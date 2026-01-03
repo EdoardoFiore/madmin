@@ -83,7 +83,7 @@ async function loadSystemSettings() {
         if (settings.company_name) {
             document.title = `${settings.company_name} - Dashboard`;
             // Desktop sidebar brand
-            const brandText = document.querySelector('.navbar-brand span');
+            const brandText = document.getElementById('navbar-brand-text');
             if (brandText) {
                 brandText.textContent = settings.company_name;
             }
@@ -118,24 +118,29 @@ async function loadSystemSettings() {
             }
         }
 
-        // Apply favicon if set
+        // Apply favicon if set (override default)
         if (settings.favicon_url) {
-            let favicon = document.querySelector('link[rel="icon"]');
-            if (!favicon) {
-                favicon = document.createElement('link');
-                favicon.rel = 'icon';
-                document.head.appendChild(favicon);
+            const faviconLink = document.getElementById('favicon-link');
+            if (faviconLink) {
+                faviconLink.href = settings.favicon_url;
             }
-            favicon.href = settings.favicon_url;
         }
 
-        // Show support URL in footer if configured
+        // Show support URL in footer if configured (inline with version)
         if (settings.support_url) {
             const supportLink = document.getElementById('support-link');
-            if (supportLink) {
+            const supportItem = document.getElementById('support-link-item');
+            if (supportLink && supportItem) {
                 supportLink.href = settings.support_url;
-                // Also show the parent li element
-                supportLink.parentElement.style.display = 'list-item';
+                supportItem.style.display = 'list-item';
+            }
+        }
+
+        // Update footer brand with company name
+        if (settings.company_name) {
+            const footerBrand = document.getElementById('footer-brand');
+            if (footerBrand) {
+                footerBrand.textContent = settings.company_name;
             }
         }
 

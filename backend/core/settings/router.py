@@ -62,10 +62,15 @@ async def update_system_settings(
         settings = SystemSettings(id=1)
         session.add(settings)
     
-    # Update fields
-    for key, value in data.model_dump(exclude_unset=True).items():
-        if value is not None:
-            setattr(settings, key, value)
+    # Update fields - allow setting to None for reset
+    # Also convert empty strings to None for nullable fields
+    update_data = data.model_dump(exclude_unset=True)
+    nullable_fields = {'logo_url', 'favicon_url', 'support_url'}
+    for key, value in update_data.items():
+        # Convert empty strings to None for nullable fields only
+        if key in nullable_fields and value == '':
+            value = None
+        setattr(settings, key, value)
     
     settings.updated_at = datetime.utcnow()
     session.add(settings)

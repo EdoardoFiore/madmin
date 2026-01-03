@@ -22,7 +22,7 @@ export async function render(container) {
                                 <i class="ti ti-server-cog" style="font-size: 3rem;"></i>
                             </div>
                             <div>
-                                <h2 class="mb-1">Benvenuto in MADMIN</h2>
+                                <h2 class="mb-1" id="dashboard-welcome">Benvenuto in MADMIN</h2>
                                 <p class="mb-0 opacity-75">Sistema di amministrazione modulare per il tuo server</p>
                             </div>
                         </div>
@@ -218,9 +218,36 @@ export async function render(container) {
     // Setup event listeners
     setupEventListeners();
 
+    // Load company name for welcome message
+    await loadCompanyName();
+
     // Load data
     await loadDashboardData();
     await loadSystemStats();
+}
+
+/**
+ * Load company name for welcome message
+ */
+async function loadCompanyName() {
+    try {
+        const response = await fetch('/api/settings/system', {
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`
+            }
+        });
+        if (response.ok) {
+            const settings = await response.json();
+            if (settings.company_name) {
+                const welcomeEl = document.getElementById('dashboard-welcome');
+                if (welcomeEl) {
+                    welcomeEl.textContent = `Benvenuto in ${settings.company_name}`;
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load company name:', e);
+    }
 }
 
 /**

@@ -24,7 +24,11 @@ export async function render(container) {
                         <div class="row g-3">
                             <div class="col-md-4">
                                 <label class="form-label">Nome Azienda</label>
-                                <input type="text" class="form-control" id="company-name" ${canManage ? '' : 'disabled'}>
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="company-name" placeholder="MADMIN" ${canManage ? '' : 'disabled'}>
+                                    ${canManage ? '<button type="button" class="btn btn-outline-secondary" id="reset-company" title="Ripristina predefinito"><i class="ti ti-refresh"></i></button>' : ''}
+                                </div>
+                                <small class="form-hint">Predefinito: MADMIN</small>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">Colore Primario</label>
@@ -37,7 +41,10 @@ export async function render(container) {
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">URL Supporto</label>
-                                <input type="url" class="form-control" id="support-url" placeholder="https://..." ${canManage ? '' : 'disabled'}>
+                                <div class="input-group">
+                                    <input type="url" class="form-control" id="support-url" placeholder="https://..." ${canManage ? '' : 'disabled'}>
+                                    ${canManage ? '<button type="button" class="btn btn-outline-secondary" id="reset-support" title="Rimuovi link supporto"><i class="ti ti-x"></i></button>' : ''}
+                                </div>
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">Logo</label>
@@ -56,6 +63,9 @@ export async function render(container) {
                                             <i class="ti ti-upload me-1"></i>Carica
                                             <input type="file" id="logo-upload" accept="image/*" class="d-none">
                                         </label>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-logo" title="Rimuovi logo">
+                                            <i class="ti ti-x"></i>
+                                        </button>
                                     </div>
                                     ` : ''}
                                 </div>
@@ -75,6 +85,9 @@ export async function render(container) {
                                             <i class="ti ti-upload me-1"></i>Carica
                                             <input type="file" id="favicon-upload" accept="image/*,.ico" class="d-none">
                                         </label>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-favicon" title="Ripristina predefinito">
+                                            <i class="ti ti-refresh"></i>
+                                        </button>
                                     </div>
                                     ` : ''}
                                 </div>
@@ -318,6 +331,56 @@ function setupEventListeners() {
         showToast('Colore ripristinato al predefinito', 'info');
     });
 
+    // Reset company name to default
+    document.getElementById('reset-company')?.addEventListener('click', async () => {
+        const companyInput = document.getElementById('company-name');
+        companyInput.value = 'MADMIN';
+        try {
+            await apiPatch('/settings/system', { company_name: 'MADMIN' });
+            showToast('Nome azienda ripristinato', 'success');
+        } catch (e) { showToast(e.message, 'error'); }
+    });
+
+    // Reset support URL (clear)
+    document.getElementById('reset-support')?.addEventListener('click', async () => {
+        const supportInput = document.getElementById('support-url');
+        supportInput.value = '';
+        try {
+            await apiPatch('/settings/system', { support_url: '' });
+            showToast('URL supporto rimosso', 'success');
+        } catch (e) { showToast(e.message, 'error'); }
+    });
+
+    // Reset logo (remove custom)
+    document.getElementById('reset-logo')?.addEventListener('click', async () => {
+        try {
+            await apiPatch('/settings/system', { logo_url: null });
+            // Restore default preview
+            const logoImg = document.getElementById('logo-preview-img');
+            const logoDefault = document.getElementById('logo-preview-default');
+            if (logoImg && logoDefault) {
+                logoImg.classList.add('d-none');
+                logoDefault.classList.remove('d-none');
+            }
+            showToast('Logo rimosso', 'success');
+        } catch (e) { showToast(e.message, 'error'); }
+    });
+
+    // Reset favicon (restore default)
+    document.getElementById('reset-favicon')?.addEventListener('click', async () => {
+        try {
+            await apiPatch('/settings/system', { favicon_url: null });
+            // Restore default preview
+            const faviconImg = document.getElementById('favicon-preview-img');
+            const faviconDefault = document.getElementById('favicon-preview-default');
+            if (faviconImg && faviconDefault) {
+                faviconImg.classList.add('d-none');
+                faviconDefault.classList.remove('d-none');
+            }
+            showToast('Favicon ripristinata al predefinito', 'success');
+        } catch (e) { showToast(e.message, 'error'); }
+    });
+
     // Logo upload
     document.getElementById('logo-upload')?.addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -401,12 +464,44 @@ function setupEventListeners() {
     // Save system settings
     document.getElementById('save-system')?.addEventListener('click', async () => {
         try {
+            const companyName = document.getElementById('company-name').value || 'MADMIN';
+            const primaryColor = document.getElementById('primary-color').value;
+            const supportUrl = document.getElementById('support-url').value || '';
+
             await apiPatch('/settings/system', {
-                company_name: document.getElementById('company-name').value,
-                primary_color: document.getElementById('primary-color').value,
-                support_url: document.getElementById('support-url').value || null
-                // TODO: Add logo_url and favicon_url after file upload implementation
+                company_name: companyName,
+                primary_color: primaryColor,
+                support_url: supportUrl
             });
+
+            // Apply changes immediately to UI
+            // Update browser title
+            document.title = `${companyName} - Dashboard`;
+
+            // Update sidebar brand
+            const brandText = document.getElementById('navbar-brand-text');
+            if (brandText) brandText.textContent = companyName;
+
+            // Update mobile header brand
+            const mobileBrand = document.getElementById('mobile-brand-name');
+            if (mobileBrand) mobileBrand.textContent = companyName;
+
+            // Update footer brand
+            const footerBrand = document.getElementById('footer-brand');
+            if (footerBrand) footerBrand.textContent = companyName;
+
+            // Update support link visibility
+            const supportItem = document.getElementById('support-link-item');
+            const supportLink = document.getElementById('support-link');
+            if (supportItem && supportLink) {
+                if (supportUrl) {
+                    supportLink.href = supportUrl;
+                    supportItem.style.display = 'list-item';
+                } else {
+                    supportItem.style.display = 'none';
+                }
+            }
+
             showToast('Impostazioni salvate', 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
