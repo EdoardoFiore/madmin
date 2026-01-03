@@ -269,15 +269,21 @@ async function loadMenu() {
 }
 
 /**
- * Create a menu item HTML
+ * Create a menu item HTML - supports both Tabler icons and custom URLs
  */
 function createMenuItem(item) {
-    const iconClass = item.icon ? `ti-${item.icon}` : 'ti-circle';
+    let iconHtml;
+    if (item.icon && (item.icon.startsWith('http://') || item.icon.startsWith('https://'))) {
+        iconHtml = `<img src="${item.icon}" alt="" style="width: 20px; height: 20px;">`;
+    } else {
+        const iconClass = item.icon ? `ti-${item.icon}` : 'ti-circle';
+        iconHtml = `<i class="ti ${iconClass}"></i>`;
+    }
     return `
         <li class="nav-item">
             <a class="nav-link" href="${item.route}">
                 <span class="nav-link-icon d-md-none d-lg-inline-block">
-                    <i class="ti ${iconClass}"></i>
+                    ${iconHtml}
                 </span>
                 <span class="nav-link-title">${item.label}</span>
             </a>

@@ -8,6 +8,20 @@ import { apiGet, apiPost, apiDelete, apiPatch, apiPut } from '../api.js';
 import { showToast, confirmDialog, formatDate, emptyState, escapeHtml, statusBadge } from '../utils.js';
 import { checkPermission } from '../app.js';
 
+/**
+ * Render icon - supports both Tabler icon names and custom URLs (SVG/PNG)
+ * @param {string} icon - Tabler icon name or URL
+ * @param {string} className - Additional CSS classes
+ * @returns {string} HTML for the icon
+ */
+function renderIcon(icon, className = '') {
+    if (!icon) return `<i class="ti ti-puzzle ${className}"></i>`;
+    if (icon.startsWith('http://') || icon.startsWith('https://')) {
+        return `<img src="${icon}" alt="icon" class="module-icon ${className}" style="width: 24px; height: 24px;">`;
+    }
+    return `<i class="ti ti-${icon} ${className}"></i>`;
+}
+
 let modules = [];
 let stagingModules = [];
 let storeModules = [];
@@ -208,7 +222,7 @@ function renderStore() {
                         <div class="card-body">
                             <div class="d-flex align-items-start mb-2">
                                 <span class="avatar bg-azure-lt me-3">
-                                    <i class="ti ti-${m.icon || 'puzzle'}"></i>
+                                    ${renderIcon(m.icon)}
                                 </span>
                                 <div class="flex-fill">
                                     <h4 class="card-title mb-0">${escapeHtml(m.name)}</h4>
@@ -225,7 +239,7 @@ function renderStore() {
                             <div class="d-flex align-items-center text-muted small mb-3">
                                 <span class="me-3"><i class="ti ti-star me-1"></i>${m.stars || 0}</span>
                                 <span><i class="ti ti-download me-1"></i>${m.downloads || 0}</span>
-                                <span class="ms-auto badge bg-secondary">v${m.version || '0.0.0'}</span>
+                                <span class="ms-auto badge bg-azure-lt">v${m.version || '0.0.0'}</span>
                             </div>
                         </div>
                         <div class="card-footer">
