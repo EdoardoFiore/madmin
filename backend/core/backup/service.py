@@ -200,20 +200,22 @@ async def upload_ftp(
         return False
 
 
-def cleanup_old_backups():
+def cleanup_old_backups(retention_days: int = 30):
     """
-    Remove old backups keeping only MAX_LOCAL_BACKUPS most recent.
+    Remove old backups based on retention policy.
+    retention_days=0 means keep forever.
     """
-    try:
-        backup_files = sorted(
-            Path(BACKUP_DIR).glob("madmin_backup_*.tar.gz"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True
-        )
+    if retention_days <= 0:
+        return  # Keep forever
         
-        for old_backup in backup_files[MAX_LOCAL_BACKUPS:]:
-            old_backup.unlink()
-            logger.info(f"Removed old backup: {old_backup}")
+    try:
+        from datetime import timedelta
+        cutoff_date = datetime.now() - timedelta(days=retention_days)
+        
+        for backup_file in Path(BACKUP_DIR).glob("madmin_backup_*.tar.gz"):
+            if datetime.fromtimestamp(backup_file.stat().st_mtime) < cutoff_date:
+                backup_file.unlink()
+                logger.info(f"Removed old backup (>{retention_days} days): {backup_file}")
             
     except Exception as e:
         logger.error(f"Cleanup failed: {e}")
@@ -225,7 +227,8 @@ async def run_backup(
     remote_port: int = 22,
     remote_user: Optional[str] = None,
     remote_password: Optional[str] = None,
-    remote_path: str = "/"
+    remote_path: str = "/",
+    retention_days: int = 30
 ) -> dict:
     """
     Run a full backup operation.
@@ -284,7 +287,7 @@ async def run_backup(
             result["errors"].append("Remote upload failed")
     
     # 5. Cleanup old backups
-    cleanup_old_backups()
+    cleanup_old_backups(retention_days)
     
     # 6. Cleanup temp directory
     import shutil

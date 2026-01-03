@@ -67,6 +67,12 @@ class ModuleInstallHooks(SQLModel):
     pre_uninstall: Optional[str] = None # e.g., "hooks/pre_uninstall.py"
 
 
+class ModuleBackupConfig(SQLModel):
+    """Backup configuration for a module."""
+    external_paths: List[str] = []  # Paths outside /opt/madmin to backup (e.g., /etc/wireguard)
+    restore_hooks: Optional[Dict[str, str]] = None  # e.g., {"post_restore": "hooks/post_restore.py"}
+
+
 class ModuleManifest(SQLModel):
     """
     Module manifest schema (manifest.json).
@@ -107,6 +113,9 @@ class ModuleManifest(SQLModel):
     
     # NEW: Frontend view entry point (relative to static/)
     frontend_entry: Optional[str] = None  # e.g., "views/main.js"
+    
+    # NEW: Backup configuration for module-specific data
+    backup: Optional[ModuleBackupConfig] = None
 
 
 class InstalledModuleResponse(SQLModel):

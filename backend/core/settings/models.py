@@ -69,6 +69,9 @@ class BackupSettings(SQLModel, table=True):
     last_run_status: Optional[str] = Field(default=None, max_length=50)
     last_run_time: Optional[datetime] = Field(default=None)
     
+    # Retention policy
+    retention_days: int = Field(default=30)  # 0 = keep forever
+    
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -122,6 +125,7 @@ class BackupSettingsUpdate(SQLModel):
     enabled: Optional[bool] = None
     frequency: Optional[str] = None
     time: Optional[str] = None
+    retention_days: Optional[int] = None
     remote_protocol: Optional[str] = None
     remote_host: Optional[str] = None
     remote_port: Optional[int] = None
@@ -135,6 +139,7 @@ class BackupSettingsResponse(SQLModel):
     enabled: bool
     frequency: str
     time: str
+    retention_days: int
     remote_protocol: str
     remote_host: str
     remote_port: int

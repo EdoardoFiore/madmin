@@ -74,7 +74,8 @@ async def trigger_backup(
         remote_port=settings.remote_port or 22,
         remote_user=settings.remote_user,
         remote_password=settings.remote_password,
-        remote_path=settings.remote_path or "/"
+        remote_path=settings.remote_path or "/",
+        retention_days=settings.retention_days or 30
     )
     
     # Update status

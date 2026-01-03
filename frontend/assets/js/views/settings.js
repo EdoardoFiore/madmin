@@ -163,57 +163,96 @@ export async function render(container) {
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup Automatico</h3>
+                        <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup</h3>
+                        <div class="card-actions">
+                            ${canManage ? `
+                            <button class="btn btn-primary btn-sm" id="trigger-backup">
+                                <i class="ti ti-download me-1"></i>Esegui Backup Ora
+                            </button>
+                            ` : ''}
+                        </div>
                     </div>
                     <div class="card-body">
+                        <!-- Last backup status -->
+                        <div class="alert alert-info mb-3" id="backup-status-alert">
+                            <div class="d-flex align-items-center">
+                                <i class="ti ti-info-circle me-2"></i>
+                                <span id="backup-last-status">Caricamento...</span>
+                            </div>
+                        </div>
+                        
                         <div class="row g-3">
-                            <div class="col-md-3">
+                            <div class="col-md-2">
                                 <label class="form-check form-switch">
                                     <input class="form-check-input" type="checkbox" id="backup-enabled" ${canManage ? '' : 'disabled'}>
-                                    <span class="form-check-label">Backup Automatico</span>
+                                    <span class="form-check-label">Automatico</span>
                                 </label>
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-md-2">
                                 <label class="form-label">Frequenza</label>
                                 <select class="form-select" id="backup-frequency" ${canManage ? '' : 'disabled'}>
                                     <option value="daily">Giornaliero</option>
                                     <option value="weekly">Settimanale</option>
                                 </select>
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-md-2">
                                 <label class="form-label">Ora</label>
                                 <input type="time" class="form-control" id="backup-time" ${canManage ? '' : 'disabled'}>
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-md-2">
+                                <label class="form-label">Retention (giorni)</label>
+                                <input type="number" class="form-control" id="backup-retention" min="0" placeholder="30" ${canManage ? '' : 'disabled'}>
+                                <small class="form-hint">0 = illimitato</small>
+                            </div>
+                            <div class="col-md-2">
                                 <label class="form-label">Protocollo</label>
                                 <select class="form-select" id="backup-protocol" ${canManage ? '' : 'disabled'}>
                                     <option value="sftp">SFTP</option>
                                     <option value="ftp">FTP</option>
                                 </select>
                             </div>
-                            <div class="col-md-6">
-                                <label class="form-label">Host Remoto</label>
-                                <input type="text" class="form-control" id="backup-host" ${canManage ? '' : 'disabled'}>
-                            </div>
                             <div class="col-md-2">
                                 <label class="form-label">Porta</label>
                                 <input type="number" class="form-control" id="backup-port" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-4">
+                                <label class="form-label">Host Remoto</label>
+                                <input type="text" class="form-control" id="backup-host" ${canManage ? '' : 'disabled'}>
+                            </div>
+                            <div class="col-md-4">
                                 <label class="form-label">Percorso</label>
                                 <input type="text" class="form-control" id="backup-path" ${canManage ? '' : 'disabled'}>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-2">
                                 <label class="form-label">Utente</label>
                                 <input type="text" class="form-control" id="backup-user" ${canManage ? '' : 'disabled'}>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-2">
                                 <label class="form-label">Password</label>
                                 <input type="password" class="form-control" id="backup-password" placeholder="••••••••" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-12">
-                                ${canManage ? '<button class="btn btn-primary" id="save-backup">Salva</button>' : ''}
+                                ${canManage ? '<button class="btn btn-primary" id="save-backup">Salva Configurazione</button>' : ''}
                             </div>
+                        </div>
+                        
+                        <!-- Backup History -->
+                        <hr class="my-4">
+                        <h4 class="mb-3"><i class="ti ti-history me-2"></i>Storico Backup</h4>
+                        <div class="table-responsive">
+                            <table class="table table-vcenter">
+                                <thead>
+                                    <tr>
+                                        <th>File</th>
+                                        <th>Dimensione</th>
+                                        <th>Data</th>
+                                        <th class="text-end">Azioni</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="backup-history-body">
+                                    <tr><td colspan="4" class="text-center text-muted">Caricamento...</td></tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -297,11 +336,27 @@ async function loadSettings() {
         document.getElementById('backup-enabled').checked = backup.enabled;
         document.getElementById('backup-frequency').value = backup.frequency || 'daily';
         document.getElementById('backup-time').value = backup.time || '03:00';
+        document.getElementById('backup-retention').value = backup.retention_days || 30;
         document.getElementById('backup-protocol').value = backup.remote_protocol || 'sftp';
         document.getElementById('backup-host').value = backup.remote_host || '';
         document.getElementById('backup-port').value = backup.remote_port || 22;
         document.getElementById('backup-path').value = backup.remote_path || '/';
         document.getElementById('backup-user').value = backup.remote_user || '';
+
+        // Last backup status
+        const statusEl = document.getElementById('backup-last-status');
+        const alertEl = document.getElementById('backup-status-alert');
+        if (backup.last_run_time) {
+            const date = new Date(backup.last_run_time).toLocaleString('it-IT');
+            const status = backup.last_run_status === 'success' ? 'completato' : backup.last_run_status;
+            statusEl.textContent = `Ultimo backup: ${date} - ${status}`;
+            alertEl.className = backup.last_run_status === 'success' ? 'alert alert-success mb-3' : 'alert alert-warning mb-3';
+        } else {
+            statusEl.textContent = 'Nessun backup eseguito';
+        }
+
+        // Load backup history
+        await loadBackupHistory();
 
     } catch (error) {
         showToast('Errore caricamento impostazioni', 'error');
@@ -565,6 +620,7 @@ function setupEventListeners() {
                 enabled: document.getElementById('backup-enabled').checked,
                 frequency: document.getElementById('backup-frequency').value,
                 time: document.getElementById('backup-time').value,
+                retention_days: parseInt(document.getElementById('backup-retention').value) || 30,
                 remote_protocol: document.getElementById('backup-protocol').value,
                 remote_host: document.getElementById('backup-host').value,
                 remote_port: parseInt(document.getElementById('backup-port').value),
@@ -606,4 +662,82 @@ function setupEventListeners() {
             btn.disabled = false;
         }
     });
+
+    // Trigger manual backup
+    document.getElementById('trigger-backup')?.addEventListener('click', async () => {
+        const btn = document.getElementById('trigger-backup');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Backup in corso...';
+        btn.disabled = true;
+
+        try {
+            const result = await apiPost('/backup/run', {});
+            if (result.success) {
+                showToast('Backup completato con successo!', 'success');
+                await loadBackupHistory();
+            } else {
+                showToast('Backup completato con errori: ' + result.errors.join(', '), 'warning');
+            }
+        } catch (e) {
+            showToast('Errore backup: ' + e.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
 }
+
+/**
+ * Load backup history from API
+ */
+async function loadBackupHistory() {
+    const tbody = document.getElementById('backup-history-body');
+    if (!tbody) return;
+
+    try {
+        const history = await apiGet('/backup/history');
+
+        if (history.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun backup disponibile</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = history.map(backup => `
+            <tr>
+                <td><i class="ti ti-file-zip me-2"></i>${backup.filename}</td>
+                <td>${backup.size_mb} MB</td>
+                <td>${new Date(backup.created_at).toLocaleString('it-IT')}</td>
+                <td class="text-end">
+                    <a href="/api/backup/download/${backup.filename}" class="btn btn-sm btn-ghost-primary" title="Scarica">
+                        <i class="ti ti-download"></i>
+                    </a>
+                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteBackup('${backup.filename}')" title="Elimina">
+                        <i class="ti ti-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Errore caricamento storico</td></tr>';
+    }
+}
+
+/**
+ * Delete a backup file
+ */
+window.deleteBackup = async function (filename) {
+    if (!confirm('Eliminare questo backup?')) return;
+
+    try {
+        await fetch(`/api/backup/delete/${filename}`, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`
+            }
+        });
+        showToast('Backup eliminato', 'success');
+        await loadBackupHistory();
+    } catch (e) {
+        showToast('Errore eliminazione: ' + e.message, 'error');
+    }
+};
