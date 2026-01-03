@@ -17,7 +17,10 @@ from core.database import get_session
 from core.auth.dependencies import require_permission
 from core.auth.models import User
 from core.settings.models import BackupSettings
-from .service import run_backup, restore_backup, preview_backup, BACKUP_DIR
+from .service import (
+    run_backup, restore_backup, preview_backup, BACKUP_DIR,
+    list_remote_backups, download_remote_backup, delete_remote_backup, cleanup_remote_backups
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,3 +211,132 @@ async def restore_from_backup(
     result = await restore_backup(str(file_path))
     
     return RestoreResult(**result)
+
+
+class RemoteBackupItem(BaseModel):
+    filename: str
+    size_mb: float
+    mtime: Optional[datetime] = None
+
+
+@router.get("/remote/list", response_model=List[RemoteBackupItem])
+async def list_remote_backup_files(
+    current_user: User = Depends(require_permission("settings.view")),
+    session: AsyncSession = Depends(get_session)
+):
+    """List backup files on remote storage."""
+    result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    
+    if not settings or not settings.remote_protocol or not settings.remote_host:
+        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    
+    backups = await list_remote_backups(
+        settings.remote_protocol,
+        settings.remote_host,
+        settings.remote_port or 22,
+        settings.remote_user or "",
+        settings.remote_password or "",
+        settings.remote_path or "/"
+    )
+    
+    return [
+        RemoteBackupItem(
+            filename=b["filename"],
+            size_mb=round(b.get("size_bytes", 0) / (1024 * 1024), 2),
+            mtime=datetime.fromtimestamp(b["mtime"]) if b.get("mtime") else None
+        )
+        for b in backups
+    ][:10]  # Limit to 10 most recent
+
+
+@router.post("/remote/download/{filename}")
+async def download_remote_backup_file(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Download a backup from remote storage to local."""
+    safe_name = Path(filename).name
+    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Nome file non valido")
+    
+    result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    
+    if not settings or not settings.remote_protocol:
+        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    
+    local_path = await download_remote_backup(
+        settings.remote_protocol,
+        settings.remote_host,
+        settings.remote_port or 22,
+        settings.remote_user or "",
+        settings.remote_password or "",
+        settings.remote_path or "/",
+        safe_name
+    )
+    
+    if local_path:
+        return {"status": "ok", "message": "Backup scaricato", "local_path": local_path}
+    else:
+        raise HTTPException(status_code=500, detail="Download fallito")
+
+
+@router.delete("/remote/delete/{filename}")
+async def delete_remote_backup_file(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Delete a backup from remote storage."""
+    safe_name = Path(filename).name
+    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Nome file non valido")
+    
+    result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    
+    if not settings or not settings.remote_protocol:
+        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    
+    success = await delete_remote_backup(
+        settings.remote_protocol,
+        settings.remote_host,
+        settings.remote_port or 22,
+        settings.remote_user or "",
+        settings.remote_password or "",
+        settings.remote_path or "/",
+        safe_name
+    )
+    
+    if success:
+        return {"status": "ok", "message": "Backup remoto eliminato"}
+    else:
+        raise HTTPException(status_code=500, detail="Eliminazione fallita")
+
+
+@router.post("/remote/cleanup")
+async def cleanup_remote_storage(
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Apply retention policy to remote storage."""
+    result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    
+    if not settings or not settings.remote_protocol:
+        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    
+    deleted = await cleanup_remote_backups(
+        settings.remote_protocol,
+        settings.remote_host,
+        settings.remote_port or 22,
+        settings.remote_user or "",
+        settings.remote_password or "",
+        settings.remote_path or "/",
+        settings.retention_days or 30
+    )
+    
+    return {"status": "ok", "deleted_count": deleted}
+

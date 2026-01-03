@@ -273,6 +273,278 @@ async def upload_ftp(
         return False
 
 
+# ============== REMOTE BACKUP MANAGEMENT ==============
+
+async def list_remote_backups_sftp(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str
+) -> list:
+    """List backup files on remote SFTP server."""
+    try:
+        import asyncssh
+        
+        async with asyncssh.connect(
+            host,
+            port=port,
+            username=username,
+            password=password,
+            known_hosts=None
+        ) as conn:
+            async with conn.start_sftp_client() as sftp:
+                files = []
+                for entry in await sftp.readdir(remote_path):
+                    if entry.filename.startswith("madmin_backup_") and entry.filename.endswith(".tar.gz"):
+                        files.append({
+                            "filename": entry.filename,
+                            "size_bytes": entry.attrs.size or 0,
+                            "mtime": entry.attrs.mtime
+                        })
+                return sorted(files, key=lambda x: x.get("mtime", 0), reverse=True)
+                
+    except ImportError:
+        logger.error("asyncssh not installed")
+        return []
+    except Exception as e:
+        logger.error(f"SFTP list failed: {e}")
+        return []
+
+
+async def list_remote_backups_ftp(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str
+) -> list:
+    """List backup files on remote FTP server."""
+    try:
+        import aioftp
+        
+        async with aioftp.Client.context(host, port, username, password) as client:
+            await client.change_directory(remote_path)
+            files = []
+            async for path, info in client.list():
+                filename = str(path)
+                if filename.startswith("madmin_backup_") and filename.endswith(".tar.gz"):
+                    files.append({
+                        "filename": filename,
+                        "size_bytes": int(info.get("size", 0)),
+                        "mtime": None  # FTP doesn't always provide mtime reliably
+                    })
+            return files
+            
+    except ImportError:
+        logger.error("aioftp not installed")
+        return []
+    except Exception as e:
+        logger.error(f"FTP list failed: {e}")
+        return []
+
+
+async def list_remote_backups(
+    protocol: str,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str
+) -> list:
+    """List backup files on remote server."""
+    if protocol == "sftp":
+        return await list_remote_backups_sftp(host, port, username, password, remote_path)
+    elif protocol == "ftp":
+        return await list_remote_backups_ftp(host, port, username, password, remote_path)
+    return []
+
+
+async def download_remote_backup_sftp(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str,
+    filename: str
+) -> Optional[str]:
+    """Download a backup file from remote SFTP server."""
+    try:
+        import asyncssh
+        
+        local_path = os.path.join(BACKUP_DIR, filename)
+        remote_file = os.path.join(remote_path, filename)
+        
+        async with asyncssh.connect(
+            host,
+            port=port,
+            username=username,
+            password=password,
+            known_hosts=None
+        ) as conn:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.get(remote_file, local_path)
+                logger.info(f"Downloaded from SFTP: {filename}")
+                return local_path
+                
+    except Exception as e:
+        logger.error(f"SFTP download failed: {e}")
+        return None
+
+
+async def download_remote_backup_ftp(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str,
+    filename: str
+) -> Optional[str]:
+    """Download a backup file from remote FTP server."""
+    try:
+        import aioftp
+        
+        local_path = os.path.join(BACKUP_DIR, filename)
+        
+        async with aioftp.Client.context(host, port, username, password) as client:
+            await client.change_directory(remote_path)
+            await client.download(filename, local_path)
+            logger.info(f"Downloaded from FTP: {filename}")
+            return local_path
+            
+    except Exception as e:
+        logger.error(f"FTP download failed: {e}")
+        return None
+
+
+async def download_remote_backup(
+    protocol: str,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str,
+    filename: str
+) -> Optional[str]:
+    """Download a backup file from remote server."""
+    if protocol == "sftp":
+        return await download_remote_backup_sftp(host, port, username, password, remote_path, filename)
+    elif protocol == "ftp":
+        return await download_remote_backup_ftp(host, port, username, password, remote_path, filename)
+    return None
+
+
+async def delete_remote_backup_sftp(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str,
+    filename: str
+) -> bool:
+    """Delete a backup file from remote SFTP server."""
+    try:
+        import asyncssh
+        
+        remote_file = os.path.join(remote_path, filename)
+        
+        async with asyncssh.connect(
+            host,
+            port=port,
+            username=username,
+            password=password,
+            known_hosts=None
+        ) as conn:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.remove(remote_file)
+                logger.info(f"Deleted from SFTP: {filename}")
+                return True
+                
+    except Exception as e:
+        logger.error(f"SFTP delete failed: {e}")
+        return False
+
+
+async def delete_remote_backup_ftp(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str,
+    filename: str
+) -> bool:
+    """Delete a backup file from remote FTP server."""
+    try:
+        import aioftp
+        
+        async with aioftp.Client.context(host, port, username, password) as client:
+            await client.change_directory(remote_path)
+            await client.remove(filename)
+            logger.info(f"Deleted from FTP: {filename}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"FTP delete failed: {e}")
+        return False
+
+
+async def delete_remote_backup(
+    protocol: str,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str,
+    filename: str
+) -> bool:
+    """Delete a backup file from remote server."""
+    if protocol == "sftp":
+        return await delete_remote_backup_sftp(host, port, username, password, remote_path, filename)
+    elif protocol == "ftp":
+        return await delete_remote_backup_ftp(host, port, username, password, remote_path, filename)
+    return False
+
+
+async def cleanup_remote_backups(
+    protocol: str,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str,
+    retention_days: int
+) -> int:
+    """
+    Remove old backups from remote storage based on retention policy.
+    Returns count of deleted files.
+    """
+    if retention_days <= 0:
+        return 0  # Keep forever
+    
+    deleted = 0
+    try:
+        from datetime import timedelta
+        cutoff_timestamp = (datetime.now() - timedelta(days=retention_days)).timestamp()
+        
+        # List remote backups
+        backups = await list_remote_backups(protocol, host, port, username, password, remote_path)
+        
+        for backup in backups:
+            mtime = backup.get("mtime")
+            if mtime and mtime < cutoff_timestamp:
+                success = await delete_remote_backup(
+                    protocol, host, port, username, password, remote_path, backup["filename"]
+                )
+                if success:
+                    deleted += 1
+                    logger.info(f"Remote cleanup: deleted {backup['filename']}")
+                    
+    except Exception as e:
+        logger.error(f"Remote cleanup failed: {e}")
+    
+    return deleted
+
+
 def cleanup_old_backups(retention_days: int = 30):
     """
     Remove old backups based on retention policy.

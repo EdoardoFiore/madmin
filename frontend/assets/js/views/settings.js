@@ -2,7 +2,7 @@
  * MADMIN - Settings View
  */
 
-import { apiGet, apiPatch, apiPost } from '../api.js';
+import { apiGet, apiPatch, apiPost, apiDelete } from '../api.js';
 import { showToast, escapeHtml, inputDialog, confirmDialog } from '../utils.js';
 import { checkPermission } from '../app.js';
 
@@ -255,6 +255,32 @@ export async function render(container) {
                             </table>
                         </div>
                     </div>
+                    
+                    <!-- Remote Backup History -->
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h4 class="card-title m-0"><i class="ti ti-cloud me-2"></i>Backup Remoti</h4>
+                        ${canManage ? `
+                        <button class="btn btn-sm btn-outline-warning" onclick="cleanupRemoteBackups()" title="Applica retention">
+                            <i class="ti ti-trash me-1"></i>Pulizia
+                        </button>` : ''}
+                    </div>
+                    <div class="card-body pt-2">
+                        <div class="table-responsive">
+                            <table class="table table-vcenter card-table">
+                                <thead>
+                                    <tr>
+                                        <th>File</th>
+                                        <th>Dimensione</th>
+                                        <th>Data</th>
+                                        <th class="text-end">Azioni</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="remote-backup-history-body">
+                                    <tr><td colspan="4" class="text-center text-muted">Caricamento...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
             
@@ -357,6 +383,7 @@ async function loadSettings() {
 
         // Load backup history
         await loadBackupHistory();
+        await loadRemoteBackupHistory();
 
     } catch (error) {
         showToast('Errore caricamento impostazioni', 'error');
@@ -729,7 +756,13 @@ async function loadBackupHistory() {
  * Delete a backup file
  */
 window.deleteBackup = async function (filename) {
-    if (!confirm('Eliminare questo backup?')) return;
+    const confirmed = await confirmDialog(
+        'Elimina Backup',
+        `Eliminare definitivamente ${filename}?`,
+        'Elimina',
+        'btn-danger'
+    );
+    if (!confirmed) return;
 
     try {
         await fetch(`/api/backup/delete/${filename}`, {
@@ -748,44 +781,270 @@ window.deleteBackup = async function (filename) {
 /**
  * Restore from a backup file
  */
-window.restoreBackup = async function (filename) {
+window.restoreBackup = async function (filename, isRemote = false) {
     try {
-        // Get preview first
+        // If remote, download first
+        if (isRemote) {
+            showToast('Download backup remoto...', 'info');
+            const dlResult = await apiPost(`/backup/remote/download/${filename}`, {});
+            if (!dlResult.status === 'ok') {
+                showToast('Download fallito', 'error');
+                return;
+            }
+        }
+
+        // Get preview
         const preview = await apiGet(`/backup/preview/${filename}`);
 
-        // Build confirmation message
-        let msg = `⚠️ ATTENZIONE: Ripristina backup ${filename}\n\n`;
-        msg += `Questo sovrascriverà i dati attuali!\n\n`;
-        msg += `Contenuto:\n`;
-        msg += `• Database: ${preview.has_database ? 'Sì' : 'No'}\n`;
-        if (preview.modules.length > 0) msg += `• Moduli: ${preview.modules.join(', ')}\n`;
-        if (preview.staging.length > 0) msg += `• Staging: ${preview.staging.join(', ')}\n`;
-        if (preview.external_paths.length > 0) msg += `• External paths: ${preview.external_paths.join(', ')}\n`;
-        msg += `\nVuoi procedere?`;
+        // Build modal HTML
+        const modalHtml = `
+            <div class="modal fade" id="restore-preview-modal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header bg-warning-lt">
+                            <h5 class="modal-title"><i class="ti ti-alert-triangle me-2"></i>Conferma Ripristino</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="alert alert-warning mb-3">
+                                <i class="ti ti-alert-circle me-2"></i>
+                                <strong>Attenzione!</strong> Questo sovrascriverà i dati attuali.
+                            </div>
+                            
+                            <h4 class="mb-3">${filename}</h4>
+                            <div class="mb-3">
+                                <span class="badge ${preview.size_bytes > 0 ? 'bg-blue-lt' : 'bg-secondary-lt'}">
+                                    ${(preview.size_bytes / 1024 / 1024).toFixed(2)} MB
+                                </span>
+                            </div>
+                            
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="card card-sm">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-center mb-2">
+                                                <span class="avatar avatar-sm bg-${preview.has_database ? 'success' : 'secondary'}-lt me-2">
+                                                    <i class="ti ti-database"></i>
+                                                </span>
+                                                <strong>Database</strong>
+                                            </div>
+                                            <span class="text-${preview.has_database ? 'success' : 'muted'}">
+                                                ${preview.has_database ? 'Incluso nel backup' : 'Non presente'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="col-md-6">
+                                    <div class="card card-sm">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-center mb-2">
+                                                <span class="avatar avatar-sm bg-${preview.config_files.length > 0 ? 'purple' : 'secondary'}-lt me-2">
+                                                    <i class="ti ti-file-settings"></i>
+                                                </span>
+                                                <strong>Config</strong>
+                                            </div>
+                                            <span class="text-muted">
+                                                ${preview.config_files.length > 0 ? preview.config_files.join(', ') : 'Nessuno'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                ${preview.modules.length > 0 ? `
+                                <div class="col-md-6">
+                                    <div class="card card-sm">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-center mb-2">
+                                                <span class="avatar avatar-sm bg-blue-lt me-2">
+                                                    <i class="ti ti-puzzle"></i>
+                                                </span>
+                                                <strong>Moduli</strong>
+                                            </div>
+                                            <span class="text-muted">${preview.modules.join(', ')}</span>
+                                        </div>
+                                    </div>
+                                </div>` : ''}
+                                
+                                ${preview.staging.length > 0 ? `
+                                <div class="col-md-6">
+                                    <div class="card card-sm">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-center mb-2">
+                                                <span class="avatar avatar-sm bg-orange-lt me-2">
+                                                    <i class="ti ti-code"></i>
+                                                </span>
+                                                <strong>Staging</strong>
+                                            </div>
+                                            <span class="text-muted">${preview.staging.join(', ')}</span>
+                                        </div>
+                                    </div>
+                                </div>` : ''}
+                                
+                                ${preview.external_paths.length > 0 ? `
+                                <div class="col-12">
+                                    <div class="card card-sm">
+                                        <div class="card-body">
+                                            <div class="d-flex align-items-center mb-2">
+                                                <span class="avatar avatar-sm bg-cyan-lt me-2">
+                                                    <i class="ti ti-folder"></i>
+                                                </span>
+                                                <strong>Path Esterni</strong>
+                                            </div>
+                                            <span class="text-muted">${preview.external_paths.join(', ')}</span>
+                                        </div>
+                                    </div>
+                                </div>` : ''}
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
+                            <button type="button" class="btn btn-warning" id="confirm-restore-btn">
+                                <i class="ti ti-restore me-1"></i>Ripristina
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
 
-        if (!confirm(msg)) return;
+        // Remove existing modal if any
+        document.getElementById('restore-preview-modal')?.remove();
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
 
-        showToast('Ripristino in corso...', 'info');
+        const modal = new bootstrap.Modal(document.getElementById('restore-preview-modal'));
+        modal.show();
 
-        const result = await apiPost(`/backup/restore/${filename}`, {});
+        // Handle confirm
+        document.getElementById('confirm-restore-btn').addEventListener('click', async () => {
+            modal.hide();
+            showToast('Ripristino in corso...', 'info');
 
-        if (result.success) {
-            let summary = 'Ripristino completato: ';
-            if (result.database_restored) summary += 'DB ✓ ';
-            if (result.modules_restored > 0) summary += `${result.modules_restored} moduli ✓ `;
-            if (result.staging_restored > 0) summary += `${result.staging_restored} staging ✓ `;
-            if (result.external_restored > 0) summary += `${result.external_restored} external ✓`;
+            try {
+                const result = await apiPost(`/backup/restore/${filename}`, {});
 
-            showToast(summary, 'success');
+                if (result.success) {
+                    let summary = 'Ripristino completato: ';
+                    if (result.database_restored) summary += 'DB ✓ ';
+                    if (result.modules_restored > 0) summary += `${result.modules_restored} moduli ✓ `;
+                    if (result.staging_restored > 0) summary += `${result.staging_restored} staging ✓ `;
+                    if (result.external_restored > 0) summary += `${result.external_restored} external ✓`;
 
-            // Suggest reload
-            if (confirm('Ripristino completato. Ricaricare la pagina per applicare le modifiche?')) {
-                location.reload();
+                    showToast(summary, 'success');
+
+                    const reload = await confirmDialog(
+                        'Ripristino Completato',
+                        'Ricaricare la pagina per applicare le modifiche?',
+                        'Ricarica',
+                        'btn-primary'
+                    );
+                    if (reload) location.reload();
+                } else {
+                    showToast('Ripristino fallito: ' + result.errors.join(', '), 'error');
+                }
+            } catch (err) {
+                showToast('Errore ripristino: ' + err.message, 'error');
             }
-        } else {
-            showToast('Ripristino fallito: ' + result.errors.join(', '), 'error');
-        }
+        });
+
     } catch (e) {
-        showToast('Errore ripristino: ' + e.message, 'error');
+        showToast('Errore: ' + e.message, 'error');
+    }
+};
+
+
+// ============== REMOTE BACKUP FUNCTIONS ==============
+
+/**
+ * Load remote backup history
+ */
+async function loadRemoteBackupHistory() {
+    const tbody = document.getElementById('remote-backup-history-body');
+    if (!tbody) return;
+
+    try {
+        const history = await apiGet('/backup/remote/list');
+
+        if (history.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun backup remoto</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = history.map(backup => `
+            <tr>
+                <td><i class="ti ti-cloud me-2"></i>${backup.filename}</td>
+                <td>${backup.size_mb} MB</td>
+                <td>${backup.mtime ? new Date(backup.mtime).toLocaleString('it-IT') : '-'}</td>
+                <td class="text-end">
+                    <button class="btn btn-sm btn-ghost-success" onclick="restoreBackup('${backup.filename}', true)" title="Ripristina">
+                        <i class="ti ti-restore"></i>
+                    </button>
+                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadRemoteBackup('${backup.filename}')" title="Scarica in locale">
+                        <i class="ti ti-download"></i>
+                    </button>
+                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteRemoteBackup('${backup.filename}')" title="Elimina">
+                        <i class="ti ti-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Remote non configurato</td></tr>';
+    }
+}
+
+/**
+ * Download remote backup to local
+ */
+window.downloadRemoteBackup = async function (filename) {
+    try {
+        showToast('Download in corso...', 'info');
+        const result = await apiPost(`/backup/remote/download/${filename}`, {});
+        showToast('Backup scaricato in locale', 'success');
+        await loadBackupHistory();
+    } catch (e) {
+        showToast('Errore download: ' + e.message, 'error');
+    }
+};
+
+/**
+ * Delete remote backup
+ */
+window.deleteRemoteBackup = async function (filename) {
+    const confirmed = await confirmDialog(
+        'Elimina Backup Remoto',
+        `Eliminare definitivamente ${filename} dal server remoto?`,
+        'Elimina',
+        'btn-danger'
+    );
+    if (!confirmed) return;
+
+    try {
+        await apiDelete(`/backup/remote/delete/${filename}`);
+        showToast('Backup remoto eliminato', 'success');
+        await loadRemoteBackupHistory();
+    } catch (e) {
+        showToast('Errore eliminazione: ' + e.message, 'error');
+    }
+};
+
+/**
+ * Cleanup remote backups based on retention
+ */
+window.cleanupRemoteBackups = async function () {
+    const confirmed = await confirmDialog(
+        'Pulizia Backup Remoti',
+        'Applicare la policy di retention ed eliminare i backup più vecchi?',
+        'Applica',
+        'btn-warning'
+    );
+    if (!confirmed) return;
+
+    try {
+        const result = await apiPost('/backup/remote/cleanup', {});
+        showToast(`Pulizia completata: ${result.deleted_count} backup eliminati`, 'success');
+        await loadRemoteBackupHistory();
+    } catch (e) {
+        showToast('Errore pulizia: ' + e.message, 'error');
     }
 };
