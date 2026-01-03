@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="it" data-bs-theme="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>MADMIN - Dashboard</title>
+
+    <!-- Tabler CSS from CDN -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.3.0/dist/tabler-icons.min.css">
+
+    <!-- Custom styles -->
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+
+<body class="d-flex flex-column">
+    <div class="page">
+        <!-- Mobile Header (shown on small screens) -->
+        <header class="mobile-header" style="display: none;">
+            <button class="mobile-menu-toggle" id="mobile-menu-toggle" aria-label="Menu">
+                <i class="ti ti-menu-2"></i>
+            </button>
+            <h1 class="navbar-brand mb-0 ms-2">
+                <a href="#" class="text-white text-decoration-none">
+                    <i class="ti ti-server-cog text-primary"></i>
+                    <span class="ms-1" id="mobile-brand-name">MADMIN</span>
+                </a>
+            </h1>
+        </header>
+
+        <!-- Mobile Overlay -->
+        <div class="mobile-overlay" id="mobile-overlay"></div>
+
+        <!-- Vertical Navbar (Sidebar) -->
+        <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark" id="sidebar">
+            <div class="container-fluid">
+                <!-- Brand -->
+                <h1 class="navbar-brand navbar-brand-autodark">
+                    <a href="#" id="navbar-brand-link">
+                        <img id="navbar-logo-img" src="" alt="Logo" class="d-none" style="max-height: 32px;">
+                        <i id="navbar-logo-default" class="ti ti-server-cog text-primary"
+                            style="font-size: 1.5rem;"></i>
+                        <span class="ms-2" id="navbar-brand-text">MADMIN</span>
+                    </a>
+                </h1>
+
+                <!-- Mobile toggle -->
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu"
+                    aria-controls="sidebar-menu" aria-expanded="false">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <!-- Sidebar menu -->
+                <div class="collapse navbar-collapse" id="sidebar-menu">
+                    <ul class="navbar-nav pt-lg-3" id="nav-menu">
+                        <!-- Menu items will be loaded dynamically -->
+                        <li class="nav-item">
+                            <a class="nav-link" href="#dashboard">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-home"></i>
+                                </span>
+                                <span class="nav-link-title">Dashboard</span>
+                            </a>
+                        </li>
+                    </ul>
+
+                    <!-- User dropdown at bottom -->
+                    <div class="sidebar-user-section">
+                        <hr class="my-3">
+                        <div class="dropup position-relative" id="user-dropdown">
+                            <a href="#" class="nav-link dropdown-toggle user-dropdown-trigger" data-bs-toggle="dropdown"
+                                data-bs-auto-close="outside" role="button" aria-expanded="false">
+                                <span class="avatar avatar-sm bg-blue-lt me-2">
+                                    <i class="ti ti-user"></i>
+                                </span>
+                                <span id="user-name">Utente</span>
+                            </a>
+                            <div class="dropdown-menu dropdown-menu-user">
+                                <a class="dropdown-item" href="#profile">
+                                    <i class="ti ti-user me-2"></i> Profilo
+                                </a>
+                                <div class="dropdown-divider"></div>
+                                <a class="dropdown-item text-danger" href="#" id="logout-btn">
+                                    <i class="ti ti-logout me-2"></i> Esci
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main content wrapper -->
+        <div class="page-wrapper">
+            <!-- Page header -->
+            <div class="page-header d-print-none">
+                <div class="container-xl">
+                    <div class="row g-2 align-items-center">
+                        <div class="col">
+                            <h2 class="page-title" id="page-title">Dashboard</h2>
+                        </div>
+                        <div class="col-auto ms-auto" id="page-actions">
+                            <!-- Page-specific actions will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page body -->
+            <div class="page-body">
+                <div class="container-xl" id="app-content">
+                    <!-- Main content will be loaded here by router -->
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="d-flex align-items-center justify-content-center py-5">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Caricamento...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <footer class="footer footer-transparent d-print-none">
+                <div class="container-xl">
+                    <div class="row text-center align-items-center flex-row-reverse">
+                        <div class="col-lg-auto ms-lg-auto">
+                            <ul class="list-inline list-inline-dots mb-0">
+                                <li class="list-inline-item">
+                                    <a href="#" class="link-secondary">Documentazione</a>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="col-12 col-lg-auto mt-3 mt-lg-0">
+                            <ul class="list-inline list-inline-dots mb-0">
+                                <li class="list-inline-item">
+                                    &copy; 2024 <a href="#" class="link-secondary">MADMIN</a>
+                                </li>
+                                <li class="list-inline-item">
+                                    <span id="version">v1.0.0</span>
+                                </li>
+                                <li class="list-inline-item" style="display: none;">
+                                    <a href="#" id="support-link" class="link-secondary" target="_blank">
+                                        <i class="ti ti-help-circle me-1"></i>Supporto
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Toast container for notifications -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"></div>
+
+    <!-- Tabler JS from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/js/tabler.min.js"></script>
+
+    <!-- SortableJS for drag-drop sorting -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+
+    <!-- Application scripts -->
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+
+</html>

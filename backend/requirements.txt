@@ -1,0 +1,42 @@
+# Core Dependencies
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Database
+sqlmodel>=0.0.14
+asyncpg>=0.29.0
+sqlalchemy[asyncio]>=2.0.25
+
+# Authentication
+bcrypt==4.0.1
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.6
+
+# Utilities
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+email-validator>=2.1.0
+psutil>=5.9.0
+pyyaml>=6.0
+httpx>=0.26.0
+
+# Background Tasks
+apscheduler>=3.10.4
+
+# Email
+aiosmtplib>=3.0.1
+
+# File handling
+aiofiles>=23.2.1
+python-magic>=0.4.27
+
+# Remote backup (SFTP/FTP)
+asyncssh>=2.14.0
+aioftp>=0.21.4
+
+# Development
+pytest>=7.4.4
+pytest-asyncio>=0.23.3
+httpx>=0.26.0

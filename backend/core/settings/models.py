@@ -1,0 +1,145 @@
+"""
+MADMIN Settings Models
+
+Database models for system configuration.
+All settings tables are singleton (only id=1 used).
+"""
+from sqlmodel import SQLModel, Field
+from typing import Optional
+from datetime import datetime
+
+
+class SystemSettings(SQLModel, table=True):
+    """
+    Portal customization settings.
+    Singleton table (only id=1 used).
+    """
+    __tablename__ = "system_settings"
+    
+    id: int = Field(default=1, primary_key=True)
+    company_name: str = Field(default="MADMIN", max_length=100)
+    primary_color: str = Field(default="#206bc4", max_length=20)
+    logo_url: Optional[str] = Field(default=None, max_length=255)
+    favicon_url: Optional[str] = Field(default=None, max_length=255)
+    support_url: Optional[str] = Field(default=None, max_length=255)
+    
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SMTPSettings(SQLModel, table=True):
+    """
+    SMTP configuration for sending emails.
+    Singleton table (only id=1 used).
+    """
+    __tablename__ = "smtp_settings"
+    
+    id: int = Field(default=1, primary_key=True)
+    smtp_host: str = Field(default="", max_length=255)
+    smtp_port: int = Field(default=587)
+    smtp_encryption: str = Field(default="tls", max_length=10)  # none, tls, ssl
+    smtp_username: Optional[str] = Field(default=None, max_length=255)
+    smtp_password: Optional[str] = Field(default=None, max_length=255)
+    sender_email: str = Field(default="noreply@localhost", max_length=255)
+    sender_name: str = Field(default="MADMIN", max_length=100)
+    public_url: Optional[str] = Field(default=None, max_length=255)
+    
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BackupSettings(SQLModel, table=True):
+    """
+    Backup configuration.
+    Singleton table (only id=1 used).
+    """
+    __tablename__ = "backup_settings"
+    
+    id: int = Field(default=1, primary_key=True)
+    enabled: bool = Field(default=False)
+    frequency: str = Field(default="daily", max_length=20)  # daily, weekly
+    time: str = Field(default="03:00", max_length=10)
+    
+    # Remote storage settings
+    remote_protocol: str = Field(default="sftp", max_length=10)  # ftp, sftp
+    remote_host: str = Field(default="", max_length=255)
+    remote_port: int = Field(default=22)
+    remote_user: str = Field(default="", max_length=100)
+    remote_password: str = Field(default="", max_length=255)
+    remote_path: str = Field(default="/", max_length=255)
+    
+    last_run_status: Optional[str] = Field(default=None, max_length=50)
+    last_run_time: Optional[datetime] = Field(default=None)
+    
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# --- Pydantic Schemas ---
+
+class SystemSettingsUpdate(SQLModel):
+    """Schema for updating system settings."""
+    company_name: Optional[str] = None
+    primary_color: Optional[str] = None
+    logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
+    support_url: Optional[str] = None
+
+
+class SystemSettingsResponse(SQLModel):
+    """Response schema for system settings."""
+    company_name: str
+    primary_color: str
+    logo_url: Optional[str]
+    favicon_url: Optional[str]
+    support_url: Optional[str]
+    updated_at: datetime
+
+
+class SMTPSettingsUpdate(SQLModel):
+    """Schema for updating SMTP settings."""
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_encryption: Optional[str] = None
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    sender_email: Optional[str] = None
+    sender_name: Optional[str] = None
+    public_url: Optional[str] = None
+
+
+class SMTPSettingsResponse(SQLModel):
+    """Response schema for SMTP settings (excludes password)."""
+    smtp_host: str
+    smtp_port: int
+    smtp_encryption: str
+    smtp_username: Optional[str]
+    sender_email: str
+    sender_name: str
+    public_url: Optional[str]
+    updated_at: datetime
+
+
+class BackupSettingsUpdate(SQLModel):
+    """Schema for updating backup settings."""
+    enabled: Optional[bool] = None
+    frequency: Optional[str] = None
+    time: Optional[str] = None
+    remote_protocol: Optional[str] = None
+    remote_host: Optional[str] = None
+    remote_port: Optional[int] = None
+    remote_user: Optional[str] = None
+    remote_password: Optional[str] = None
+    remote_path: Optional[str] = None
+
+
+class BackupSettingsResponse(SQLModel):
+    """Response schema for backup settings (excludes password)."""
+    enabled: bool
+    frequency: str
+    time: str
+    remote_protocol: str
+    remote_host: str
+    remote_port: int
+    remote_user: str
+    remote_path: str
+    last_run_status: Optional[str]
+    last_run_time: Optional[datetime]
+    updated_at: datetime

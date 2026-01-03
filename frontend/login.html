@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="it" data-bs-theme="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>MADMIN - Login</title>
+
+    <!-- Tabler CSS from CDN -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.3.0/dist/tabler-icons.min.css">
+
+    <style>
+        :root {
+            --tblr-primary: #206bc4;
+        }
+
+        .login-page {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            background: linear-gradient(135deg, #1a1f2c 0%, #2d3748 100%);
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .login-logo {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--tblr-primary);
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+
+        .login-subtitle {
+            text-align: center;
+            color: #6c757d;
+            margin-bottom: 2rem;
+        }
+
+        .form-control:focus {
+            border-color: var(--tblr-primary);
+            box-shadow: 0 0 0 0.25rem rgba(32, 107, 196, 0.25);
+        }
+
+        .btn-primary {
+            background: var(--tblr-primary);
+            border-color: var(--tblr-primary);
+        }
+
+        .btn-primary:hover {
+            background: #1a5aad;
+            border-color: #1a5aad;
+        }
+
+        .alert {
+            display: none;
+        }
+
+        .alert.show {
+            display: block;
+        }
+    </style>
+</head>
+
+<body class="login-page">
+    <div class="container">
+        <div class="login-card card">
+            <div class="card-body p-4">
+                <div class="login-logo">
+                    <i class="ti ti-server-cog"></i> MADMIN
+                </div>
+                <p class="login-subtitle">Modular Admin System</p>
+
+                <div id="login-alert" class="alert alert-danger">
+                    <span id="login-error"></span>
+                </div>
+
+                <form id="login-form">
+                    <div class="mb-3">
+                        <label class="form-label" for="username">
+                            <i class="ti ti-user"></i> Username
+                        </label>
+                        <input type="text" class="form-control" id="username" name="username"
+                            placeholder="Inserisci username" required autofocus>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label" for="password">
+                            <i class="ti ti-lock"></i> Password
+                        </label>
+                        <input type="password" class="form-control" id="password" name="password"
+                            placeholder="Inserisci password" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-check">
+                            <input type="checkbox" class="form-check-input" id="remember">
+                            <span class="form-check-label">Ricordami</span>
+                        </label>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100" id="login-btn">
+                        <span class="btn-text">Accedi</span>
+                        <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <p class="text-center text-white-50 mt-4">
+            &copy; 2024 MADMIN - Modular Admin System
+        </p>
+    </div>
+
+    <script>
+        // Check if already logged in
+        const token = localStorage.getItem('madmin_token');
+        if (token) {
+            window.location.href = '/';
+        }
+
+        const form = document.getElementById('login-form');
+        const alertBox = document.getElementById('login-alert');
+        const errorSpan = document.getElementById('login-error');
+        const loginBtn = document.getElementById('login-btn');
+        const btnText = loginBtn.querySelector('.btn-text');
+        const spinner = loginBtn.querySelector('.spinner-border');
+
+        function showError(message) {
+            errorSpan.textContent = message;
+            alertBox.classList.add('show');
+        }
+
+        function hideError() {
+            alertBox.classList.remove('show');
+        }
+
+        function setLoading(loading) {
+            if (loading) {
+                btnText.textContent = 'Accesso in corso...';
+                spinner.classList.remove('d-none');
+                loginBtn.disabled = true;
+            } else {
+                btnText.textContent = 'Accedi';
+                spinner.classList.add('d-none');
+                loginBtn.disabled = false;
+            }
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+            setLoading(true);
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            // Create form data for OAuth2 password flow
+            const formData = new URLSearchParams();
+            formData.append('username', username);
+            formData.append('password', password);
+
+            try {
+                const response = await fetch('/api/auth/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    localStorage.setItem('madmin_token', data.access_token);
+
+                    // Redirect to dashboard
+                    window.location.href = '/';
+                } else {
+                    const error = await response.json();
+                    showError(error.detail || 'Credenziali non valide');
+                }
+            } catch (error) {
+                showError('Errore di connessione al server');
+                console.error('Login error:', error);
+            } finally {
+                setLoading(false);
+            }
+        });
+    </script>
+</body>
+
+</html>

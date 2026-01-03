@@ -1,0 +1,1 @@
+# MADMIN Settings Module
