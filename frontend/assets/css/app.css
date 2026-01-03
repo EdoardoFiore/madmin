@@ -40,6 +40,11 @@
     width: 1.5rem;
 }
 
+/* Module icon SVG - make it white in dark sidebar */
+.navbar-vertical .nav-link-icon img.module-icon-menu {
+    filter: brightness(0) invert(1);
+}
+
 /* == Page Layout == */
 @media (min-width: 992px) {
     .page-wrapper {
