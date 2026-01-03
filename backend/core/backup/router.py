@@ -17,7 +17,7 @@ from core.database import get_session
 from core.auth.dependencies import require_permission
 from core.auth.models import User
 from core.settings.models import BackupSettings
-from .service import run_backup, BACKUP_DIR
+from .service import run_backup, restore_backup, preview_backup, BACKUP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,25 @@ class BackupResult(BaseModel):
     archive: Optional[str] = None
     remote_uploaded: bool = False
     errors: List[str] = []
+
+
+class RestoreResult(BaseModel):
+    success: bool
+    database_restored: bool = False
+    modules_restored: int = 0
+    staging_restored: int = 0
+    external_restored: int = 0
+    errors: List[str] = []
+
+
+class BackupPreview(BaseModel):
+    filename: str
+    size_bytes: int
+    has_database: bool
+    config_files: List[str] = []
+    modules: List[str] = []
+    staging: List[str] = []
+    external_paths: List[str] = []
 
 
 class BackupHistoryItem(BaseModel):
@@ -144,3 +163,48 @@ async def delete_backup(
     
     file_path.unlink()
     return {"status": "ok", "message": "Backup eliminato"}
+
+
+@router.get("/preview/{filename}", response_model=BackupPreview)
+async def preview_backup_contents(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.view"))
+):
+    """Preview contents of a backup archive before restore."""
+    safe_name = Path(filename).name
+    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Nome file non valido")
+    
+    file_path = Path(BACKUP_DIR) / safe_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Backup non trovato")
+    
+    preview = preview_backup(str(file_path))
+    
+    if "error" in preview:
+        raise HTTPException(status_code=500, detail=preview["error"])
+    
+    return BackupPreview(**preview)
+
+
+@router.post("/restore/{filename}", response_model=RestoreResult)
+async def restore_from_backup(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.manage"))
+):
+    """
+    Restore from a backup archive.
+    
+    WARNING: This will overwrite current database and module files!
+    """
+    safe_name = Path(filename).name
+    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Nome file non valido")
+    
+    file_path = Path(BACKUP_DIR) / safe_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Backup non trovato")
+    
+    result = await restore_backup(str(file_path))
+    
+    return RestoreResult(**result)

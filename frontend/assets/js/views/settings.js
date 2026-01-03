@@ -708,6 +708,9 @@ async function loadBackupHistory() {
                 <td>${backup.size_mb} MB</td>
                 <td>${new Date(backup.created_at).toLocaleString('it-IT')}</td>
                 <td class="text-end">
+                    <button class="btn btn-sm btn-ghost-success" onclick="restoreBackup('${backup.filename}')" title="Ripristina">
+                        <i class="ti ti-restore"></i>
+                    </button>
                     <a href="/api/backup/download/${backup.filename}" class="btn btn-sm btn-ghost-primary" title="Scarica">
                         <i class="ti ti-download"></i>
                     </a>
@@ -739,5 +742,50 @@ window.deleteBackup = async function (filename) {
         await loadBackupHistory();
     } catch (e) {
         showToast('Errore eliminazione: ' + e.message, 'error');
+    }
+};
+
+/**
+ * Restore from a backup file
+ */
+window.restoreBackup = async function (filename) {
+    try {
+        // Get preview first
+        const preview = await apiGet(`/backup/preview/${filename}`);
+
+        // Build confirmation message
+        let msg = `⚠️ ATTENZIONE: Ripristina backup ${filename}\n\n`;
+        msg += `Questo sovrascriverà i dati attuali!\n\n`;
+        msg += `Contenuto:\n`;
+        msg += `• Database: ${preview.has_database ? 'Sì' : 'No'}\n`;
+        if (preview.modules.length > 0) msg += `• Moduli: ${preview.modules.join(', ')}\n`;
+        if (preview.staging.length > 0) msg += `• Staging: ${preview.staging.join(', ')}\n`;
+        if (preview.external_paths.length > 0) msg += `• External paths: ${preview.external_paths.join(', ')}\n`;
+        msg += `\nVuoi procedere?`;
+
+        if (!confirm(msg)) return;
+
+        showToast('Ripristino in corso...', 'info');
+
+        const result = await apiPost(`/backup/restore/${filename}`, {});
+
+        if (result.success) {
+            let summary = 'Ripristino completato: ';
+            if (result.database_restored) summary += 'DB ✓ ';
+            if (result.modules_restored > 0) summary += `${result.modules_restored} moduli ✓ `;
+            if (result.staging_restored > 0) summary += `${result.staging_restored} staging ✓ `;
+            if (result.external_restored > 0) summary += `${result.external_restored} external ✓`;
+
+            showToast(summary, 'success');
+
+            // Suggest reload
+            if (confirm('Ripristino completato. Ricaricare la pagina per applicare le modifiche?')) {
+                location.reload();
+            }
+        } else {
+            showToast('Ripristino fallito: ' + result.errors.join(', '), 'error');
+        }
+    } catch (e) {
+        showToast('Errore ripristino: ' + e.message, 'error');
     }
 };

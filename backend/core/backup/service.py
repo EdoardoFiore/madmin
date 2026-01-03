@@ -35,10 +35,17 @@ async def dump_database(backup_path: str) -> bool:
     Uses pg_dump with settings from environment.
     """
     try:
-        db_url = os.environ.get("DATABASE_URL", "")
+        from config import get_settings
+        
+        db_url = get_settings().database_url
         if not db_url:
-            logger.error("DATABASE_URL not set for backup")
+            logger.error("DATABASE_URL not configured for backup")
             return False
+        
+        # Convert asyncpg URL to standard postgresql format for pg_dump
+        # postgresql+asyncpg://... -> postgresql://...
+        if "+asyncpg" in db_url:
+            db_url = db_url.replace("+asyncpg", "")
         
         # Parse database URL
         # Format: postgresql://user:password@host:port/database
@@ -92,7 +99,8 @@ def backup_config_files(backup_path: str) -> bool:
         # Files to backup
         files_to_backup = [
             "/opt/madmin/backend/.env",
-            "/etc/nginx/sites-available/madmin",
+            "/etc/nginx/sites-available/madmin.conf",
+            "/etc/nginx/sites-enabled/madmin.conf",
             "/etc/systemd/system/madmin.service",
         ]
         
@@ -103,20 +111,85 @@ def backup_config_files(backup_path: str) -> bool:
                 shutil.copy2(filepath, dest)
                 logger.info(f"Backed up {filepath}")
         
-        # Also backup modules directory structure
-        modules_dir = "/opt/madmin/modules"
-        if os.path.exists(modules_dir):
+        # Backup installed modules directory
+        modules_dir = "/opt/madmin/backend/modules"
+        if os.path.exists(modules_dir) and os.listdir(modules_dir):
             shutil.copytree(
                 modules_dir, 
                 os.path.join(config_dir, "modules"),
                 dirs_exist_ok=True
             )
+            logger.info(f"Backed up {modules_dir}")
+        
+        # Backup staging modules directory
+        staging_dir = "/opt/madmin/backend/staging"
+        if os.path.exists(staging_dir) and os.listdir(staging_dir):
+            shutil.copytree(
+                staging_dir, 
+                os.path.join(config_dir, "staging"),
+                dirs_exist_ok=True
+            )
+            logger.info(f"Backed up {staging_dir}")
+        
+        # Backup module external_paths from manifests
+        backup_module_external_paths(backup_path)
         
         return True
         
     except Exception as e:
         logger.error(f"Config backup failed: {e}")
         return False
+
+
+def backup_module_external_paths(backup_path: str):
+    """
+    Backup external paths defined in module manifests.
+    """
+    import shutil
+    import json
+    
+    external_dir = os.path.join(backup_path, "external")
+    os.makedirs(external_dir, exist_ok=True)
+    
+    # Check both modules and staging directories
+    module_dirs = [
+        "/opt/madmin/backend/modules",
+        "/opt/madmin/backend/staging"
+    ]
+    
+    for modules_base in module_dirs:
+        if not os.path.exists(modules_base):
+            continue
+            
+        for module_name in os.listdir(modules_base):
+            manifest_path = os.path.join(modules_base, module_name, "manifest.json")
+            if not os.path.exists(manifest_path):
+                continue
+            
+            try:
+                with open(manifest_path, 'r') as f:
+                    manifest = json.load(f)
+                
+                backup_config = manifest.get("backup", {})
+                external_paths = backup_config.get("external_paths", [])
+                
+                for ext_path in external_paths:
+                    if os.path.exists(ext_path):
+                        # Create module-specific subdirectory
+                        dest_dir = os.path.join(external_dir, module_name)
+                        os.makedirs(dest_dir, exist_ok=True)
+                        
+                        dest = os.path.join(dest_dir, os.path.basename(ext_path.rstrip("/")))
+                        
+                        if os.path.isdir(ext_path):
+                            shutil.copytree(ext_path, dest, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(ext_path, dest)
+                        
+                        logger.info(f"Backed up module external path: {ext_path}")
+                        
+            except Exception as e:
+                logger.warning(f"Failed to backup external paths for {module_name}: {e}")
 
 
 def create_archive(backup_path: str, archive_name: str) -> Optional[str]:
@@ -294,4 +367,298 @@ async def run_backup(
     shutil.rmtree(backup_path, ignore_errors=True)
     
     result["success"] = len(result["errors"]) == 0
+    return result
+
+
+# ============== RESTORE FUNCTIONS ==============
+
+async def restore_database(backup_path: str) -> bool:
+    """
+    Restore PostgreSQL database from backup.
+    Uses pg_restore with settings from config.
+    """
+    try:
+        from config import get_settings
+        
+        db_url = get_settings().database_url
+        if not db_url:
+            logger.error("DATABASE_URL not configured for restore")
+            return False
+        
+        # Convert asyncpg URL to standard postgresql format
+        if "+asyncpg" in db_url:
+            db_url = db_url.replace("+asyncpg", "")
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(db_url)
+        
+        dump_file = os.path.join(backup_path, "database.sql")
+        if not os.path.exists(dump_file):
+            logger.warning("No database.sql found in backup")
+            return False
+        
+        # Build pg_restore command
+        env = os.environ.copy()
+        env["PGPASSWORD"] = parsed.password or ""
+        
+        # First, drop and recreate database connections
+        # Use pg_restore with --clean to drop objects before recreating
+        cmd = [
+            "pg_restore",
+            "-h", parsed.hostname or "localhost",
+            "-p", str(parsed.port or 5432),
+            "-U", parsed.username or "madmin",
+            "-d", parsed.path.lstrip("/"),
+            "--clean",  # Drop objects before recreating
+            "--if-exists",  # Don't error if objects don't exist
+            "--no-owner",  # Don't set ownership
+            "-v",  # Verbose
+            dump_file
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        
+        # pg_restore may return non-zero even on success with --clean --if-exists
+        # Check stderr for actual errors
+        if process.returncode != 0:
+            stderr_text = stderr.decode()
+            # Ignore errors about objects not existing (expected with --clean)
+            if "ERROR" in stderr_text and "does not exist" not in stderr_text:
+                logger.error(f"pg_restore failed: {stderr_text}")
+                return False
+        
+        logger.info(f"Database restored from {dump_file}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Database restore failed: {e}")
+        return False
+
+
+def restore_modules(backup_path: str) -> dict:
+    """
+    Restore modules from backup to their directories.
+    Returns dict with counts of restored modules.
+    """
+    import shutil
+    result = {"modules": 0, "staging": 0}
+    
+    config_dir = os.path.join(backup_path, "config")
+    
+    # Restore installed modules
+    backup_modules = os.path.join(config_dir, "modules")
+    if os.path.exists(backup_modules):
+        dest = "/opt/madmin/backend/modules"
+        os.makedirs(dest, exist_ok=True)
+        for item in os.listdir(backup_modules):
+            src = os.path.join(backup_modules, item)
+            dst = os.path.join(dest, item)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                result["modules"] += 1
+                logger.info(f"Restored module: {item}")
+    
+    # Restore staging modules
+    backup_staging = os.path.join(config_dir, "staging")
+    if os.path.exists(backup_staging):
+        dest = "/opt/madmin/backend/staging"
+        os.makedirs(dest, exist_ok=True)
+        for item in os.listdir(backup_staging):
+            src = os.path.join(backup_staging, item)
+            dst = os.path.join(dest, item)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                result["staging"] += 1
+                logger.info(f"Restored staging module: {item}")
+    
+    return result
+
+
+def restore_external_paths(backup_path: str) -> int:
+    """
+    Restore external paths from backup using manifest info.
+    Returns count of restored paths.
+    """
+    import shutil
+    import json
+    
+    external_dir = os.path.join(backup_path, "external")
+    if not os.path.exists(external_dir):
+        logger.info("No external paths to restore")
+        return 0
+    
+    count = 0
+    config_dir = os.path.join(backup_path, "config")
+    
+    # Check manifests in both modules and staging from backup
+    for subdir in ["modules", "staging"]:
+        modules_dir = os.path.join(config_dir, subdir)
+        if not os.path.exists(modules_dir):
+            continue
+        
+        for module_name in os.listdir(modules_dir):
+            manifest_path = os.path.join(modules_dir, module_name, "manifest.json")
+            if not os.path.exists(manifest_path):
+                continue
+            
+            try:
+                with open(manifest_path, 'r') as f:
+                    manifest = json.load(f)
+                
+                backup_config = manifest.get("backup", {})
+                external_paths = backup_config.get("external_paths", [])
+                
+                # Look for this module's backed up external data
+                module_external = os.path.join(external_dir, module_name)
+                if not os.path.exists(module_external):
+                    continue
+                
+                for ext_path in external_paths:
+                    basename = os.path.basename(ext_path.rstrip("/"))
+                    src = os.path.join(module_external, basename)
+                    
+                    if os.path.exists(src):
+                        # Ensure parent directory exists
+                        os.makedirs(os.path.dirname(ext_path), exist_ok=True)
+                        
+                        if os.path.isdir(src):
+                            shutil.copytree(src, ext_path, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, ext_path)
+                        
+                        count += 1
+                        logger.info(f"Restored external path: {ext_path}")
+                        
+            except Exception as e:
+                logger.warning(f"Failed to restore external paths for {module_name}: {e}")
+    
+    return count
+
+
+def preview_backup(archive_path: str) -> dict:
+    """
+    Preview contents of a backup archive without extracting.
+    Returns dict with backup info.
+    """
+    import tarfile
+    
+    result = {
+        "filename": os.path.basename(archive_path),
+        "size_bytes": os.path.getsize(archive_path),
+        "has_database": False,
+        "config_files": [],
+        "modules": [],
+        "staging": [],
+        "external_paths": []
+    }
+    
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getnames():
+                if member.endswith("database.sql"):
+                    result["has_database"] = True
+                elif "/config/" in member:
+                    parts = member.split("/config/")
+                    if len(parts) > 1:
+                        sub = parts[1]
+                        if sub.startswith("modules/"):
+                            module = sub.split("/")[1] if "/" in sub else sub
+                            if module and module not in result["modules"]:
+                                result["modules"].append(module)
+                        elif sub.startswith("staging/"):
+                            module = sub.split("/")[1] if "/" in sub else sub.replace("staging/", "")
+                            if module and module not in result["staging"]:
+                                result["staging"].append(module)
+                        elif not "/" in sub:
+                            result["config_files"].append(sub)
+                elif "/external/" in member:
+                    parts = member.split("/external/")
+                    if len(parts) > 1:
+                        path = parts[1]
+                        if "/" in path:
+                            module = path.split("/")[0]
+                            if module not in result["external_paths"]:
+                                result["external_paths"].append(module)
+                                
+    except Exception as e:
+        logger.error(f"Failed to preview backup: {e}")
+        result["error"] = str(e)
+    
+    return result
+
+
+async def restore_backup(archive_path: str) -> dict:
+    """
+    Restore from a backup archive.
+    
+    Steps:
+    1. Extract archive to temp directory
+    2. Restore database
+    3. Restore modules
+    4. Restore external paths
+    
+    Returns dict with status and details.
+    """
+    import shutil
+    
+    if not os.path.exists(archive_path):
+        return {"success": False, "errors": ["Backup file not found"]}
+    
+    # Extract to temp directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    restore_path = os.path.join(BACKUP_DIR, f"restore_temp_{timestamp}")
+    os.makedirs(restore_path, exist_ok=True)
+    
+    result = {
+        "success": False,
+        "database_restored": False,
+        "modules_restored": 0,
+        "staging_restored": 0,
+        "external_restored": 0,
+        "errors": []
+    }
+    
+    try:
+        # Extract archive
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(restore_path)
+        
+        # Find the backup directory inside (it's named madmin_backup_TIMESTAMP)
+        extracted_dirs = [d for d in os.listdir(restore_path) if d.startswith("madmin_backup")]
+        if not extracted_dirs:
+            result["errors"].append("Invalid backup archive structure")
+            return result
+        
+        backup_path = os.path.join(restore_path, extracted_dirs[0])
+        
+        # 1. Restore database
+        db_result = await restore_database(backup_path)
+        result["database_restored"] = db_result
+        if not db_result:
+            result["errors"].append("Database restore failed or no database in backup")
+        
+        # 2. Restore modules
+        modules_result = restore_modules(backup_path)
+        result["modules_restored"] = modules_result["modules"]
+        result["staging_restored"] = modules_result["staging"]
+        
+        # 3. Restore external paths
+        external_count = restore_external_paths(backup_path)
+        result["external_restored"] = external_count
+        
+        result["success"] = result["database_restored"] or result["modules_restored"] > 0
+        
+    except Exception as e:
+        logger.error(f"Restore failed: {e}")
+        result["errors"].append(str(e))
+    finally:
+        # Cleanup temp directory
+        shutil.rmtree(restore_path, ignore_errors=True)
+    
     return result
