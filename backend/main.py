@@ -131,7 +131,7 @@ def create_app() -> FastAPI:
             {"label": "Dashboard", "icon": "home", "route": "#dashboard", "permission": None},
             {"label": "Utenti", "icon": "users", "route": "#users", "permission": "users.view"},
             {"label": "Firewall Macchina", "icon": "shield", "route": "#firewall", "permission": "firewall.view"},
-            {"label": "Rete", "icon": "network", "route": "#network", "permission": None},
+            {"label": "Rete", "icon": "network", "route": "#network", "permission": "network.view"},
             {"label": "Crontab", "icon": "clock", "route": "#crontab", "permission": "settings.view"},
             {"label": "Impostazioni", "icon": "settings", "route": "#settings", "permission": "settings.view"},
             {"label": "Moduli", "icon": "puzzle", "route": "#modules", "permission": "modules.view"},

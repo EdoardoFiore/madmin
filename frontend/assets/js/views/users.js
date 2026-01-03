@@ -366,12 +366,20 @@ async function handleUserSubmit(e) {
 
             showToast('Utente aggiornato', 'success');
         } else {
+            // Create new user
             await apiPost('/auth/users', {
                 username,
                 password,
                 email: document.getElementById('user-email').value || null,
                 is_superuser: document.getElementById('user-superuser').checked
             });
+
+            // Save permissions if not superuser
+            if (!document.getElementById('user-superuser').checked) {
+                const selectedPerms = [...document.querySelectorAll('.perm-check:checked')].map(c => c.value);
+                await apiPut(`/auth/users/${username}/permissions`, selectedPerms);
+            }
+
             showToast('Utente creato', 'success');
         }
 

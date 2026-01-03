@@ -136,6 +136,8 @@ CORE_PERMISSIONS = [
     {"slug": "permissions.manage", "description": "Assign permissions to users"},
     {"slug": "firewall.view", "description": "View firewall rules"},
     {"slug": "firewall.manage", "description": "Create, edit, delete firewall rules"},
+    {"slug": "network.view", "description": "View network interfaces"},
+    {"slug": "network.manage", "description": "Configure network interfaces"},
     {"slug": "settings.view", "description": "View system settings"},
     {"slug": "settings.manage", "description": "Modify system settings"},
     {"slug": "modules.view", "description": "View installed modules"},

@@ -26,7 +26,7 @@ class NetplanConfig(BaseModel):
 
 @router.get("/interfaces")
 async def get_network_interfaces(
-    _user: User = Depends(get_current_user)
+    _user: User = Depends(require_permission("network.view"))
 ):
     """
     Get all network interfaces with their details.
@@ -44,7 +44,7 @@ async def get_network_interfaces(
 @router.get("/interfaces/{interface}/config")
 async def get_interface_config(
     interface: str,
-    _user: User = Depends(get_current_user)
+    _user: User = Depends(require_permission("network.view"))
 ):
     """Get netplan configuration for a specific interface."""
     config = netplan_service.get_interface_config(interface)
@@ -59,7 +59,7 @@ async def get_interface_config(
 async def set_interface_config(
     interface: str,
     config: NetplanConfig,
-    _user: User = Depends(require_permission("settings.manage"))
+    _user: User = Depends(require_permission("network.manage"))
 ):
     """
     Set netplan configuration for an interface.
@@ -85,7 +85,7 @@ async def set_interface_config(
 @router.delete("/interfaces/{interface}/config")
 async def delete_interface_config(
     interface: str,
-    _user: User = Depends(require_permission("settings.manage"))
+    _user: User = Depends(require_permission("network.manage"))
 ):
     """
     Delete MADMIN-managed netplan config for an interface.
@@ -103,7 +103,7 @@ async def delete_interface_config(
 
 @router.post("/netplan/apply")
 async def apply_netplan(
-    _user: User = Depends(require_permission("settings.manage"))
+    _user: User = Depends(require_permission("network.manage"))
 ):
     """
     Apply netplan configuration.
