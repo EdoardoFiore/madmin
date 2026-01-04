@@ -5,8 +5,27 @@ Database models for system configuration.
 All settings tables are singleton (only id=1 used).
 """
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, BigInteger
 from typing import Optional
 from datetime import datetime
+
+
+class SystemStatsHistory(SQLModel, table=True):
+    """
+    Historical system statistics for dashboard graphs.
+    Stores CPU, RAM, Disk usage over time.
+    """
+    __tablename__ = "system_stats_history"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    cpu_percent: float = Field(default=0.0)
+    ram_percent: float = Field(default=0.0)
+    ram_used: int = Field(default=0, sa_column=Column(BigInteger))
+    ram_total: int = Field(default=0, sa_column=Column(BigInteger))
+    disk_percent: float = Field(default=0.0)
+    disk_used: int = Field(default=0, sa_column=Column(BigInteger))
+    disk_total: int = Field(default=0, sa_column=Column(BigInteger))
 
 
 class SystemSettings(SQLModel, table=True):

@@ -67,12 +67,50 @@ async def lifespan(app: FastAPI):
     async with async_session_maker() as session:
         await firewall_orchestrator.apply_rules(session)
     
+    # Start background stats collection task
+    import asyncio
+    from core.system.service import system_service, save_stats_to_history
+    
+    stats_task_running = True
+    
+    async def collect_stats_periodically():
+        """Background task to collect system stats every 60 seconds."""
+        while stats_task_running:
+            try:
+                stats = system_service.get_stats()
+                if stats.get("available"):
+                    async with async_session_maker() as session:
+                        await save_stats_to_history(
+                            session,
+                            cpu=stats["cpu"]["percent"],
+                            ram=stats["memory"]["percent"],
+                            disk=stats["disk"]["percent"],
+                            ram_used=stats["memory"]["used"],
+                            ram_total=stats["memory"]["total"],
+                            disk_used=stats["disk"]["used"],
+                            disk_total=stats["disk"]["total"]
+                        )
+            except Exception as e:
+                logger.error(f"Background stats collection error: {e}")
+            
+            await asyncio.sleep(60)  # Collect every 60 seconds
+    
+    # Start the background task
+    stats_task = asyncio.create_task(collect_stats_periodically())
+    logger.info("Background stats collection started (every 60s)")
+    
     logger.info("MADMIN ready!")
     
     yield
     
     # Shutdown
     logger.info("MADMIN shutting down...")
+    stats_task_running = False
+    stats_task.cancel()
+    try:
+        await stats_task
+    except asyncio.CancelledError:
+        pass
 
 
 def create_app() -> FastAPI:

@@ -84,6 +84,124 @@ export async function render(container) {
                 </div>
             </div>
             
+            <!-- Services Status -->
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <i class="ti ti-activity me-2"></i>Stato Servizi
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3" id="services-status-container">
+                            <div class="col-6 col-md-3">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar bg-primary-lt me-3">
+                                                <i class="ti ti-server"></i>
+                                            </span>
+                                            <div>
+                                                <div class="font-weight-medium">MADMIN</div>
+                                                <div id="svc-madmin" class="text-muted">
+                                                    <span class="spinner-border spinner-border-sm"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar bg-blue-lt me-3">
+                                                <i class="ti ti-database"></i>
+                                            </span>
+                                            <div>
+                                                <div class="font-weight-medium">PostgreSQL</div>
+                                                <div id="svc-postgresql" class="text-muted">
+                                                    <span class="spinner-border spinner-border-sm"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar bg-green-lt me-3">
+                                                <i class="ti ti-world"></i>
+                                            </span>
+                                            <div>
+                                                <div class="font-weight-medium">Nginx</div>
+                                                <div id="svc-nginx" class="text-muted">
+                                                    <span class="spinner-border spinner-border-sm"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar bg-orange-lt me-3">
+                                                <i class="ti ti-shield"></i>
+                                            </span>
+                                            <div>
+                                                <div class="font-weight-medium">iptables</div>
+                                                <div id="svc-iptables" class="text-muted">
+                                                    <span class="spinner-border spinner-border-sm"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Resource Graphs -->
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <i class="ti ti-chart-line me-2"></i>Andamento Risorse
+                        </h3>
+                        <div class="card-actions">
+                            <div class="btn-group" role="group">
+                                <input type="radio" class="btn-check" name="graph-range" id="graph-1h" value="1" checked>
+                                <label class="btn btn-sm" for="graph-1h">1h</label>
+                                <input type="radio" class="btn-check" name="graph-range" id="graph-24h" value="24">
+                                <label class="btn btn-sm" for="graph-24h">24h</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <h4 class="subheader">CPU</h4>
+                                <div id="chart-cpu" style="height: 150px;"></div>
+                            </div>
+                            <div class="col-md-4">
+                                <h4 class="subheader">RAM</h4>
+                                <div id="chart-ram" style="height: 150px;"></div>
+                            </div>
+                            <div class="col-md-4">
+                                <h4 class="subheader">Disco</h4>
+                                <div id="chart-disk" style="height: 150px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Stats Cards -->
             <div class="col-sm-6 col-lg-3">
                 <div class="card">
@@ -201,7 +319,7 @@ export async function render(container) {
                             <dd class="col-7" id="system-version">-</dd>
                             
                             <dt class="col-5">Backend:</dt>
-                            <dd class="col-7">FastAPI + SQLite</dd>
+                            <dd class="col-7">FastAPI + PostgreSQL</dd>
                             
                             <dt class="col-5">Frontend:</dt>
                             <dd class="col-7">Tabler UI + ES Modules</dd>
@@ -224,6 +342,8 @@ export async function render(container) {
     // Load data
     await loadDashboardData();
     await loadSystemStats();
+    await loadServicesStatus();
+    await loadResourceGraphs(1);
 }
 
 /**
@@ -404,3 +524,196 @@ async function loadDashboardData() {
     // Last update
     document.getElementById('last-update').textContent = formatRelativeTime(new Date());
 }
+
+
+// ============== SERVICES STATUS ==============
+
+/**
+ * Load services status from API
+ */
+async function loadServicesStatus() {
+    try {
+        const services = await apiGet('/system/services');
+
+        // Update each service status
+        for (const [svc, data] of Object.entries(services)) {
+            const el = document.getElementById(`svc-${svc}`);
+            if (el) {
+                const isActive = data.active;
+                el.innerHTML = `
+                    <span class="badge bg-${isActive ? 'success' : 'danger'}-lt">
+                        ${isActive ? 'Attivo' : data.status || 'Inattivo'}
+                    </span>
+                `;
+            }
+        }
+    } catch (error) {
+        console.error('Error loading services status:', error);
+        // Set all to unknown
+        ['madmin', 'postgresql', 'nginx', 'iptables'].forEach(svc => {
+            const el = document.getElementById(`svc-${svc}`);
+            if (el) {
+                el.innerHTML = '<span class="badge bg-secondary-lt">Sconosciuto</span>';
+            }
+        });
+    }
+}
+
+
+// ============== RESOURCE GRAPHS ==============
+
+let cpuChart = null;
+let ramChart = null;
+let diskChart = null;
+/**
+ * Load resource graphs with historical data
+ */
+async function loadResourceGraphs(hours = 1) {
+    try {
+        // Fetch both history and current stats (for totals)
+        const [history, currentStats] = await Promise.all([
+            apiGet(`/system/stats/history?hours=${hours}`),
+            apiGet('/system/stats')
+        ]);
+
+        if (history.length === 0) {
+            // Show placeholder message
+            ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.innerHTML = '<div class="text-muted text-center py-4">Dati non ancora disponibili</div>';
+            });
+            return;
+        }
+
+        const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+
+        // CPU data (percentage)
+        const cpuData = history.map(h => parseFloat(h.cpu.toFixed(1)));
+
+        // Get totals from current real-time stats
+        const ramTotalGB = currentStats.available
+            ? (currentStats.memory.total / (1024 * 1024 * 1024))
+            : 2; // fallback
+        const diskTotalGB = currentStats.available
+            ? (currentStats.disk.total / (1024 * 1024 * 1024))
+            : 50; // fallback
+
+        // RAM data (convert to GB)
+        const ramDataGB = history.map(h => parseFloat(((h.ram_used || 0) / (1024 * 1024 * 1024)).toFixed(2)));
+
+        // Disk data (convert to GB)
+        const diskDataGB = history.map(h => parseFloat(((h.disk_used || 0) / (1024 * 1024 * 1024)).toFixed(2)));
+
+        // Calculate min/max for each
+        const cpuMinMax = { min: Math.min(...cpuData).toFixed(1), max: Math.max(...cpuData).toFixed(1) };
+        const ramMinMax = { min: Math.min(...ramDataGB).toFixed(1), max: Math.max(...ramDataGB).toFixed(1) };
+        const diskMinMax = { min: Math.min(...diskDataGB).toFixed(1), max: Math.max(...diskDataGB).toFixed(1) };
+
+        // Base chart options
+        const baseOptions = (data, color, categories) => ({
+            series: [{ data }],
+            chart: {
+                type: 'area',
+                height: 120,
+                sparkline: { enabled: false },
+                animations: { enabled: false },
+                toolbar: { show: false },
+                zoom: { enabled: false }
+            },
+            dataLabels: { enabled: false },
+            stroke: { curve: 'smooth', width: 2 },
+            fill: {
+                type: 'gradient',
+                gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1 }
+            },
+            colors: [color],
+            xaxis: {
+                categories,
+                labels: { show: false },
+                axisBorder: { show: false },
+                axisTicks: { show: false }
+            },
+            grid: { show: true, borderColor: '#e0e0e0', strokeDashArray: 3, padding: { left: 5, right: 5 } }
+        });
+
+        // CPU chart (percentage 0-100%)
+        const cpuOptions = {
+            ...baseOptions(cpuData, '#206bc4', timestamps),
+            yaxis: {
+                min: 0,
+                max: 100,
+                labels: { show: true, formatter: (val) => val.toFixed(0) + '%' }
+            },
+            tooltip: { y: { formatter: (val) => val.toFixed(1) + '%' } }
+        };
+
+        // RAM chart (GB, 0 to total)
+        const ramOptions = {
+            ...baseOptions(ramDataGB, '#2fb344', timestamps),
+            yaxis: {
+                min: 0,
+                max: Math.ceil(ramTotalGB),
+                labels: { show: true, formatter: (val) => val.toFixed(0) + ' GB' }
+            },
+            tooltip: { y: { formatter: (val) => val.toFixed(1) + ' GB' } }
+        };
+
+        // Disk chart (GB, 0 to total)
+        const diskOptions = {
+            ...baseOptions(diskDataGB, '#f76707', timestamps),
+            yaxis: {
+                min: 0,
+                max: Math.ceil(diskTotalGB),
+                labels: { show: true, formatter: (val) => val.toFixed(0) + ' GB' }
+            },
+            tooltip: { y: { formatter: (val) => val.toFixed(1) + ' GB' } }
+        };
+
+        // Destroy existing charts
+        if (cpuChart) cpuChart.destroy();
+        if (ramChart) ramChart.destroy();
+        if (diskChart) diskChart.destroy();
+
+        // Create new charts
+        cpuChart = new ApexCharts(document.getElementById('chart-cpu'), cpuOptions);
+        ramChart = new ApexCharts(document.getElementById('chart-ram'), ramOptions);
+        diskChart = new ApexCharts(document.getElementById('chart-disk'), diskOptions);
+
+        cpuChart.render();
+        ramChart.render();
+        diskChart.render();
+
+        // Update min/max labels
+        document.getElementById('cpu-minmax')?.remove();
+        document.getElementById('ram-minmax')?.remove();
+        document.getElementById('disk-minmax')?.remove();
+
+        document.getElementById('chart-cpu')?.insertAdjacentHTML('afterend',
+            `<div id="cpu-minmax" class="text-muted small mt-1">Min: ${cpuMinMax.min}% | Max: ${cpuMinMax.max}%</div>`);
+        document.getElementById('chart-ram')?.insertAdjacentHTML('afterend',
+            `<div id="ram-minmax" class="text-muted small mt-1">Min: ${ramMinMax.min} GB | Max: ${ramMinMax.max} GB (${ramTotalGB.toFixed(0)} GB tot)</div>`);
+        document.getElementById('chart-disk')?.insertAdjacentHTML('afterend',
+            `<div id="disk-minmax" class="text-muted small mt-1">Min: ${diskMinMax.min} GB | Max: ${diskMinMax.max} GB (${diskTotalGB.toFixed(0)} GB tot)</div>`);
+
+    } catch (error) {
+        console.error('Error loading resource graphs:', error);
+        ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = '<div class="text-muted text-center py-4">Errore caricamento dati</div>';
+        });
+    }
+}
+
+// Add event listener for graph range toggle after setupEventListeners
+const originalSetupEventListeners = setupEventListeners;
+setupEventListeners = function () {
+    originalSetupEventListeners();
+
+    // Graph range toggle
+    document.querySelectorAll('input[name="graph-range"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const hours = parseInt(e.target.value);
+            loadResourceGraphs(hours);
+        });
+    });
+};

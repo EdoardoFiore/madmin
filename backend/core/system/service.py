@@ -4,7 +4,10 @@ MADMIN System Service
 Provides system statistics using psutil.
 """
 import logging
-from typing import Optional
+import subprocess
+import shutil
+from typing import Optional, List
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,45 @@ class SystemService:
             }
     
     @staticmethod
+    def get_services_status() -> dict:
+        """
+        Check status of critical system services.
+        
+        Returns:
+            dict with service names and their status (active/inactive)
+        """
+        services = {}
+        
+        # Check systemd services
+        service_names = ['postgresql', 'nginx', 'madmin']
+        for svc in service_names:
+            try:
+                result = subprocess.run(
+                    ['systemctl', 'is-active', svc],
+                    capture_output=True,
+                    timeout=5
+                )
+                status = result.stdout.decode().strip()
+                services[svc] = {
+                    "active": status == 'active',
+                    "status": status
+                }
+            except Exception as e:
+                services[svc] = {
+                    "active": False,
+                    "status": "unknown",
+                    "error": str(e)
+                }
+        
+        # Check iptables availability
+        services['iptables'] = {
+            "active": shutil.which('iptables') is not None,
+            "status": "available" if shutil.which('iptables') else "not found"
+        }
+        
+        return services
+    
+    @staticmethod
     def format_bytes(bytes_value: int) -> str:
         """Format bytes to human readable string."""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -85,4 +127,89 @@ class SystemService:
         return f"{bytes_value:.1f} PB"
 
 
+# Async functions for database operations (called from router)
+async def save_stats_to_history(
+    session, 
+    cpu: float, 
+    ram: float, 
+    disk: float,
+    ram_used: int = 0,
+    ram_total: int = 0,
+    disk_used: int = 0,
+    disk_total: int = 0
+):
+    """Save current stats to history table."""
+    from core.settings.models import SystemStatsHistory
+    
+    try:
+        record = SystemStatsHistory(
+            cpu_percent=cpu,
+            ram_percent=ram,
+            ram_used=ram_used,
+            ram_total=ram_total,
+            disk_percent=disk,
+            disk_used=disk_used,
+            disk_total=disk_total
+        )
+        session.add(record)
+        await session.commit()
+        
+        # Cleanup old records (keep only last 24h)
+        await cleanup_old_stats(session)
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error saving stats to history: {e}")
+
+
+async def cleanup_old_stats(session):
+    """Remove stats older than 24 hours."""
+    from sqlalchemy import delete
+    from core.settings.models import SystemStatsHistory
+    
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    await session.execute(
+        delete(SystemStatsHistory).where(SystemStatsHistory.timestamp < cutoff)
+    )
+    await session.commit()
+
+
+async def get_stats_history(session, hours: int = 1) -> List[dict]:
+    """
+    Get historical stats for the specified time range.
+    
+    Args:
+        session: Database session
+        hours: Number of hours to look back (1 or 24)
+    
+    Returns:
+        List of stats records ordered by timestamp
+    """
+    from sqlalchemy import select
+    from core.settings.models import SystemStatsHistory
+    
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    
+    result = await session.execute(
+        select(SystemStatsHistory)
+        .where(SystemStatsHistory.timestamp >= cutoff)
+        .order_by(SystemStatsHistory.timestamp.asc())
+    )
+    records = result.scalars().all()
+    
+    return [
+        {
+            "timestamp": r.timestamp.isoformat(),
+            "cpu": r.cpu_percent,
+            "ram": r.ram_percent,
+            "ram_used": r.ram_used,
+            "ram_total": r.ram_total,
+            "disk": r.disk_percent,
+            "disk_used": r.disk_used,
+            "disk_total": r.disk_total
+        }
+        for r in records
+    ]
+
+
 system_service = SystemService()
+
