@@ -94,9 +94,9 @@ class ModuleStore:
                 return _registry_cache
             raise
     
-    async def get_available_modules(self) -> List[StoreModule]:
+    async def get_available_modules(self, force_refresh: bool = False) -> List[StoreModule]:
         """Get list of all available modules from registry."""
-        registry = await self.fetch_registry()
+        registry = await self.fetch_registry(force_refresh=force_refresh)
         modules = []
         
         for mod_data in registry.get("modules", []):
@@ -140,39 +140,61 @@ class ModuleStore:
         # Create temp directory
         temp_dir = Path(tempfile.mkdtemp(prefix="madmin_module_"))
         
-        try:
-            # Clone repository
-            cmd = ["git", "clone", "--depth", "1"]
+        # Determine variations of version tag to try
+        versions_to_try = []
+        if version:
+            versions_to_try.append(version)
+            if not version.startswith("v"):
+                versions_to_try.append(f"v{version}")
+            elif version.startswith("v"):
+                versions_to_try.append(version.lstrip("v"))
+        else:
+            versions_to_try.append(None)
             
-            if version:
-                cmd.extend(["--branch", version])
-            
-            cmd.extend([clone_url, str(temp_dir / "module")])
-            
-            logger.info(f"Cloning {clone_url} (version: {version or 'latest'})")
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            
-            if result.returncode != 0:
-                raise RuntimeError(f"Git clone failed: {result.stderr}")
-            
-            module_path = temp_dir / "module"
-            
-            # Verify manifest exists
-            if not (module_path / "manifest.json").exists():
-                raise ValueError("Downloaded repository has no manifest.json")
-            
-            return module_path
-            
-        except Exception as e:
-            # Cleanup on error
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            raise
+        last_error = None
+        
+        for ver in versions_to_try:
+            try:
+                # Clone repository
+                cmd = ["git", "clone", "--depth", "1"]
+                
+                if ver:
+                    cmd.extend(["--branch", ver])
+                
+                cmd.extend([clone_url, str(temp_dir / "module")])
+                
+                logger.info(f"Cloning {clone_url} (version: {ver or 'latest'})")
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                
+                if result.returncode == 0:
+                    # Success!
+                    module_path = temp_dir / "module"
+                    if (module_path / "manifest.json").exists():
+                        return module_path
+                    else:
+                        raise ValueError("Downloaded repository has no manifest.json")
+                else:
+                    # Failed, try next version
+                    last_error = RuntimeError(f"Git clone failed for {ver}: {result.stderr}")
+                    # Cleanup for next attempt
+                    shutil.rmtree(temp_dir / "module", ignore_errors=True)
+                    continue
+                    
+            except Exception as e:
+                # Cleanup for next attempt
+                shutil.rmtree(temp_dir / "module", ignore_errors=True)
+                last_error = e
+                continue
+        
+        # If we get here, all attempts failed
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise last_error or RuntimeError("Git clone failed")
     
     async def install_module(
         self,
@@ -197,9 +219,13 @@ class ModuleStore:
         staging_dir = Path(settings.staging_dir)
         target_path = staging_dir / module_id
         
-        # Check if already in staging
+        # Check if already in staging - remove if exists to ensure fresh download
         if target_path.exists():
-            return {"success": False, "error": f"Module {module_id} already exists in staging"}
+            try:
+                shutil.rmtree(target_path)
+                logger.info(f"Removed existing staging directory for {module_id}")
+            except Exception as e:
+                return {"success": False, "error": f"Failed to clean up staging for {module_id}: {e}"}
         
         try:
             # Download from GitHub

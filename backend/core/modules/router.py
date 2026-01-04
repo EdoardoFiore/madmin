@@ -380,15 +380,19 @@ class StoreInstallRequest(BaseModel):
 
 @router.get("/store/available")
 async def get_store_modules(
+    refresh: bool = False,
     current_user: User = Depends(require_permission("modules.view")),
     session: AsyncSession = Depends(get_session)
 ):
     """
     Get all modules available in the store.
     Returns modules from cloud registry with install status.
+    
+    Args:
+        refresh: If true, bypass cache and fetch fresh data from registry.
     """
     try:
-        available = await module_store.get_available_modules()
+        available = await module_store.get_available_modules(force_refresh=refresh)
     except Exception as e:
         raise HTTPException(
             status_code=503,
@@ -483,3 +487,68 @@ async def check_store_updates(
     
     return {"updates": updates, "count": len(updates)}
 
+
+@router.post("/{module_id}/update")
+async def update_module(
+    module_id: str,
+    current_user: User = Depends(require_permission("modules.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Update a module to the latest version from store.
+    
+    1. Downloads new version from store
+    2. Backs up external data
+    3. Updates module files
+    4. Restores data
+    5. Executes update hooks
+    """
+    from pathlib import Path
+    
+    # Get current module
+    result = await session.execute(
+        select(InstalledModule).where(InstalledModule.id == module_id)
+    )
+    installed = result.scalar_one_or_none()
+    
+    if not installed:
+        raise HTTPException(status_code=404, detail="Modulo non trovato")
+    
+    # Check for updates
+    updates = await module_store.check_updates([{"id": module_id, "version": installed.version}])
+    
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nessun aggiornamento disponibile")
+    
+    update_info = updates[0]
+    
+    # Download new version to staging
+    download_result = await module_store.install_module(
+        module_id,
+        version=update_info.get("available_version")
+    )
+    
+    if not download_result.get("success"):
+        raise HTTPException(
+            status_code=400,
+            detail=download_result.get("error", "Download fallito")
+        )
+    
+    # Update module
+    staging_path = Path(settings.staging_dir) / module_id
+    success = await module_loader.update_module(session, module_id, staging_path)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Aggiornamento fallito")
+    
+    await session.commit()
+    
+    # Cleanup staging
+    import shutil
+    shutil.rmtree(staging_path, ignore_errors=True)
+    
+    return {
+        "success": True,
+        "message": f"Modulo aggiornato a versione {update_info.get('available_version')}",
+        "restart_required": True
+    }

@@ -26,6 +26,7 @@ let modules = [];
 let stagingModules = [];
 let storeModules = [];
 let moduleChains = [];
+let availableUpdates = {};  // Map of module_id -> update info
 
 export async function render(container) {
     const canManage = checkPermission('modules.manage');
@@ -37,6 +38,7 @@ export async function render(container) {
                     <li class="nav-item">
                         <a href="#tab-installed" class="nav-link active" data-bs-toggle="tab">
                             <i class="ti ti-package me-1"></i>Installati
+                            <span class="badge bg-green ms-1" id="updates-badge" style="display:none;">0</span>
                         </a>
                     </li>
                     <li class="nav-item">
@@ -58,6 +60,13 @@ export async function render(container) {
                     </li>
                     ` : ''}
                 </ul>
+                ${canManage ? `
+                <div class="card-actions">
+                    <button class="btn btn-outline-primary btn-sm" id="btn-check-updates">
+                        <i class="ti ti-refresh me-1"></i>Verifica Aggiornamenti
+                    </button>
+                </div>
+                ` : ''}
             </div>
             <div class="card-body">
                 <div class="tab-content">
@@ -111,6 +120,7 @@ export async function render(container) {
 
     setupEventListeners();
     await loadModules();
+    await checkForUpdates();  // Check updates on load
     loadStoreModules(); // Load async without await
     if (canManage) {
         await loadStagingModules();
@@ -154,6 +164,25 @@ function setupEventListeners() {
             }
         });
     }
+
+    // Check updates button
+    const checkUpdatesBtn = document.getElementById('btn-check-updates');
+    if (checkUpdatesBtn) {
+        checkUpdatesBtn.addEventListener('click', async () => {
+            checkUpdatesBtn.disabled = true;
+            checkUpdatesBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
+            await checkForUpdates();
+            checkUpdatesBtn.disabled = false;
+            checkUpdatesBtn.innerHTML = '<i class="ti ti-refresh me-1"></i>Verifica Aggiornamenti';
+
+            const count = Object.keys(availableUpdates).length;
+            if (count > 0) {
+                showToast(`${count} aggiornamento/i disponibile/i`, 'info');
+            } else {
+                showToast('Nessun aggiornamento disponibile', 'success');
+            }
+        });
+    }
 }
 
 async function loadModules() {
@@ -162,6 +191,31 @@ async function loadModules() {
         renderModules();
     } catch (e) {
         showToast(e.message, 'error');
+    }
+}
+
+async function checkForUpdates() {
+    try {
+        const response = await apiGet('/modules/store/updates');
+        availableUpdates = {};
+
+        if (response.updates && response.updates.length > 0) {
+            response.updates.forEach(u => {
+                availableUpdates[u.id] = u;
+            });
+
+            // Update badge
+            const badge = document.getElementById('updates-badge');
+            if (badge) {
+                badge.textContent = response.updates.length;
+                badge.style.display = 'inline';
+            }
+
+            // Re-render to show update buttons
+            renderModules();
+        }
+    } catch (e) {
+        console.error('Failed to check for updates:', e);
     }
 }
 
@@ -174,12 +228,13 @@ async function loadModuleChains() {
     }
 }
 
-async function loadStoreModules() {
+async function loadStoreModules(forceRefresh = false) {
     const container = document.getElementById('store-container');
     if (!container) return;
 
     try {
-        const response = await apiGet('/modules/store/available');
+        const url = forceRefresh ? '/modules/store/available?refresh=true' : '/modules/store/available';
+        const response = await apiGet(url);
         storeModules = response.modules || [];
         renderStore();
     } catch (e) {
@@ -189,6 +244,80 @@ async function loadStoreModules() {
                 Impossibile caricare lo store: ${escapeHtml(e.message)}
             </div>
         `;
+    }
+}
+
+/**
+ * Unified module update function - used by both Installed and Store tabs
+ * @param {string} moduleId 
+ * @param {object} updateInfo - {current_version, available_version, changelog}
+ * @returns {Promise<boolean>} - true if update was initiated
+ */
+async function updateModule(moduleId, updateInfo) {
+    const newVersion = updateInfo.available_version || updateInfo.version;
+    const currentVersion = updateInfo.current_version || updateInfo.installed_version;
+
+    // Build changelog HTML if available
+    let changelogHtml = '';
+    if (updateInfo.changelog && Object.keys(updateInfo.changelog).length > 0) {
+        changelogHtml = `
+            <div class="mt-2">
+                <strong>Changelog:</strong>
+                <ul class="mb-0 mt-1">
+                    ${Object.entries(updateInfo.changelog).slice(0, 3).map(([v, desc]) =>
+            `<li><code>${escapeHtml(v)}</code>: ${escapeHtml(desc)}</li>`
+        ).join('')}
+                </ul>
+            </div>`;
+    }
+
+    const message = `
+        <p>Aggiornare <strong>${escapeHtml(moduleId)}</strong> alla versione <span class="badge bg-green">${escapeHtml(newVersion)}</span>?</p>
+        ${currentVersion ? `<p>Versione attuale: <span class="badge bg-secondary">${escapeHtml(currentVersion)}</span></p>` : ''}
+        ${changelogHtml}
+        <div class="alert alert-info mt-2">
+            <i class="ti ti-info-circle me-1"></i>
+            I dati esterni (es. configurazioni WireGuard) saranno preservati.
+        </div>
+        <p class="text-warning"><i class="ti ti-refresh me-1"></i>Richiede riavvio di MADMIN</p>`;
+
+    const confirmed = await confirmDialog(
+        'Aggiorna Modulo',
+        message,
+        'Aggiorna',
+        'btn-success',
+        true  // htmlContent = true
+    );
+
+    if (!confirmed) return false;
+
+    try {
+        const result = await apiPost(`/modules/${moduleId}/update`);
+        showToast(result.message || 'Modulo aggiornato!', 'success');
+
+        // Clean up local state
+        delete availableUpdates[moduleId];
+
+        // Update badge
+        const badge = document.getElementById('updates-badge');
+        const count = Object.keys(availableUpdates).length;
+        if (badge) {
+            if (count > 0) {
+                badge.textContent = count;
+                badge.style.display = 'inline';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+
+        // Refresh data
+        await loadModules();
+        await loadStoreModules();
+
+        return true;
+    } catch (e) {
+        showToast(e.message, 'error');
+        return false;
     }
 }
 
@@ -251,11 +380,21 @@ function renderStore() {
         </div>
     `;
 
-    // Refresh button
+    // Refresh button - forces cache bypass
     document.getElementById('btn-refresh-store')?.addEventListener('click', async (e) => {
-        e.target.disabled = true;
-        await loadStoreModules();
-        showToast('Store aggiornato', 'success');
+        const btn = e.currentTarget;
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Aggiornamento...';
+        try {
+            await loadStoreModules(true);  // force refresh
+            showToast('Dati store aggiornati dal cloud', 'success');
+        } catch (e) {
+            showToast('Errore aggiornamento store', 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
     });
 
     // Install buttons
@@ -280,6 +419,33 @@ function renderStore() {
             }
         });
     });
+
+    // Store update buttons - use unified updateModule function
+    container.querySelectorAll('.btn-store-update').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const moduleId = btn.dataset.id;
+            const newVersion = btn.dataset.version;
+            const originalHtml = btn.innerHTML;
+
+            // Find full module info from storeModules or create minimal info
+            const storeModule = storeModules.find(m => m.id === moduleId);
+            const updateInfo = {
+                available_version: newVersion,
+                current_version: storeModule?.installed_version,
+                changelog: storeModule?.changelog || {}
+            };
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+            const success = await updateModule(moduleId, updateInfo);
+
+            if (!success) {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            }
+        });
+    });
 }
 
 function renderStoreButton(module, canManage) {
@@ -292,7 +458,7 @@ function renderStoreButton(module, canManage) {
             </span>`;
         case 'update_available':
             return canManage
-                ? `<button class="btn btn-warning w-100 btn-store-install" data-id="${module.id}">
+                ? `<button class="btn btn-warning w-100 btn-store-update" data-id="${module.id}" data-version="${module.version}">
                     <i class="ti ti-refresh me-1"></i>Aggiorna a v${module.version}
                 </button>`
                 : `<span class="btn btn-outline-warning w-100 disabled">Aggiornamento disponibile</span>`;
@@ -365,6 +531,10 @@ function renderModules() {
                             ${canManage ? `
                             <td>
                                 <div class="btn-group btn-group-sm">
+                                    ${availableUpdates[m.id] ? `
+                                    <button class="btn btn-success btn-update" data-id="${m.id}" title="Aggiorna a ${availableUpdates[m.id].available_version}">
+                                        <i class="ti ti-refresh"></i>
+                                    </button>` : ''}
                                     <button class="btn ${m.enabled ? 'btn-ghost-warning' : 'btn-ghost-success'} btn-toggle" 
                                             data-id="${m.id}" data-enabled="${m.enabled}">
                                         <i class="ti ti-${m.enabled ? 'player-pause' : 'player-play'}"></i>
@@ -400,16 +570,60 @@ function renderModules() {
     // Uninstall buttons
     container.querySelectorAll('.btn-uninstall').forEach(btn => {
         btn.addEventListener('click', async () => {
-            const confirmed = await confirmDialog('Disinstalla Modulo', 'Sei sicuro? I dati del modulo saranno rimossi.', 'Disinstalla', 'btn-danger');
+            const moduleId = btn.dataset.id;
+            const message = `
+                <p>Sei sicuro di voler disinstallare <strong>${escapeHtml(moduleId)}</strong>?</p>
+                <div class="alert alert-warning">
+                    <i class="ti ti-alert-triangle me-1"></i>
+                    <strong>Attenzione:</strong> Verranno rimossi:
+                    <ul class="mb-0 mt-1">
+                        <li>File del modulo</li>
+                        <li>Pacchetti apt/pip (se non usati da altri moduli)</li>
+                        <li>Permessi e configurazioni</li>
+                    </ul>
+                </div>
+                <p class="text-danger"><i class="ti ti-refresh me-1"></i>Richiede riavvio di MADMIN</p>`;
+
+            const confirmed = await confirmDialog(
+                'Disinstalla Modulo',
+                message,
+                'Disinstalla',
+                'btn-danger',
+                true  // htmlContent = true
+            );
             if (confirmed) {
                 try {
-                    await apiDelete(`/modules/${btn.dataset.id}`);
-                    showToast('Modulo disinstallato', 'success');
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+                    await apiDelete(`/modules/${moduleId}`);
+                    showToast('Modulo disinstallato. Riavvia MADMIN per applicare.', 'success');
                     await loadModules();
                     await loadStagingModules();
                 } catch (e) {
                     showToast(e.message, 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="ti ti-trash"></i>';
                 }
+            }
+        });
+    });
+
+    // Update buttons - use unified updateModule function
+    container.querySelectorAll('.btn-update').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const moduleId = btn.dataset.id;
+            const updateInfo = availableUpdates[moduleId];
+            if (!updateInfo) return;
+
+            const originalHtml = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+            const success = await updateModule(moduleId, updateInfo);
+
+            if (!success) {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
             }
         });
     });

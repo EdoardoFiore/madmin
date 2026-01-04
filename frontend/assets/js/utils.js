@@ -160,9 +160,10 @@ export function debounce(func, wait) {
  * @param {string} message 
  * @param {string} confirmText 
  * @param {string} confirmClass 
+ * @param {boolean} htmlContent - If true, message is rendered as HTML (use with caution)
  * @returns {Promise<boolean>}
  */
-export function confirmDialog(title, message, confirmText = 'Conferma', confirmClass = 'btn-danger') {
+export function confirmDialog(title, message, confirmText = 'Conferma', confirmClass = 'btn-danger', htmlContent = false) {
     return new Promise((resolve) => {
         const modalId = `confirm-modal-${Date.now()}`;
         const modalHtml = `
@@ -173,7 +174,7 @@ export function confirmDialog(title, message, confirmText = 'Conferma', confirmC
                             <h5 class="modal-title">${escapeHtml(title)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
-                        <div class="modal-body">${escapeHtml(message)}</div>
+                        <div class="modal-body">${htmlContent ? message : escapeHtml(message)}</div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
                             <button type="button" class="btn ${confirmClass}" id="${modalId}-confirm">${escapeHtml(confirmText)}</button>

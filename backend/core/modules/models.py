@@ -65,6 +65,9 @@ class ModuleInstallHooks(SQLModel):
     pre_install: Optional[str] = None   # e.g., "hooks/pre_install.py"
     post_install: Optional[str] = None  # e.g., "hooks/post_install.py"
     pre_uninstall: Optional[str] = None # e.g., "hooks/pre_uninstall.py"
+    post_uninstall: Optional[str] = None # e.g., "hooks/post_uninstall.py"
+    pre_update: Optional[str] = None    # e.g., "hooks/pre_update.py"
+    post_update: Optional[str] = None   # e.g., "hooks/post_update.py"
 
 
 class ModuleBackupConfig(SQLModel):
