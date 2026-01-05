@@ -123,78 +123,122 @@ class ModuleStore:
         """
         Download module from GitHub repository.
         
+        Priority:
+        1. Try to download release asset (module.zip) - this counts as download
+        2. Fall back to git clone if no release asset exists
+        
         Args:
             repo_url: GitHub repository URL
-            version: Tag/branch to checkout (default: main)
+            version: Tag/version to download (default: latest)
         
         Returns:
             Path to downloaded module directory
         """
-        # Clean URL
+        import zipfile
+        import httpx
+        
+        # Clean URL and extract owner/repo
         repo_url = repo_url.rstrip("/").rstrip(".git")
-        if not repo_url.endswith(".git"):
-            clone_url = repo_url + ".git"
-        else:
-            clone_url = repo_url
+        parts = repo_url.split("/")
+        owner, repo = parts[-2], parts[-1]
         
         # Create temp directory
         temp_dir = Path(tempfile.mkdtemp(prefix="madmin_module_"))
         
-        # Determine variations of version tag to try
+        # Normalize version
+        if version and not version.startswith("v"):
+            version = f"v{version}"
+        
+        # Try to download release asset first (this counts as download!)
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                # Get release info
+                if version:
+                    release_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{version}"
+                else:
+                    release_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+                
+                logger.info(f"Checking for release asset at {release_url}")
+                response = await client.get(release_url)
+                
+                if response.status_code == 200:
+                    release_data = response.json()
+                    assets = release_data.get("assets", [])
+                    
+                    # Look for module.zip asset
+                    zip_asset = None
+                    for asset in assets:
+                        if asset.get("name", "").endswith(".zip"):
+                            zip_asset = asset
+                            break
+                    
+                    if zip_asset:
+                        # Download the ZIP asset (this is counted!)
+                        download_url = zip_asset.get("browser_download_url")
+                        logger.info(f"Downloading release asset: {download_url}")
+                        
+                        zip_response = await client.get(download_url, follow_redirects=True)
+                        if zip_response.status_code == 200:
+                            zip_path = temp_dir / "module.zip"
+                            zip_path.write_bytes(zip_response.content)
+                            
+                            # Extract ZIP
+                            module_path = temp_dir / "module"
+                            with zipfile.ZipFile(zip_path, 'r') as zf:
+                                zf.extractall(module_path)
+                            
+                            # Check if manifest exists (might be in subfolder)
+                            if (module_path / "manifest.json").exists():
+                                logger.info("Downloaded module from release asset")
+                                return module_path
+                            
+                            # Check for single subfolder
+                            subdirs = [d for d in module_path.iterdir() if d.is_dir()]
+                            if len(subdirs) == 1 and (subdirs[0] / "manifest.json").exists():
+                                logger.info("Downloaded module from release asset (with subfolder)")
+                                return subdirs[0]
+                        
+        except Exception as e:
+            logger.warning(f"Could not download release asset: {e}, falling back to git clone")
+        
+        # Fallback: git clone
+        logger.info(f"Falling back to git clone for {repo_url}")
+        
+        clone_url = repo_url + ".git" if not repo_url.endswith(".git") else repo_url
+        
         versions_to_try = []
         if version:
             versions_to_try.append(version)
-            if not version.startswith("v"):
-                versions_to_try.append(f"v{version}")
-            elif version.startswith("v"):
-                versions_to_try.append(version.lstrip("v"))
+            versions_to_try.append(version.lstrip("v"))
         else:
             versions_to_try.append(None)
-            
+        
         last_error = None
         
         for ver in versions_to_try:
             try:
-                # Clone repository
                 cmd = ["git", "clone", "--depth", "1"]
-                
                 if ver:
                     cmd.extend(["--branch", ver])
-                
                 cmd.extend([clone_url, str(temp_dir / "module")])
                 
-                logger.info(f"Cloning {clone_url} (version: {ver or 'latest'})")
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 
                 if result.returncode == 0:
-                    # Success!
                     module_path = temp_dir / "module"
                     if (module_path / "manifest.json").exists():
                         return module_path
                     else:
                         raise ValueError("Downloaded repository has no manifest.json")
                 else:
-                    # Failed, try next version
-                    last_error = RuntimeError(f"Git clone failed for {ver}: {result.stderr}")
-                    # Cleanup for next attempt
+                    last_error = RuntimeError(f"Git clone failed: {result.stderr}")
                     shutil.rmtree(temp_dir / "module", ignore_errors=True)
-                    continue
-                    
             except Exception as e:
-                # Cleanup for next attempt
                 shutil.rmtree(temp_dir / "module", ignore_errors=True)
                 last_error = e
-                continue
         
-        # If we get here, all attempts failed
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise last_error or RuntimeError("Git clone failed")
+        raise last_error or RuntimeError("Download failed")
     
     async def install_module(
         self,
@@ -250,18 +294,19 @@ class ModuleStore:
             logger.error(f"Failed to install module {module_id}: {e}")
             return {"success": False, "error": str(e)}
     
-    async def check_updates(self, installed_modules: List[Dict]) -> List[Dict]:
+    async def check_updates(self, installed_modules: List[Dict], force_refresh: bool = False) -> List[Dict]:
         """
         Check for available updates for installed modules.
         
         Args:
             installed_modules: List of {id, version} dicts
+            force_refresh: If true, bypass cache
         
         Returns:
             List of modules with available updates
         """
         updates = []
-        available = await self.get_available_modules()
+        available = await self.get_available_modules(force_refresh=force_refresh)
         
         available_map = {m.id: m for m in available}
         

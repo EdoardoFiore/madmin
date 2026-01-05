@@ -171,7 +171,7 @@ function setupEventListeners() {
         checkUpdatesBtn.addEventListener('click', async () => {
             checkUpdatesBtn.disabled = true;
             checkUpdatesBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
-            await checkForUpdates();
+            await checkForUpdates(true);  // Force refresh to bypass cache
             checkUpdatesBtn.disabled = false;
             checkUpdatesBtn.innerHTML = '<i class="ti ti-refresh me-1"></i>Verifica Aggiornamenti';
 
@@ -194,9 +194,10 @@ async function loadModules() {
     }
 }
 
-async function checkForUpdates() {
+async function checkForUpdates(forceRefresh = false) {
     try {
-        const response = await apiGet('/modules/store/updates');
+        const url = forceRefresh ? '/modules/store/updates?refresh=true' : '/modules/store/updates';
+        const response = await apiGet(url);
         availableUpdates = {};
 
         if (response.updates && response.updates.length > 0) {
@@ -213,6 +214,12 @@ async function checkForUpdates() {
 
             // Re-render to show update buttons
             renderModules();
+        } else {
+            // No updates - hide badge
+            const badge = document.getElementById('updates-badge');
+            if (badge) {
+                badge.style.display = 'none';
+            }
         }
     } catch (e) {
         console.error('Failed to check for updates:', e);

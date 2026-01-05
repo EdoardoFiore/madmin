@@ -99,6 +99,77 @@ async def lifespan(app: FastAPI):
     stats_task = asyncio.create_task(collect_stats_periodically())
     logger.info("Background stats collection started (every 60s)")
     
+    # Start scheduled backup task
+    from core.settings.models import BackupSettings
+    from core.backup.service import run_backup
+    from sqlalchemy import select
+    from datetime import datetime
+    
+    backup_task_running = True
+    last_backup_date = None
+    
+    async def scheduled_backup_task():
+        """Background task to run scheduled backups."""
+        nonlocal last_backup_date
+        
+        while backup_task_running:
+            try:
+                async with async_session_maker() as session:
+                    result = await session.execute(
+                        select(BackupSettings).where(BackupSettings.id == 1)
+                    )
+                    settings = result.scalar_one_or_none()
+                    
+                    if settings and settings.enabled:
+                        now = datetime.now()
+                        current_time = now.strftime("%H:%M")
+                        current_date = now.date()
+                        
+                        # Check if it's time to run backup
+                        should_run = False
+                        
+                        if settings.frequency == "daily":
+                            # Run once per day at specified time
+                            if current_time == settings.time and last_backup_date != current_date:
+                                should_run = True
+                        elif settings.frequency == "weekly":
+                            # Run on Sundays at specified time
+                            if now.weekday() == 6 and current_time == settings.time and last_backup_date != current_date:
+                                should_run = True
+                        
+                        if should_run:
+                            logger.info(f"Starting scheduled backup (frequency: {settings.frequency})")
+                            last_backup_date = current_date
+                            
+                            backup_result = await run_backup(
+                                remote_protocol=settings.remote_protocol if settings.remote_host else None,
+                                remote_host=settings.remote_host or None,
+                                remote_port=settings.remote_port,
+                                remote_user=settings.remote_user or None,
+                                remote_password=settings.remote_password or None,
+                                remote_path=settings.remote_path,
+                                retention_days=settings.retention_days
+                            )
+                            
+                            # Update last run status
+                            settings.last_run_time = datetime.utcnow()
+                            settings.last_run_status = "success" if backup_result.get("success") else "failed"
+                            session.add(settings)
+                            await session.commit()
+                            
+                            if backup_result.get("success"):
+                                logger.info(f"Scheduled backup completed: {backup_result.get('archive')}")
+                            else:
+                                logger.error(f"Scheduled backup failed: {backup_result.get('errors')}")
+                            
+            except Exception as e:
+                logger.error(f"Scheduled backup task error: {e}")
+            
+            await asyncio.sleep(60)  # Check every minute
+    
+    backup_task = asyncio.create_task(scheduled_backup_task())
+    logger.info("Scheduled backup task started")
+    
     logger.info("MADMIN ready!")
     
     yield
@@ -106,9 +177,15 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("MADMIN shutting down...")
     stats_task_running = False
+    backup_task_running = False
     stats_task.cancel()
+    backup_task.cancel()
     try:
         await stats_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await backup_task
     except asyncio.CancelledError:
         pass
 

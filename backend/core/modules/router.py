@@ -474,6 +474,7 @@ async def install_from_store(
 
 @router.get("/store/updates")
 async def check_store_updates(
+    refresh: bool = False,
     current_user: User = Depends(require_permission("modules.view")),
     session: AsyncSession = Depends(get_session)
 ):
@@ -483,7 +484,7 @@ async def check_store_updates(
     )
     installed = [{"id": row[0], "version": row[1]} for row in result.fetchall()]
     
-    updates = await module_store.check_updates(installed)
+    updates = await module_store.check_updates(installed, force_refresh=refresh)
     
     return {"updates": updates, "count": len(updates)}
 
