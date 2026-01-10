@@ -283,8 +283,23 @@ class ModuleLoader:
         # Uninstall apt packages (only if not used by others)
         if deps.apt:
             logger.info(f"Checking apt packages for removal: {deps.apt}")
+            
+            # Critical system packages that should NEVER be uninstalled
+            protected_packages = {
+                'openssl', 'ca-certificates', 'sudo', 'systemd', 'bash', 'ssh', 'apt', 'dpkg',
+                'python3', 'python3-pip', 'python3-venv',
+                'postgresql', 'postgresql-client', 'postgresql-common'
+            }
+            
             try:
                 for pkg in deps.apt:
+                    # Check if protected (exact match or startswith for mostly safe check)
+                    is_protected = pkg in protected_packages or any(pkg.startswith(p + '-') for p in protected_packages)
+                    
+                    if is_protected:
+                        logger.warning(f"Refusing to uninstall protected system package: {pkg}")
+                        continue
+                        
                     if pkg not in other_apt:
                         result = subprocess.run(
                             ["apt-get", "remove", "-y", pkg],
