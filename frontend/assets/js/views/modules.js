@@ -640,24 +640,32 @@ function renderFirewallPriority() {
     const container = document.getElementById('firewall-priority-section');
     if (!container) return;
 
-    // Group chains by parent (INPUT, FORWARD, etc)
-    const chainsByParent = {};
-    moduleChains.forEach(c => {
-        if (!chainsByParent[c.parent_chain]) {
-            chainsByParent[c.parent_chain] = [];
-        }
-        chainsByParent[c.parent_chain].push(c);
-    });
-
-    // Sort by priority within each group
-    Object.values(chainsByParent).forEach(chains => {
-        chains.sort((a, b) => a.priority - b.priority);
-    });
-
     if (moduleChains.length === 0) {
         container.innerHTML = '';
         return;
     }
+
+    // Group chains by table, then by parent
+    const chainsStructure = {};
+    moduleChains.forEach(c => {
+        const table = c.table_name || 'filter';
+        const parent = c.parent_chain;
+
+        if (!chainsStructure[table]) {
+            chainsStructure[table] = {};
+        }
+        if (!chainsStructure[table][parent]) {
+            chainsStructure[table][parent] = [];
+        }
+        chainsStructure[table][parent].push(c);
+    });
+
+    // Sort by priority within each group
+    Object.values(chainsStructure).forEach(parents => {
+        Object.values(parents).forEach(chains => {
+            chains.sort((a, b) => a.priority - b.priority);
+        });
+    });
 
     container.innerHTML = `
         <div class="card">
@@ -668,23 +676,36 @@ function renderFirewallPriority() {
             </div>
             <div class="card-body">
                 <p class="text-muted small mb-3">
-                    L'ordine dei moduli determina la priorità delle loro regole firewall. 
+                    L'ordine dei moduli determina la priorità delle loro regole firewall all'interno di ogni tabella e catena.
                     Trascina per riordinare. Le regole MADMIN (firewall macchina) hanno sempre priorità massima.
                 </p>
                 <div class="row">
-                    ${Object.entries(chainsByParent).map(([parent, chains]) => `
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label"><code>${parent}</code></label>
-                            <ul class="list-group" id="priority-list-${parent}" data-parent="${parent}">
-                                ${chains.map((c, idx) => `
-                                    <li class="list-group-item d-flex align-items-center" 
-                                        data-chain-id="${c.id}" data-priority="${c.priority}">
-                                        <i class="ti ti-grip-vertical cursor-move text-muted me-2"></i>
-                                        <span class="badge bg-azure-lt me-2">${idx + 1}</span>
-                                        <span>${c.chain_name.replace('MOD_', '').replace('_', ' ')}</span>
-                                    </li>
+                    ${Object.entries(chainsStructure).map(([table, parents]) => `
+                        <div class="col-12 mb-3">
+                            <h5 class="text-uppercase text-muted font-weight-bold mb-2">
+                                Tabella: <span class="text-primary">${escapeHtml(table)}</span>
+                            </h5>
+                            <div class="row">
+                                ${Object.entries(parents).map(([parent, chains]) => `
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label font-monospace bg-light px-2 py-1 rounded small">
+                                            ${escapeHtml(parent)}
+                                        </label>
+                                        <ul class="list-group" id="priority-list-${table}-${parent}" data-table="${table}" data-parent="${parent}">
+                                            ${chains.map((c, idx) => `
+                                                <li class="list-group-item d-flex align-items-center" 
+                                                    data-chain-id="${c.id}" data-priority="${c.priority}">
+                                                    <i class="ti ti-grip-vertical cursor-move text-muted me-2"></i>
+                                                    <span class="badge bg-azure-lt me-2">${idx + 1}</span>
+                                                    <span>${escapeHtml(c.chain_name.replace('MOD_', '').replace('_', ' '))}</span>
+                                                    <small class="ms-auto text-muted font-monospace" style="font-size: 0.7rem;">${c.priority}</small>
+                                                </li>
+                                            `).join('')}
+                                        </ul>
+                                    </div>
                                 `).join('')}
-                            </ul>
+                            </div>
+                            <hr class="my-2 border-light">
                         </div>
                     `).join('')}
                 </div>
@@ -693,31 +714,43 @@ function renderFirewallPriority() {
     `;
 
     // Initialize Sortable for each list
-    Object.keys(chainsByParent).forEach(parent => {
-        const list = document.getElementById(`priority-list-${parent}`);
-        if (list && typeof Sortable !== 'undefined') {
-            new Sortable(list, {
-                animation: 150,
-                handle: '.cursor-move',
-                onEnd: async (evt) => {
-                    const items = list.querySelectorAll('li[data-chain-id]');
-                    const orders = [];
-                    items.forEach((item, index) => {
-                        orders.push({ id: item.dataset.chainId, priority: index });
-                        // Update badge
-                        item.querySelector('.badge').textContent = index + 1;
-                    });
+    Object.keys(chainsStructure).forEach(table => {
+        Object.keys(chainsStructure[table]).forEach(parent => {
+            const listId = `priority-list-${table}-${parent}`;
+            const list = document.getElementById(listId);
 
-                    try {
-                        await apiPut('/firewall/chains/order', orders);
-                        showToast('Priorità aggiornata', 'success');
-                    } catch (e) {
-                        showToast(e.message, 'error');
-                        await loadModuleChains();
+            if (list && typeof Sortable !== 'undefined') {
+                new Sortable(list, {
+                    animation: 150,
+                    handle: '.cursor-move',
+                    onEnd: async (evt) => {
+                        const items = list.querySelectorAll('li[data-chain-id]');
+                        const orders = [];
+                        items.forEach((item, index) => {
+                            // Calculate new priority (offset by existing logic or just relative index?)
+                            // Backend uses absolute priority. Let's use 10-step increments or just 1-based index + base?
+                            // For simplicity, let's just use index * 10 + 10 to leave gaps, or similar.
+                            // Currently backend uses int. Let's re-normalize to 10, 20, 30...
+                            const newPriority = (index + 1) * 10;
+                            orders.push({ id: item.dataset.chainId, priority: newPriority });
+
+                            // Update UI badge
+                            item.querySelector('.badge').textContent = index + 1;
+                            // Update debug small text
+                            item.querySelector('small').textContent = newPriority;
+                        });
+
+                        try {
+                            await apiPut('/firewall/chains/order', orders);
+                            showToast('Priorità aggiornata', 'success');
+                        } catch (e) {
+                            showToast(e.message, 'error');
+                            await loadModuleChains();
+                        }
                     }
-                }
-            });
-        }
+                });
+            }
+        });
     });
 }
 

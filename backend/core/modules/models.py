@@ -51,6 +51,7 @@ class ModuleFirewallChain(SQLModel):
     """Firewall chain definition from a module."""
     name: str  # e.g., "MOD_WG_FORWARD"
     parent: str  # INPUT, OUTPUT, FORWARD, or MADMIN_ chains
+    table: str = "filter"  # filter, nat, mangle
     priority: int = 50
 
 

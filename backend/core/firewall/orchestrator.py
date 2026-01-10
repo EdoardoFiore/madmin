@@ -74,11 +74,26 @@ class FirewallOrchestrator:
         existing = result.scalar_one_or_none()
         
         if existing:
-            # Chain exists, but we should ensure jump rules are present (e.g. after restart)
-            # Just skip the DB creation part
-            pass
+            # Update DB record if fields changed (e.g. table fix or priority change)
+            if (existing.table_name != table_name or 
+                existing.parent_chain != parent_chain or 
+                existing.priority != priority):
+                
+                existing.table_name = table_name
+                existing.parent_chain = parent_chain
+                existing.priority = priority
+                session.add(existing)
+                await session.flush()
+                logger.info(f"Updated module chain {chain_name} configuration")
+
+            # Chain exists in DB, but we MUST ensure physical chain exists (e.g. after restart)
+            # Use create_chain (not flush) to preserve existing rules if any, but ensure it exists
+            if not iptables.create_chain(chain_name, table_name):
+                logger.error(f"Failed to ensure iptables chain {chain_name} exists")
+                # Continue anyway to try to rebuild jumps
         else:
-            # Create chain in iptables
+            # New chain, create and register
+            # Create chain in iptables (flush if exists to be safe/clean)
             if not iptables.create_or_flush_chain(chain_name, table_name):
                 logger.error(f"Failed to create iptables chain {chain_name}")
                 return None

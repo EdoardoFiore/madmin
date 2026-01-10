@@ -154,7 +154,8 @@ class ModuleLoader:
                 module_id=module_id,
                 chain_name=chain_def.name,
                 parent_chain=chain_def.parent,
-                priority=chain_def.priority
+                priority=chain_def.priority,
+                table_name=chain_def.table
             )
     
     async def install_system_dependencies(
