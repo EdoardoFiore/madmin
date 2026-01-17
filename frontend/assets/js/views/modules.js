@@ -773,9 +773,14 @@ function renderStagingModules() {
                             <p class="text-muted small">${m.description || 'Nessuna descrizione'}</p>
                             <div class="d-flex justify-content-between align-items-center">
                                 <span class="badge bg-secondary">v${m.version}</span>
-                                <button class="btn btn-primary btn-sm btn-install" data-id="${m.id}">
-                                    <i class="ti ti-download me-1"></i>Installa
-                                </button>
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-primary btn-install" data-id="${m.id}">
+                                        <i class="ti ti-download me-1"></i>Installa
+                                    </button>
+                                    <button class="btn btn-outline-danger btn-delete-staging" data-id="${m.id}" data-name="${escapeHtml(m.name)}" title="Elimina da staging">
+                                        <i class="ti ti-trash"></i>
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -799,6 +804,38 @@ function renderStagingModules() {
                 showToast(e.message, 'error');
                 btn.disabled = false;
                 btn.innerHTML = '<i class="ti ti-download me-1"></i>Installa';
+            }
+        });
+    });
+
+    // Delete staging buttons
+    container.querySelectorAll('.btn-delete-staging').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const id = btn.dataset.id;
+            const name = btn.dataset.name;
+
+            const confirmed = await confirmDialog(
+                'Elimina Modulo da Staging',
+                `<p>Eliminare <strong>${escapeHtml(name || id)}</strong> dalla cartella staging?</p>
+                <p class="text-muted small">La cartella del modulo verrà rimossa completamente. I moduli installati non saranno influenzati.</p>`,
+                'Elimina',
+                'btn-danger',
+                true
+            );
+
+            if (confirmed) {
+                try {
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+                    await apiDelete(`/modules/staging/${id}`);
+                    showToast('Modulo rimosso da staging', 'success');
+                    await loadStagingModules();
+                    await loadStoreModules();  // Refresh store to update status
+                } catch (e) {
+                    showToast(e.message, 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="ti ti-trash"></i>';
+                }
             }
         });
     });

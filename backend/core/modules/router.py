@@ -123,6 +123,37 @@ async def list_staging_modules(
     return available
 
 
+@router.delete("/staging/{module_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_staging_module(
+    module_id: str,
+    current_user: User = Depends(require_permission("modules.manage"))
+):
+    """
+    Delete a module folder from staging directory.
+    
+    This removes the module files from staging without affecting installed modules.
+    """
+    staging_path = Path(settings.staging_dir) / module_id
+    
+    if not staging_path.exists():
+        raise HTTPException(status_code=404, detail="Modulo non trovato in staging")
+    
+    if not staging_path.is_dir():
+        raise HTTPException(status_code=400, detail="Percorso non valido")
+    
+    # Safety check: ensure path is within staging directory
+    try:
+        staging_path.resolve().relative_to(Path(settings.staging_dir).resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Percorso non valido")
+    
+    try:
+        shutil.rmtree(staging_path)
+        return None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore durante l'eliminazione: {str(e)}")
+
+
 @router.post("/upload", response_model=StagingModuleInfo)
 async def upload_module_zip(
     file: UploadFile = File(...),
