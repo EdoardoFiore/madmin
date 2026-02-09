@@ -23,6 +23,53 @@ export async function render(container) {
     }
 
     container.innerHTML = `
+        <!-- My Profile Security Section -->
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-user-cog me-2"></i>Il Mio Profilo</h3>
+            </div>
+            <div class="card-body">
+                <div class="row g-4">
+                    <!-- Change Password -->
+                    <div class="col-lg-6">
+                        <h4><i class="ti ti-lock me-2"></i>Cambia Password</h4>
+                        <form id="change-password-form" class="mt-3">
+                            <div class="row g-2">
+                                <div class="col-12">
+                                    <input type="password" class="form-control" id="current-password" 
+                                           placeholder="Password attuale" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <input type="password" class="form-control" id="new-password" 
+                                           placeholder="Nuova password" required minlength="6">
+                                </div>
+                                <div class="col-md-6">
+                                    <input type="password" class="form-control" id="confirm-password" 
+                                           placeholder="Conferma password" required>
+                                </div>
+                                <div class="col-12">
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="ti ti-check me-1"></i>Cambia Password
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    
+                    <!-- 2FA Management -->
+                    <div class="col-lg-6">
+                        <h4><i class="ti ti-shield-lock me-2"></i>Autenticazione 2FA</h4>
+                        <div id="2fa-status-container" class="mt-3">
+                            <div class="d-flex justify-content-center py-3">
+                                <div class="spinner-border spinner-border-sm text-primary"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Users Table Card -->
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
@@ -36,17 +83,61 @@ export async function render(container) {
                             <th>Utente</th>
                             <th>Email</th>
                             <th>Ruolo</th>
+                            <th>2FA</th>
                             <th>Stato</th>
                             <th>Ultimo Accesso</th>
                             <th class="w-1"></th>
                         </tr>
                     </thead>
                     <tbody id="users-table-body">
-                        <tr><td colspan="6" class="text-center py-4">
+                        <tr><td colspan="7" class="text-center py-4">
                             <div class="spinner-border spinner-border-sm"></div>
                         </td></tr>
                     </tbody>
                 </table>
+            </div>
+        </div>
+        
+        <!-- 2FA Setup Modal -->
+        <div class="modal modal-blur fade" id="2fa-setup-modal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Configura Autenticazione 2FA</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6 text-center">
+                                <h5 class="mb-3">1. Scansiona il QR Code</h5>
+                                <div id="qr-code-container" class="mb-3 p-3 bg-white rounded d-inline-block">
+                                    <img id="qr-code-img" src="" alt="QR Code" style="width: 180px; height: 180px;">
+                                </div>
+                                <p class="text-muted small">Google Authenticator, Authy, etc.</p>
+                            </div>
+                            <div class="col-md-6">
+                                <h5 class="mb-3">2. Oppure manualmente</h5>
+                                <div class="input-group mb-3">
+                                    <input type="text" class="form-control font-monospace" id="secret-key" readonly>
+                                    <button class="btn btn-outline-secondary" type="button" id="copy-secret">
+                                        <i class="ti ti-copy"></i>
+                                    </button>
+                                </div>
+                                <hr>
+                                <h5 class="mb-3">3. Verifica codice</h5>
+                                <input type="text" class="form-control form-control-lg text-center font-monospace mb-3" 
+                                       id="verify-setup-code" maxlength="6" pattern="[0-9]{6}"
+                                       placeholder="000000" inputmode="numeric">
+                                <button class="btn btn-primary w-100" id="btn-verify-2fa">
+                                    <i class="ti ti-check me-1"></i>Attiva 2FA
+                                </button>
+                            </div>
+                        </div>
+                        <hr>
+                        <h5><i class="ti ti-key me-2"></i>Codici di Backup (salva in luogo sicuro!)</h5>
+                        <div id="backup-codes-list" class="row g-2 mt-2"></div>
+                    </div>
+                </div>
             </div>
         </div>
         
@@ -138,6 +229,12 @@ function setupEventListeners() {
     if (password) {
         password.addEventListener('input', validatePasswordMatch);
     }
+
+    // Setup password change form
+    setupPasswordChangeForm();
+
+    // Load 2FA status
+    load2FAStatus();
 }
 
 function validatePasswordMatch() {
@@ -172,41 +269,58 @@ function renderUsers() {
     const currentUser = getUser();
 
     if (users.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6">${emptyState('ti-users', 'Nessun utente')}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7">${emptyState('ti-users', 'Nessun utente')}</td></tr>`;
         return;
     }
 
-    tbody.innerHTML = users.map(user => `
-        <tr>
-            <td>
-                <div class="d-flex align-items-center">
-                    <span class="avatar avatar-sm bg-${user.is_superuser ? 'red' : 'blue'}-lt me-2">
-                        <i class="ti ti-${user.is_superuser ? 'crown' : 'user'}"></i>
-                    </span>
-                    <div>
-                        <div class="font-weight-medium">${escapeHtml(user.username)}</div>
-                        ${user.is_superuser ? '<small class="text-muted">Superuser</small>' : ''}
+    tbody.innerHTML = users.map(user => {
+        // Determine if we should show action buttons
+        const isSelf = user.username === currentUser?.username;
+        const isTargetAdmin = user.username === 'admin';
+        const isCurrentAdmin = currentUser?.username === 'admin';
+
+        // Don't show actions on self (already present) and on admin if not admin
+        // Admin can only be edited by admin themselves
+        const showActions = canManage && !isSelf && !(isTargetAdmin && !isCurrentAdmin);
+
+        // 2FA status icon
+        const twoFaIcon = user.totp_enabled
+            ? '<span class="badge bg-green-lt" title="2FA Attiva"><i class="ti ti-shield-check"></i></span>'
+            : '<span class="badge bg-secondary-lt" title="2FA Non Attiva"><i class="ti ti-shield-off"></i></span>';
+
+        return `
+            <tr>
+                <td>
+                    <div class="d-flex align-items-center">
+                        <span class="avatar avatar-sm bg-${user.is_superuser ? 'red' : 'blue'}-lt me-2">
+                            <i class="ti ti-${user.is_superuser ? 'crown' : 'user'}"></i>
+                        </span>
+                        <div>
+                            <div class="font-weight-medium">${escapeHtml(user.username)}</div>
+                            ${user.is_superuser ? '<small class="text-muted">Superuser</small>' : ''}
+                        </div>
                     </div>
-                </div>
-            </td>
-            <td>${user.email ? escapeHtml(user.email) : '<span class="text-muted">-</span>'}</td>
-            <td>${user.is_superuser ? '<span class="badge bg-red">Admin</span>' : '<span class="badge bg-blue">Utente</span>'}</td>
-            <td>${statusBadge(user.is_active)}</td>
-            <td>${user.last_login ? formatDate(user.last_login) : '<span class="text-muted">Mai</span>'}</td>
-            <td>
-                ${canManage && user.username !== currentUser?.username ? `
-                    <div class="btn-group btn-group-sm">
-                        <button class="btn btn-ghost-primary btn-edit" data-username="${user.username}" title="Modifica">
-                            <i class="ti ti-edit"></i>
-                        </button>
-                        <button class="btn btn-ghost-danger btn-delete" data-username="${user.username}" title="Elimina">
-                            <i class="ti ti-trash"></i>
-                        </button>
-                    </div>
-                ` : ''}
-            </td>
-        </tr>
-    `).join('');
+                </td>
+                <td>${user.email ? escapeHtml(user.email) : '<span class="text-muted">-</span>'}</td>
+                <td>${user.is_superuser ? '<span class="badge bg-red">Admin</span>' : '<span class="badge bg-blue">Utente</span>'}</td>
+                <td>${twoFaIcon}</td>
+                <td>${statusBadge(user.is_active)}</td>
+                <td>${user.last_login ? formatDate(user.last_login) : '<span class="text-muted">Mai</span>'}</td>
+                <td>
+                    ${showActions ? `
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-ghost-primary btn-edit" data-username="${user.username}" title="Modifica">
+                                <i class="ti ti-edit"></i>
+                            </button>
+                            <button class="btn btn-ghost-danger btn-delete" data-username="${user.username}" title="Elimina">
+                                <i class="ti ti-trash"></i>
+                            </button>
+                        </div>
+                    ` : ''}
+                </td>
+            </tr>
+        `;
+    }).join('');
 
     tbody.querySelectorAll('.btn-edit').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -388,4 +502,247 @@ async function handleUserSubmit(e) {
     } catch (error) {
         showToast('Errore: ' + error.message, 'error');
     }
+}
+
+
+// ========== PASSWORD CHANGE & 2FA MANAGEMENT ==========
+
+let twoFaSetupData = null;
+
+/**
+ * Setup password change form handler
+ */
+function setupPasswordChangeForm() {
+    const form = document.getElementById('change-password-form');
+    form?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const currentPassword = document.getElementById('current-password').value;
+        const newPassword = document.getElementById('new-password').value;
+        const confirmPassword = document.getElementById('confirm-password').value;
+
+        if (newPassword !== confirmPassword) {
+            showToast('Le password non corrispondono', 'error');
+            return;
+        }
+
+        if (newPassword.length < 6) {
+            showToast('La password deve essere di almeno 6 caratteri', 'error');
+            return;
+        }
+
+        const btn = form.querySelector('button[type="submit"]');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvataggio...';
+        btn.disabled = true;
+
+        try {
+            await apiPost('/auth/me/password', {
+                current_password: currentPassword,
+                new_password: newPassword
+            });
+            showToast('Password aggiornata con successo!', 'success');
+            form.reset();
+        } catch (error) {
+            showToast('Errore: ' + error.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
+}
+
+/**
+ * Load and render 2FA status
+ */
+async function load2FAStatus() {
+    const container = document.getElementById('2fa-status-container');
+    if (!container) return;
+
+    try {
+        const status = await apiGet('/auth/me/2fa/status');
+
+        if (status.enabled) {
+            container.innerHTML = `
+                <div class="alert alert-success mb-3">
+                    <div class="d-flex align-items-center">
+                        <i class="ti ti-shield-check me-2" style="font-size: 1.5rem;"></i>
+                        <div>
+                            <strong>2FA Attiva</strong>
+                            <div class="text-muted small">Il tuo account è protetto</div>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-outline-danger btn-sm" id="btn-disable-2fa">
+                    <i class="ti ti-shield-off me-1"></i>Disattiva 2FA
+                </button>
+                <button class="btn btn-outline-secondary btn-sm ms-2" id="btn-regenerate-codes">
+                    <i class="ti ti-key me-1"></i>Rigenera Codici
+                </button>
+            `;
+            setupDisable2FA();
+            setupRegenerateCodes();
+        } else {
+            container.innerHTML = `
+                <div class="alert alert-warning mb-3">
+                    <div class="d-flex align-items-center">
+                        <i class="ti ti-shield-exclamation me-2" style="font-size: 1.5rem;"></i>
+                        <div>
+                            <strong>2FA Non Attiva</strong>
+                            <div class="text-muted small">Aggiungi sicurezza al tuo account</div>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary btn-sm" id="btn-setup-2fa">
+                    <i class="ti ti-shield-plus me-1"></i>Attiva 2FA
+                </button>
+            `;
+            setupEnable2FA();
+        }
+    } catch (error) {
+        container.innerHTML = `
+            <div class="alert alert-danger">
+                <i class="ti ti-alert-circle me-2"></i>Errore caricamento stato 2FA
+            </div>
+        `;
+    }
+}
+
+/**
+ * Setup enable 2FA button
+ */
+function setupEnable2FA() {
+    document.getElementById('btn-setup-2fa')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btn-setup-2fa');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Generazione...';
+        btn.disabled = true;
+
+        try {
+            twoFaSetupData = await apiPost('/auth/me/2fa/setup', {});
+
+            // Populate modal
+            document.getElementById('qr-code-img').src = `data:image/png;base64,${twoFaSetupData.qr_code}`;
+            document.getElementById('secret-key').value = twoFaSetupData.secret;
+            document.getElementById('verify-setup-code').value = '';
+
+            // Show backup codes
+            const codesList = document.getElementById('backup-codes-list');
+            codesList.innerHTML = twoFaSetupData.backup_codes.map(c => `
+                <div class="col-6 col-md-4">
+                    <span class="badge bg-secondary-lt font-monospace w-100 py-2">${c}</span>
+                </div>
+            `).join('');
+
+            // Setup modal event listeners
+            setup2FAModalListeners();
+
+            // Show modal
+            const modal = new bootstrap.Modal(document.getElementById('2fa-setup-modal'));
+            modal.show();
+        } catch (error) {
+            showToast('Errore: ' + error.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
+}
+
+/**
+ * Setup 2FA modal listeners
+ */
+function setup2FAModalListeners() {
+    // Copy secret key
+    document.getElementById('copy-secret')?.addEventListener('click', () => {
+        const secretInput = document.getElementById('secret-key');
+        navigator.clipboard.writeText(secretInput.value);
+        showToast('Chiave copiata negli appunti', 'success');
+    });
+
+    // Verify and enable 2FA
+    const verifyBtn = document.getElementById('btn-verify-2fa');
+    verifyBtn?.addEventListener('click', async () => {
+        const code = document.getElementById('verify-setup-code').value;
+        if (!code || code.length !== 6) {
+            showToast('Inserisci un codice valido a 6 cifre', 'error');
+            return;
+        }
+
+        const originalText = verifyBtn.innerHTML;
+        verifyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
+        verifyBtn.disabled = true;
+
+        try {
+            await apiPost('/auth/me/2fa/enable', { code });
+            showToast('2FA attivata con successo!', 'success');
+
+            // Close modal and refresh
+            const modal = bootstrap.Modal.getInstance(document.getElementById('2fa-setup-modal'));
+            modal?.hide();
+            await load2FAStatus();
+            await loadData(); // Refresh users table
+        } catch (error) {
+            showToast('Errore: ' + error.message, 'error');
+        } finally {
+            verifyBtn.innerHTML = originalText;
+            verifyBtn.disabled = false;
+        }
+    });
+
+    // Enter key on verification code
+    document.getElementById('verify-setup-code')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('btn-verify-2fa')?.click();
+        }
+    });
+}
+
+/**
+ * Setup disable 2FA button
+ */
+function setupDisable2FA() {
+    document.getElementById('btn-disable-2fa')?.addEventListener('click', async () => {
+        const confirmed = await confirmDialog(
+            'Disattiva 2FA',
+            "Sei sicuro di voler disattivare l'autenticazione a due fattori?",
+            'Disattiva',
+            'btn-danger'
+        );
+        if (!confirmed) return;
+
+        const password = prompt('Inserisci la tua password per confermare:');
+        if (!password) return;
+
+        try {
+            await apiDelete('/auth/me/2fa/disable', { password });
+            showToast('2FA disattivata', 'success');
+            await load2FAStatus();
+            await loadData();
+        } catch (error) {
+            showToast('Errore: ' + error.message, 'error');
+        }
+    });
+}
+
+/**
+ * Setup regenerate backup codes button
+ */
+function setupRegenerateCodes() {
+    document.getElementById('btn-regenerate-codes')?.addEventListener('click', async () => {
+        const code = prompt('Inserisci il codice 2FA dalla tua app authenticator:');
+        if (!code) return;
+
+        try {
+            const result = await apiPost('/auth/me/2fa/backup-codes', { code });
+
+            // Show new codes in alert
+            const codesHtml = result.backup_codes.map(c => `<code>${c}</code>`).join(' ');
+            showToast(`Nuovi codici generati. Salvali subito!`, 'success');
+
+            alert('Nuovi codici di backup:\n\n' + result.backup_codes.join('\n') + '\n\nSalva questi codici in un luogo sicuro!');
+        } catch (error) {
+            showToast('Errore: ' + error.message, 'error');
+        }
+    });
 }

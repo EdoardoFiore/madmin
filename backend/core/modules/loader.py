@@ -258,6 +258,14 @@ class ModuleLoader:
         # Uninstall pip packages (only if not used by others)
         if deps.pip:
             logger.info(f"Checking pip packages for removal: {deps.pip}")
+            
+            # Core pip packages that should NEVER be uninstalled (used by MADMIN core)
+            protected_pip = {
+                'fastapi', 'uvicorn', 'sqlmodel', 'sqlalchemy', 'asyncpg', 'pydantic',
+                'passlib', 'python-jose', 'bcrypt', 'httpx', 'aiofiles',
+                'pyotp', 'qrcode',  # 2FA core packages
+            }
+            
             try:
                 from config import get_settings
                 venv_pip = Path(get_settings().data_dir).parent / "venv" / "bin" / "pip"
@@ -265,6 +273,11 @@ class ModuleLoader:
                 
                 for pkg in deps.pip:
                     pkg_name = pkg.split(">=")[0].split("==")[0]
+                    
+                    if pkg_name in protected_pip:
+                        logger.warning(f"Refusing to uninstall protected pip package: {pkg_name}")
+                        continue
+                    
                     if pkg_name not in other_pip:
                         result = subprocess.run(
                             [pip_cmd, "uninstall", "-y", pkg_name],
@@ -279,6 +292,7 @@ class ModuleLoader:
                         logger.info(f"Keeping pip package {pkg_name} (used by other modules)")
             except Exception as e:
                 logger.error(f"Error uninstalling pip packages: {e}")
+        
         
         # Uninstall apt packages (only if not used by others)
         if deps.apt:

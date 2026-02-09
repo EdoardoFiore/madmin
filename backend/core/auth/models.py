@@ -59,6 +59,11 @@ class User(SQLModel, table=True):
     is_active: bool = Field(default=True)
     is_superuser: bool = Field(default=False)
     
+    # 2FA Fields
+    totp_secret: Optional[str] = Field(default=None, max_length=64)
+    totp_enabled: bool = Field(default=False)
+    backup_codes: Optional[str] = Field(default=None)  # JSON array of backup codes
+    
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: Optional[datetime] = Field(default=None)
@@ -105,6 +110,7 @@ class UserResponse(SQLModel):
     email: Optional[str]
     is_active: bool
     is_superuser: bool
+    totp_enabled: bool = False
     created_at: datetime
     last_login: Optional[datetime]
     permissions: List[str] = []  # List of permission slugs

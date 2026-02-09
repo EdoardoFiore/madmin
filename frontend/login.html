@@ -81,6 +81,7 @@
                     <span id="login-error"></span>
                 </div>
 
+                <!-- Login Form -->
                 <form id="login-form">
                     <div class="mb-3">
                         <label class="form-label" for="username">
@@ -110,6 +111,31 @@
                         <span class="spinner-border spinner-border-sm d-none" role="status"></span>
                     </button>
                 </form>
+
+                <!-- 2FA Verification Section (hidden by default) -->
+                <div id="2fa-section" class="d-none">
+                    <div class="text-center mb-3">
+                        <i class="ti ti-shield-lock" style="font-size: 3rem; color: var(--tblr-primary);"></i>
+                    </div>
+                    <p class="text-center mb-3">
+                        Inserisci il codice a 6 cifre dalla tua app authenticator
+                    </p>
+                    <div class="mb-3">
+                        <input type="text" class="form-control form-control-lg text-center" id="otp-code"
+                            placeholder="000000" maxlength="8" autocomplete="one-time-code" pattern="[0-9A-Za-z]{6,8}"
+                            inputmode="numeric">
+                        <small class="form-hint text-center d-block mt-2">
+                            Puoi usare anche un codice di backup
+                        </small>
+                    </div>
+                    <button type="button" class="btn btn-primary w-100 mb-2" id="verify-2fa-btn">
+                        <span class="btn-text">Verifica</span>
+                        <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    </button>
+                    <button type="button" class="btn btn-link w-100" id="back-to-login">
+                        <i class="ti ti-arrow-left"></i> Torna al login
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -125,12 +151,18 @@
             window.location.href = '/';
         }
 
+        // Elements
         const form = document.getElementById('login-form');
         const alertBox = document.getElementById('login-alert');
         const errorSpan = document.getElementById('login-error');
         const loginBtn = document.getElementById('login-btn');
-        const btnText = loginBtn.querySelector('.btn-text');
-        const spinner = loginBtn.querySelector('.spinner-border');
+        const twoFaSection = document.getElementById('2fa-section');
+        const verify2faBtn = document.getElementById('verify-2fa-btn');
+        const backToLoginBtn = document.getElementById('back-to-login');
+        const otpInput = document.getElementById('otp-code');
+
+        // State for 2FA flow
+        let tempToken = null;
 
         function showError(message) {
             errorSpan.textContent = message;
@@ -141,27 +173,45 @@
             alertBox.classList.remove('show');
         }
 
-        function setLoading(loading) {
+        function setLoading(btn, loading, loadingText = 'Caricamento...', defaultText = 'Accedi') {
+            const btnText = btn.querySelector('.btn-text');
+            const spinner = btn.querySelector('.spinner-border');
+
             if (loading) {
-                btnText.textContent = 'Accesso in corso...';
+                btnText.textContent = loadingText;
                 spinner.classList.remove('d-none');
-                loginBtn.disabled = true;
+                btn.disabled = true;
             } else {
-                btnText.textContent = 'Accedi';
+                btnText.textContent = defaultText;
                 spinner.classList.add('d-none');
-                loginBtn.disabled = false;
+                btn.disabled = false;
             }
         }
 
+        function showLoginForm() {
+            form.classList.remove('d-none');
+            twoFaSection.classList.add('d-none');
+            tempToken = null;
+            hideError();
+        }
+
+        function show2faForm() {
+            form.classList.add('d-none');
+            twoFaSection.classList.remove('d-none');
+            otpInput.value = '';
+            otpInput.focus();
+            hideError();
+        }
+
+        // Login form submit
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             hideError();
-            setLoading(true);
+            setLoading(loginBtn, true, 'Accesso in corso...', 'Accedi');
 
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
 
-            // Create form data for OAuth2 password flow
             const formData = new URLSearchParams();
             formData.append('username', username);
             formData.append('password', password);
@@ -177,10 +227,16 @@
 
                 if (response.ok) {
                     const data = await response.json();
-                    localStorage.setItem('madmin_token', data.access_token);
 
-                    // Redirect to dashboard
-                    window.location.href = '/';
+                    // Check if 2FA is required
+                    if (data.token_type === '2fa_required') {
+                        tempToken = data.access_token;
+                        show2faForm();
+                    } else {
+                        // Normal login - store token and redirect
+                        localStorage.setItem('madmin_token', data.access_token);
+                        window.location.href = '/';
+                    }
                 } else {
                     const error = await response.json();
                     showError(error.detail || 'Credenziali non valide');
@@ -189,9 +245,58 @@
                 showError('Errore di connessione al server');
                 console.error('Login error:', error);
             } finally {
-                setLoading(false);
+                setLoading(loginBtn, false, 'Accesso in corso...', 'Accedi');
             }
         });
+
+        // 2FA verification
+        verify2faBtn.addEventListener('click', async () => {
+            const code = otpInput.value.trim();
+
+            if (!code) {
+                showError('Inserisci il codice');
+                return;
+            }
+
+            hideError();
+            setLoading(verify2faBtn, true, 'Verifica...', 'Verifica');
+
+            try {
+                const response = await fetch(`/api/auth/token/2fa?code=${encodeURIComponent(code)}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${tempToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    localStorage.setItem('madmin_token', data.access_token);
+                    window.location.href = '/';
+                } else {
+                    const error = await response.json();
+                    showError(error.detail || 'Codice non valido');
+                    otpInput.value = '';
+                    otpInput.focus();
+                }
+            } catch (error) {
+                showError('Errore di connessione al server');
+                console.error('2FA error:', error);
+            } finally {
+                setLoading(verify2faBtn, false, 'Verifica...', 'Verifica');
+            }
+        });
+
+        // Handle Enter key on OTP input
+        otpInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                verify2faBtn.click();
+            }
+        });
+
+        // Back to login button
+        backToLoginBtn.addEventListener('click', showLoginForm);
     </script>
 </body>
 
