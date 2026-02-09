@@ -33,6 +33,7 @@ aiosmtplib>=3.0.1
 # File handling
 aiofiles>=23.2.1
 python-magic>=0.4.27
+Pillow>=10.0.0
 
 # Remote backup (SFTP/FTP)
 asyncssh>=2.14.0

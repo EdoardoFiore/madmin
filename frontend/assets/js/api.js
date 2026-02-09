@@ -182,6 +182,27 @@ export async function apiDelete(endpoint) {
 }
 
 /**
+ * DELETE request with JSON body
+ * @param {string} endpoint 
+ * @param {Object} data 
+ * @returns {Promise<Object>}
+ */
+export async function apiDeleteWithBody(endpoint, data = {}) {
+    const response = await apiFetch(endpoint, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Request failed' }));
+        throw new Error(error.detail || 'Request failed');
+    }
+
+    return response.json().catch(() => null);
+}
+
+/**
  * Get current user info
  * @returns {Promise<Object>}
  */

@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
 @router.get("/system", response_model=SystemSettingsResponse)
 async def get_system_settings(
-    current_user: User = Depends(require_permission("settings.view")),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
     """Get system settings."""

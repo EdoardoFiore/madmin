@@ -65,6 +65,7 @@ async def login(
     OAuth2 compatible token login.
     Returns JWT access token on successful authentication.
     If 2FA is enabled, returns token_type='2fa_required' and a temporary token.
+    If 2FA is enforced but not set up, returns token_type='2fa_setup_required'.
     """
     user = await service.authenticate_user(session, form_data.username, form_data.password)
     
@@ -75,13 +76,29 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # If 2FA is enabled, return temporary token requiring OTP verification
+    # Check if user is active (return same error to not reveal account status)
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # If 2FA is enabled, require OTP verification
     if user.totp_enabled:
         temp_token = service.create_access_token(
             data={"sub": user.username, "user_id": str(user.id), "2fa_pending": True},
             expires_delta=timedelta(minutes=5)
         )
         return {"access_token": temp_token, "token_type": "2fa_required"}
+    
+    # If 2FA is enforced but not yet set up, require setup
+    if user.totp_enforced and not user.totp_enabled:
+        temp_token = service.create_access_token(
+            data={"sub": user.username, "user_id": str(user.id), "2fa_setup_required": True},
+            expires_delta=timedelta(minutes=15)  # More time to set up
+        )
+        return {"access_token": temp_token, "token_type": "2fa_setup_required"}
     
     # Update last login
     await service.update_last_login(session, user)
@@ -158,6 +175,7 @@ async def get_current_user_info(
         is_active=current_user.is_active,
         is_superuser=current_user.is_superuser,
         totp_enabled=current_user.totp_enabled,
+        totp_enforced=current_user.totp_enforced,
         created_at=current_user.created_at,
         last_login=current_user.last_login,
         permissions=[p.slug for p in current_user.permissions] if not current_user.is_superuser else ["*"]
@@ -181,6 +199,7 @@ async def list_users(
             is_active=u.is_active,
             is_superuser=u.is_superuser,
             totp_enabled=u.totp_enabled,
+            totp_enforced=u.totp_enforced,
             created_at=u.created_at,
             last_login=u.last_login,
             permissions=[p.slug for p in u.permissions]
@@ -206,6 +225,7 @@ async def create_user(
             is_active=user.is_active,
             is_superuser=user.is_superuser,
             totp_enabled=user.totp_enabled,
+            totp_enforced=user.totp_enforced,
             created_at=user.created_at,
             last_login=user.last_login,
             permissions=[]
@@ -232,6 +252,7 @@ async def get_user(
         is_active=user.is_active,
         is_superuser=user.is_superuser,
         totp_enabled=user.totp_enabled,
+        totp_enforced=user.totp_enforced,
         created_at=user.created_at,
         last_login=user.last_login,
         permissions=[p.slug for p in user.permissions]
@@ -274,6 +295,7 @@ async def update_user(
             is_active=updated_user.is_active,
             is_superuser=updated_user.is_superuser,
             totp_enabled=updated_user.totp_enabled,
+            totp_enforced=updated_user.totp_enforced,
             created_at=updated_user.created_at,
             last_login=updated_user.last_login,
             permissions=[p.slug for p in updated_user.permissions]
@@ -319,6 +341,35 @@ async def list_permissions(
     ]
 
 
+@router.delete("/users/{username}/2fa", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_user_2fa(
+    username: str,
+    current_user: User = Depends(require_permission("users.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Administrator endpoint to disable 2FA for a specific user.
+    Useful for resetting 2FA if a user lost their device.
+    """
+    user = await service.get_user_by_username(session, username)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Utente non trovato"
+        )
+    
+    # Disable 2FA
+    user.totp_enabled = False
+    
+    # Reset secret and backup codes so they are regenerated on next setup
+    user.totp_secret = None
+    user.backup_codes = None
+    
+    session.add(user)
+    await session.commit()
+
+
+
 @router.put("/users/{username}/permissions", response_model=UserResponse)
 async def set_user_permissions(
     username: str,
@@ -348,6 +399,7 @@ async def set_user_permissions(
             is_active=updated_user.is_active,
             is_superuser=updated_user.is_superuser,
             totp_enabled=updated_user.totp_enabled,
+            totp_enforced=updated_user.totp_enforced,
             created_at=updated_user.created_at,
             last_login=updated_user.last_login,
             permissions=[p.slug for p in updated_user.permissions]
@@ -395,6 +447,7 @@ async def get_2fa_status(
     """Get 2FA status for current user."""
     return {
         "enabled": current_user.totp_enabled,
+        "enforced": current_user.totp_enforced,
         "has_backup_codes": bool(current_user.backup_codes and json.loads(current_user.backup_codes))
     }
 
@@ -475,11 +528,19 @@ async def disable_2fa(
 ):
     """
     Disable 2FA (requires password verification).
+    Non-superusers cannot disable 2FA if it was enforced by an admin.
     """
     if not current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="2FA non è attiva"
+        )
+    
+    # Block non-superusers from disabling enforced 2FA
+    if current_user.totp_enforced and not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La 2FA è stata forzata dall'amministratore e non può essere disattivata"
         )
     
     if not service.verify_password(data.password, current_user.hashed_password):
@@ -490,6 +551,7 @@ async def disable_2fa(
     
     current_user.totp_secret = None
     current_user.totp_enabled = False
+    # Note: totp_enforced remains true - admin must remove it
     current_user.backup_codes = None
     session.add(current_user)
     await session.commit()

@@ -232,6 +232,11 @@
                     if (data.token_type === '2fa_required') {
                         tempToken = data.access_token;
                         show2faForm();
+                    } else if (data.token_type === '2fa_setup_required') {
+                        // 2FA enforced but not set up - store temp token and redirect to setup
+                        localStorage.setItem('madmin_token', data.access_token);
+                        localStorage.setItem('madmin_2fa_setup_required', 'true');
+                        window.location.href = '/#/users';
                     } else {
                         // Normal login - store token and redirect
                         localStorage.setItem('madmin_token', data.access_token);

@@ -44,6 +44,9 @@ async function init() {
         return;
     }
 
+    // Check if 2FA is enforced but not enabled - force user to set it up
+    await check2FAEnforcement();
+
     // Load and apply system settings (customizations)
     await loadSystemSettings();
 
@@ -62,6 +65,138 @@ async function init() {
     window.addEventListener('hashchange', handleRoute);
 
     console.log('MADMIN ready');
+}
+
+/**
+ * Check if 2FA is enforced but not enabled - show global setup modal if needed
+ */
+async function check2FAEnforcement() {
+    try {
+        const response = await fetch('/api/auth/me/2fa/status', {
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`
+            }
+        });
+
+        if (!response.ok) return;
+
+        const status = await response.json();
+
+        // If 2FA is enforced but not enabled, show global modal
+        if (status.enforced && !status.enabled) {
+            showGlobal2FAModal();
+        }
+    } catch (error) {
+        console.error('Failed to check 2FA status:', error);
+    }
+}
+
+/**
+ * Show global 2FA setup modal (cannot be dismissed until setup complete)
+ */
+function showGlobal2FAModal() {
+    const modal = new bootstrap.Modal(document.getElementById('global-2fa-modal'));
+    modal.show();
+
+    // Setup button handlers
+    document.getElementById('btn-start-global-2fa')?.addEventListener('click', startGlobal2FASetup);
+    document.getElementById('global-copy-secret')?.addEventListener('click', () => {
+        const secret = document.getElementById('global-secret-key').value;
+        navigator.clipboard.writeText(secret);
+        showToast('Chiave copiata', 'success');
+    });
+    document.getElementById('btn-global-verify-2fa')?.addEventListener('click', verifyGlobal2FA);
+    document.getElementById('global-verify-code')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') verifyGlobal2FA();
+    });
+}
+
+/**
+ * Start global 2FA setup - call API to generate secret and QR
+ */
+async function startGlobal2FASetup() {
+    const btn = document.getElementById('btn-start-global-2fa');
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Generazione...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch('/api/auth/me/2fa/setup', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`,
+                'Content-Type': 'application/json'
+            },
+            body: '{}'
+        });
+
+        if (!response.ok) throw new Error('Errore generazione 2FA');
+
+        const data = await response.json();
+
+        // Show QR content
+        document.getElementById('global-2fa-setup-content').classList.add('d-none');
+        document.getElementById('global-2fa-qr-content').classList.remove('d-none');
+
+        // Populate data
+        document.getElementById('global-qr-code-img').src = `data:image/png;base64,${data.qr_code}`;
+        document.getElementById('global-secret-key').value = data.secret;
+
+        // Show backup codes
+        const codesContainer = document.getElementById('global-backup-codes');
+        codesContainer.innerHTML = data.backup_codes.map(c =>
+            `<div class="col-6 col-md-4"><code class="fs-5">${c}</code></div>`
+        ).join('');
+
+    } catch (error) {
+        showToast('Errore: ' + error.message, 'error');
+        btn.innerHTML = '<i class="ti ti-shield-plus me-2"></i>Configura 2FA';
+        btn.disabled = false;
+    }
+}
+
+/**
+ * Verify global 2FA code and enable
+ */
+async function verifyGlobal2FA() {
+    const code = document.getElementById('global-verify-code').value.trim();
+    if (!code || code.length !== 6) {
+        showToast('Inserisci un codice a 6 cifre', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('btn-global-verify-2fa');
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch('/api/auth/me/2fa/enable', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ code })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Codice non valido');
+        }
+
+        showToast('2FA attivata con successo!', 'success');
+
+        // Clear localStorage flag and close modal
+        localStorage.removeItem('madmin_2fa_setup_required');
+        bootstrap.Modal.getInstance(document.getElementById('global-2fa-modal'))?.hide();
+
+        // Reload page to refresh state
+        window.location.reload();
+
+    } catch (error) {
+        showToast('Errore: ' + error.message, 'error');
+        btn.innerHTML = '<i class="ti ti-check me-1"></i>Attiva 2FA';
+        btn.disabled = false;
+    }
 }
 
 /**
@@ -310,7 +445,16 @@ function hasPermission(permission) {
  * Handle route changes
  */
 async function handleRoute() {
-    const hash = window.location.hash.slice(1) || 'dashboard';
+    let hash = window.location.hash.slice(1);
+
+    // Remove leading slash if present (handle #/dashboard vs #dashboard)
+    if (hash.startsWith('/')) {
+        hash = hash.substring(1);
+    }
+
+    // Default route
+    if (!hash) hash = 'dashboard';
+
     const [viewName, ...params] = hash.split('/');
 
     // Update page title

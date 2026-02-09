@@ -2,7 +2,7 @@
  * MADMIN - Users View
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../api.js';
+import { apiGet, apiPost, apiPatch, apiDelete, apiDeleteWithBody, apiPut } from '../api.js';
 import { showToast, confirmDialog, formatDate, emptyState, escapeHtml, statusBadge } from '../utils.js';
 import { setPageActions, checkPermission, getUser } from '../app.js';
 
@@ -178,6 +178,20 @@ export async function render(container) {
                                         <span class="form-check-label"><strong>Superuser</strong> (tutti i permessi)</span>
                                     </label>
                                 </div>
+                                <div class="col-6">
+                                    <label class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="user-active" checked>
+                                        <span class="form-check-label">Attivo</span>
+                                    </label>
+                                    <small class="form-hint text-muted">Utenti disattivati non possono accedere</small>
+                                </div>
+                                <div class="col-6 d-none" id="force-2fa-container">
+                                    <label class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="user-totp-enforced">
+                                        <span class="form-check-label"><i class="ti ti-shield-check me-1"></i>Forza 2FA</span>
+                                    </label>
+                                    <small class="form-hint text-muted">L'utente dovrà attivare la 2FA</small>
+                                </div>
                                 <div class="col-12" id="permissions-section">
                                     <label class="form-label">Permessi</label>
                                     <div id="permissions-list" class="row g-3">
@@ -187,10 +201,81 @@ export async function render(container) {
                             </div>
                         </div>
                         <div class="modal-footer">
+                            <button type="button" class="btn btn-danger me-auto d-none" id="btn-reset-user-2fa">
+                                <i class="ti ti-shield-off me-1"></i>Reset 2FA
+                            </button>
                             <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
                             <button type="submit" class="btn btn-primary">Salva</button>
                         </div>
                     </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Password Input Modal -->
+        <div class="modal modal-blur fade" id="password-input-modal" tabindex="-1">
+            <div class="modal-dialog modal-sm">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Conferma Password</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="text-muted">Inserisci la tua password per confermare:</p>
+                        <input type="password" class="form-control" id="modal-password-input" 
+                               placeholder="Password" autofocus>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
+                        <button type="button" class="btn btn-danger" id="modal-password-confirm">Conferma</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- OTP Input Modal -->
+        <div class="modal modal-blur fade" id="otp-input-modal" tabindex="-1">
+            <div class="modal-dialog modal-sm">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Verifica 2FA</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="text-muted">Inserisci il codice dalla tua app authenticator:</p>
+                        <input type="text" class="form-control form-control-lg text-center font-monospace" 
+                               id="modal-otp-input" maxlength="6" pattern="[0-9]{6}" 
+                               placeholder="000000" inputmode="numeric" autofocus>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
+                        <button type="button" class="btn btn-primary" id="modal-otp-confirm">Conferma</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Backup Codes Display Modal -->
+        <div class="modal modal-blur fade" id="backup-codes-display-modal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="ti ti-key me-2"></i>Nuovi Codici di Backup</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-warning">
+                            <i class="ti ti-alert-triangle me-2"></i>
+                            Salva questi codici in un luogo sicuro. I codici precedenti non sono più validi.
+                        </div>
+                        <div id="backup-codes-display" class="row g-2"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" id="copy-displayed-codes">
+                            <i class="ti ti-copy me-1"></i>Copia tutti
+                        </button>
+                        <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Ho salvato i codici</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -425,6 +510,8 @@ function renderGroupedPermissions(userPerms) {
 
 function openUserModal(user = null) {
     editingUser = user;
+    const currentUser = getUser();
+    const isSuperuser = currentUser?.is_superuser || false;
 
     document.getElementById('user-modal-title').textContent = user ? 'Modifica Utente' : 'Nuovo Utente';
     document.getElementById('user-username').value = user?.username || '';
@@ -439,6 +526,28 @@ function openUserModal(user = null) {
     document.getElementById('password-hint').textContent = user ? 'Lascia vuoto per non modificare' : 'Minimo 6 caratteri';
     document.getElementById('password-mismatch').classList.add('d-none');
     document.getElementById('user-superuser').checked = user?.is_superuser || false;
+    document.getElementById('user-active').checked = user?.is_active ?? true;
+    document.getElementById('user-totp-enforced').checked = user?.totp_enforced || false;
+
+    // Show "Force 2FA" option only for superusers editing other users
+    const force2faContainer = document.getElementById('force-2fa-container');
+    if (isSuperuser && user && user.username !== currentUser?.username) {
+        force2faContainer.classList.remove('d-none');
+    } else {
+        force2faContainer.classList.add('d-none');
+    }
+
+    // Show "Reset 2FA" button only for superusers editing other users with 2FA enabled
+    const reset2faBtn = document.getElementById('btn-reset-user-2fa');
+    if (isSuperuser && user && user.totp_enabled && user.username !== currentUser?.username) {
+        reset2faBtn.classList.remove('d-none');
+        // Remove old listeners by cloning
+        const newBtn = reset2faBtn.cloneNode(true);
+        reset2faBtn.parentNode.replaceChild(newBtn, reset2faBtn);
+        newBtn.addEventListener('click', () => handleReset2FA(user.username));
+    } else {
+        reset2faBtn.classList.add('d-none');
+    }
 
     const permSection = document.getElementById('permissions-section');
     permSection.style.display = user?.is_superuser ? 'none' : 'block';
@@ -467,8 +576,15 @@ async function handleUserSubmit(e) {
             const updateData = {
                 email: document.getElementById('user-email').value || null,
                 is_superuser: document.getElementById('user-superuser').checked,
-                is_active: true
+                is_active: document.getElementById('user-active').checked
             };
+
+            // Only send totp_enforced if the container is visible (superuser editing another user)
+            const force2faContainer = document.getElementById('force-2fa-container');
+            if (!force2faContainer.classList.contains('d-none')) {
+                updateData.totp_enforced = document.getElementById('user-totp-enforced').checked;
+            }
+
             if (password) updateData.password = password;
 
             await apiPatch(`/auth/users/${editingUser.username}`, updateData);
@@ -561,35 +677,53 @@ async function load2FAStatus() {
 
     try {
         const status = await apiGet('/auth/me/2fa/status');
+        const currentUser = getUser();
+        const isSuperuser = currentUser?.is_superuser || false;
+        const isEnforced = status.enforced || false;
 
         if (status.enabled) {
+            // Show disable button only if: superuser OR not enforced
+            const canDisable = isSuperuser || !isEnforced;
+
             container.innerHTML = `
                 <div class="alert alert-success mb-3">
                     <div class="d-flex align-items-center">
                         <i class="ti ti-shield-check me-2" style="font-size: 1.5rem;"></i>
                         <div>
                             <strong>2FA Attiva</strong>
-                            <div class="text-muted small">Il tuo account è protetto</div>
+                            <div class="text-muted small">Il tuo account è protetto${isEnforced ? ' (obbligatoria)' : ''}</div>
                         </div>
                     </div>
                 </div>
-                <button class="btn btn-outline-danger btn-sm" id="btn-disable-2fa">
-                    <i class="ti ti-shield-off me-1"></i>Disattiva 2FA
-                </button>
-                <button class="btn btn-outline-secondary btn-sm ms-2" id="btn-regenerate-codes">
+                ${canDisable ? `
+                    <button class="btn btn-outline-danger btn-sm" id="btn-disable-2fa">
+                        <i class="ti ti-shield-off me-1"></i>Disattiva 2FA
+                    </button>
+                ` : ''}
+                <button class="btn btn-outline-secondary btn-sm ${canDisable ? 'ms-2' : ''}" id="btn-regenerate-codes">
                     <i class="ti ti-key me-1"></i>Rigenera Codici
                 </button>
             `;
-            setupDisable2FA();
+            if (canDisable) setupDisable2FA();
             setupRegenerateCodes();
         } else {
+            // 2FA not enabled
+            const localRequired = localStorage.getItem('madmin_2fa_setup_required') === 'true';
+            // Only consider required if both localStorage flag AND backend enforced flag are true
+            const isRequired = localRequired && isEnforced;
+
+            // Clear stale localStorage flag if backend says not enforced
+            if (localRequired && !isEnforced) {
+                localStorage.removeItem('madmin_2fa_setup_required');
+            }
+
             container.innerHTML = `
-                <div class="alert alert-warning mb-3">
+                <div class="alert ${isRequired || isEnforced ? 'alert-danger' : 'alert-warning'} mb-3">
                     <div class="d-flex align-items-center">
-                        <i class="ti ti-shield-exclamation me-2" style="font-size: 1.5rem;"></i>
+                        <i class="ti ti-${isRequired || isEnforced ? 'alert-triangle' : 'shield-exclamation'} me-2" style="font-size: 1.5rem;"></i>
                         <div>
-                            <strong>2FA Non Attiva</strong>
-                            <div class="text-muted small">Aggiungi sicurezza al tuo account</div>
+                            <strong>${isRequired || isEnforced ? '2FA Obbligatoria' : '2FA Non Attiva'}</strong>
+                            <div class="text-muted small">${isRequired || isEnforced ? 'Devi attivare la 2FA per continuare' : 'Aggiungi sicurezza al tuo account'}</div>
                         </div>
                     </div>
                 </div>
@@ -677,6 +811,9 @@ function setup2FAModalListeners() {
             await apiPost('/auth/me/2fa/enable', { code });
             showToast('2FA attivata con successo!', 'success');
 
+            // Clear the setup required flag if it was set
+            localStorage.removeItem('madmin_2fa_setup_required');
+
             // Close modal and refresh
             const modal = bootstrap.Modal.getInstance(document.getElementById('2fa-setup-modal'));
             modal?.hide();
@@ -711,17 +848,53 @@ function setupDisable2FA() {
         );
         if (!confirmed) return;
 
-        const password = prompt('Inserisci la tua password per confermare:');
-        if (!password) return;
+        // Show password input modal
+        const passwordModal = new bootstrap.Modal(document.getElementById('password-input-modal'));
+        const passwordInput = document.getElementById('modal-password-input');
+        const confirmBtn = document.getElementById('modal-password-confirm');
 
-        try {
-            await apiDelete('/auth/me/2fa/disable', { password });
-            showToast('2FA disattivata', 'success');
-            await load2FAStatus();
-            await loadData();
-        } catch (error) {
-            showToast('Errore: ' + error.message, 'error');
-        }
+        passwordInput.value = '';
+        passwordModal.show();
+
+        // Wait for modal to be shown before focusing
+        document.getElementById('password-input-modal').addEventListener('shown.bs.modal', () => {
+            passwordInput.focus();
+        }, { once: true });
+
+        // Handle confirm button click
+        const handleConfirm = async () => {
+            const password = passwordInput.value;
+            if (!password) {
+                showToast('Inserisci la password', 'error');
+                return;
+            }
+
+            confirmBtn.disabled = true;
+            confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
+
+            try {
+                await apiDeleteWithBody('/auth/me/2fa/disable', { password });
+                passwordModal.hide();
+                showToast('2FA disattivata', 'success');
+                await load2FAStatus();
+                await loadData();
+            } catch (error) {
+                showToast('Errore: ' + error.message, 'error');
+            } finally {
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = 'Conferma';
+            }
+        };
+
+        // Remove old listener and add new one
+        const newConfirmBtn = confirmBtn.cloneNode(true);
+        confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+        newConfirmBtn.addEventListener('click', handleConfirm);
+
+        // Enter key support
+        passwordInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleConfirm();
+        }, { once: true });
     });
 }
 
@@ -730,19 +903,90 @@ function setupDisable2FA() {
  */
 function setupRegenerateCodes() {
     document.getElementById('btn-regenerate-codes')?.addEventListener('click', async () => {
-        const code = prompt('Inserisci il codice 2FA dalla tua app authenticator:');
-        if (!code) return;
+        // Show OTP input modal
+        const otpModal = new bootstrap.Modal(document.getElementById('otp-input-modal'));
+        const otpInput = document.getElementById('modal-otp-input');
+        const confirmBtn = document.getElementById('modal-otp-confirm');
 
-        try {
-            const result = await apiPost('/auth/me/2fa/backup-codes', { code });
+        otpInput.value = '';
+        otpModal.show();
 
-            // Show new codes in alert
-            const codesHtml = result.backup_codes.map(c => `<code>${c}</code>`).join(' ');
-            showToast(`Nuovi codici generati. Salvali subito!`, 'success');
+        // Wait for modal to be shown before focusing
+        document.getElementById('otp-input-modal').addEventListener('shown.bs.modal', () => {
+            otpInput.focus();
+        }, { once: true });
 
-            alert('Nuovi codici di backup:\n\n' + result.backup_codes.join('\n') + '\n\nSalva questi codici in un luogo sicuro!');
-        } catch (error) {
-            showToast('Errore: ' + error.message, 'error');
-        }
+        // Handle confirm button click
+        const handleConfirm = async () => {
+            const code = otpInput.value.trim();
+            if (!code || code.length !== 6) {
+                showToast('Inserisci un codice valido a 6 cifre', 'error');
+                return;
+            }
+
+            confirmBtn.disabled = true;
+            confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Genera...';
+
+            try {
+                const result = await apiPost('/auth/me/2fa/backup-codes', { code });
+                otpModal.hide();
+
+                // Show backup codes in Tabler modal
+                const codesContainer = document.getElementById('backup-codes-display');
+                codesContainer.innerHTML = result.backup_codes.map(c =>
+                    `<div class="col-6"><code class="fs-4">${c}</code></div>`
+                ).join('');
+
+                // Setup copy button
+                document.getElementById('copy-displayed-codes').onclick = () => {
+                    navigator.clipboard.writeText(result.backup_codes.join('\n'));
+                    showToast('Codici copiati negli appunti', 'success');
+                };
+
+                new bootstrap.Modal(document.getElementById('backup-codes-display-modal')).show();
+                showToast('Nuovi codici generati', 'success');
+            } catch (error) {
+                showToast('Errore: ' + error.message, 'error');
+            } finally {
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = 'Conferma';
+            }
+        };
+
+        // Remove old listener and add new one
+        const newConfirmBtn = confirmBtn.cloneNode(true);
+        confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+        newConfirmBtn.addEventListener('click', handleConfirm);
+
+        // Enter key support
+        otpInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleConfirm();
+        }, { once: true });
     });
+}
+
+/**
+ * Handle admin reset of user 2FA
+ */
+async function handleReset2FA(username) {
+    const confirmed = await confirmDialog(
+        'Reset 2FA',
+        `Sei sicuro di voler disattivare l'autenticazione a due fattori per l'utente ${username}?`,
+        'Reset 2FA',
+        'btn-danger'
+    );
+
+    if (!confirmed) return;
+
+    try {
+        await apiDelete(`/auth/users/${username}/2fa`);
+        showToast('2FA disattivata con successo', 'success');
+
+        // Hide modal and refresh
+        const modal = bootstrap.Modal.getInstance(document.getElementById('user-modal'));
+        modal.hide();
+        await loadData();
+    } catch (error) {
+        showToast('Errore: ' + error.message, 'error');
+    }
 }

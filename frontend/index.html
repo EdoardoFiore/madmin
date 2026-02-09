@@ -159,6 +159,65 @@
         </div>
     </div>
 
+    <!-- Global 2FA Enforced Setup Modal (shown regardless of page permissions) -->
+    <div class="modal modal-blur" id="global-2fa-modal" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title"><i class="ti ti-shield-lock me-2"></i>Configurazione 2FA Obbligatoria</h5>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-warning mb-4">
+                        <i class="ti ti-alert-triangle me-2"></i>
+                        L'amministratore ha richiesto l'attivazione dell'autenticazione a due fattori per il tuo
+                        account.
+                        Non potrai utilizzare il sistema finché non completi questa configurazione.
+                    </div>
+                    <div id="global-2fa-setup-content">
+                        <div class="text-center py-4">
+                            <button class="btn btn-primary btn-lg" id="btn-start-global-2fa">
+                                <i class="ti ti-shield-plus me-2"></i>Configura 2FA
+                            </button>
+                        </div>
+                    </div>
+                    <div id="global-2fa-qr-content" class="d-none">
+                        <div class="row">
+                            <div class="col-md-6 text-center">
+                                <h5 class="mb-3">1. Scansiona il QR Code</h5>
+                                <div class="mb-3 p-3 bg-white rounded d-inline-block">
+                                    <img id="global-qr-code-img" src="" alt="QR Code"
+                                        style="width: 180px; height: 180px;">
+                                </div>
+                                <p class="text-muted small">Google Authenticator, Authy, etc.</p>
+                            </div>
+                            <div class="col-md-6">
+                                <h5 class="mb-3">2. Oppure inserisci manualmente</h5>
+                                <div class="input-group mb-3">
+                                    <input type="text" class="form-control font-monospace" id="global-secret-key"
+                                        readonly>
+                                    <button class="btn btn-outline-secondary" type="button" id="global-copy-secret">
+                                        <i class="ti ti-copy"></i>
+                                    </button>
+                                </div>
+                                <hr>
+                                <h5 class="mb-3">3. Verifica codice</h5>
+                                <input type="text" class="form-control form-control-lg text-center font-monospace mb-3"
+                                    id="global-verify-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000"
+                                    inputmode="numeric">
+                                <button class="btn btn-primary w-100" id="btn-global-verify-2fa">
+                                    <i class="ti ti-check me-1"></i>Attiva 2FA
+                                </button>
+                            </div>
+                        </div>
+                        <hr>
+                        <h5><i class="ti ti-key me-2"></i>Codici di Backup (salva in luogo sicuro!)</h5>
+                        <div id="global-backup-codes" class="row g-2 mt-2"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast container for notifications -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"></div>
 

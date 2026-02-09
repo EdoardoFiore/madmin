@@ -263,7 +263,7 @@ class ModuleLoader:
             protected_pip = {
                 'fastapi', 'uvicorn', 'sqlmodel', 'sqlalchemy', 'asyncpg', 'pydantic',
                 'passlib', 'python-jose', 'bcrypt', 'httpx', 'aiofiles',
-                'pyotp', 'qrcode',  # 2FA core packages
+                'pyotp', 'qrcode', 'pillow',  # 2FA core packages
             }
             
             try:

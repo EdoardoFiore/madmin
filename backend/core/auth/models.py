@@ -62,6 +62,7 @@ class User(SQLModel, table=True):
     # 2FA Fields
     totp_secret: Optional[str] = Field(default=None, max_length=64)
     totp_enabled: bool = Field(default=False)
+    totp_enforced: bool = Field(default=False)  # 2FA required by admin
     backup_codes: Optional[str] = Field(default=None)  # JSON array of backup codes
     
     # Metadata
@@ -101,6 +102,7 @@ class UserUpdate(SQLModel):
     email: Optional[str] = None
     is_active: Optional[bool] = None
     is_superuser: Optional[bool] = None
+    totp_enforced: Optional[bool] = None  # Force 2FA on user
 
 
 class UserResponse(SQLModel):
@@ -111,6 +113,7 @@ class UserResponse(SQLModel):
     is_active: bool
     is_superuser: bool
     totp_enabled: bool = False
+    totp_enforced: bool = False
     created_at: datetime
     last_login: Optional[datetime]
     permissions: List[str] = []  # List of permission slugs
