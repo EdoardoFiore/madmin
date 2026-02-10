@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from core.database import get_session
 from core.auth.dependencies import require_permission
+from core.auth.dependencies import get_current_user
 from core.auth.models import User
 from .models import (
     SystemSettings, SystemSettingsUpdate, SystemSettingsResponse,
