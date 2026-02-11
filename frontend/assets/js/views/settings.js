@@ -738,9 +738,9 @@ async function loadBackupHistory() {
                     <button class="btn btn-sm btn-ghost-success" onclick="restoreBackup('${backup.filename}')" title="Ripristina">
                         <i class="ti ti-restore"></i>
                     </button>
-                    <a href="/api/backup/download/${backup.filename}" class="btn btn-sm btn-ghost-primary" title="Scarica">
+                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadLocalBackup('${backup.filename}')" title="Scarica">
                         <i class="ti ti-download"></i>
-                    </a>
+                    </button>
                     <button class="btn btn-sm btn-ghost-danger" onclick="deleteBackup('${backup.filename}')" title="Elimina">
                         <i class="ti ti-trash"></i>
                     </button>
@@ -1048,3 +1048,37 @@ window.cleanupRemoteBackups = async function () {
         showToast('Errore pulizia: ' + e.message, 'error');
     }
 };
+async function downloadLocalBackup(filename) {
+    const btn = event.currentTarget;
+    const originalIcon = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    try {
+        const response = await fetch(`/api/backup/download/${filename}`, {
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`
+            }
+        });
+
+        if (!response.ok) throw new Error('Download fallito');
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalIcon;
+    }
+}
+
+// Make globally available
+window.downloadLocalBackup = downloadLocalBackup;
