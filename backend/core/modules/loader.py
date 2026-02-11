@@ -178,10 +178,14 @@ class ModuleLoader:
                 # Check if packages are already installed
                 for pkg in deps.apt:
                     check = subprocess.run(
-                        ["dpkg", "-s", pkg],
-                        capture_output=True
+                        ["dpkg-query", "-W", "-f=${Status}", pkg],
+                        capture_output=True, text=True
                     )
-                    if check.returncode != 0:
+                    is_installed = (
+                        check.returncode == 0
+                        and "install ok installed" in check.stdout
+                    )
+                    if not is_installed:
                         # Package not installed, install it
                         result = subprocess.run(
                             ["apt-get", "install", "-y", pkg],
