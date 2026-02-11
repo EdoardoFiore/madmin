@@ -3,7 +3,7 @@
  */
 
 import { apiGet, apiPost, apiPatch, apiDelete, apiDeleteWithBody, apiPut } from '../api.js';
-import { showToast, confirmDialog, formatDate, emptyState, escapeHtml, statusBadge } from '../utils.js';
+import { showToast, confirmDialog, formatDate, emptyState, escapeHtml, statusBadge, copyToClipboard } from '../utils.js';
 import { setPageActions, checkPermission, getUser } from '../app.js';
 
 let users = [];
@@ -117,11 +117,8 @@ export async function render(container) {
                             </div>
                             <div class="col-md-6">
                                 <h5 class="mb-3">2. Oppure manualmente</h5>
-                                <div class="input-group mb-3">
-                                    <input type="text" class="form-control font-monospace" id="secret-key" readonly>
-                                    <button class="btn btn-outline-secondary" type="button" id="copy-secret">
-                                        <i class="ti ti-copy"></i>
-                                    </button>
+                                <div class="mb-3">
+                                    <input type="text" class="form-control font-monospace text-center" id="secret-key" readonly>
                                 </div>
                                 <hr>
                                 <h5 class="mb-3">3. Verifica codice</h5>
@@ -787,52 +784,53 @@ function setupEnable2FA() {
  * Setup 2FA modal listeners
  */
 function setup2FAModalListeners() {
-    // Copy secret key
-    document.getElementById('copy-secret')?.addEventListener('click', () => {
-        const secretInput = document.getElementById('secret-key');
-        navigator.clipboard.writeText(secretInput.value);
-        showToast('Chiave copiata negli appunti', 'success');
-    });
+    // Copy button removed
 
     // Verify and enable 2FA
     const verifyBtn = document.getElementById('btn-verify-2fa');
-    verifyBtn?.addEventListener('click', async () => {
-        const code = document.getElementById('verify-setup-code').value;
-        if (!code || code.length !== 6) {
-            showToast('Inserisci un codice valido a 6 cifre', 'error');
-            return;
-        }
+    if (verifyBtn) {
+        // Remove old listeners
+        const newVerifyBtn = verifyBtn.cloneNode(true);
+        verifyBtn.parentNode.replaceChild(newVerifyBtn, verifyBtn);
 
-        const originalText = verifyBtn.innerHTML;
-        verifyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
-        verifyBtn.disabled = true;
+        newVerifyBtn.addEventListener('click', async () => {
+            const code = document.getElementById('verify-setup-code').value;
+            if (!code || code.length !== 6) {
+                showToast('Inserisci un codice valido a 6 cifre', 'error');
+                return;
+            }
 
-        try {
-            await apiPost('/auth/me/2fa/enable', { code });
-            showToast('2FA attivata con successo!', 'success');
+            const originalText = verifyBtn.innerHTML;
+            verifyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
+            verifyBtn.disabled = true;
 
-            // Clear the setup required flag if it was set
-            localStorage.removeItem('madmin_2fa_setup_required');
+            try {
+                await apiPost('/auth/me/2fa/enable', { code });
+                showToast('2FA attivata con successo!', 'success');
 
-            // Close modal and refresh
-            const modal = bootstrap.Modal.getInstance(document.getElementById('2fa-setup-modal'));
-            modal?.hide();
-            await load2FAStatus();
-            await loadData(); // Refresh users table
-        } catch (error) {
-            showToast('Errore: ' + error.message, 'error');
-        } finally {
-            verifyBtn.innerHTML = originalText;
-            verifyBtn.disabled = false;
-        }
-    });
+                // Clear the setup required flag if it was set
+                localStorage.removeItem('madmin_2fa_setup_required');
 
-    // Enter key on verification code
-    document.getElementById('verify-setup-code')?.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            document.getElementById('btn-verify-2fa')?.click();
-        }
-    });
+                // Close modal and refresh
+                const modal = bootstrap.Modal.getInstance(document.getElementById('2fa-setup-modal'));
+                modal?.hide();
+                await load2FAStatus();
+                await loadData(); // Refresh users table
+            } catch (error) {
+                showToast('Errore: ' + error.message, 'error');
+            } finally {
+                verifyBtn.innerHTML = originalText;
+                verifyBtn.disabled = false;
+            }
+        });
+
+        // Enter key on verification code
+        document.getElementById('verify-setup-code')?.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                document.getElementById('btn-verify-2fa')?.click();
+            }
+        });
+    }
 }
 
 /**

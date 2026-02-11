@@ -324,3 +324,59 @@ export function inputDialog(title, label, placeholder = '', type = 'text') {
         setTimeout(() => inputEl.focus(), 300);
     });
 }
+
+/**
+ * Copy text to clipboard with fallback
+ * @param {string} text 
+ * @returns {Promise<boolean>}
+ */
+export async function copyToClipboard(text) {
+    if (!text) {
+        console.warn('copyToClipboard: No text provided');
+        return false;
+    }
+
+    // Try Clipboard API first (if secure context)
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(text);
+            console.log('Copied to clipboard via API');
+            return true;
+        } catch (err) {
+            console.warn('Clipboard API failed, trying fallback', err);
+        }
+    } else {
+        console.log('Clipboard API unavailable or insecure context, using fallback');
+    }
+
+    // Fallback: textarea + execCommand
+    try {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+
+        // Ensure it's not visible but part of DOM
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        textArea.style.top = '0';
+        textArea.setAttribute('readonly', '');
+        document.body.appendChild(textArea);
+
+        textArea.focus();
+        textArea.select();
+        textArea.setSelectionRange(0, 99999); // For mobile devices
+
+        const success = document.execCommand('copy');
+        document.body.removeChild(textArea);
+
+        if (success) {
+            console.log('Copied to clipboard via fallback');
+            return true;
+        } else {
+            console.error('Fallback execCommand returned false');
+            return false;
+        }
+    } catch (err) {
+        console.error('Fallback copy failed completely', err);
+        return false;
+    }
+}

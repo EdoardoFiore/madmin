@@ -6,7 +6,7 @@
  */
 
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken } from './api.js';
-import { showToast, loadingSpinner } from './utils.js';
+import { showToast, loadingSpinner, copyToClipboard } from './utils.js';
 
 // View registry - maps routes to view modules
 const views = {
@@ -100,11 +100,7 @@ function showGlobal2FAModal() {
 
     // Setup button handlers
     document.getElementById('btn-start-global-2fa')?.addEventListener('click', startGlobal2FASetup);
-    document.getElementById('global-copy-secret')?.addEventListener('click', () => {
-        const secret = document.getElementById('global-secret-key').value;
-        navigator.clipboard.writeText(secret);
-        showToast('Chiave copiata', 'success');
-    });
+    // document.getElementById('global-copy-secret') removed
     document.getElementById('btn-global-verify-2fa')?.addEventListener('click', verifyGlobal2FA);
     document.getElementById('global-verify-code')?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') verifyGlobal2FA();
