@@ -316,7 +316,7 @@ class ModuleLoader:
                         
                     if pkg not in other_apt:
                         result = subprocess.run(
-                            ["apt-get", "remove", "-y", pkg],
+                            ["apt-get", "purge", "-y", pkg],
                             capture_output=True,
                             text=True
                         )
