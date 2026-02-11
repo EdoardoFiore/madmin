@@ -211,11 +211,13 @@ export function confirmDialog(title, message, confirmText = 'Conferma', confirmC
  */
 export function chainBadge(chain) {
     const classes = {
-        'INPUT': 'badge-input',
-        'OUTPUT': 'badge-output',
-        'FORWARD': 'badge-forward'
+        'INPUT': 'bg-teal-lt',
+        'OUTPUT': 'bg-blue-lt',
+        'FORWARD': 'bg-purple-lt',
+        'PREROUTING': 'bg-orange-lt',
+        'POSTROUTING': 'bg-pink-lt'
     };
-    return `<span class="badge ${classes[chain] || 'bg-secondary'}">${chain}</span>`;
+    return `<span class="badge ${classes[chain] || 'bg-secondary-lt'}">${chain}</span>`;
 }
 
 /**
@@ -225,12 +227,23 @@ export function chainBadge(chain) {
  */
 export function actionBadge(action) {
     const classes = {
-        'ACCEPT': 'badge-accept',
-        'DROP': 'badge-drop',
-        'REJECT': 'badge-reject',
-        'LOG': 'badge-log'
+        // Filter actions
+        'ACCEPT': 'bg-green-lt',
+        'DROP': 'bg-red-lt',
+        'REJECT': 'bg-orange-lt',
+        'LOG': 'bg-blue-lt',
+        // NAT actions
+        'SNAT': 'bg-teal-lt',
+        'DNAT': 'bg-cyan-lt',
+        'MASQUERADE': 'bg-purple-lt',
+        'REDIRECT': 'bg-pink-lt',
+        // Mangle/Raw actions
+        'MARK': 'bg-yellow-lt',
+        'TOS': 'bg-yellow-lt',
+        'TTL': 'bg-yellow-lt',
+        'NOTRACK': 'bg-gray-lt'
     };
-    return `<span class="badge ${classes[action] || 'bg-secondary'}">${action}</span>`;
+    return `<span class="badge ${classes[action] || 'bg-secondary-lt'}">${action}</span>`;
 }
 
 /**
@@ -240,9 +253,9 @@ export function actionBadge(action) {
  */
 export function statusBadge(active) {
     if (active) {
-        return '<span class="badge bg-success">Attivo</span>';
+        return '<span class="badge bg-green-lt">Attivo</span>';
     }
-    return '<span class="badge bg-secondary">Disattivato</span>';
+    return '<span class="badge bg-secondary-lt">Disattivato</span>';
 }
 
 /**

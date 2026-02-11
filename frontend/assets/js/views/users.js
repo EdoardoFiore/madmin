@@ -387,7 +387,7 @@ function renderUsers() {
                     </div>
                 </td>
                 <td>${user.email ? escapeHtml(user.email) : '<span class="text-muted">-</span>'}</td>
-                <td>${user.is_superuser ? '<span class="badge bg-red">Admin</span>' : '<span class="badge bg-blue">Utente</span>'}</td>
+                <td>${user.is_superuser ? '<span class="badge bg-red-lt">Admin</span>' : '<span class="badge bg-blue-lt">Utente</span>'}</td>
                 <td>${twoFaIcon}</td>
                 <td>${statusBadge(user.is_active)}</td>
                 <td>${user.last_login ? formatDate(user.last_login) : '<span class="text-muted">Mai</span>'}</td>

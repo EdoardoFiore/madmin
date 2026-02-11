@@ -181,7 +181,7 @@ async function loadInterfaces() {
  */
 function renderInterfaceCard(iface) {
     const isUp = iface.is_up;
-    const statusClass = isUp ? 'bg-success' : 'bg-secondary';
+    const statusClass = isUp ? 'bg-green-lt' : 'bg-secondary-lt';
     const statusText = isUp ? 'Attiva' : 'Inattiva';
     const canManage = checkPermission('settings.manage');
 
@@ -201,9 +201,9 @@ function renderInterfaceCard(iface) {
     let netplanBadge = '';
     if (iface.netplan) {
         if (iface.netplan.dhcp4) {
-            netplanBadge = '<span class="badge bg-info text-white ms-1">DHCP</span>';
+            netplanBadge = '<span class="badge bg-cyan-lt ms-1">DHCP</span>';
         } else if (iface.netplan.addresses?.length > 0) {
-            netplanBadge = '<span class="badge bg-purple text-white ms-1">Statico</span>';
+            netplanBadge = '<span class="badge bg-purple-lt ms-1">Statico</span>';
         }
     }
 
@@ -218,7 +218,7 @@ function renderInterfaceCard(iface) {
                         <div class="flex-fill">
                             <h4 class="mb-0">${iface.name}</h4>
                             <span class="badge ${statusClass}">${statusText}</span>
-                            ${iface.speed > 0 ? `<span class="badge bg-azure text-white ms-1">${iface.speed} Mbps</span>` : ''}
+                            ${iface.speed > 0 ? `<span class="badge bg-azure-lt ms-1">${iface.speed} Mbps</span>` : ''}
                             ${netplanBadge}
                         </div>
                         ${canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') ? `

@@ -144,35 +144,8 @@
     font-weight: 500;
 }
 
-/* Rule action badges */
-.badge-accept {
-    background-color: #2fb344;
-}
-
-.badge-drop {
-    background-color: #d63939;
-}
-
-.badge-reject {
-    background-color: #f76707;
-}
-
-.badge-log {
-    background-color: #206bc4;
-}
-
-/* Chain badges */
-.badge-input {
-    background-color: #0ca678;
-}
-
-.badge-output {
-    background-color: #4263eb;
-}
-
-.badge-forward {
-    background-color: #ae3ec9;
-}
+/* Rule action badges handled by utility classes */
+/* Chain badges handled by utility classes */
 
 /* == Drag and Drop for Rule Ordering == */
 .sortable-ghost {
