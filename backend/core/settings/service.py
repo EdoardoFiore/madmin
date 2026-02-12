@@ -125,13 +125,40 @@ class NetworkService:
             logger.error(f"Error renewing cert: {e}")
             raise
 
-    async def upload_custom_cert(self, crt_content: bytes, key_content: bytes) -> CertificateInfo:
+    async def upload_custom_cert(self, crt_content: bytes, key_content: bytes, ca_content: Optional[bytes] = None) -> CertificateInfo:
         """
         Upload custom certificate and key.
+        Optionally append CA chain to the certificate file.
+        Verifies the certificate matches the private key before applying.
         """
         try:
             key_path = SSL_DIR / "server.key"
             crt_path = SSL_DIR / "server.crt"
+            
+            # Temp paths for validation
+            temp_key_path = SSL_DIR / "server.key.tmp"
+            temp_crt_path = SSL_DIR / "server.crt.tmp"
+            
+            # Write temp files
+            with open(temp_crt_path, "wb") as f:
+                f.write(crt_content)
+                # Append CA chain if provided
+                if ca_content:
+                    f.write(b"\n")
+                    f.write(ca_content)
+            
+            with open(temp_key_path, "wb") as f:
+                f.write(key_content)
+                
+            # Set permissions on temp key
+            os.chmod(temp_key_path, 0o600)
+            
+            # Verify certificate matches key
+            if not await self._verify_certificate_match(temp_crt_path, temp_key_path):
+                # Cleanup temp files
+                if temp_crt_path.exists(): os.remove(temp_crt_path)
+                if temp_key_path.exists(): os.remove(temp_key_path)
+                raise ValueError("Il certificato non corrisponde alla chiave privata fornita.")
             
             # Backup existing
             if key_path.exists():
@@ -139,18 +166,9 @@ class NetworkService:
             if crt_path.exists():
                 shutil.copy(crt_path, str(crt_path) + ".bak")
             
-            # Write new files
-            with open(crt_path, "wb") as f:
-                f.write(crt_content)
-            
-            with open(key_path, "wb") as f:
-                f.write(key_content)
-                
-            # Set permissions
-            os.chmod(key_path, 0o600)
-            
-            # Verify cert matches key (basic check)
-            # TODO: Implement proper verification
+            # Move temp to production
+            shutil.move(str(temp_crt_path), str(crt_path))
+            shutil.move(str(temp_key_path), str(key_path))
             
             # Reload Nginx
             if not await self._reload_nginx():
@@ -160,15 +178,50 @@ class NetworkService:
                 if os.path.exists(str(crt_path) + ".bak"):
                     shutil.move(str(crt_path) + ".bak", crt_path)
                 await self._reload_nginx()
-                raise RuntimeError("Nginx configuration failed with new certificate")
+                raise RuntimeError("Configurazione Nginx non valida con il nuovo certificato")
                 
             return await self._get_certificate_info()
             
         except Exception as e:
             logger.error(f"Error uploading cert: {e}")
+            # Ensure cleanup
+            if (SSL_DIR / "server.crt.tmp").exists(): os.remove(SSL_DIR / "server.crt.tmp")
+            if (SSL_DIR / "server.key.tmp").exists(): os.remove(SSL_DIR / "server.key.tmp")
             raise
 
     # --- Private Helpers ---
+
+    async def _verify_certificate_match(self, crt_path: Path, key_path: Path) -> bool:
+        """Verify that certificate public key matches private key modulus."""
+        try:
+            # Get modulus of certificate
+            proc_crt = await asyncio.create_subprocess_shell(
+                f"openssl x509 -noout -modulus -in {crt_path} | openssl md5",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout_crt, _ = await proc_crt.communicate()
+            
+            # Get modulus of private key
+            proc_key = await asyncio.create_subprocess_shell(
+                f"openssl rsa -noout -modulus -in {key_path} | openssl md5",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout_key, _ = await proc_key.communicate()
+            
+            if proc_crt.returncode != 0 or proc_key.returncode != 0:
+                logger.error("OpenSSL verification failed")
+                return False
+                
+            match = stdout_crt.strip() == stdout_key.strip()
+            if not match:
+                logger.warning(f"Certificate mismatch: {stdout_crt.strip()} != {stdout_key.strip()}")
+            return match
+            
+        except Exception as e:
+            logger.error(f"Error verifies cert match: {e}")
+            return False
 
     async def _read_nginx_conf(self) -> str:
         if not os.path.exists(NGINX_CONF_PATH):

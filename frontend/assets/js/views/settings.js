@@ -379,6 +379,11 @@ export async function render(container) {
                   <input type="file" class="form-control" id="upload-ssl-key" accept=".key,.pem">
                   <small class="form-hint">Chiave privata RSA (senza password)</small>
                 </div>
+                <div class="mb-3">
+                  <label class="form-label">CA Bundle/Chain (Opzionale)</label>
+                  <input type="file" class="form-control" id="upload-ssl-ca" accept=".crt,.pem,.ca-bundle">
+                  <small class="form-hint">Certificati intermedi per la catena di fiducia</small>
+                </div>
                 <div class="alert alert-warning">
                     <i class="ti ti-alert-triangle me-1"></i>
                     <strong>Attenzione:</strong> Il caricamento riavvierà il servizio web. La connessione verrà interrotta temporaneamente.
@@ -890,6 +895,7 @@ function setupEventListeners() {
     document.getElementById('confirm-upload-ssl')?.addEventListener('click', async () => {
         const crtFile = document.getElementById('upload-ssl-crt').files[0];
         const keyFile = document.getElementById('upload-ssl-key').files[0];
+        const caFile = document.getElementById('upload-ssl-ca').files[0];
 
         if (!crtFile || !keyFile) {
             showToast('Seleziona sia il certificato (.crt) che la chiave privata (.key)', 'warning');
@@ -905,6 +911,9 @@ function setupEventListeners() {
             const formData = new FormData();
             formData.append('cert_file', crtFile);
             formData.append('key_file', keyFile);
+            if (caFile) {
+                formData.append('ca_file', caFile);
+            }
 
             const response = await fetch('/api/settings/network/ssl/upload', {
                 method: 'POST',

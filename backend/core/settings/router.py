@@ -4,6 +4,7 @@ MADMIN Settings Router
 API endpoints for system settings management.
 """
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -321,19 +322,23 @@ async def renew_ssl_certificate(
 async def upload_ssl_certificate(
     cert_file: UploadFile = File(...),
     key_file: UploadFile = File(...),
+    ca_file: Optional[UploadFile] = File(None),
     current_user: User = Depends(require_permission("settings.manage"))
 ):
     """
     Upload custom SSL certificate and private key.
+    Optionally upload a CA Bundle/Chain (ca_file) to append to the certificate.
     WARNING: This will restart Nginx and drop connections.
     """
     try:
         cert_content = await cert_file.read()
         key_content = await key_file.read()
         
-        info = await network_service.upload_custom_cert(cert_content, key_content)
-        # Assuming upload_custom_cert returns CertificateInfo object
-        # Since it's an async method in service, ensure we await it if it's not already awaited (checked service.py, it is async)
+        ca_content = None
+        if ca_file:
+            ca_content = await ca_file.read()
+        
+        info = await network_service.upload_custom_cert(cert_content, key_content, ca_content)
         return info
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

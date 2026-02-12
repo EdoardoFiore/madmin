@@ -5,6 +5,7 @@ Database models for system configuration.
 All settings tables are singleton (only id=1 used).
 """
 from sqlmodel import SQLModel, Field
+from pydantic import BaseModel
 from sqlalchemy import Column, BigInteger
 from typing import Optional
 from datetime import datetime
