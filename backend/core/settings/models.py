@@ -167,3 +167,26 @@ class BackupSettingsResponse(SQLModel):
     last_run_status: Optional[str]
     last_run_time: Optional[datetime]
     updated_at: datetime
+
+
+class CertificateInfo(BaseModel):
+    """Schema for SSL certificate information."""
+    issuer: str
+    subject: str
+    valid_from: datetime
+    valid_to: datetime
+    days_remaining: int
+    is_self_signed: bool
+
+
+class NetworkSettingsResponse(BaseModel):
+    """Schema for network settings response."""
+    management_port: int
+    ssl_enabled: bool
+    certificate: Optional[CertificateInfo]
+
+
+class PortChangeRequest(BaseModel):
+    """Schema for changing management port."""
+    port: int
+

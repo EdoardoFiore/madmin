@@ -4,7 +4,7 @@ MADMIN Settings Router
 API endpoints for system settings management.
 """
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -15,8 +15,10 @@ from core.auth.models import User
 from .models import (
     SystemSettings, SystemSettingsUpdate, SystemSettingsResponse,
     SMTPSettings, SMTPSettingsUpdate, SMTPSettingsResponse,
-    BackupSettings, BackupSettingsUpdate, BackupSettingsResponse
+    BackupSettings, BackupSettingsUpdate, BackupSettingsResponse,
+    NetworkSettingsResponse, PortChangeRequest, CertificateInfo
 )
+from .service import network_service
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
@@ -269,3 +271,70 @@ async def update_backup_settings(
         last_run_time=settings.last_run_time,
         updated_at=settings.updated_at
     )
+
+
+# --- Network Settings ---
+
+@router.get("/network", response_model=NetworkSettingsResponse)
+async def get_network_settings(
+    current_user: User = Depends(require_permission("settings.view"))
+):
+    """Get network (Nginx) settings."""
+    return await network_service.get_network_settings()
+
+
+@router.post("/network/port")
+async def update_management_port(
+    data: PortChangeRequest,
+    current_user: User = Depends(require_permission("settings.manage"))
+):
+    """
+    Update management port (restarts Nginx).
+    WARNING: This will disconnect the current session.
+    """
+    try:
+        if await network_service.update_port(data.port):
+            return {"status": "success", "message": f"Port changed to {data.port}. Service reloaded."}
+        else:
+             raise HTTPException(status_code=500, detail="Failed to reload Nginx")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/network/ssl/renew", response_model=CertificateInfo)
+async def renew_ssl_certificate(
+    current_user: User = Depends(require_permission("settings.manage"))
+):
+    """
+    Renew self-signed SSL certificate.
+    WARNING: This will restart Nginx and drop connections.
+    """
+    try:
+        return await network_service.renew_self_signed_cert()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/network/ssl/upload", response_model=CertificateInfo)
+async def upload_ssl_certificate(
+    cert_file: UploadFile = File(...),
+    key_file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("settings.manage"))
+):
+    """
+    Upload custom SSL certificate and private key.
+    WARNING: This will restart Nginx and drop connections.
+    """
+    try:
+        cert_content = await cert_file.read()
+        key_content = await key_file.read()
+        
+        info = await network_service.upload_custom_cert(cert_content, key_content)
+        # Assuming upload_custom_cert returns CertificateInfo object
+        # Since it's an async method in service, ensure we await it if it's not already awaited (checked service.py, it is async)
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

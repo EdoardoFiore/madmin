@@ -1,0 +1,264 @@
+"""
+MADMIN Settings Service
+
+Service layer for managing system settings, including Nginx network configuration.
+"""
+import os
+import re
+import shutil
+import asyncio
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any, Tuple
+
+from config import get_settings
+from .models import CertificateInfo, NetworkSettingsResponse
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+NGINX_CONF_PATH = "/etc/nginx/sites-available/madmin.conf"
+SSL_DIR = Path(settings.data_dir) / "ssl"
+
+# Ensure SSL directory exists
+os.makedirs(SSL_DIR, exist_ok=True)
+
+
+class NetworkService:
+    """Service for managing network configuration (Nginx & SSL)."""
+
+    async def get_network_settings(self) -> NetworkSettingsResponse:
+        """Get current network configuration."""
+        port = await self._get_current_port()
+        ssl_enabled = await self._is_ssl_enabled()
+        cert_info = await self._get_certificate_info()
+        
+        return NetworkSettingsResponse(
+            management_port=port,
+            ssl_enabled=ssl_enabled,
+            certificate=cert_info
+        )
+
+    async def update_port(self, new_port: int) -> bool:
+        """
+        Update management port in Nginx config.
+        Returns True if successful and Nginx reloaded.
+        """
+        if not 1 <= new_port <= 65535:
+            raise ValueError("Porta non valida (1-65535)")
+            
+        try:
+            # Read config
+            content = await self._read_nginx_conf()
+            
+            # Regex to find listen directive
+            # Matches: listen 80; or listen 443 ssl;
+            pattern = r"listen\s+(\d+)(?:\s+ssl)?;"
+            
+            match = re.search(pattern, content)
+            if not match:
+                raise ValueError("Direttiva 'listen' non trovata in Nginx config")
+                
+            current_port = int(match.group(1))
+            full_match = match.group(0)
+            
+            if current_port == new_port:
+                return True
+                
+            # Replace port
+            new_directive = full_match.replace(str(current_port), str(new_port))
+            new_content = content.replace(full_match, new_directive)
+            
+            # Write config
+            await self._write_nginx_conf(new_content)
+            
+            # Reload Nginx
+            return await self._reload_nginx()
+            
+        except Exception as e:
+            logger.error(f"Error updating port: {e}")
+            raise
+
+    async def renew_self_signed_cert(self) -> CertificateInfo:
+        """
+        Regenerate self-signed certificate.
+        """
+        try:
+            key_path = SSL_DIR / "server.key"
+            crt_path = SSL_DIR / "server.crt"
+            
+            # Backup existing
+            if key_path.exists():
+                shutil.copy(key_path, str(key_path) + ".bak")
+            if crt_path.exists():
+                shutil.copy(crt_path, str(crt_path) + ".bak")
+            
+            # Generate new cert (10 years)
+            cmd = [
+                "openssl", "req", "-x509", "-nodes", "-days", "3650",
+                "-newkey", "rsa:2048",
+                "-keyout", str(key_path),
+                "-out", str(crt_path),
+                "-subj", "/C=IT/ST=Italy/L=Rome/O=MADMIN/OU=IT/CN=madmin.local"
+            ]
+            
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            
+            if proc.returncode != 0:
+                raise RuntimeError(f"OpenSSL failed: {stderr.decode()}")
+                
+            # Set permissions
+            os.chmod(key_path, 0o600)
+            
+            # Reload Nginx to apply
+            await self._reload_nginx()
+            
+            return await self._get_certificate_info()
+            
+        except Exception as e:
+            logger.error(f"Error renewing cert: {e}")
+            raise
+
+    async def upload_custom_cert(self, crt_content: bytes, key_content: bytes) -> CertificateInfo:
+        """
+        Upload custom certificate and key.
+        """
+        try:
+            key_path = SSL_DIR / "server.key"
+            crt_path = SSL_DIR / "server.crt"
+            
+            # Backup existing
+            if key_path.exists():
+                shutil.copy(key_path, str(key_path) + ".bak")
+            if crt_path.exists():
+                shutil.copy(crt_path, str(crt_path) + ".bak")
+            
+            # Write new files
+            with open(crt_path, "wb") as f:
+                f.write(crt_content)
+            
+            with open(key_path, "wb") as f:
+                f.write(key_content)
+                
+            # Set permissions
+            os.chmod(key_path, 0o600)
+            
+            # Verify cert matches key (basic check)
+            # TODO: Implement proper verification
+            
+            # Reload Nginx
+            if not await self._reload_nginx():
+                # Rollback if Nginx fails
+                if os.path.exists(str(key_path) + ".bak"):
+                    shutil.move(str(key_path) + ".bak", key_path)
+                if os.path.exists(str(crt_path) + ".bak"):
+                    shutil.move(str(crt_path) + ".bak", crt_path)
+                await self._reload_nginx()
+                raise RuntimeError("Nginx configuration failed with new certificate")
+                
+            return await self._get_certificate_info()
+            
+        except Exception as e:
+            logger.error(f"Error uploading cert: {e}")
+            raise
+
+    # --- Private Helpers ---
+
+    async def _read_nginx_conf(self) -> str:
+        if not os.path.exists(NGINX_CONF_PATH):
+            return ""
+        with open(NGINX_CONF_PATH, "r") as f:
+            return f.read()
+
+    async def _write_nginx_conf(self, content: str):
+        with open(NGINX_CONF_PATH, "w") as f:
+            f.write(content)
+
+    async def _get_current_port(self) -> int:
+        content = await self._read_nginx_conf()
+        match = re.search(r"listen\s+(\d+)", content)
+        return int(match.group(1)) if match else 80
+
+    async def _is_ssl_enabled(self) -> bool:
+        content = await self._read_nginx_conf()
+        return "ssl" in content and "listen" in content
+
+    async def _reload_nginx(self) -> bool:
+        """Test config and reload Nginx."""
+        # Test config
+        proc = await asyncio.create_subprocess_shell(
+            "nginx -t",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        if proc.returncode != 0:
+            return False
+            
+        # Reload
+        proc = await asyncio.create_subprocess_shell(
+            "systemctl reload nginx",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        return proc.returncode == 0
+
+    async def _get_certificate_info(self) -> Optional[CertificateInfo]:
+        """Parse certificate info using openssl."""
+        crt_path = SSL_DIR / "server.crt"
+        if not crt_path.exists():
+            return None
+            
+        try:
+            cmd = ["openssl", "x509", "-in", str(crt_path), "-noout", "-dates", "-issuer", "-subject"]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            
+            if proc.returncode != 0:
+                return None
+                
+            output = stdout.decode()
+            info = {}
+            for line in output.splitlines():
+                if "=" in line:
+                    key, val = line.split("=", 1)
+                    info[key.strip()] = val.strip()
+            
+            # Parse dates
+            fmt = "%b %d %H:%M:%S %Y %Z"
+            valid_from = datetime.strptime(info.get("notBefore", ""), fmt)
+            valid_to = datetime.strptime(info.get("notAfter", ""), fmt)
+            now = datetime.utcnow()
+            days_remaining = (valid_to - now).days
+            
+            # Check if self-signed (issuer == subject roughly)
+            # OpenSSL output format varies, usually subject=... issuer=...
+            # For self-signed, they are identical
+            is_self_signed = info.get("issuer") == info.get("subject")
+            
+            return CertificateInfo(
+                issuer=info.get("issuer", "Unknown"),
+                subject=info.get("subject", "Unknown"),
+                valid_from=valid_from,
+                valid_to=valid_to,
+                days_remaining=days_remaining,
+                is_self_signed=is_self_signed
+            )
+            
+        except Exception as e:
+            logger.error(f"Error parsing cert info: {e}")
+            return None
+
+
+network_service = NetworkService()

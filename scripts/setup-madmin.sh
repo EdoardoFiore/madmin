@@ -145,10 +145,30 @@ log_info "Fase 5/6: Configurazione Nginx..."
 # Rileva IP pubblico
 PUBLIC_IP=$(curl -s https://ifconfig.me 2>/dev/null || echo "localhost")
 
+# Crea directory SSL
+mkdir -p $INSTALL_DIR/data/ssl
+chmod 700 $INSTALL_DIR/data/ssl
+
+# Genera certificato self-signed (10 anni)
+if [ ! -f "$INSTALL_DIR/data/ssl/server.crt" ]; then
+    log_info "Generazione certificato SSL self-signed (10 anni)..."
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout $INSTALL_DIR/data/ssl/server.key \
+        -out $INSTALL_DIR/data/ssl/server.crt \
+        -subj "/C=IT/ST=Italy/L=Rome/O=MADMIN/OU=IT/CN=madmin.local" >/dev/null 2>&1
+    chmod 600 $INSTALL_DIR/data/ssl/server.key
+fi
+
 cat > /etc/nginx/sites-available/madmin.conf << EOF
 server {
-    listen 80;
+    listen 7443 ssl;
     server_name $PUBLIC_IP _;
+    
+    ssl_certificate $INSTALL_DIR/data/ssl/server.crt;
+    ssl_certificate_key $INSTALL_DIR/data/ssl/server.key;
+    
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
     
     root $INSTALL_DIR/frontend;
     index index.html;

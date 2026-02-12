@@ -101,6 +101,56 @@ export async function render(container) {
                 </div>
             </div>
             
+            <!-- Network Security Settings -->
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="ti ti-lock me-2"></i>Sicurezza e Rete</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                             <!-- Port Configuration -->
+                            <div class="col-md-6">
+                                <label class="form-label">Porta di Gestione (HTTPS)</label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="network-port" placeholder="7443" ${canManage ? '' : 'disabled'}>
+                                    ${canManage ? '<button class="btn btn-warning" id="save-port">Cambia Porta</button>' : ''}
+                                </div>
+                                <small class="form-hint text-warning">
+                                    <i class="ti ti-alert-triangle me-1"></i>
+                                    Il cambio porta interromperà la connessione. Dovrai ricollegarti manualmente.
+                                </small>
+                            </div>
+
+                            <!-- SSL Certificate Info -->
+                            <div class="col-md-6">
+                                 <label class="form-label">Certificato SSL</label>
+                                 <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center mb-2">
+                                            <span class="badge bg-green me-2" id="ssl-status-badge">Attivo</span>
+                                            <div class="text-muted small" id="ssl-issuer">Issuer: -</div>
+                                        </div>
+                                        <div class="text-muted small mb-2" id="ssl-validity">Scadenza: -</div>
+                                        
+                                        ${canManage ? `
+                                        <div class="btn-group w-100">
+                                            <button class="btn btn-outline-primary btn-sm" id="renew-ssl">
+                                                <i class="ti ti-refresh me-1"></i>Rinnova Self-Signed
+                                            </button>
+                                            <button class="btn btn-outline-secondary btn-sm" id="btn-upload-ssl-modal">
+                                                <i class="ti ti-upload me-1"></i>Carica Custom
+                                            </button>
+                                        </div>
+                                        ` : ''}
+                                    </div>
+                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- SMTP Settings -->
             <div class="col-12">
                 <div class="card">
@@ -307,6 +357,41 @@ export async function render(container) {
                     </div>
                 </div>
             </div>
+            </div>
+        </div>
+        
+        <!-- Upload SSL Modal -->
+        <div class="modal modal-blur fade" id="modal-upload-ssl" tabindex="-1" role="dialog" aria-hidden="true">
+          <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Carica Certificato SSL Custom</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                  <label class="form-label">Certificato (server.crt)</label>
+                  <input type="file" class="form-control" id="upload-ssl-crt" accept=".crt,.pem,.cer">
+                  <small class="form-hint">Certificato pubblico X.509 (PEM)</small>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Chiave Privata (server.key)</label>
+                  <input type="file" class="form-control" id="upload-ssl-key" accept=".key,.pem">
+                  <small class="form-hint">Chiave privata RSA (senza password)</small>
+                </div>
+                <div class="alert alert-warning">
+                    <i class="ti ti-alert-triangle me-1"></i>
+                    <strong>Attenzione:</strong> Il caricamento riavvierà il servizio web. La connessione verrà interrotta temporaneamente.
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">Annulla</button>
+                <button type="button" class="btn btn-primary ms-auto" id="confirm-upload-ssl">
+                  <i class="ti ti-upload me-1"></i>Carica e Riavvia
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
     `;
 
@@ -316,11 +401,35 @@ export async function render(container) {
 
 async function loadSettings() {
     try {
-        const [system, smtp, backup] = await Promise.all([
+        const [system, smtp, backup, network] = await Promise.all([
             apiGet('/settings/system'),
             apiGet('/settings/smtp'),
-            apiGet('/settings/backup')
+            apiGet('/settings/backup'),
+            apiGet('/settings/network')
         ]);
+
+        // Network
+        document.getElementById('network-port').value = network.management_port;
+
+        // SSL Info
+        if (network.certificate) {
+            document.getElementById('ssl-issuer').textContent = `Issuer: ${network.certificate.issuer}`;
+            const validTo = new Date(network.certificate.valid_to).toLocaleDateString('it-IT');
+            document.getElementById('ssl-validity').textContent = `Scadenza: ${validTo} (${network.certificate.days_remaining} giorni rimanenti)`;
+
+            const badge = document.getElementById('ssl-status-badge');
+            if (network.certificate.is_self_signed) {
+                badge.className = 'badge bg-yellow me-2';
+                badge.textContent = 'Self-Signed';
+            } else {
+                badge.className = 'badge bg-green me-2';
+                badge.textContent = 'Valid';
+            }
+        } else {
+            document.getElementById('ssl-status-badge').className = 'badge bg-secondary me-2';
+            document.getElementById('ssl-status-badge').textContent = 'Nessuno';
+        }
+
         // System
         document.getElementById('company-name').value = system.company_name || '';
         document.getElementById('primary-color').value = system.primary_color || '#206bc4';
@@ -712,11 +821,116 @@ function setupEventListeners() {
             btn.disabled = false;
         }
     });
+
+    // Network - Save Port
+    document.getElementById('save-port')?.addEventListener('click', async () => {
+        const port = parseInt(document.getElementById('network-port').value);
+        if (!port || port < 1 || port > 65535) {
+            showToast('Porta non valida (1-65535)', 'error');
+            return;
+        }
+
+        const confirmed = await confirmDialog(
+            'Cambia Porta di Gestione',
+            `Sei sicuro di voler cambiare la porta a ${port}? La connessione attuale verrà interrotta e dovrai ricollegarti manualmente alla nuova porta (es. https://${location.hostname}:${port}).`,
+            'Cambia e Riavvia',
+            'btn-warning'
+        );
+        if (!confirmed) return;
+
+        const btn = document.getElementById('save-port');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Riavvio...';
+        btn.disabled = true;
+
+        try {
+            await apiPost('/settings/network/port', { port });
+            showToast(`Porta cambiata a ${port}. Il servizio si sta riavviando...`, 'success');
+            // Do not reload, connection will be lost
+        } catch (e) {
+            showToast('Errore cambio porta: ' + e.message, 'error');
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
+
+    // Network - Renew SSL
+    document.getElementById('renew-ssl')?.addEventListener('click', async () => {
+        const confirmed = await confirmDialog(
+            'Rinnova Certificato',
+            'Vuoi rigenerare il certificato Self-Signed per altri 10 anni? Il servizio web verrà riavviato.',
+            'Rinnova',
+            'btn-primary'
+        );
+        if (!confirmed) return;
+
+        const btn = document.getElementById('renew-ssl');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>...';
+        btn.disabled = true;
+
+        try {
+            await apiPost('/settings/network/ssl/renew', {});
+            showToast('Certificato rinnovato. Ricarica la pagina se necessario.', 'success');
+            setTimeout(() => location.reload(), 5000);
+        } catch (e) {
+            showToast('Errore rinnovo: ' + e.message, 'error');
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
+
+    // Network - Open Upload Modal
+    document.getElementById('btn-upload-ssl-modal')?.addEventListener('click', () => {
+        const modal = new bootstrap.Modal(document.getElementById('modal-upload-ssl'));
+        modal.show();
+    });
+
+    // Network - Confirm Upload SSL
+    document.getElementById('confirm-upload-ssl')?.addEventListener('click', async () => {
+        const crtFile = document.getElementById('upload-ssl-crt').files[0];
+        const keyFile = document.getElementById('upload-ssl-key').files[0];
+
+        if (!crtFile || !keyFile) {
+            showToast('Seleziona sia il certificato (.crt) che la chiave privata (.key)', 'warning');
+            return;
+        }
+
+        const btn = document.getElementById('confirm-upload-ssl');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caricamento...';
+        btn.disabled = true;
+
+        try {
+            const formData = new FormData();
+            formData.append('cert_file', crtFile);
+            formData.append('key_file', keyFile);
+
+            const response = await fetch('/api/settings/network/ssl/upload', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` },
+                body: formData
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Upload fallito');
+            }
+
+            showToast('Certificato caricato con successo. Riavvio in corso...', 'success');
+            const modal = bootstrap.Modal.getInstance(document.getElementById('modal-upload-ssl'));
+            modal.hide();
+            setTimeout(() => location.reload(), 5000);
+
+        } catch (e) {
+            showToast('Errore: ' + e.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
 }
 
-/**
- * Load backup history from API
- */
 async function loadBackupHistory() {
     const tbody = document.getElementById('backup-history-body');
     if (!tbody) return;
