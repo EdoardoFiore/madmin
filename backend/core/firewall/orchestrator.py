@@ -254,6 +254,12 @@ class FirewallOrchestrator:
             state=rule_data.get("state"),
             limit_rate=rule_data.get("limit_rate"),
             limit_burst=rule_data.get("limit_burst"),
+            to_destination=rule_data.get("to_destination"),
+            to_source=rule_data.get("to_source"),
+            to_ports=rule_data.get("to_ports"),
+            log_prefix=rule_data.get("log_prefix"),
+            log_level=rule_data.get("log_level"),
+            reject_with=rule_data.get("reject_with"),
             comment=rule_data.get("comment"),
             table_name=rule_data.get("table_name", "filter"),
             order=max_order + 1,
@@ -400,7 +406,13 @@ class FirewallOrchestrator:
                 state=rule.state,
                 comment=f"ID_{rule.id}",
                 limit_rate=rule.limit_rate,
-                limit_burst=rule.limit_burst
+                limit_burst=rule.limit_burst,
+                to_destination=rule.to_destination,
+                to_source=rule.to_source,
+                to_ports=rule.to_ports,
+                log_prefix=rule.log_prefix,
+                log_level=rule.log_level,
+                reject_with=rule.reject_with
             ):
                 logger.error(f"Failed to apply rule {rule.id}")
                 success = False

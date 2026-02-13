@@ -48,6 +48,14 @@ class MachineFirewallRule(SQLModel, table=True):
     # Rate limiting (iptables -m limit)
     limit_rate: Optional[str] = Field(default=None, max_length=20)  # e.g., "10/second", "100/minute"
     limit_burst: Optional[int] = Field(default=None)  # Burst limit for rate limiting
+
+    # Action specific fields
+    to_destination: Optional[str] = Field(default=None, max_length=50)  # DNAT
+    to_source: Optional[str] = Field(default=None, max_length=50)       # SNAT
+    to_ports: Optional[str] = Field(default=None, max_length=50)        # REDIRECT/MASQUERADE
+    log_prefix: Optional[str] = Field(default=None, max_length=50)      # LOG
+    log_level: Optional[str] = Field(default=None, max_length=20)       # LOG
+    reject_with: Optional[str] = Field(default=None, max_length=50)     # REJECT
     
     # Metadata
     comment: Optional[str] = Field(default=None, max_length=255)
@@ -95,6 +103,12 @@ class MachineFirewallRuleCreate(SQLModel):
     state: Optional[str] = None
     limit_rate: Optional[str] = None
     limit_burst: Optional[int] = None
+    to_destination: Optional[str] = None
+    to_source: Optional[str] = None
+    to_ports: Optional[str] = None
+    log_prefix: Optional[str] = None
+    log_level: Optional[str] = None
+    reject_with: Optional[str] = None
     comment: Optional[str] = None
     table_name: str = "filter"
     enabled: bool = True
@@ -113,6 +127,12 @@ class MachineFirewallRuleUpdate(SQLModel):
     state: Optional[str] = None
     limit_rate: Optional[str] = None
     limit_burst: Optional[int] = None
+    to_destination: Optional[str] = None
+    to_source: Optional[str] = None
+    to_ports: Optional[str] = None
+    log_prefix: Optional[str] = None
+    log_level: Optional[str] = None
+    reject_with: Optional[str] = None
     comment: Optional[str] = None
     table_name: Optional[str] = None
     enabled: Optional[bool] = None
@@ -132,6 +152,12 @@ class MachineFirewallRuleResponse(SQLModel):
     state: Optional[str]
     limit_rate: Optional[str]
     limit_burst: Optional[int]
+    to_destination: Optional[str]
+    to_source: Optional[str]
+    to_ports: Optional[str]
+    log_prefix: Optional[str]
+    log_level: Optional[str]
+    reject_with: Optional[str]
     comment: Optional[str]
     table_name: str
     order: int

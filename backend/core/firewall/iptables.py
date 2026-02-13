@@ -220,6 +220,12 @@ def build_rule_args(
     comment: Optional[str] = None,
     limit_rate: Optional[str] = None,
     limit_burst: Optional[int] = None,
+    to_destination: Optional[str] = None,
+    to_source: Optional[str] = None,
+    to_ports: Optional[str] = None,
+    log_prefix: Optional[str] = None,
+    log_level: Optional[str] = None,
+    reject_with: Optional[str] = None,
     operation: str = "-A"
 ) -> List[str]:
     """
@@ -237,9 +243,14 @@ def build_rule_args(
         state: Connection state (NEW, ESTABLISHED, etc.)
         comment: Rule comment
         limit_rate: Rate limit (e.g., "10/second", "100/minute")
-        limit_burst: Burst limit for rate limiting
+        to_destination: DNAT target
+        to_source: SNAT target
+        to_ports: REDIRECT/MASQUERADE target ports
+        log_prefix: Log prefix
+        log_level: Log level
+        reject_with: Reject type (e.g. icmp-port-unreachable)
         operation: -A (append), -I (insert), -D (delete)
-    
+
     Returns:
         List of command arguments
     """
@@ -265,7 +276,10 @@ def build_rule_args(
     
     if port and protocol in ("tcp", "udp"):
         # Support both single port and range
-        args.extend(["--dport", str(port)])
+        if "," in str(port):
+             args.extend(["-m", "multiport", "--dports", str(port)])
+        else:
+             args.extend(["--dport", str(port)])
     
     if limit_rate:
         # Rate limiting: -m limit --limit <rate> [--limit-burst <burst>]
@@ -273,12 +287,30 @@ def build_rule_args(
         if limit_burst:
             args.extend(["--limit-burst", str(limit_burst)])
     
-    if comment:
-        # Sanitize comment for iptables
         safe_comment = re.sub(r'[^a-zA-Z0-9_\-\. ]', '', comment)[:255]
         args.extend(["-m", "comment", "--comment", safe_comment])
     
     args.extend(["-j", action])
+
+    if action == "DNAT" and to_destination:
+        args.extend(["--to-destination", to_destination])
+    
+    if action == "SNAT" and to_source:
+        args.extend(["--to-source", to_source])
+        
+    if action in ("REDIRECT", "MASQUERADE") and to_ports:
+        args.extend(["--to-ports", to_ports])
+        
+    if action == "LOG":
+        if log_prefix:
+            # Sanitize log prefix (max 29 chars provided by user, but checks needed)
+            safe_prefix = re.sub(r'[^a-zA-Z0-9_\-\. \[\]]', '', log_prefix)[:29]
+            args.extend(["--log-prefix", safe_prefix])
+        if log_level:
+             args.extend(["--log-level", log_level])
+
+    if action == "REJECT" and reject_with:
+        args.extend(["--reject-with", reject_with])
     
     return args
 
@@ -296,7 +328,13 @@ def add_rule(
     state: Optional[str] = None,
     comment: Optional[str] = None,
     limit_rate: Optional[str] = None,
-    limit_burst: Optional[int] = None
+    limit_burst: Optional[int] = None,
+    to_destination: Optional[str] = None,
+    to_source: Optional[str] = None,
+    to_ports: Optional[str] = None,
+    log_prefix: Optional[str] = None,
+    log_level: Optional[str] = None,
+    reject_with: Optional[str] = None
 ) -> bool:
     """Add a firewall rule to a chain."""
     args = build_rule_args(
@@ -312,6 +350,12 @@ def add_rule(
         comment=comment,
         limit_rate=limit_rate,
         limit_burst=limit_burst,
+        to_destination=to_destination,
+        to_source=to_source,
+        to_ports=to_ports,
+        log_prefix=log_prefix,
+        log_level=log_level,
+        reject_with=reject_with,
         operation="-A"
     )
     
@@ -330,7 +374,13 @@ def delete_rule_by_spec(
     in_interface: Optional[str] = None,
     out_interface: Optional[str] = None,
     state: Optional[str] = None,
-    comment: Optional[str] = None
+    comment: Optional[str] = None,
+    to_destination: Optional[str] = None,
+    to_source: Optional[str] = None,
+    to_ports: Optional[str] = None,
+    log_prefix: Optional[str] = None,
+    log_level: Optional[str] = None,
+    reject_with: Optional[str] = None
 ) -> bool:
     """Delete a firewall rule by its specification."""
     args = build_rule_args(
@@ -344,6 +394,12 @@ def delete_rule_by_spec(
         out_interface=out_interface,
         state=state,
         comment=comment,
+        to_destination=to_destination,
+        to_source=to_source,
+        to_ports=to_ports,
+        log_prefix=log_prefix,
+        log_level=log_level,
+        reject_with=reject_with,
         operation="-D"
     )
     

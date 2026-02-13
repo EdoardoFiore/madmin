@@ -772,7 +772,7 @@ function renderStagingModules() {
                             <h4 class="card-title">${escapeHtml(m.name)}</h4>
                             <p class="text-muted small">${m.description || 'Nessuna descrizione'}</p>
                             <div class="d-flex justify-content-between align-items-center">
-                                <span class="badge bg-secondary">v${m.version}</span>
+                                <span class="badge bg-azure-lt">v${m.version}</span>
                                 <div class="btn-group btn-group-sm">
                                     <button class="btn btn-primary btn-install" data-id="${m.id}">
                                         <i class="ti ti-download me-1"></i>Installa

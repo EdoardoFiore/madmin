@@ -115,8 +115,7 @@ export async function render(container) {
                                 </div>
                                 <div class="col-md-6" id="port-group">
                                     <label class="form-label">Porta</label>
-                                    <input type="text" class="form-control" id="rule-port" 
-                                           placeholder="es. 80, 443, 8000:8080">
+                                    <input type="text" class="form-control" id="rule-port" placeholder="80, 443, 8000:8080">
                                     <small class="form-hint">Singola porta o range (80:443)</small>
                                 </div>
                                 <div class="col-md-6">
@@ -138,6 +137,65 @@ export async function render(container) {
                                     <label class="form-label">Interfaccia Out</label>
                                     <input type="text" class="form-control" id="rule-out-interface" 
                                            placeholder="es. eth0, wg0">
+                                </div>
+
+                                <!-- Action Specific Fields -->
+                                <div class="col-md-6 field-dnat" style="display:none">
+                                    <label class="form-label">
+                                        To Destination 
+                                        <i class="ti ti-help text-muted" data-bs-toggle="tooltip" title="Address to redirect to, e.g. 192.168.1.50:80"></i>
+                                    </label>
+                                    <input type="text" class="form-control" id="rule-to-destination" placeholder="192.168.1.50:80">
+                                </div>
+                                <div class="col-md-6 field-snat" style="display:none">
+                                    <label class="form-label">
+                                        To Source
+                                        <i class="ti ti-help text-muted" data-bs-toggle="tooltip" title="Source address to map to, e.g. 1.2.3.4"></i>
+                                    </label>
+                                    <input type="text" class="form-control" id="rule-to-source" placeholder="1.2.3.4">
+                                </div>
+                                <div class="col-md-6 field-redirect" style="display:none">
+                                    <label class="form-label">
+                                        To Ports
+                                        <i class="ti ti-help text-muted" data-bs-toggle="tooltip" title="Port range to map to, e.g. 8080"></i>
+                                    </label>
+                                    <input type="text" class="form-control" id="rule-to-ports" placeholder="8080">
+                                </div>
+                                <div class="col-md-6 field-log" style="display:none">
+                                    <label class="form-label">
+                                        Log Prefix
+                                        <i class="ti ti-help text-muted" data-bs-toggle="tooltip" title="Prefix for log messages, max 29 chars"></i>
+                                    </label>
+                                    <input type="text" class="form-control" id="rule-log-prefix" placeholder="[DROP_SSH] ">
+                                </div>
+                                <div class="col-md-6 field-log" style="display:none">
+                                    <label class="form-label">Log Level</label>
+                                    <select class="form-select" id="rule-log-level">
+                                        <option value="">Default</option>
+                                        <option value="alert">Alert</option>
+                                        <option value="crit">Crit</option>
+                                        <option value="error">Error</option>
+                                        <option value="warning">Warning</option>
+                                        <option value="notice">Notice</option>
+                                        <option value="info">Info</option>
+                                        <option value="debug">Debug</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6 field-reject" style="display:none">
+                                    <label class="form-label">
+                                        Reject With
+                                        <i class="ti ti-help text-muted" data-bs-toggle="tooltip" title="ICMP Error message to send back"></i>
+                                    </label>
+                                    <select class="form-select" id="rule-reject-with">
+                                        <option value="">Default (icmp-port-unreachable)</option>
+                                        <option value="icmp-net-unreachable">icmp-net-unreachable</option>
+                                        <option value="icmp-host-unreachable">icmp-host-unreachable</option>
+                                        <option value="icmp-port-unreachable">icmp-port-unreachable</option>
+                                        <option value="icmp-proto-unreachable">icmp-proto-unreachable</option>
+                                        <option value="icmp-net-prohibited">icmp-net-prohibited</option>
+                                        <option value="icmp-host-prohibited">icmp-host-prohibited</option>
+                                        <option value="icmp-admin-prohibited">icmp-admin-prohibited</option>
+                                    </select>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">Stato Connessione</label>
@@ -221,6 +279,13 @@ function setupEventListeners() {
     document.getElementById('rule-table')?.addEventListener('change', (e) => {
         updateModalChains(e.target.value);
         updateModalActions(e.target.value);
+        toggleActionFields();
+        updateIptablesPreview();
+    });
+
+    // Action change - show/hide specific fields
+    document.getElementById('rule-action')?.addEventListener('change', () => {
+        toggleActionFields();
         updateIptablesPreview();
     });
 
@@ -239,7 +304,8 @@ function setupEventListeners() {
     // Update preview on any field change
     ['rule-chain', 'rule-action', 'rule-protocol', 'rule-port', 'rule-source',
         'rule-destination', 'rule-in-interface', 'rule-out-interface', 'rule-state',
-        'rule-limit-rate', 'rule-limit-burst']
+        'rule-limit-rate', 'rule-limit-burst', 'rule-to-destination', 'rule-to-source',
+        'rule-to-ports', 'rule-log-prefix', 'rule-log-level', 'rule-reject-with']
         .forEach(id => {
             document.getElementById(id)?.addEventListener('change', updateIptablesPreview);
             document.getElementById(id)?.addEventListener('input', updateIptablesPreview);
@@ -292,6 +358,25 @@ function updateModalActions(table) {
 }
 
 /**
+ * Show/Hide fields based on selected action
+ */
+function toggleActionFields() {
+    const action = document.getElementById('rule-action').value;
+
+    // Hide all first
+    document.querySelectorAll('.field-dnat, .field-snat, .field-redirect, .field-log, .field-reject')
+        .forEach(el => el.style.display = 'none');
+
+    // Show specific
+    if (action === 'DNAT') document.querySelectorAll('.field-dnat').forEach(el => el.style.display = 'block');
+    if (action === 'SNAT') document.querySelectorAll('.field-snat').forEach(el => el.style.display = 'block');
+    if (['REDIRECT', 'MASQUERADE'].includes(action)) document.querySelectorAll('.field-redirect').forEach(el => el.style.display = 'block');
+    if (action === 'LOG') document.querySelectorAll('.field-log').forEach(el => el.style.display = 'block');
+    if (action === 'REJECT') document.querySelectorAll('.field-reject').forEach(el => el.style.display = 'block');
+
+}
+
+/**
  * Update iptables command preview
  */
 function updateIptablesPreview() {
@@ -311,6 +396,14 @@ function updateIptablesPreview() {
     const limitRate = document.getElementById('rule-limit-rate')?.value;
     const limitBurst = document.getElementById('rule-limit-burst')?.value;
 
+    // New fields
+    const toDest = document.getElementById('rule-to-destination')?.value;
+    const toSource = document.getElementById('rule-to-source')?.value;
+    const toPorts = document.getElementById('rule-to-ports')?.value;
+    const logPrefix = document.getElementById('rule-log-prefix')?.value;
+    const logLevel = document.getElementById('rule-log-level')?.value;
+    const rejectWith = document.getElementById('rule-reject-with')?.value;
+
     let cmd = `iptables -t ${table} -A ${chain}`;
 
     if (protocol) cmd += ` -p ${protocol}`;
@@ -319,12 +412,28 @@ function updateIptablesPreview() {
     if (inIface) cmd += ` -i ${inIface}`;
     if (outIface) cmd += ` -o ${outIface}`;
     if (state) cmd += ` -m state --state ${state}`;
-    if (port && (protocol === 'tcp' || protocol === 'udp')) cmd += ` --dport ${port}`;
+    if (port && (protocol === 'tcp' || protocol === 'udp')) {
+        if (port.includes(',')) {
+            cmd += ` -m multiport --dports ${port}`;
+        } else {
+            cmd += ` --dport ${port}`;
+        }
+    }
     if (limitRate) {
         cmd += ` -m limit --limit ${limitRate}`;
         if (limitBurst) cmd += ` --limit-burst ${limitBurst}`;
     }
     cmd += ` -j ${action}`;
+
+    // Append action arguments
+    if (action === 'DNAT' && toDest) cmd += ` --to-destination ${toDest}`;
+    if (action === 'SNAT' && toSource) cmd += ` --to-source ${toSource}`;
+    if (['REDIRECT', 'MASQUERADE'].includes(action) && toPorts) cmd += ` --to-ports ${toPorts}`;
+    if (action === 'LOG') {
+        if (logPrefix) cmd += ` --log-prefix "${logPrefix}"`;
+        if (logLevel) cmd += ` --log-level ${logLevel}`;
+    }
+    if (action === 'REJECT' && rejectWith) cmd += ` --reject-with ${rejectWith}`;
 
     preview.textContent = cmd;
 }
@@ -561,6 +670,17 @@ function openRuleModal(rule = null) {
     document.getElementById('rule-enabled').checked = rule?.enabled !== false;
     document.getElementById('rule-comment').value = rule?.comment || '';
 
+    // New fields
+    document.getElementById('rule-to-destination').value = rule?.to_destination || '';
+    document.getElementById('rule-to-source').value = rule?.to_source || '';
+    document.getElementById('rule-to-ports').value = rule?.to_ports || '';
+    document.getElementById('rule-log-prefix').value = rule?.log_prefix || '';
+    document.getElementById('rule-log-level').value = rule?.log_level || '';
+    document.getElementById('rule-reject-with').value = rule?.reject_with || '';
+
+    // Trigger visibility update
+    toggleActionFields();
+
     // Show/hide port field based on protocol
     const proto = rule?.protocol || '';
     document.getElementById('port-group').style.display = (proto === 'tcp' || proto === 'udp') ? 'block' : 'none';
@@ -592,6 +712,14 @@ async function handleRuleSubmit(e) {
         limit_burst: parseInt(document.getElementById('rule-limit-burst').value) || null,
         enabled: document.getElementById('rule-enabled').checked,
         comment: document.getElementById('rule-comment').value || null,
+
+        // New fields
+        to_destination: document.getElementById('rule-to-destination').value || null,
+        to_source: document.getElementById('rule-to-source').value || null,
+        to_ports: document.getElementById('rule-to-ports').value || null,
+        log_prefix: document.getElementById('rule-log-prefix').value || null,
+        log_level: document.getElementById('rule-log-level').value || null,
+        reject_with: document.getElementById('rule-reject-with').value || null,
     };
 
     try {
