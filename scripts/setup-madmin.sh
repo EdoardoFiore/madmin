@@ -67,6 +67,10 @@ apt-get install -y python3-pip python3-venv python3-dev python3-full
 log_info "Installazione Nginx..."
 apt-get install -y nginx
 
+# Pre-configurazione iptables-persistent (silent install)
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+
 # Utility
 apt-get install -y curl git iptables iptables-persistent
 
