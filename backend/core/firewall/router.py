@@ -20,6 +20,7 @@ from .models import (
     ModuleChainResponse
 )
 from .orchestrator import firewall_orchestrator
+from .iptables import IptablesError
 
 router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
 
@@ -123,10 +124,16 @@ async def create_rule(
             detail=f"Action for table {table} must be one of: {', '.join(table_actions[table])}"
         )
     
-    rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
-    await session.commit()
-    
-    return _rule_to_response(rule)
+    try:
+        rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
+        await session.commit()
+        return _rule_to_response(rule)
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.patch("/rules/{rule_id}", response_model=MachineFirewallRuleResponse)
@@ -148,12 +155,19 @@ async def update_rule(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
     
-    rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)
-    if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    
-    await session.commit()
-    return _rule_to_response(rule)
+    try:
+        rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)
+        if not rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        
+        await session.commit()
+        return _rule_to_response(rule)
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -168,11 +182,18 @@ async def delete_rule(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid rule ID format")
     
-    success = await firewall_orchestrator.delete_rule(session, rule_uuid)
-    if not success:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    
-    await session.commit()
+    try:
+        success = await firewall_orchestrator.delete_rule(session, rule_uuid)
+        if not success:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        
+        await session.commit()
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.put("/rules/order")
@@ -184,10 +205,16 @@ async def update_rule_order(
     """Update the order of firewall rules."""
     order_list = [{"id": o.id, "order": o.order} for o in orders]
     
-    await firewall_orchestrator.reorder_rules(session, order_list)
-    await session.commit()
-    
-    return {"status": "ok", "message": f"Updated order for {len(orders)} rules"}
+    try:
+        await firewall_orchestrator.reorder_rules(session, order_list)
+        await session.commit()
+        return {"status": "ok", "message": f"Updated order for {len(orders)} rules"}
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 class SingleRuleReorder(SQLModel):
@@ -210,45 +237,52 @@ async def reorder_single_rule(
     from sqlalchemy import select
     from .models import MachineFirewallRule
     
-    # Get the rule
-    result = await session.execute(
-        select(MachineFirewallRule).where(MachineFirewallRule.id == rule_uuid)
-    )
-    rule = result.scalar_one_or_none()
-    if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    
-    old_order = rule.order
-    new_order = data.new_order
-    
-    # Get all rules in the same chain/table
-    chain_rules = await session.execute(
-        select(MachineFirewallRule)
-        .where(MachineFirewallRule.chain == rule.chain)
-        .where(MachineFirewallRule.table_name == rule.table_name)
-        .order_by(MachineFirewallRule.order)
-    )
-    all_rules = list(chain_rules.scalars().all())
-    
-    # Shift rules
-    if new_order < old_order:
-        # Moving up
-        for r in all_rules:
-            if r.id != rule.id and r.order >= new_order and r.order < old_order:
-                r.order += 1
-    else:
-        # Moving down
-        for r in all_rules:
-            if r.id != rule.id and r.order > old_order and r.order <= new_order:
-                r.order -= 1
-    
-    rule.order = new_order
-    await session.commit()
-    
-    # Re-apply rules
-    await firewall_orchestrator.apply_rules(session)
-    
-    return {"status": "ok", "message": f"Rule moved to position {new_order}"}
+    try:
+        # Get the rule
+        result = await session.execute(
+            select(MachineFirewallRule).where(MachineFirewallRule.id == rule_uuid)
+        )
+        rule = result.scalar_one_or_none()
+        if not rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        
+        old_order = rule.order
+        new_order = data.new_order
+        
+        # Get all rules in the same chain/table
+        chain_rules = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.chain == rule.chain)
+            .where(MachineFirewallRule.table_name == rule.table_name)
+            .order_by(MachineFirewallRule.order)
+        )
+        all_rules = list(chain_rules.scalars().all())
+        
+        # Shift rules
+        if new_order < old_order:
+            # Moving up
+            for r in all_rules:
+                if r.id != rule.id and r.order >= new_order and r.order < old_order:
+                    r.order += 1
+        else:
+            # Moving down
+            for r in all_rules:
+                if r.id != rule.id and r.order > old_order and r.order <= new_order:
+                    r.order -= 1
+        
+        rule.order = new_order
+        await session.commit()
+        
+        # Re-apply rules
+        await firewall_orchestrator.apply_rules(session)
+        
+        return {"status": "ok", "message": f"Rule moved to position {new_order}"}
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.post("/apply")
@@ -257,15 +291,18 @@ async def apply_rules(
     session: AsyncSession = Depends(get_session)
 ):
     """Manually trigger rule application to iptables."""
-    success = await firewall_orchestrator.apply_rules(session)
-    
-    if not success:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to apply some rules. Check server logs."
-        )
-    
-    return {"status": "ok", "message": "Rules applied successfully"}
+    try:
+        success = await firewall_orchestrator.apply_rules(session)
+        
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to apply some rules. Check server logs."
+            )
+        
+        return {"status": "ok", "message": "Rules applied successfully"}
+    except IptablesError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # --- Module Chain Endpoints (for admin/debug) ---

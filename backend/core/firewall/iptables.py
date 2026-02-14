@@ -81,6 +81,39 @@ def get_madmin_chain(table: str, parent_chain: str) -> Optional[str]:
 # LOW-LEVEL IPTABLES OPERATIONS
 # =============================================================================
 
+class IptablesError(Exception):
+    """Custom exception for iptables errors."""
+    pass
+
+
+def parse_iptables_error(stderr: str) -> str:
+    """
+    Parse iptables/nftables error messages into user-friendly text.
+    """
+    err = stderr.lower()
+    
+    # Common nftables/iptables-nft errors
+    if "rule_append failed (invalid argument)" in err:
+        if "dnat" in err and "output" in err:
+            return "DNAT not allowed in OUTPUT chain (use NAT/OUTPUT)"
+        return "Parametri non validi per questa chain/tabella. Controlla la compatibilità (es. DNAT solo in NAT)."
+    
+    if "no chain/target/match by that name" in err:
+        return "Chain, target o modulo non trovato. Verifica che la chain esista."
+        
+    if "bad rule (does a matching rule exist in that chain?)" in err:
+        return "Regola non trovata (impossibile eliminare/modificare)."
+        
+    if "permission denied" in err:
+        return "Permesso negato (richiede privilegi di root)."
+        
+    if "resource temporarily unavailable" in err:
+        return "Risorsa non disponibile (lock di iptables attivo? Riprova)."
+
+    # Fallback: clean up the system error
+    return f"Errore iptables: {stderr.strip()}"
+
+
 def _run_iptables(table: str, args: List[str], suppress_errors: bool = False) -> Tuple[bool, str]:
     """
     Execute an iptables command.
@@ -88,10 +121,13 @@ def _run_iptables(table: str, args: List[str], suppress_errors: bool = False) ->
     Args:
         table: iptables table (filter, nat, mangle, raw)
         args: Command arguments (without 'iptables -t table')
-        suppress_errors: If True, don't log errors
+        suppress_errors: If True, don't log errors and don't raise exceptions
     
     Returns:
         Tuple of (success: bool, output: str)
+        
+    Raises:
+        IptablesError: If command fails and suppress_errors is False
     """
     if settings.mock_iptables:
         cmd_str = f"iptables -t {table} {' '.join(args)}"
@@ -112,9 +148,16 @@ def _run_iptables(table: str, args: List[str], suppress_errors: bool = False) ->
         if not suppress_errors:
             logger.error(f"iptables command failed: {' '.join(cmd)}")
             logger.error(f"Error: {e.stderr}")
+            
+            # Parse and raise user-friendly error
+            friendly_msg = parse_iptables_error(e.stderr)
+            raise IptablesError(friendly_msg)
+            
         return False, e.stderr
     except FileNotFoundError:
         logger.error("iptables command not found")
+        if not suppress_errors:
+            raise IptablesError("Comando iptables non trovato sul sistema")
         return False, "iptables not found"
 
 
