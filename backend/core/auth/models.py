@@ -69,6 +69,9 @@ class User(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: Optional[datetime] = Field(default=None)
     
+    # Preferences (JSON string)
+    preferences: str = Field(default="{}")
+    
     # Relationships
     permissions: List[Permission] = Relationship(back_populates="users", link_model=UserPermission)
     
@@ -105,6 +108,11 @@ class UserUpdate(SQLModel):
     totp_enforced: Optional[bool] = None  # Force 2FA on user
 
 
+class UserPreferencesUpdate(SQLModel):
+    """Schema for updating user preferences."""
+    preferences: str
+
+
 class UserResponse(SQLModel):
     """Schema for user API responses (excludes password)."""
     id: uuid.UUID
@@ -117,6 +125,7 @@ class UserResponse(SQLModel):
     created_at: datetime
     last_login: Optional[datetime]
     permissions: List[str] = []  # List of permission slugs
+    preferences: str = "{}"
 
 
 class PermissionResponse(SQLModel):

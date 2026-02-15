@@ -17,6 +17,7 @@ from .models import (
     Token, 
     UserCreate, 
     UserUpdate, 
+    UserPreferencesUpdate,
     UserResponse, 
     PermissionResponse,
     User
@@ -178,7 +179,38 @@ async def get_current_user_info(
         totp_enforced=current_user.totp_enforced,
         created_at=current_user.created_at,
         last_login=current_user.last_login,
-        permissions=[p.slug for p in current_user.permissions] if not current_user.is_superuser else ["*"]
+        permissions=[p.slug for p in current_user.permissions] if not current_user.is_superuser else ["*"],
+        preferences=current_user.preferences
+    )
+
+
+@router.patch("/me/preferences", response_model=UserResponse)
+async def update_user_preferences(
+    preferences_data: UserPreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Update current user preferences.
+    Preferences are stored as a JSON string.
+    """
+    current_user.preferences = preferences_data.preferences
+    session.add(current_user)
+    await session.commit()
+    await session.refresh(current_user)
+    
+    return UserResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        is_active=current_user.is_active,
+        is_superuser=current_user.is_superuser,
+        totp_enabled=current_user.totp_enabled,
+        totp_enforced=current_user.totp_enforced,
+        created_at=current_user.created_at,
+        last_login=current_user.last_login,
+        permissions=[p.slug for p in current_user.permissions] if not current_user.is_superuser else ["*"],
+        preferences=current_user.preferences
     )
 
 

@@ -12,6 +12,32 @@ import { setPageActions, checkPermission } from '../app.js';
 let rules = [];
 let editingRule = null;
 let currentTable = 'filter';
+let userPreferences = {};
+let visibleColumns = [];
+
+// Column definitions
+const ALL_COLUMNS = {
+    protocol: { label: 'Protocollo' },
+    source: { label: 'Sorgente' },
+    destination: { label: 'Destinazione' },
+    port: { label: 'Porta' },
+    state: { label: 'Stato' },
+    in_interface: { label: 'In Iface' },
+    out_interface: { label: 'Out Iface' },
+    to_destination: { label: 'To Dest', tables: ['nat'] },
+    to_source: { label: 'To Source', tables: ['nat'] },
+    to_ports: { label: 'To Ports', tables: ['nat'] },
+    log_prefix: { label: 'Log Prefix' },
+    limit_rate: { label: 'Rate Limit' },
+    comment: { label: 'Commento' }
+};
+
+const DEFAULT_COLUMNS = {
+    filter: ['protocol', 'source', 'destination', 'port', 'state', 'comment'],
+    nat: ['protocol', 'source', 'destination', 'port', 'to_destination', 'to_source', 'comment'],
+    mangle: ['protocol', 'source', 'destination', 'port', 'state', 'comment'],
+    raw: ['protocol', 'source', 'destination', 'port', 'state', 'comment']
+};
 
 // Table definitions with their chains
 const TABLES = {
@@ -47,14 +73,24 @@ export async function render(container) {
                 <!-- Table Selection -->
                 <div class="card mb-3">
                     <div class="card-body py-2">
-                        <div class="btn-group w-100" role="group">
-                            ${Object.entries(TABLES).map(([key, t]) => `
-                                <input type="radio" class="btn-check" name="fw-table" id="table-${key}" 
-                                       value="${key}" ${key === 'filter' ? 'checked' : ''}>
-                                <label class="btn btn-outline-primary" for="table-${key}">
-                                    <i class="ti ti-${t.icon} me-1"></i>${t.label}
-                                </label>
-                            `).join('')}
+                        <div class="d-flex gap-2">
+                            <div class="btn-group flex-grow-1" role="group">
+                                ${Object.entries(TABLES).map(([key, t]) => `
+                                    <input type="radio" class="btn-check" name="fw-table" id="table-${key}" 
+                                           value="${key}" ${key === 'filter' ? 'checked' : ''}>
+                                    <label class="btn btn-outline-primary" for="table-${key}">
+                                        <i class="ti ti-${t.icon} me-1"></i>${t.label}
+                                    </label>
+                                `).join('')}
+                            </div>
+                            <div class="dropdown">
+                                <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                                    <i class="ti ti-columns me-2"></i>Colonne
+                                </button>
+                                <div class="dropdown-menu dropdown-menu-end" id="column-selector">
+                                    <!-- Populated dynamically -->
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -253,7 +289,114 @@ iptables -t filter -A INPUT -j ACCEPT
 
     setupEventListeners();
     renderChainTabs();
+    await loadUserPreferences(); // Load preferences before rules
     await loadRules();
+}
+
+/**
+ * Load user preferences from API
+ */
+async function loadUserPreferences() {
+    try {
+        const user = await apiGet('/auth/me');
+        if (user.preferences) {
+            userPreferences = JSON.parse(user.preferences);
+        }
+    } catch (e) {
+        console.error('Failed to load preferences:', e);
+        userPreferences = {};
+    }
+    updateVisibleColumns();
+}
+
+/**
+ * Save user preferences to API
+ */
+async function saveUserPreferences() {
+    try {
+        await apiPatch('/auth/me/preferences', {
+            preferences: JSON.stringify(userPreferences)
+        });
+    } catch (e) {
+        showToast('Errore salvataggio preferenze', 'error');
+    }
+}
+
+/**
+ * Get visible columns ordered by definition and filtered by current table
+ */
+function getOrderedVisibleColumns() {
+    return Object.keys(ALL_COLUMNS).filter(key => {
+        // Must be enabled by user
+        if (!visibleColumns.includes(key)) return false;
+
+        // Must be valid for current table
+        const colDef = ALL_COLUMNS[key];
+        if (colDef.tables && !colDef.tables.includes(currentTable)) return false;
+
+        return true;
+    });
+}
+
+/**
+ * Render the column selector dropdown
+ */
+function renderColumnSelector() {
+    const container = document.getElementById('column-selector');
+    if (!container) return;
+
+    // Filter columns valid for current table
+    const validColumns = Object.entries(ALL_COLUMNS).filter(([key, col]) => {
+        if (col.tables && !col.tables.includes(currentTable)) return false;
+        return true;
+    });
+
+    container.innerHTML = validColumns.map(([key, col]) => `
+        <label class="dropdown-item">
+            <input class="form-check-input m-0 me-2 column-toggle" type="checkbox" 
+                   value="${key}" ${visibleColumns.includes(key) ? 'checked' : ''}>
+            ${col.label}
+        </label>
+    `).join('');
+
+    // Re-attach listeners
+    container.querySelectorAll('.column-toggle').forEach(chk => {
+        chk.addEventListener('change', handleColumnToggle);
+    });
+}
+
+/**
+ * Handle column visibility toggle
+ */
+async function handleColumnToggle(e) {
+    const column = e.target.value;
+    const checked = e.target.checked;
+
+    if (checked) {
+        if (!visibleColumns.includes(column)) visibleColumns.push(column);
+    } else {
+        visibleColumns = visibleColumns.filter(c => c !== column);
+    }
+
+    // Save to user preferences
+    if (!userPreferences.firewall_columns) userPreferences.firewall_columns = {};
+    userPreferences.firewall_columns[currentTable] = visibleColumns;
+
+    // Save to backend (fire and forget)
+    saveUserPreferences();
+
+    // Re-render
+    renderRules();
+}
+
+/**
+ * Update visible columns based on current table and preferences
+ */
+function updateVisibleColumns() {
+    const tablePrefs = userPreferences.firewall_columns || {};
+    // Ensure we start with a copy of defaults if nothing saved
+    visibleColumns = [...(tablePrefs[currentTable] || DEFAULT_COLUMNS[currentTable])];
+    renderColumnSelector();
 }
 
 /**
@@ -270,6 +413,7 @@ function setupEventListeners() {
     document.querySelectorAll('input[name="fw-table"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             currentTable = e.target.value;
+            updateVisibleColumns(); // Update columns for new table
             renderChainTabs();
             renderRules();
         });
@@ -476,6 +620,8 @@ function renderRules() {
             continue;
         }
 
+        const orderedColumns = getOrderedVisibleColumns();
+
         container.innerHTML = `
             <div class="table-responsive">
                 <table class="table table-vcenter firewall-table" id="table-${chain.toLowerCase()}">
@@ -483,17 +629,12 @@ function renderRules() {
                         <tr>
                             <th class="rule-order" style="width: 60px;">#</th>
                             <th>Azione</th>
-                            <th>Protocollo</th>
-                            <th>Sorgente</th>
-                            <th>Destinazione</th>
-                            <th>Porta</th>
-                            <th>Stato</th>
-                            <th>Commento</th>
+                            ${orderedColumns.map(col => `<th>${ALL_COLUMNS[col].label}</th>`).join('')}
                             <th class="rule-actions"></th>
                         </tr>
                     </thead>
                     <tbody class="sortable-container" data-chain="${chain}">
-                        ${chainRules.map(rule => renderRuleRow(rule)).join('')}
+                        ${chainRules.map(rule => renderRuleRow(rule, orderedColumns)).join('')}
                     </tbody>
                 </table>
             </div>
@@ -508,9 +649,12 @@ function renderRules() {
 /**
  * Render a single rule row
  */
-function renderRuleRow(rule) {
+function renderRuleRow(rule, orderedColumns) {
     const canManage = checkPermission('firewall.manage');
     const disabledClass = rule.enabled ? '' : 'disabled';
+
+    // If orderedColumns not provided (legacy call?), fallback
+    const columns = orderedColumns || getOrderedVisibleColumns();
 
     return `
         <tr class="${disabledClass} draggable-row" data-id="${rule.id}" draggable="${canManage}">
@@ -519,12 +663,7 @@ function renderRuleRow(rule) {
                 <span class="ms-1">${rule.order + 1}</span>
             </td>
             <td>${actionBadge(rule.action)}</td>
-            <td>${rule.protocol ? `<code>${rule.protocol}</code>` : '<span class="text-muted">tutti</span>'}</td>
-            <td>${rule.source ? `<code>${escapeHtml(rule.source)}</code>` : '<span class="text-muted">-</span>'}</td>
-            <td>${rule.destination ? `<code>${escapeHtml(rule.destination)}</code>` : '<span class="text-muted">-</span>'}</td>
-            <td>${rule.port ? `<code>${escapeHtml(rule.port)}</code>` : '<span class="text-muted">-</span>'}</td>
-            <td>${rule.state ? `<span class="badge bg-secondary-lt">${rule.state}</span>` : '-'}</td>
-            <td class="text-muted">${rule.comment ? escapeHtml(rule.comment) : '-'}</td>
+            ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
             <td class="rule-actions">
                 ${canManage ? `
                     <div class="btn-group btn-group-sm">
@@ -539,6 +678,29 @@ function renderRuleRow(rule) {
             </td>
         </tr>
     `;
+}
+
+/**
+ * Render a cell based on column type
+ */
+function renderCell(rule, column) {
+    const esc = escapeHtml;
+    switch (column) {
+        case 'protocol': return rule.protocol ? `<code>${rule.protocol}</code>` : '<span class="text-muted">tutti</span>';
+        case 'source': return rule.source ? `<code>${esc(rule.source)}</code>` : '<span class="text-muted">-</span>';
+        case 'destination': return rule.destination ? `<code>${esc(rule.destination)}</code>` : '<span class="text-muted">-</span>';
+        case 'port': return rule.port ? `<code>${esc(rule.port)}</code>` : '<span class="text-muted">-</span>';
+        case 'state': return rule.state ? `<span class="badge bg-secondary-lt">${rule.state}</span>` : '-';
+        case 'comment': return `<span class="text-muted">${rule.comment ? esc(rule.comment) : '-'}</span>`;
+        case 'in_interface': return rule.in_interface ? `<code>${esc(rule.in_interface)}</code>` : '-';
+        case 'out_interface': return rule.out_interface ? `<code>${esc(rule.out_interface)}</code>` : '-';
+        case 'to_destination': return rule.to_destination ? `<code>${esc(rule.to_destination)}</code>` : '-';
+        case 'to_source': return rule.to_source ? `<code>${esc(rule.to_source)}</code>` : '-';
+        case 'to_ports': return rule.to_ports ? `<code>${esc(rule.to_ports)}</code>` : '-';
+        case 'log_prefix': return rule.log_prefix ? `<code>${esc(rule.log_prefix)}</code>` : '-';
+        case 'limit_rate': return rule.limit_rate ? `${esc(rule.limit_rate)}${rule.limit_burst ? ` (burst: ${rule.limit_burst})` : ''}` : '-';
+        default: return '-';
+    }
 }
 
 /**
