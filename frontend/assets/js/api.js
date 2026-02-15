@@ -62,9 +62,13 @@ export async function apiFetch(endpoint, options = {}) {
     }
 
     const headers = {
-        'Content-Type': 'application/json',
         ...options.headers,
     };
+
+    // Set default Content-Type if not present and body is not FormData
+    if (!headers['Content-Type'] && !(options.body instanceof FormData)) {
+        headers['Content-Type'] = 'application/json';
+    }
 
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;

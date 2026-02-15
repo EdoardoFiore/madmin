@@ -5,7 +5,7 @@
  * Displays rules with drag-and-drop ordering and iptables preview.
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../api.js';
+import { apiGet, apiPost, apiPatch, apiDelete, apiPut, apiFetch } from '../api.js';
 import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../utils.js';
 import { setPageActions, checkPermission } from '../app.js';
 
@@ -61,9 +61,17 @@ const TABLE_ACTIONS = {
 export async function render(container) {
     if (checkPermission('firewall.manage')) {
         setPageActions(`
-            <button class="btn btn-primary" id="btn-add-rule">
-                <i class="ti ti-plus me-2"></i>Nuova Regola
-            </button>
+            <div class="btn-list">
+                <button class="btn btn-outline-secondary" id="btn-export">
+                    <i class="ti ti-download me-2"></i>Esporta
+                </button>
+                <button class="btn btn-outline-secondary" id="btn-import">
+                    <i class="ti ti-upload me-2"></i>Importa
+                </button>
+                <button class="btn btn-primary" id="btn-add-rule">
+                    <i class="ti ti-plus me-2"></i>Nuova Regola
+                </button>
+            </div>
         `);
     }
 
@@ -285,6 +293,62 @@ iptables -t filter -A INPUT -j ACCEPT
                 </div>
             </div>
         </div>
+        <!-- Import Modal -->
+        <div class="modal modal-blur fade" id="import-modal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Importa Regole Firewall</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <form id="import-form">
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label required">File di configurazione (JSON)</label>
+                                <input type="file" class="form-control" id="import-file" accept=".json" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label required">Modalità Importazione</label>
+                                <div class="form-selectgroup">
+                                    <label class="form-selectgroup-item">
+                                        <input type="radio" name="import-mode" value="append" class="form-selectgroup-input" checked>
+                                        <span class="form-selectgroup-label d-flex align-items-center p-3">
+                                            <span class="me-3">
+                                                <span class="form-selectgroup-check"></span>
+                                            </span>
+                                            <span class="form-selectgroup-label-content">
+                                                <span class="form-selectgroup-title strong mb-1">Aggiungi</span>
+                                                <span class="d-block text-muted">Aggiunge le regole a quelle esistenti</span>
+                                            </span>
+                                        </span>
+                                    </label>
+                                    <label class="form-selectgroup-item">
+                                        <input type="radio" name="import-mode" value="replace" class="form-selectgroup-input">
+                                        <span class="form-selectgroup-label d-flex align-items-center p-3">
+                                            <span class="me-3">
+                                                <span class="form-selectgroup-check"></span>
+                                            </span>
+                                            <span class="form-selectgroup-label-content">
+                                                <span class="form-selectgroup-title strong mb-1">Sostituisci</span>
+                                                <span class="d-block text-muted">Cancella tutto e ripristina dal backup</span>
+                                            </span>
+                                        </span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="alert alert-warning">
+                                <i class="ti ti-alert-triangle me-2"></i>
+                                Attenzione: l'importazione applicherà immediatamente le regole al firewall.
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
+                            <button type="submit" class="btn btn-primary">Importa</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
     `;
 
     setupEventListeners();
@@ -292,6 +356,73 @@ iptables -t filter -A INPUT -j ACCEPT
     await loadUserPreferences(); // Load preferences before rules
     await loadRules();
 }
+
+/**
+ * Handle export rules
+ */
+async function handleExport() {
+    try {
+        const response = await apiFetch('/firewall/export');
+        if (!response.ok) throw new Error('Export failed');
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'firewall_rules.json';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        a.remove();
+    } catch (error) {
+        showToast('Errore durante l\'esportazione: ' + error.message, 'error');
+    }
+}
+
+/**
+ * Handle import rules
+ */
+async function handleImportSubmit(e) {
+    e.preventDefault();
+
+    const fileInput = document.getElementById('import-file');
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const mode = document.querySelector('input[name="import-mode"]:checked').value;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        // Use apiFetch directly to handle FormData (apiPost forces JSON)
+        const response = await apiFetch(`/firewall/import?mode=${mode}`, {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Import failed' }));
+            throw new Error(error.detail || 'Import failed');
+        }
+
+        const result = await response.json();
+
+        showToast(result.message || 'Regole importate con successo', 'success');
+
+        if (result.errors && result.errors.length > 0) {
+            console.warn('Import warnings:', result.errors);
+            showToast(`Importato con ${result.errors.length} errori/avvisi (vedi console)`, 'warning');
+        }
+
+        bootstrap.Modal.getInstance(document.getElementById('import-modal')).hide();
+        await loadRules();
+    } catch (error) {
+        showToast('Errore importazione: ' + error.message, 'error');
+    }
+}
+
+
 
 /**
  * Load user preferences from API
@@ -403,6 +534,15 @@ function updateVisibleColumns() {
  * Setup event listeners
  */
 function setupEventListeners() {
+    // Export/Import buttons
+    document.getElementById('btn-export')?.addEventListener('click', handleExport);
+    document.getElementById('btn-import')?.addEventListener('click', () => {
+        new bootstrap.Modal(document.getElementById('import-modal')).show();
+    });
+
+    // Import form submit
+    document.getElementById('import-form')?.addEventListener('submit', handleImportSubmit);
+
     // Add rule button
     document.getElementById('btn-add-rule')?.addEventListener('click', () => openRuleModal());
 

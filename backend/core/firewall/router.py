@@ -4,7 +4,10 @@ MADMIN Firewall Router
 API endpoints for machine firewall management.
 """
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+import json
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Query
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import SQLModel
 import uuid
@@ -191,6 +194,9 @@ async def delete_rule(
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        await session.rollback()
+        raise
     except Exception as e:
         await session.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -303,6 +309,92 @@ async def apply_rules(
         return {"status": "ok", "message": "Rules applied successfully"}
     except IptablesError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/export", response_class=JSONResponse)
+async def export_rules(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Export all firewall rules as JSON.
+    """
+    rules = await firewall_orchestrator.get_all_rules(session)
+    export_data = [_rule_to_response(r).model_dump() for r in rules]
+    
+    return JSONResponse(
+        content=jsonable_encoder(export_data),
+        headers={"Content-Disposition": "attachment; filename=firewall_rules.json"}
+    )
+
+
+@router.post("/import", status_code=status.HTTP_200_OK)
+async def import_rules(
+    file: UploadFile = File(...),
+    mode: str = Query("append", description="Import mode: 'append' (default) or 'replace'"),
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Import firewall rules from JSON file.
+    Mode:
+    - append: Add rules to existing ones (default)
+    - replace: Delete all existing rules and add new ones
+    """
+    if mode not in ["append", "replace"]:
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'append' or 'replace'")
+    
+    try:
+        content = await file.read()
+        rules_data = json.loads(content)
+        
+        if not isinstance(rules_data, list):
+            raise HTTPException(status_code=400, detail="Invalid file format: expected a list of rules")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON file")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading file: {str(e)}")
+        
+    try:
+        # If replace mode, clear existing rules
+        if mode == "replace":
+            await firewall_orchestrator.delete_all_rules(session)
+            
+        applied_count = 0
+        errors = []
+        
+        for i, rule_dict in enumerate(rules_data):
+            try:
+                # Sanitize input (remove ID, dates, etc to treat as new rule)
+                clean_data = {
+                    k: v for k, v in rule_dict.items() 
+                    if k in MachineFirewallRuleCreate.model_fields
+                }
+                
+                # Check required fields
+                if "chain" not in clean_data or "action" not in clean_data:
+                    errors.append(f"Rule #{i+1}: Missing chain or action")
+                    continue
+                    
+                # Create rule (validates data implicitly via Pydantic model in orchestrator or here)
+                # Orchestrator create_rule accepts dict and creates model
+                await firewall_orchestrator.create_rule(session, clean_data)
+                applied_count += 1
+                
+            except Exception as e:
+                errors.append(f"Rule #{i+1}: {str(e)}")
+        
+        await session.commit()
+        
+        return {
+            "status": "ok", 
+            "message": f"Imported {applied_count} rules", 
+            "errors": errors if errors else None
+        }
+        
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 
 # --- Module Chain Endpoints (for admin/debug) ---

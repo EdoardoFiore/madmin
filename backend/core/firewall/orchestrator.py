@@ -330,10 +330,22 @@ class FirewallOrchestrator:
             session.add(r)
         
         # Apply rules
+        return await self.apply_rules(session)
+        
+    async def delete_all_rules(self, session: AsyncSession) -> bool:
+        """
+        Delete ALL firewall rules.
+        Used for full config restore/replace.
+        """
+        await session.execute(delete(MachineFirewallRule))
+        await session.flush()
+        
+        # Apply (clear) rules
         await self.apply_rules(session)
         
-        logger.info(f"Deleted firewall rule {rule_id}")
+        logger.info("Deleted ALL firewall rules")
         return True
+
     
     async def reorder_rules(
         self,
