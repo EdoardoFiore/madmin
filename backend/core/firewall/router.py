@@ -153,7 +153,7 @@ async def update_rule(
         raise HTTPException(status_code=400, detail="Invalid rule ID format")
     
     # Filter out None values
-    update_data = {k: v for k, v in rule_data.model_dump().items() if v is not None}
+    update_data = rule_data.model_dump(exclude_unset=True)
     
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")

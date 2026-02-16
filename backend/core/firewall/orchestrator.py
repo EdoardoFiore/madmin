@@ -289,7 +289,7 @@ class FirewallOrchestrator:
         
         # Update fields
         for key, value in rule_data.items():
-            if hasattr(rule, key) and value is not None:
+            if hasattr(rule, key):
                 setattr(rule, key, value)
         
         rule.updated_at = datetime.utcnow()
