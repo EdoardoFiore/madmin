@@ -55,6 +55,21 @@ log_info "Fase 1/6: Installazione dipendenze di sistema..."
 
 apt-get update
 
+# Utility di base (necessarie su Ubuntu Minimal dove non sono preinstallate)
+log_info "Installazione utility di base..."
+apt-get install -y \
+    cron \
+    iproute2 \
+    openssl \
+    debconf-utils \
+    build-essential \
+    libmagic-dev \
+    libffi-dev \
+    sudo \
+    net-tools \
+    curl \
+    git
+
 # PostgreSQL
 log_info "Installazione PostgreSQL..."
 apt-get install -y postgresql postgresql-contrib libpq-dev
@@ -71,8 +86,12 @@ apt-get install -y nginx
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 
-# Utility
-apt-get install -y curl git iptables iptables-persistent
+# Firewall
+apt-get install -y iptables iptables-persistent
+
+# Abilita e avvia cron daemon
+systemctl enable cron
+systemctl start cron
 
 log_success "Dipendenze installate."
 
