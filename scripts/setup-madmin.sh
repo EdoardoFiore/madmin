@@ -15,6 +15,28 @@ log_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 log_error() { echo -e "\033[31m[ERROR]\033[0m $1" >&2; }
 log_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 
+# --- Attendi rilascio lock apt/dpkg ---
+wait_for_apt() {
+    local max_wait=120
+    local waited=0
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+          fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+          fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+        if [ $waited -eq 0 ]; then
+            log_warning "Un altro processo sta usando apt/dpkg (probabilmente unattended-upgrades). Attendo..."
+        fi
+        sleep 2
+        waited=$((waited + 2))
+        if [ $waited -ge $max_wait ]; then
+            log_error "Timeout: impossibile ottenere il lock apt dopo ${max_wait}s. Prova: sudo systemctl stop unattended-upgrades && sudo apt-get install -y"
+            exit 1
+        fi
+    done
+    if [ $waited -gt 0 ]; then
+        log_info "Lock apt rilasciato dopo ${waited}s."
+    fi
+}
+
 # --- Banner ---
 print_banner() {
     echo -e "\033[1;36m"
@@ -53,6 +75,7 @@ log_info "Directory del progetto: $PROJECT_DIR"
 # --- Fase 1: Dipendenze di Sistema ---
 log_info "Fase 1/7: Installazione dipendenze di sistema..."
 
+wait_for_apt
 apt-get update
 
 # Utility di base (necessarie su Ubuntu Minimal dove non sono preinstallate)
@@ -311,6 +334,7 @@ print(' '.join(deps))
 
     if [ -n "$APT_DEPS" ]; then
         log_info "  Installazione pacchetti apt: $APT_DEPS"
+        wait_for_apt
         apt-get install -y $APT_DEPS
     fi
 
