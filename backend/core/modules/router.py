@@ -5,8 +5,10 @@ API endpoints for module management.
 Modules are pre-installed (monolithic). Only activation/deactivation is supported.
 """
 import logging
+from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -14,10 +16,12 @@ from pydantic import BaseModel
 from core.database import get_session
 from core.auth.dependencies import require_permission
 from core.auth.models import User
+from config import get_settings
 from .models import InstalledModule
 from .loader import module_loader
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/api/modules", tags=["Modules"])
 
@@ -25,31 +29,15 @@ router = APIRouter(prefix="/api/modules", tags=["Modules"])
 # ============== MODULE MANAGEMENT ==============
 
 
-class ModuleInfo(BaseModel):
-    """Module info returned to frontend."""
-    id: str
-    name: str
-    version: str
-    description: str = ""
-    author: str = ""
-    icon: str = "puzzle"
-    enabled: bool = False
-    activated: bool = False
-    permissions: List[str] = []
-    firewall_chains: int = 0
-
-
-@router.get("/available", response_model=List[ModuleInfo])
+@router.get("/available")
 async def list_available_modules(
     current_user: User = Depends(require_permission("modules.view")),
     session: AsyncSession = Depends(get_session)
 ):
     """
-    List all available modules with their status.
-    Reads from the modules directory and cross-references with DB.
+    List all available modules with their status and details.
     """
-    modules = await module_loader.discover_available_modules(session)
-    return [ModuleInfo(**m) for m in modules]
+    return await module_loader.discover_available_modules(session)
 
 
 @router.get("/menu")
@@ -68,10 +56,7 @@ async def activate_module(
 ):
     """
     Activate a module.
-    
     First activation: runs database migrations and post_install hook.
-    Subsequent activations: just enables the module.
-    Requires application restart to take effect.
     """
     result = await module_loader.activate_module(session, module_id)
     
@@ -88,8 +73,8 @@ async def deactivate_module(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Deactivate a module. Data is preserved.
-    Requires application restart to take effect.
+    Deactivate a module with full cleanup.
+    Removes chains, permissions, and drops module tables.
     """
     result = await module_loader.deactivate_module(session, module_id)
     
@@ -97,6 +82,24 @@ async def deactivate_module(
         raise HTTPException(status_code=400, detail=result.get("error", "Disattivazione fallita"))
     
     return result
+
+
+@router.get("/{module_id}/readme")
+async def get_module_readme(
+    module_id: str,
+    current_user: User = Depends(require_permission("modules.view"))
+):
+    """Get a module's README.md content."""
+    module_path = Path(settings.modules_dir) / module_id / "README.md"
+    
+    if not module_path.exists():
+        raise HTTPException(status_code=404, detail="README non trovato")
+    
+    try:
+        content = module_path.read_text(encoding="utf-8")
+        return {"content": content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============== FIREWALL CHAIN PRIORITY ==============
@@ -157,3 +160,4 @@ async def update_chain_priorities(
     await session.commit()
     
     return {"status": "ok", "message": "Priorità aggiornate. Riavvio richiesto."}
+

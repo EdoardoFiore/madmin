@@ -337,9 +337,9 @@ class ModuleLoader:
                 logger.info(f"Skipping disabled module: {module_id}")
                 continue
             
-            # Skip modules that were never activated
+            # Skip non-active modules (no DB record = available)
             if not db_module:
-                logger.info(f"Skipping never-activated module: {module_id}")
+                logger.info(f"Skipping non-active module: {module_id}")
                 continue
             
             if await self.load_module(app, session, module_id):
@@ -371,10 +371,12 @@ class ModuleLoader:
         module_id: str
     ) -> dict:
         """
-        Activate a module. 
+        Activate a module (clean slate — always treated as first activation).
         
-        First activation: runs DB migrations + post_install hook.
-        Subsequent activations: just sets enabled=true.
+        1. Run database migrations
+        2. Execute post_install hook
+        3. Create DB record
+        4. Register permissions + chains
         
         Returns dict with status info.
         """
@@ -388,7 +390,7 @@ class ModuleLoader:
         if not manifest:
             return {"success": False, "error": "Manifest non valido"}
         
-        # Get or create DB record
+        # Check if already active
         result = await session.execute(
             select(InstalledModule).where(InstalledModule.id == module_id)
         )
@@ -397,48 +399,43 @@ class ModuleLoader:
         if db_module and db_module.enabled:
             return {"success": True, "message": "Modulo già attivo"}
         
-        first_activation = (db_module is None) or (not db_module.activated)
+        # Run database migrations
+        logger.info(f"Activating {module_id} — running migrations")
+        if not await self.run_database_migrations(manifest, module_path, session):
+            return {"success": False, "error": "Migrazione database fallita"}
         
-        if first_activation:
-            # Run database migrations
-            logger.info(f"First activation of {module_id} — running migrations")
-            if not await self.run_database_migrations(manifest, module_path, session):
-                return {"success": False, "error": "Migrazione database fallita"}
-            
-            # Execute post_install hook
-            if manifest.install_hooks.post_install:
-                await self.execute_hook(
-                    manifest.install_hooks.post_install,
-                    module_path,
-                    "post_install"
-                )
-        
-        # Create or update DB record
-        if db_module:
-            db_module.enabled = True
-            db_module.activated = True
-            db_module.version = manifest.version
-            db_module.manifest_json = json.dumps(manifest.model_dump())
-        else:
-            db_module = InstalledModule(
-                id=manifest.id,
-                name=manifest.name,
-                version=manifest.version,
-                description=manifest.description or "",
-                author=manifest.author or "",
-                install_path=str(module_path),
-                manifest_json=json.dumps(manifest.model_dump()),
-                enabled=True,
-                activated=True
+        # Execute post_install hook
+        if manifest.install_hooks.post_install:
+            await self.execute_hook(
+                manifest.install_hooks.post_install,
+                module_path,
+                "post_install"
             )
-            session.add(db_module)
+        
+        # Create DB record
+        db_module = InstalledModule(
+            id=manifest.id,
+            name=manifest.name,
+            version=manifest.version,
+            description=manifest.description or "",
+            author=manifest.author or "",
+            install_path=str(module_path),
+            manifest_json=json.dumps(manifest.model_dump()),
+            enabled=True
+        )
+        session.add(db_module)
+        
+        # Register permissions
+        await self.register_module_permissions(session, module_id, manifest.permissions)
+        
+        # Register firewall chains
+        await self.register_module_chains(session, module_id, manifest)
         
         await session.commit()
         
         logger.info(f"Activated module: {module_id} v{manifest.version}")
         return {
             "success": True,
-            "first_activation": first_activation,
             "message": f"Modulo {manifest.name} attivato. Riavvio richiesto."
         }
     
@@ -448,10 +445,19 @@ class ModuleLoader:
         module_id: str
     ) -> dict:
         """
-        Deactivate a module. Sets enabled=false, preserves all data.
+        Deactivate a module (clean slate):
+        1. Call on_disable hook (module handles its own system cleanup)
+        2. Remove firewall chain records
+        3. Remove permission records
+        4. Drop module DB tables
+        5. Delete InstalledModule record
         
         Returns dict with status info.
         """
+        from sqlalchemy import text, delete
+        from core.firewall.models import ModuleChain
+        from core.auth.models import Permission
+        
         result = await session.execute(
             select(InstalledModule).where(InstalledModule.id == module_id)
         )
@@ -460,16 +466,72 @@ class ModuleLoader:
         if not db_module:
             return {"success": False, "error": f"Modulo '{module_id}' non trovato nel database"}
         
-        if not db_module.enabled:
-            return {"success": True, "message": "Modulo già disabilitato"}
+        module_name = db_module.name
+        module_path = self.modules_dir / module_id
         
-        db_module.enabled = False
+        # 1. Execute on_disable hook FIRST — module cleans its own system resources
+        manifest_path = module_path / "manifest.json"
+        manifest = self._parse_manifest(manifest_path)
+        if manifest and manifest.install_hooks.on_disable:
+            logger.info(f"Running on_disable hook for {module_id}")
+            await self.execute_hook(
+                manifest.install_hooks.on_disable,
+                module_path,
+                "on_disable"
+            )
+        
+        # 2. Remove firewall chain records
+        await session.execute(
+            delete(ModuleChain).where(ModuleChain.module_id == module_id)
+        )
+        logger.info(f"Removed firewall chain records for {module_id}")
+        
+        # 3. Remove permission records
+        await session.execute(
+            delete(Permission).where(Permission.module_id == module_id)
+        )
+        logger.info(f"Removed permission records for {module_id}")
+        
+        # 4. Drop module tables
+        if manifest:
+            try:
+                import importlib.util, inspect
+                models_file = module_path / "models.py"
+                if models_file.exists():
+                    spec = importlib.util.spec_from_file_location(
+                        f"modules.{module_id}.models_cleanup", models_file
+                    )
+                    if spec and spec.loader:
+                        mod = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(mod)
+                        
+                        from sqlmodel import SQLModel as SM
+                        tables_to_drop = []
+                        for name, cls in inspect.getmembers(mod, inspect.isclass):
+                            if issubclass(cls, SM) and hasattr(cls, '__tablename__'):
+                                tconf = getattr(cls, 'model_config', {})
+                                if isinstance(tconf, dict) and tconf.get('table', False):
+                                    tables_to_drop.append(cls.__tablename__)
+                                elif hasattr(cls, '__table__'):
+                                    tables_to_drop.append(cls.__tablename__)
+                        
+                        for table_name in reversed(tables_to_drop):
+                            try:
+                                await session.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+                                logger.info(f"Dropped table: {table_name}")
+                            except Exception as e:
+                                logger.warning(f"Failed to drop table {table_name}: {e}")
+            except Exception as e:
+                logger.warning(f"Error cleaning up tables for {module_id}: {e}")
+        
+        # 5. Delete DB record
+        await session.delete(db_module)
         await session.commit()
         
-        logger.info(f"Deactivated module: {module_id}")
+        logger.info(f"Fully deactivated module: {module_id}")
         return {
             "success": True,
-            "message": f"Modulo {db_module.name} disabilitato. Dati preservati. Riavvio richiesto."
+            "message": f"Modulo {module_name} disattivato e dati rimossi. Riavvio richiesto."
         }
     
     async def discover_available_modules(
@@ -478,7 +540,7 @@ class ModuleLoader:
     ) -> List[Dict[str, Any]]:
         """
         List all modules in the modules directory with their status.
-        Used by the frontend to show available modules with enable/disable toggle.
+        Includes detailed info for the frontend card/detail view.
         """
         available = []
         
@@ -502,6 +564,26 @@ class ModuleLoader:
             )
             db_module = result.scalar_one_or_none()
             
+            # Check for README
+            has_readme = (item / "README.md").exists()
+            
+            # Build chain details
+            chain_details = [
+                {
+                    "name": c.name,
+                    "parent": c.parent,
+                    "table": c.table,
+                    "priority": c.priority
+                }
+                for c in manifest.firewall_chains
+            ]
+            
+            # Build permission details
+            perm_details = [
+                {"slug": p.slug, "description": p.description}
+                for p in manifest.permissions
+            ]
+            
             available.append({
                 "id": manifest.id,
                 "name": manifest.name,
@@ -510,9 +592,14 @@ class ModuleLoader:
                 "author": manifest.author or "",
                 "icon": manifest.menu[0].icon if manifest.menu else "puzzle",
                 "enabled": db_module.enabled if db_module else False,
-                "activated": db_module.activated if db_module else False,
-                "permissions": [p.slug for p in manifest.permissions],
-                "firewall_chains": len(manifest.firewall_chains),
+                "has_readme": has_readme,
+                "permissions": perm_details,
+                "firewall_chains": chain_details,
+                "dependencies": manifest.dependencies,
+                "system_dependencies": {
+                    "apt": manifest.system_dependencies.apt,
+                    "pip": manifest.system_dependencies.pip
+                }
             })
         
         return available

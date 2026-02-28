@@ -23,8 +23,7 @@ class InstalledModule(SQLModel, table=True):
     
     # Installation info
     installed_at: datetime = Field(default_factory=datetime.utcnow)
-    enabled: bool = Field(default=False)
-    activated: bool = Field(default=False)  # True after first activation (migrations run)
+    enabled: bool = Field(default=True)
     
     # Path to module directory
     install_path: str = Field(max_length=255)
@@ -63,13 +62,9 @@ class ModuleSystemDependencies(SQLModel):
 
 
 class ModuleInstallHooks(SQLModel):
-    """Lifecycle hooks for module installation."""
-    pre_install: Optional[str] = None   # e.g., "hooks/pre_install.py"
-    post_install: Optional[str] = None  # e.g., "hooks/post_install.py"
-    pre_uninstall: Optional[str] = None # e.g., "hooks/pre_uninstall.py"
-    post_uninstall: Optional[str] = None # e.g., "hooks/post_uninstall.py"
-    pre_update: Optional[str] = None    # e.g., "hooks/pre_update.py"
-    post_update: Optional[str] = None   # e.g., "hooks/post_update.py"
+    """Lifecycle hooks for module activation/deactivation."""
+    post_install: Optional[str] = None  # e.g., "hooks/post_install.py" — runs on activation
+    on_disable: Optional[str] = None    # e.g., "hooks/on_disable.py" — runs on deactivation
 
 
 class ModuleBackupConfig(SQLModel):

@@ -17,12 +17,8 @@
         "migrations/001_initial.py"
     ],
     "install_hooks": {
-        "pre_install": null,
         "post_install": "hooks/post_install.py",
-        "pre_uninstall": "hooks/pre_uninstall.py",
-        "post_uninstall": null,
-        "pre_update": null,
-        "post_update": "hooks/post_update.py"
+        "on_disable": "hooks/on_disable.py"
     },
     "backend_router": "router.py",
     "static_dir": "static",
