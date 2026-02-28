@@ -51,7 +51,7 @@ log_info "Directory di installazione: $INSTALL_DIR"
 log_info "Directory del progetto: $PROJECT_DIR"
 
 # --- Fase 1: Dipendenze di Sistema ---
-log_info "Fase 1/6: Installazione dipendenze di sistema..."
+log_info "Fase 1/7: Installazione dipendenze di sistema..."
 
 apt-get update
 
@@ -96,7 +96,7 @@ systemctl start cron
 log_success "Dipendenze installate."
 
 # --- Fase 2: Configurazione PostgreSQL ---
-log_info "Fase 2/6: Configurazione PostgreSQL..."
+log_info "Fase 2/7: Configurazione PostgreSQL..."
 
 # Avvia PostgreSQL se non attivo
 systemctl start postgresql
@@ -114,11 +114,10 @@ sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;
 log_success "PostgreSQL configurato (DB: $DB_NAME, User: $DB_USER)"
 
 # --- Fase 3: Deploy Backend ---
-log_info "Fase 3/6: Deploy Backend..."
+log_info "Fase 3/7: Deploy Backend..."
 
 mkdir -p $INSTALL_DIR/backend
 mkdir -p $INSTALL_DIR/backend/modules
-mkdir -p $INSTALL_DIR/backend/staging
 mkdir -p $INSTALL_DIR/data
 
 # Copia file backend
@@ -149,7 +148,7 @@ chmod 600 $INSTALL_DIR/backend/.env
 log_success "Backend deployato."
 
 # --- Fase 4: Deploy Frontend ---
-log_info "Fase 4/6: Deploy Frontend..."
+log_info "Fase 4/7: Deploy Frontend..."
 
 mkdir -p $INSTALL_DIR/frontend
 
@@ -163,7 +162,7 @@ chmod -R 755 $INSTALL_DIR/frontend
 log_success "Frontend deployato."
 
 # --- Fase 5: Configurazione Nginx ---
-log_info "Fase 5/6: Configurazione Nginx..."
+log_info "Fase 5/7: Configurazione Nginx..."
 
 # Rileva IP pubblico
 PUBLIC_IP=$(curl -s https://ifconfig.me 2>/dev/null || echo "localhost")
@@ -259,7 +258,7 @@ systemctl enable nginx
 log_success "Nginx configurato."
 
 # --- Fase 6: Servizio Systemd ---
-log_info "Fase 6/6: Configurazione servizio systemd..."
+log_info "Fase 6/7: Configurazione servizio systemd..."
 
 cat > /etc/systemd/system/madmin.service << EOF
 [Unit]
@@ -284,9 +283,61 @@ log_info "Abilitazione IP Forwarding..."
 echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-madmin.conf
 sysctl -p /etc/sysctl.d/99-madmin.conf
 
-# Avvia servizio
+# Non avviare ancora — prima installiamo le dipendenze dei moduli
 systemctl daemon-reload
 systemctl enable madmin.service
+
+log_success "Servizio systemd configurato."
+
+# --- Fase 7: Dipendenze Moduli (dinamico da manifest.json) ---
+log_info "Fase 7/7: Installazione dipendenze moduli..."
+
+MODULE_COUNT=0
+for manifest in $INSTALL_DIR/backend/modules/*/manifest.json; do
+    [ -f "$manifest" ] || continue
+    MODULE_COUNT=$((MODULE_COUNT + 1))
+
+    MODULE_NAME=$(python3 -c "import json; print(json.load(open('$manifest'))['name'])" 2>/dev/null || echo "Modulo sconosciuto")
+    MODULE_ID=$(python3 -c "import json; print(json.load(open('$manifest'))['id'])" 2>/dev/null || echo "unknown")
+    log_info "Modulo $MODULE_COUNT: $MODULE_NAME ($MODULE_ID)"
+
+    # Dipendenze apt
+    APT_DEPS=$(python3 -c "
+import json
+m = json.load(open('$manifest'))
+deps = m.get('system_dependencies', {}).get('apt', [])
+print(' '.join(deps))
+" 2>/dev/null)
+
+    if [ -n "$APT_DEPS" ]; then
+        log_info "  Installazione pacchetti apt: $APT_DEPS"
+        apt-get install -y $APT_DEPS
+    fi
+
+    # Dipendenze pip
+    PIP_DEPS=$(python3 -c "
+import json
+m = json.load(open('$manifest'))
+deps = m.get('system_dependencies', {}).get('pip', [])
+print(' '.join(deps))
+" 2>/dev/null)
+
+    if [ -n "$PIP_DEPS" ]; then
+        log_info "  Installazione pacchetti pip: $PIP_DEPS"
+        $INSTALL_DIR/venv/bin/pip install $PIP_DEPS
+    fi
+
+    log_success "  $MODULE_NAME — dipendenze installate."
+done
+
+if [ $MODULE_COUNT -eq 0 ]; then
+    log_warning "Nessun modulo trovato in $INSTALL_DIR/backend/modules/"
+else
+    log_success "$MODULE_COUNT moduli rilevati, dipendenze installate (moduli disabilitati di default)."
+fi
+
+# --- Avvio servizio ---
+log_info "Avvio servizio MADMIN..."
 systemctl start madmin.service
 
 # Attendi che il backend sia pronto

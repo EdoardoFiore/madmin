@@ -9,6 +9,9 @@ from pydantic import Field
 from typing import List
 from functools import lru_cache
 
+# Versione MADMIN (usata per export/import config cross-versione)
+MADMIN_VERSION = "1.0.0"
+
 
 class Settings(BaseSettings):
     """Application configuration loaded from environment variables."""
@@ -44,10 +47,6 @@ class Settings(BaseSettings):
     modules_dir: str = Field(
         default="/opt/madmin/backend/modules",
         description="Directory for installed modules"
-    )
-    staging_dir: str = Field(
-        default="/opt/madmin/backend/staging",
-        description="Directory for development modules"
     )
     
     # Feature flags

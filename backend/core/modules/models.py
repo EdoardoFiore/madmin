@@ -23,7 +23,8 @@ class InstalledModule(SQLModel, table=True):
     
     # Installation info
     installed_at: datetime = Field(default_factory=datetime.utcnow)
-    enabled: bool = Field(default=True)
+    enabled: bool = Field(default=False)
+    activated: bool = Field(default=False)  # True after first activation (migrations run)
     
     # Path to module directory
     install_path: str = Field(max_length=255)
@@ -122,18 +123,5 @@ class ModuleManifest(SQLModel):
     backup: Optional[ModuleBackupConfig] = None
 
 
-class InstalledModuleResponse(SQLModel):
-    """Response schema for installed module."""
-    id: str
-    name: str
-    version: str
-    description: Optional[str]
-    author: Optional[str]
-    installed_at: datetime
-    enabled: bool
 
 
-class ModuleInstallRequest(SQLModel):
-    """Request to install a module from URL or staging."""
-    source: str  # "staging" or URL
-    module_id: Optional[str] = None  # Required if source is "staging"

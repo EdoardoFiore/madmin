@@ -1,0 +1,60 @@
+{
+    "id": "dhcp",
+    "name": "DHCP Server",
+    "version": "1.0.1",
+    "description": "ISC DHCP server management with multi-interface subnets, pools, static reservations and live lease monitoring",
+    "author": "MADMIN Team",
+    "system_dependencies": {
+        "apt": [
+            "isc-dhcp-server"
+        ],
+        "pip": [
+            "jinja2>=3.0"
+        ]
+    },
+    "database_migrations": [
+        "migrations/001_initial.py"
+    ],
+    "install_hooks": {
+        "pre_install": null,
+        "post_install": "hooks/post_install.py",
+        "pre_uninstall": "hooks/pre_uninstall.py",
+        "post_uninstall": null,
+        "pre_update": null,
+        "post_update": null
+    },
+    "backend_router": "router.py",
+    "static_dir": "static",
+    "frontend_entry": "views/main.js",
+    "permissions": [
+        {
+            "slug": "dhcp.view",
+            "description": "Visualizza configurazione DHCP"
+        },
+        {
+            "slug": "dhcp.manage",
+            "description": "Gestione subnets, pool e opzioni DHCP"
+        },
+        {
+            "slug": "dhcp.reservations",
+            "description": "Gestione prenotazioni statiche (host)"
+        }
+    ],
+    "menu": [
+        {
+            "label": "DHCP Server",
+            "icon": "https://www.svgrepo.com/show/472739/network.svg",
+            "route": "#dhcp"
+        }
+    ],
+    "firewall_chains": [],
+    "backup": {
+        "external_paths": [
+            "/etc/dhcp"
+        ],
+        "restore_hooks": {
+            "post_restore": "hooks/post_install.py"
+        }
+    },
+    "dependencies": []
+}

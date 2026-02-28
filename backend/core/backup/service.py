@@ -121,16 +121,7 @@ def backup_config_files(backup_path: str) -> bool:
             )
             logger.info(f"Backed up {modules_dir}")
         
-        # Backup staging modules directory
-        staging_dir = "/opt/madmin/backend/staging"
-        if os.path.exists(staging_dir) and os.listdir(staging_dir):
-            shutil.copytree(
-                staging_dir, 
-                os.path.join(config_dir, "staging"),
-                dirs_exist_ok=True
-            )
-            logger.info(f"Backed up {staging_dir}")
-        
+
         # Backup module external_paths from manifests
         backup_module_external_paths(backup_path)
         
@@ -151,10 +142,9 @@ def backup_module_external_paths(backup_path: str):
     external_dir = os.path.join(backup_path, "external")
     os.makedirs(external_dir, exist_ok=True)
     
-    # Check both modules and staging directories
+    # Check modules directory
     module_dirs = [
-        "/opt/madmin/backend/modules",
-        "/opt/madmin/backend/staging"
+        "/opt/madmin/backend/modules"
     ]
     
     for modules_base in module_dirs:
@@ -719,7 +709,7 @@ def restore_modules(backup_path: str) -> dict:
     Returns dict with counts of restored modules.
     """
     import shutil
-    result = {"modules": 0, "staging": 0}
+    result = {"modules": 0}
     
     config_dir = os.path.join(backup_path, "config")
     
@@ -736,18 +726,6 @@ def restore_modules(backup_path: str) -> dict:
                 result["modules"] += 1
                 logger.info(f"Restored module: {item}")
     
-    # Restore staging modules
-    backup_staging = os.path.join(config_dir, "staging")
-    if os.path.exists(backup_staging):
-        dest = "/opt/madmin/backend/staging"
-        os.makedirs(dest, exist_ok=True)
-        for item in os.listdir(backup_staging):
-            src = os.path.join(backup_staging, item)
-            dst = os.path.join(dest, item)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-                result["staging"] += 1
-                logger.info(f"Restored staging module: {item}")
     
     return result
 
@@ -768,8 +746,8 @@ def restore_external_paths(backup_path: str) -> int:
     count = 0
     config_dir = os.path.join(backup_path, "config")
     
-    # Check manifests in both modules and staging from backup
-    for subdir in ["modules", "staging"]:
+    # Check manifests in modules from backup
+    for subdir in ["modules"]:
         modules_dir = os.path.join(config_dir, subdir)
         if not os.path.exists(modules_dir):
             continue
@@ -826,7 +804,6 @@ def preview_backup(archive_path: str) -> dict:
         "has_database": False,
         "config_files": [],
         "modules": [],
-        "staging": [],
         "external_paths": []
     }
     
@@ -843,10 +820,6 @@ def preview_backup(archive_path: str) -> dict:
                             module = sub.split("/")[1] if "/" in sub else sub
                             if module and module not in result["modules"]:
                                 result["modules"].append(module)
-                        elif sub.startswith("staging/"):
-                            module = sub.split("/")[1] if "/" in sub else sub.replace("staging/", "")
-                            if module and module not in result["staging"]:
-                                result["staging"].append(module)
                         elif not "/" in sub:
                             result["config_files"].append(sub)
                 elif "/external/" in member:
@@ -891,7 +864,6 @@ async def restore_backup(archive_path: str) -> dict:
         "success": False,
         "database_restored": False,
         "modules_restored": 0,
-        "staging_restored": 0,
         "external_restored": 0,
         "errors": []
     }
@@ -918,7 +890,6 @@ async def restore_backup(archive_path: str) -> dict:
         # 2. Restore modules
         modules_result = restore_modules(backup_path)
         result["modules_restored"] = modules_result["modules"]
-        result["staging_restored"] = modules_result["staging"]
         
         # 3. Restore external paths
         external_count = restore_external_paths(backup_path)

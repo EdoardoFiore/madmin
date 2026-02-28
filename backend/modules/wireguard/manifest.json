@@ -1,0 +1,84 @@
+{
+    "id": "wireguard",
+    "name": "WireGuard VPN",
+    "version": "1.3.3",
+    "description": "WireGuard VPN instance and client management with firewall groups and multi-instance support",
+    "author": "MADMIN Team",
+    "system_dependencies": {
+        "apt": [
+            "wireguard",
+            "wireguard-tools",
+            "qrencode"
+        ],
+        "pip": [
+            "qrcode>=7.3",
+            "pillow>=9.0"
+        ]
+    },
+    "database_migrations": [
+        "migrations/001_initial.py"
+    ],
+    "install_hooks": {
+        "pre_install": null,
+        "post_install": "hooks/post_install.py",
+        "pre_uninstall": "hooks/pre_uninstall.py",
+        "post_uninstall": null,
+        "pre_update": null,
+        "post_update": "hooks/post_update.py"
+    },
+    "backend_router": "router.py",
+    "static_dir": "static",
+    "frontend_entry": "views/main.js",
+    "permissions": [
+        {
+            "slug": "wireguard.view",
+            "description": "Visualizza istanze WireGuard"
+        },
+        {
+            "slug": "wireguard.manage",
+            "description": "Crea/modifica istanze WireGuard"
+        },
+        {
+            "slug": "wireguard.clients",
+            "description": "Gestione client VPN"
+        },
+        {
+            "slug": "wireguard.groups",
+            "description": "Gestione gruppi firewall"
+        }
+    ],
+    "menu": [
+        {
+            "label": "WireGuard",
+            "icon": "https://www.svgrepo.com/show/520310/wireguard.svg",
+            "route": "#wireguard"
+        }
+    ],
+    "firewall_chains": [
+        {
+            "name": "MOD_WG_INPUT",
+            "parent": "INPUT",
+            "priority": 50
+        },
+        {
+            "name": "MOD_WG_FORWARD",
+            "parent": "FORWARD",
+            "priority": 50
+        },
+        {
+            "name": "MOD_WG_NAT",
+            "parent": "POSTROUTING",
+            "table": "nat",
+            "priority": 50
+        }
+    ],
+    "backup": {
+        "external_paths": [
+            "/etc/wireguard"
+        ],
+        "restore_hooks": {
+            "post_restore": "hooks/post_restore.py"
+        }
+    },
+    "dependencies": []
+}
