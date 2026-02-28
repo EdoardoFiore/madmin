@@ -56,14 +56,20 @@ async def activate_module(
 ):
     """
     Activate a module.
-    First activation: runs database migrations and post_install hook.
+    Runs database migrations and post_install hook.
     """
-    result = await module_loader.activate_module(session, module_id)
-    
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "Attivazione fallita"))
-    
-    return result
+    try:
+        result = await module_loader.activate_module(session, module_id)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Attivazione fallita"))
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error activating module {module_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Errore imprevisto durante l'attivazione: {str(e)}")
 
 
 @router.post("/{module_id}/deactivate")
@@ -76,12 +82,18 @@ async def deactivate_module(
     Deactivate a module with full cleanup.
     Removes chains, permissions, and drops module tables.
     """
-    result = await module_loader.deactivate_module(session, module_id)
-    
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("error", "Disattivazione fallita"))
-    
-    return result
+    try:
+        result = await module_loader.deactivate_module(session, module_id)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "Disattivazione fallita"))
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error deactivating module {module_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Errore imprevisto durante la disattivazione: {str(e)}")
 
 
 @router.get("/{module_id}/readme")

@@ -388,56 +388,71 @@ class ModuleLoader:
         
         manifest = self._parse_manifest(manifest_path)
         if not manifest:
-            return {"success": False, "error": "Manifest non valido"}
+            return {"success": False, "error": f"Manifest del modulo '{module_id}' non valido o corrotto"}
         
-        # Check if already active
-        result = await session.execute(
-            select(InstalledModule).where(InstalledModule.id == module_id)
-        )
-        db_module = result.scalar_one_or_none()
-        
-        if db_module and db_module.enabled:
-            return {"success": True, "message": "Modulo già attivo"}
-        
-        # Run database migrations
-        logger.info(f"Activating {module_id} — running migrations")
-        if not await self.run_database_migrations(manifest, module_path, session):
-            return {"success": False, "error": "Migrazione database fallita"}
-        
-        # Execute post_install hook
-        if manifest.install_hooks.post_install:
-            await self.execute_hook(
-                manifest.install_hooks.post_install,
-                module_path,
-                "post_install"
+        try:
+            # Check if already active
+            result = await session.execute(
+                select(InstalledModule).where(InstalledModule.id == module_id)
             )
+            db_module = result.scalar_one_or_none()
+            
+            if db_module and db_module.enabled:
+                return {"success": True, "message": "Modulo già attivo"}
+            
+            # Run database migrations
+            logger.info(f"Activating {module_id} — running migrations")
+            if not await self.run_database_migrations(manifest, module_path, session):
+                return {"success": False, "error": f"Migrazione database fallita per il modulo '{manifest.name}'"}
+            
+            # Execute post_install hook
+            if manifest.install_hooks.post_install:
+                hook_ok = await self.execute_hook(
+                    manifest.install_hooks.post_install,
+                    module_path,
+                    "post_install"
+                )
+                if not hook_ok:
+                    logger.warning(f"post_install hook for {module_id} returned failure, continuing")
+            
+            # Create DB record
+            db_module = InstalledModule(
+                id=manifest.id,
+                name=manifest.name,
+                version=manifest.version,
+                description=manifest.description or "",
+                author=manifest.author or "",
+                install_path=str(module_path),
+                manifest_json=json.dumps(manifest.model_dump()),
+                enabled=True
+            )
+            session.add(db_module)
+            await session.flush()  # Flush so FK constraints are satisfied
+            
+            # Register permissions
+            await self.register_module_permissions(session, module_id, manifest.permissions)
+            
+            # Register firewall chains
+            await self.register_module_chains(session, module_id, manifest)
+            
+            await session.commit()
+            
+            logger.info(f"Activated module: {module_id} v{manifest.version}")
+            return {
+                "success": True,
+                "message": f"Modulo {manifest.name} attivato. Riavvio richiesto."
+            }
         
-        # Create DB record
-        db_module = InstalledModule(
-            id=manifest.id,
-            name=manifest.name,
-            version=manifest.version,
-            description=manifest.description or "",
-            author=manifest.author or "",
-            install_path=str(module_path),
-            manifest_json=json.dumps(manifest.model_dump()),
-            enabled=True
-        )
-        session.add(db_module)
-        
-        # Register permissions
-        await self.register_module_permissions(session, module_id, manifest.permissions)
-        
-        # Register firewall chains
-        await self.register_module_chains(session, module_id, manifest)
-        
-        await session.commit()
-        
-        logger.info(f"Activated module: {module_id} v{manifest.version}")
-        return {
-            "success": True,
-            "message": f"Modulo {manifest.name} attivato. Riavvio richiesto."
-        }
+        except Exception as e:
+            logger.error(f"Error activating module {module_id}: {e}", exc_info=True)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "error": f"Errore durante l'attivazione del modulo '{module_id}': {str(e)}"
+            }
     
     async def deactivate_module(
         self,
@@ -468,52 +483,54 @@ class ModuleLoader:
         
         module_name = db_module.name
         module_path = self.modules_dir / module_id
+        errors = []  # Track non-fatal errors during cleanup
         
-        # 1. Execute on_disable hook FIRST — module cleans its own system resources
-        manifest_path = module_path / "manifest.json"
-        manifest = self._parse_manifest(manifest_path)
-        if manifest and manifest.install_hooks.on_disable:
-            logger.info(f"Running on_disable hook for {module_id}")
-            await self.execute_hook(
-                manifest.install_hooks.on_disable,
-                module_path,
-                "on_disable"
-            )
-        
-        # 2. Remove firewall chain records
-        await session.execute(
-            delete(ModuleChain).where(ModuleChain.module_id == module_id)
-        )
-        logger.info(f"Removed firewall chain records for {module_id}")
-        
-        # 3. Remove permission records
-        await session.execute(
-            delete(Permission).where(Permission.module_id == module_id)
-        )
-        logger.info(f"Removed permission records for {module_id}")
-        
-        # 4. Drop module tables
-        if manifest:
+        try:
+            # 1. Execute on_disable hook FIRST — module cleans its own system resources
+            manifest_path = module_path / "manifest.json"
+            manifest = self._parse_manifest(manifest_path)
+            if manifest and manifest.install_hooks.on_disable:
+                logger.info(f"Running on_disable hook for {module_id}")
+                hook_ok = await self.execute_hook(
+                    manifest.install_hooks.on_disable,
+                    module_path,
+                    "on_disable"
+                )
+                if not hook_ok:
+                    errors.append("Hook on_disable ha riportato errori (pulizia di sistema potenzialmente incompleta)")
+            
+            # 2. Remove firewall chain records
             try:
-                import importlib.util, inspect
-                models_file = module_path / "models.py"
-                if models_file.exists():
-                    spec = importlib.util.spec_from_file_location(
-                        f"modules.{module_id}.models_cleanup", models_file
-                    )
-                    if spec and spec.loader:
-                        mod = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(mod)
+                await session.execute(
+                    delete(ModuleChain).where(ModuleChain.module_id == module_id)
+                )
+                logger.info(f"Removed firewall chain records for {module_id}")
+            except Exception as e:
+                logger.error(f"Failed to remove chain records for {module_id}: {e}")
+                errors.append(f"Rimozione chain firewall fallita: {e}")
+            
+            # 3. Remove permission records
+            try:
+                await session.execute(
+                    delete(Permission).where(Permission.module_id == module_id)
+                )
+                logger.info(f"Removed permission records for {module_id}")
+            except Exception as e:
+                logger.error(f"Failed to remove permissions for {module_id}: {e}")
+                errors.append(f"Rimozione permessi fallita: {e}")
+            
+            # 4. Drop module tables (parse models.py as text to avoid MetaData conflicts)
+            if manifest:
+                try:
+                    import re
+                    models_file = module_path / "models.py"
+                    if models_file.exists():
+                        models_text = models_file.read_text()
+                        tables_to_drop = re.findall(
+                            r'__tablename__\s*=\s*["\'](\w+)["\']', models_text
+                        )
                         
-                        from sqlmodel import SQLModel as SM
-                        tables_to_drop = []
-                        for name, cls in inspect.getmembers(mod, inspect.isclass):
-                            if issubclass(cls, SM) and hasattr(cls, '__tablename__'):
-                                tconf = getattr(cls, 'model_config', {})
-                                if isinstance(tconf, dict) and tconf.get('table', False):
-                                    tables_to_drop.append(cls.__tablename__)
-                                elif hasattr(cls, '__table__'):
-                                    tables_to_drop.append(cls.__tablename__)
+                        logger.info(f"Tables to drop for {module_id}: {tables_to_drop}")
                         
                         for table_name in reversed(tables_to_drop):
                             try:
@@ -521,18 +538,38 @@ class ModuleLoader:
                                 logger.info(f"Dropped table: {table_name}")
                             except Exception as e:
                                 logger.warning(f"Failed to drop table {table_name}: {e}")
-            except Exception as e:
-                logger.warning(f"Error cleaning up tables for {module_id}: {e}")
+                                errors.append(f"Drop tabella '{table_name}' fallito: {e}")
+                except Exception as e:
+                    logger.warning(f"Error cleaning up tables for {module_id}: {e}")
+                    errors.append(f"Errore pulizia tabelle: {e}")
+            
+            # 5. Delete DB record
+            await session.delete(db_module)
+            await session.commit()
+            
+            logger.info(f"Fully deactivated module: {module_id}")
+            
+            message = f"Modulo {module_name} disattivato e dati rimossi. Riavvio richiesto."
+            if errors:
+                message += f" Attenzione: {len(errors)} avviso/i durante la pulizia."
+                logger.warning(f"Deactivation warnings for {module_id}: {errors}")
+            
+            return {
+                "success": True,
+                "message": message,
+                "warnings": errors if errors else None
+            }
         
-        # 5. Delete DB record
-        await session.delete(db_module)
-        await session.commit()
-        
-        logger.info(f"Fully deactivated module: {module_id}")
-        return {
-            "success": True,
-            "message": f"Modulo {module_name} disattivato e dati rimossi. Riavvio richiesto."
-        }
+        except Exception as e:
+            logger.error(f"Error deactivating module {module_id}: {e}", exc_info=True)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "error": f"Errore durante la disattivazione del modulo '{module_id}': {str(e)}"
+            }
     
     async def discover_available_modules(
         self,

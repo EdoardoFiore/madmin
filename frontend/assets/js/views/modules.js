@@ -27,19 +27,17 @@ export async function render(container) {
     const canManage = checkPermission('modules.manage');
 
     container.innerHTML = `
-        <div class="page-header d-flex justify-content-between align-items-center mb-4">
-            <div>
-                <h2 class="page-title mb-1">
-                    <i class="ti ti-puzzle me-2"></i>Gestione Moduli
-                </h2>
-                <p class="text-muted mb-0">Attiva o disattiva i moduli disponibili nel sistema.</p>
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-puzzle me-2"></i>Gestione Moduli</h3>
             </div>
-        </div>
-
-        <div id="modules-grid" class="row g-3 mb-4">
-            <div class="col-12 text-center py-4">
-                <div class="spinner-border spinner-border-sm"></div>
-                <p class="text-muted mt-2">Caricamento moduli...</p>
+            <div class="card-body">
+                <div id="modules-grid" class="row g-3">
+                    <div class="col-12 text-center py-4">
+                        <div class="spinner-border spinner-border-sm"></div>
+                        <p class="text-muted mt-2">Caricamento moduli...</p>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -183,11 +181,15 @@ window._confirmActivate = async (moduleId, moduleName) => {
     try {
         const result = await apiPost(`/modules/${moduleId}/activate`);
         showToast(result.message || 'Modulo attivato', 'success');
-        await loadModules();
-        await loadModuleChains();
+        if (result.warnings && result.warnings.length > 0) {
+            showToast(`Avvisi: ${result.warnings.join('; ')}`, 'warning');
+        }
     } catch (e) {
-        showToast(e.message || 'Attivazione fallita', 'error');
-        await loadModules();
+        const detail = e?.response?.detail || e?.detail || e.message || 'Attivazione fallita';
+        showToast(detail, 'error');
+    } finally {
+        // Always refresh list and restore button
+        try { await loadModules(); await loadModuleChains(); } catch (_) { }
     }
 };
 
@@ -228,11 +230,14 @@ window._confirmDeactivate = async (moduleId, moduleName) => {
     try {
         const result = await apiPost(`/modules/${moduleId}/deactivate`);
         showToast(result.message || 'Modulo disattivato', 'success');
-        await loadModules();
-        await loadModuleChains();
+        if (result.warnings && result.warnings.length > 0) {
+            showToast(`Avvisi: ${result.warnings.join('; ')}`, 'warning');
+        }
     } catch (e) {
-        showToast(e.message || 'Disattivazione fallita', 'error');
-        await loadModules();
+        const detail = e?.response?.detail || e?.detail || e.message || 'Disattivazione fallita';
+        showToast(detail, 'error');
+    } finally {
+        try { await loadModules(); await loadModuleChains(); } catch (_) { }
     }
 };
 
@@ -461,9 +466,9 @@ function renderFirewallPriority() {
     container.innerHTML = `
         <div class="card">
             <div class="card-header">
-                <h4 class="card-title mb-0">
+                <h3 class="card-title mb-0">
                     <i class="ti ti-shield me-2"></i>Priorità Firewall Moduli
-                </h4>
+                </h3>
             </div>
             <div class="card-body">
                 <p class="text-muted small mb-3">
