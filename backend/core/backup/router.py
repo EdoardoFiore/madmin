@@ -35,18 +35,30 @@ router = APIRouter(prefix="/api/backup", tags=["Backup"])
 
 @router.post("/export")
 async def export_configuration(
+    download: bool = False,
     current_user: User = Depends(require_permission("settings.manage")),
     session: AsyncSession = Depends(get_session)
 ):
-    """Export full configuration as downloadable tar.gz archive."""
+    """Export full configuration as tar.gz archive.
+    
+    Without ?download=true: saves locally and returns JSON with filename.
+    With ?download=true: returns the file for browser download.
+    """
     try:
         archive_path = await export_config(session)
         
-        return FileResponse(
-            path=archive_path,
-            filename=os.path.basename(archive_path),
-            media_type="application/gzip"
-        )
+        if download:
+            return FileResponse(
+                path=archive_path,
+                filename=os.path.basename(archive_path),
+                media_type="application/gzip"
+            )
+        
+        return {
+            "success": True,
+            "filename": os.path.basename(archive_path),
+            "path": str(archive_path)
+        }
     except Exception as e:
         logger.error(f"Export failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Esportazione fallita: {str(e)}")
@@ -165,6 +177,49 @@ async def preview_scp_file(
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     
+    return result
+
+
+# ============== RESTORE FROM LOCAL BACKUP ==============
+
+
+@router.post("/restore/preview/{filename}")
+async def preview_local_backup(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.view"))
+):
+    """Preview a local backup file for restore."""
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+    
+    file_path = os.path.join(BACKUP_DIR, safe_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File non trovato")
+    
+    result = await preview_config(file_path)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+
+@router.post("/restore/{filename}")
+async def restore_local_backup(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Restore configuration from a local backup file."""
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+    
+    file_path = os.path.join(BACKUP_DIR, safe_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File non trovato nella cartella backup")
+    
+    result = await import_config(session, file_path)
     return result
 
 

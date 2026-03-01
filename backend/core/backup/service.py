@@ -487,7 +487,7 @@ def list_local_backups() -> List[dict]:
         stat = os.stat(filepath)
         backups.append({
             "filename": filename,
-            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            "size_bytes": stat.st_size,
             "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
         })
     
@@ -508,7 +508,7 @@ def list_import_files() -> List[dict]:
         files.append({
             "filename": filename,
             "path": filepath,
-            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            "size_bytes": stat.st_size,
             "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
         })
     
@@ -601,7 +601,7 @@ def list_remote_backups_sftp(
             if entry.filename.endswith(".tar.gz"):
                 files.append({
                     "filename": entry.filename,
-                    "size_mb": round(entry.st_size / (1024 * 1024), 2),
+                    "size_bytes": entry.st_size,
                     "mtime": datetime.fromtimestamp(entry.st_mtime).isoformat() if entry.st_mtime else None
                 })
         
@@ -636,7 +636,7 @@ def list_remote_backups_ftp(
                 size = int(parts[4]) if len(parts) > 4 else 0
                 result.append({
                     "filename": parts[-1],
-                    "size_mb": round(size / (1024 * 1024), 2),
+                    "size_bytes": size,
                     "mtime": None
                 })
         

@@ -216,50 +216,21 @@ export async function render(container) {
                         <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup & Migrazione</h3>
                         <div class="card-actions">
                             ${canManage ? `
-                            <button class="btn btn-success btn-sm me-2" id="export-config">
-                                <i class="ti ti-download me-1"></i>Esporta Configurazione
-                            </button>
-                            <button class="btn btn-primary btn-sm" id="trigger-backup">
-                                <i class="ti ti-cloud-upload me-1"></i>Backup Programmato
+                            <div class="btn-group">
+                                <button class="btn btn-primary btn-sm" id="backup-local-btn">
+                                    <i class="ti ti-device-floppy me-1"></i>Backup Locale
+                                </button>
+                                <button class="btn btn-cyan btn-sm" id="backup-remote-btn">
+                                    <i class="ti ti-cloud-upload me-1"></i>Backup Remoto
+                                </button>
+                            </div>
+                            <button class="btn btn-warning btn-sm ms-2" id="open-import-modal-btn">
+                                <i class="ti ti-file-import me-1"></i>Ripristina...
                             </button>
                             ` : ''}
                         </div>
                     </div>
                     <div class="card-body">
-                        <!-- Import Section -->
-                        ${canManage ? `
-                        <div class="row g-3 mb-4">
-                            <div class="col-md-6">
-                                <h4 class="mb-2"><i class="ti ti-upload me-2"></i>Importa Configurazione</h4>
-                                <div class="border border-2 border-dashed rounded-3 p-4 text-center" id="import-dropzone"
-                                     style="cursor: pointer; transition: all 0.2s;">
-                                    <i class="ti ti-file-upload" style="font-size: 2rem; color: var(--tblr-primary);"></i>
-                                    <p class="mt-2 mb-1 text-muted">Trascina un file .tar.gz o clicca per selezionare</p>
-                                    <small class="text-muted">Esportato da un'altra istanza MADMIN</small>
-                                    <input type="file" id="import-file-input" accept=".tar.gz" class="d-none">
-                                </div>
-                                <div id="import-progress" class="d-none mt-2">
-                                    <div class="progress">
-                                        <div class="progress-bar progress-bar-indeterminate"></div>
-                                    </div>
-                                    <small class="text-muted">Importazione in corso...</small>
-                                </div>
-                            </div>
-                            <div class="col-md-6">
-                                <h4 class="mb-2"><i class="ti ti-server me-2"></i>File da SCP</h4>
-                                <p class="text-muted small mb-2">
-                                    Carica file via SCP in <code>/opt/madmin/data/imports/</code>
-                                </p>
-                                <div id="scp-files-list">
-                                    <div class="text-muted small">Caricamento...</div>
-                                </div>
-                            </div>
-                        </div>
-                        <hr>
-                        ` : ''}
-                        
-                        <!-- Scheduled Backup Settings -->
-                        <h4 class="mb-3"><i class="ti ti-clock me-2"></i>Backup Programmato</h4>
                         <!-- Last backup status -->
                         <div class="alert alert-info mb-3" id="backup-status-alert">
                             <div class="d-flex align-items-center">
@@ -267,7 +238,9 @@ export async function render(container) {
                                 <span id="backup-last-status">Caricamento...</span>
                             </div>
                         </div>
-                        
+
+                        <!-- Scheduled Backup Settings -->
+                        <h4 class="mb-3"><i class="ti ti-clock me-2"></i>Backup Programmato</h4>
                         <div class="row g-3">
                             <div class="col-md-2">
                                 <label class="form-check form-switch">
@@ -323,9 +296,9 @@ export async function render(container) {
                             </div>
                         </div>
                         
-                        <!-- Backup History -->
+                        <!-- Local Backup History -->
                         <hr class="my-4">
-                        <h4 class="mb-3"><i class="ti ti-history me-2"></i>Storico Export</h4>
+                        <h4 class="mb-3"><i class="ti ti-history me-2"></i>Backup Locali</h4>
                         <div class="table-responsive">
                             <table class="table table-vcenter">
                                 <thead>
@@ -366,6 +339,47 @@ export async function render(container) {
                                     <tr><td colspan="4" class="text-center text-muted">Caricamento...</td></tr>
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Import/Restore Modal -->
+            <div class="modal modal-blur fade" id="modal-import-config" tabindex="-1" role="dialog" aria-hidden="true">
+                <div class="modal-dialog modal-dialog-centered" role="document">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="ti ti-file-import me-2"></i>Ripristina Configurazione</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <!-- Upload -->
+                            <h4 class="mb-2">Carica file</h4>
+                            <div class="border border-2 border-dashed rounded-3 p-3 text-center mb-3" id="import-dropzone"
+                                 style="cursor: pointer; transition: all 0.2s;">
+                                <i class="ti ti-file-upload" style="font-size: 1.5rem; color: var(--tblr-primary);"></i>
+                                <p class="mt-1 mb-0 text-muted small">Trascina un file .tar.gz o clicca per selezionare</p>
+                                <input type="file" id="import-file-input" accept=".tar.gz" class="d-none">
+                            </div>
+
+                            <!-- SCP Files -->
+                            <h4 class="mb-2"><i class="ti ti-server me-1"></i>File da SCP</h4>
+                            <p class="text-muted small mb-2">
+                                Carica via SCP in <code>/opt/madmin/data/imports/</code>
+                            </p>
+                            <div id="scp-files-list">
+                                <div class="text-muted small">Caricamento...</div>
+                            </div>
+
+                            <div id="import-progress" class="d-none mt-3">
+                                <div class="progress">
+                                    <div class="progress-bar progress-bar-indeterminate"></div>
+                                </div>
+                                <small class="text-muted">Importazione in corso...</small>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">Chiudi</button>
                         </div>
                     </div>
                 </div>
@@ -844,27 +858,53 @@ function setupEventListeners() {
         }
     });
 
-    // Trigger manual backup
-    document.getElementById('trigger-backup')?.addEventListener('click', async () => {
-        const btn = document.getElementById('trigger-backup');
+    // Backup Locale - exports and saves on server
+    document.getElementById('backup-local-btn')?.addEventListener('click', async () => {
+        const btn = document.getElementById('backup-local-btn');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Backup in corso...';
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Backup...';
         btn.disabled = true;
 
         try {
-            const result = await apiPost('/backup/run', {});
-            if (result.success) {
-                showToast('Backup completato con successo!', 'success');
-                await loadBackupHistory();
-            } else {
-                showToast('Backup completato con errori: ' + result.errors.join(', '), 'warning');
-            }
+            const result = await apiPost('/backup/export', {});
+            showToast('Backup locale completato!', 'success');
+            await loadBackupHistory();
         } catch (e) {
             showToast('Errore backup: ' + e.message, 'error');
         } finally {
             btn.innerHTML = originalText;
             btn.disabled = false;
         }
+    });
+
+    // Backup Remoto - exports + uploads to configured remote
+    document.getElementById('backup-remote-btn')?.addEventListener('click', async () => {
+        const btn = document.getElementById('backup-remote-btn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Backup...';
+        btn.disabled = true;
+
+        try {
+            const result = await apiPost('/backup/run', {});
+            if (result.success) {
+                showToast('Backup remoto completato!', 'success');
+                await loadBackupHistory();
+                await loadRemoteBackupHistory();
+            } else {
+                showToast('Backup con errori: ' + (result.errors || []).join(', '), 'warning');
+            }
+        } catch (e) {
+            showToast('Errore backup remoto: ' + e.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
+
+    // Open Import/Restore Modal
+    document.getElementById('open-import-modal-btn')?.addEventListener('click', () => {
+        const modal = new bootstrap.Modal(document.getElementById('modal-import-config'));
+        modal.show();
     });
 
     // Network - Save Port
@@ -980,6 +1020,13 @@ function setupEventListeners() {
     });
 }
 
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+
 async function loadBackupHistory() {
     const tbody = document.getElementById('backup-history-body');
     if (!tbody) return;
@@ -988,16 +1035,19 @@ async function loadBackupHistory() {
         const history = await apiGet('/backup/history');
 
         if (history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun export disponibile</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun backup disponibile</td></tr>';
             return;
         }
 
         tbody.innerHTML = history.map(backup => `
             <tr>
                 <td><i class="ti ti-file-zip me-2"></i>${backup.filename}</td>
-                <td>${backup.size_mb} MB</td>
+                <td>${formatFileSize(backup.size_bytes)}</td>
                 <td>${new Date(backup.created_at).toLocaleString('it-IT')}</td>
                 <td class="text-end">
+                    <button class="btn btn-sm btn-ghost-warning" onclick="restoreFromLocalBackup('${backup.filename}')" title="Ripristina">
+                        <i class="ti ti-refresh"></i>
+                    </button>
                     <button class="btn btn-sm btn-ghost-primary" onclick="downloadLocalBackup('${backup.filename}')" title="Scarica">
                         <i class="ti ti-download"></i>
                     </button>
@@ -1012,52 +1062,9 @@ async function loadBackupHistory() {
     }
 }
 
-// ============== EXPORT ==============
+// ============== EXPORT & IMPORT SETUP ==============
 
 function setupExportImportListeners() {
-    // Export config download
-    document.getElementById('export-config')?.addEventListener('click', async () => {
-        const btn = document.getElementById('export-config');
-        const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Esportazione...';
-        btn.disabled = true;
-
-        try {
-            const response = await fetch('/api/backup/export', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
-            });
-
-            if (!response.ok) {
-                const err = await response.json();
-                throw new Error(err.detail || 'Esportazione fallita');
-            }
-
-            const blob = await response.blob();
-            const contentDisposition = response.headers.get('content-disposition');
-            const filename = contentDisposition
-                ? contentDisposition.split('filename=')[1]?.replace(/"/g, '')
-                : 'madmin-config.tar.gz';
-
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-
-            showToast('Configurazione esportata con successo', 'success');
-            await loadBackupHistory();
-        } catch (e) {
-            showToast('Errore esportazione: ' + e.message, 'error');
-        } finally {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
-        }
-    });
-
     // Import - Drag & Drop
     const dropzone = document.getElementById('import-dropzone');
     const fileInput = document.getElementById('import-file-input');
@@ -1332,7 +1339,7 @@ async function loadScpFiles() {
                 <div>
                     <i class="ti ti-file-zip me-1"></i>
                     <span class="small">${f.filename}</span>
-                    <span class="badge bg-secondary-lt ms-1">${f.size_mb} MB</span>
+                    <span class="badge bg-secondary-lt ms-1">${formatFileSize(f.size_bytes)}</span>
                 </div>
                 <button class="btn btn-sm btn-outline-primary" onclick="importScpFile('${f.filename}')">
                     <i class="ti ti-file-import me-1"></i>Importa
@@ -1362,8 +1369,169 @@ window.importScpFile = async function (filename) {
         showToast('Errore preview: ' + e.message, 'error');
     }
 };
+// ============== RESTORE FROM LOCAL BACKUP ==============
 
-// ============== LOCAL FILE MANAGEMENT ==============
+window.restoreFromLocalBackup = async function (filename) {
+    try {
+        const response = await fetch(`/api/backup/restore/preview/${encodeURIComponent(filename)}`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Preview fallito');
+        }
+
+        const preview = await response.json();
+        showRestorePreviewModal(preview, filename);
+    } catch (e) {
+        showToast('Errore preview: ' + e.message, 'error');
+    }
+};
+
+function showRestorePreviewModal(preview, filename) {
+    const versionWarning = preview.source_version !== preview.current_version
+        ? `<div class="alert alert-warning mb-3">
+            <i class="ti ti-alert-triangle me-2"></i>
+            <strong>Versione diversa!</strong> Sorgente: ${preview.source_version} → Corrente: ${preview.current_version}
+           </div>`
+        : '';
+
+    const coreUsers = (preview.core?.users || []).map(u =>
+        `<tr>
+            <td><i class="ti ti-user me-1"></i>${u.username}</td>
+            <td>${u.is_superuser ? '<span class="badge bg-red-lt">Super Admin</span>' : '<span class="badge bg-blue-lt">Utente</span>'}</td>
+        </tr>`
+    ).join('');
+
+    const modulesHtml = Object.entries(preview.modules || {}).map(([modId, modData]) => {
+        const tablesHtml = Object.entries(modData.tables || {}).map(([table, count]) =>
+            `<div class="d-flex justify-content-between"><span class="text-muted small">${table}</span><span class="badge bg-blue-lt">${count}</span></div>`
+        ).join('');
+
+        return `
+            <div class="col-md-6">
+                <div class="card card-sm">
+                    <div class="card-body py-2">
+                        <div class="d-flex align-items-center mb-1">
+                            <span class="avatar avatar-xs bg-purple-lt me-2"><i class="ti ti-puzzle"></i></span>
+                            <strong class="small">${modId}</strong>
+                            ${modData.has_files ? '<span class="badge bg-cyan-lt ms-auto">+ file</span>' : ''}
+                        </div>
+                        ${tablesHtml}
+                    </div>
+                </div>
+            </div>`;
+    }).join('');
+
+    const modalHtml = `
+        <div class="modal fade" id="restore-preview-modal" tabindex="-1">
+            <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header bg-warning-lt">
+                        <h5 class="modal-title"><i class="ti ti-refresh me-2"></i>Conferma Ripristino</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        ${versionWarning}
+
+                        <div class="d-flex gap-2 mb-3">
+                            <span class="badge bg-blue-lt">v${preview.source_version}</span>
+                            <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString('it-IT')}</span>
+                            <span class="badge bg-secondary-lt">${filename}</span>
+                        </div>
+
+                        <div class="row g-2 mb-3">
+                            <div class="col-12">
+                                <div class="card card-sm">
+                                    <div class="card-body py-2">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar avatar-xs bg-green-lt me-2"><i class="ti ti-users"></i></span>
+                                            <strong class="small">Utenti (${preview.core?.users?.length || 0})</strong>
+                                        </div>
+                                        ${coreUsers ? `<table class="table table-sm mb-0 mt-1"><tbody>${coreUsers}</tbody></table>` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card card-sm">
+                                    <div class="card-body py-2 d-flex align-items-center">
+                                        <span class="avatar avatar-xs bg-orange-lt me-2"><i class="ti ti-shield"></i></span>
+                                        <strong class="small">Firewall</strong>
+                                        <span class="badge bg-orange-lt ms-auto">${preview.core?.firewall_rules || 0}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card card-sm">
+                                    <div class="card-body py-2 d-flex align-items-center">
+                                        <span class="avatar avatar-xs bg-cyan-lt me-2"><i class="ti ti-adjustments"></i></span>
+                                        <strong class="small">Impostazioni</strong>
+                                        <span class="badge bg-cyan-lt ms-auto">${preview.core?.settings?.company_name || '-'}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        ${modulesHtml ? `
+                        <h4 class="mb-2"><i class="ti ti-puzzle me-1"></i>Moduli</h4>
+                        <div class="row g-2">${modulesHtml}</div>
+                        ` : ''}
+
+                        <div class="alert alert-danger mt-3 mb-0">
+                            <i class="ti ti-alert-circle me-2"></i>
+                            <strong>Attenzione!</strong> Il ripristino sovrascriverà i dati correnti.
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
+                        <button type="button" class="btn btn-warning" id="confirm-restore-btn">
+                            <i class="ti ti-refresh me-1"></i>Ripristina
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('restore-preview-modal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    const modal = new bootstrap.Modal(document.getElementById('restore-preview-modal'));
+    modal.show();
+
+    document.getElementById('confirm-restore-btn').addEventListener('click', async () => {
+        modal.hide();
+        showToast('Ripristino in corso...', 'info');
+
+        try {
+            const result = await apiPost(`/backup/restore/${encodeURIComponent(filename)}`, {});
+
+            if (result.success !== false) {
+                let summary = 'Ripristino completato: ';
+                summary += `${result.users_imported || 0} utenti, `;
+                summary += `${result.firewall_rules_imported || 0} regole firewall, `;
+                summary += `${result.modules_imported?.length || 0} moduli`;
+
+                showToast(summary, 'success');
+
+                const reload = await confirmDialog(
+                    'Ripristino Completato',
+                    'Ricaricare la pagina per applicare le modifiche?',
+                    'Ricarica',
+                    'btn-primary'
+                );
+                if (reload) location.reload();
+            } else {
+                showToast('Ripristino fallito: ' + (result.errors || []).join(', '), 'error');
+            }
+        } catch (err) {
+            showToast('Errore ripristino: ' + err.message, 'error');
+        }
+    });
+}
+
 
 window.deleteBackup = async function (filename) {
     const confirmed = await confirmDialog(
@@ -1425,7 +1593,7 @@ async function loadRemoteBackupHistory() {
         tbody.innerHTML = history.map(backup => `
             <tr>
                 <td><i class="ti ti-cloud me-2"></i>${backup.filename}</td>
-                <td>${backup.size_mb} MB</td>
+                <td>${formatFileSize(backup.size_bytes)}</td>
                 <td>${backup.mtime ? new Date(backup.mtime).toLocaleString('it-IT') : '-'}</td>
                 <td class="text-end">
                     <button class="btn btn-sm btn-ghost-primary" onclick="downloadRemoteBackup('${backup.filename}')" title="Scarica in locale">
