@@ -386,18 +386,8 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
 
 def _schedule_restart():
     """Schedule MADMIN service restart after a short delay (allows HTTP response to complete)."""
-    def _do_restart():
-        import time
-        time.sleep(3)
-        logger.info("Restarting MADMIN service after config import...")
-        try:
-            subprocess.run(["systemctl", "restart", "madmin"], check=True)
-        except Exception as e:
-            logger.error(f"Failed to restart MADMIN: {e}")
-    
-    thread = threading.Thread(target=_do_restart, daemon=True)
-    thread.start()
-    logger.info("MADMIN restart scheduled in 3 seconds")
+    from core.system.service import SystemService
+    SystemService.restart_madmin(3)
 
 
 # ============== SCHEDULED BACKUP (uses export_config) ==============

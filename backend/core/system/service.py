@@ -6,6 +6,7 @@ Provides system statistics using psutil.
 import logging
 import subprocess
 import shutil
+import os
 from typing import Optional, List
 from datetime import datetime, timedelta
 
@@ -22,6 +23,21 @@ except ImportError:
 
 class SystemService:
     """Service class for system statistics."""
+    
+    @staticmethod
+    def restart_madmin(delay_seconds: int = 1) -> None:
+        """
+        Restart the MADMIN backend safely.
+        
+        Uses a detached background shell command to avoid the restart command
+        being killed (SIGTERM) when the MADMIN service itself stops.
+        
+        Args:
+            delay_seconds: Seconds to wait before restarting, to allow API responses
+        """
+        logger.info(f"Scheduling MADMIN restart in {delay_seconds}s...")
+        # Note: os.system("... &") forks a shell in the background detached from the API
+        os.system(f"sleep {delay_seconds} && systemctl restart madmin &")
     
     @staticmethod
     def get_stats() -> dict:
