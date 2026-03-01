@@ -20,6 +20,7 @@ wait_for_apt() {
     local max_wait=120
     local waited=0
     while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+          fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
           fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
           fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
         if [ $waited -eq 0 ]; then
@@ -335,7 +336,11 @@ print(' '.join(deps))
     if [ -n "$APT_DEPS" ]; then
         log_info "  Installazione pacchetti apt: $APT_DEPS"
         wait_for_apt
-        apt-get install -y $APT_DEPS
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_DEPS; then
+            log_warning "  apt-get fallito, riprovo dopo attesa lock..."
+            wait_for_apt
+            DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_DEPS
+        fi
     fi
 
     # Dipendenze pip
