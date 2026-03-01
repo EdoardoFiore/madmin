@@ -68,13 +68,16 @@
             "priority": 50
         }
     ],
-    "backup": {
-        "external_paths": [
-            "/etc/wireguard"
+    "config_export": {
+        "tables": [
+            "wg_instance",
+            "wg_client",
+            "wg_group",
+            "wg_group_member",
+            "wg_group_rule"
         ],
-        "restore_hooks": {
-            "post_restore": "hooks/post_restore.py"
-        }
+        "irrecoverable_files": [],
+        "post_restore": "hooks/post_restore.py"
     },
     "dependencies": []
 }

@@ -1,37 +1,53 @@
 """
-OpenVPN Module - Post Restore Hook
+OpenVPN post_restore hook.
 
-Executed after module backup restoration:
-- Restarts OpenVPN services
-- Reapplies firewall rules
+Regenerates all server.conf files and CCD entries from DB data.
+Uses existing OpenVPNService functions — no code duplication.
 """
-import subprocess
 import logging
+import asyncio
 from pathlib import Path
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("hook_post_restore")
 
 
-async def run():
-    """Post-restore hook for OpenVPN module."""
-    logger.info("Running OpenVPN post-restore hook")
+async def run(session: AsyncSession):
+    """Regenerate OpenVPN configs from imported DB data."""
+    from modules.openvpn.models import OvpnInstance, OvpnClient
+    from modules.openvpn.service import OpenVPNService
     
-    # 1. Restart all OpenVPN instances that have configs
-    server_dir = Path("/etc/openvpn/server")
-    if server_dir.exists():
-        for conf_file in server_dir.parent.glob("*.conf"):
-            # Extract instance ID from filename (e.g., office.conf -> office)
-            instance_id = conf_file.stem
-            service_name = f"openvpn-server@{instance_id}"
-            
-            # Enable and start service
-            subprocess.run(["systemctl", "enable", service_name], capture_output=True)
-            result = subprocess.run(["systemctl", "start", service_name], capture_output=True)
-            
-            if result.returncode == 0:
-                logger.info(f"Started service: {service_name}")
-            else:
-                logger.warning(f"Failed to start {service_name}: {result.stderr.decode()}")
+    logger.info("Running OpenVPN post_restore hook")
     
-    logger.info("OpenVPN post-restore complete")
-    return True
+    # Get all instances from DB
+    result = await session.execute(select(OvpnInstance))
+    instances = result.scalars().all()
+    
+    for instance in instances:
+        instance_dir = OpenVPNService.get_instance_dir(instance.id)
+        
+        # Ensure directories exist
+        instance_dir.mkdir(parents=True, exist_ok=True)
+        ccd_dir = instance_dir / "ccd"
+        ccd_dir.mkdir(exist_ok=True)
+        
+        # Generate server.conf using existing function
+        config_content = OpenVPNService.create_server_config(instance)
+        config_path = instance_dir / "server.conf"
+        config_path.write_text(config_content)
+        logger.info(f"Regenerated server.conf for instance {instance.name}")
+        
+        # Regenerate CCD files for all clients with static IPs
+        clients_result = await session.execute(
+            select(OvpnClient).where(OvpnClient.instance_id == instance.id)
+        )
+        clients = clients_result.scalars().all()
+        
+        for client in clients:
+            if client.static_ip:
+                OpenVPNService.create_ccd_file(
+                    instance.id, client.name, client.static_ip
+                )
+    
+    logger.info(f"OpenVPN post_restore complete: {len(instances)} instances regenerated")

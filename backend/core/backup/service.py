@@ -1,26 +1,40 @@
 """
-MADMIN Backup Service
+MADMIN Backup Service — Config Export/Import
 
 Handles:
-- Database dumps (PostgreSQL)
-- Configuration file backup
-- Archive creation
-- Remote upload (SFTP/FTP)
-- Scheduled backup via APScheduler
+- Configuration export (JSON-based, cross-version compatible)
+- Configuration import with preview
+- Remote upload/download (SFTP/FTP)
+- Scheduled export via APScheduler
+
+Replaces the old pg_dump approach with declarative JSON export.
+Only irrecoverable files (PKI, certs, keys) are included — everything else
+is regenerated from DB by post_restore hooks.
 """
 import os
+import glob
+import json
+import shutil
 import asyncio
 import tarfile
 import logging
+import importlib.util
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from pathlib import Path
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text, delete
+
+from config import get_settings, MADMIN_VERSION
 
 logger = logging.getLogger(__name__)
 
 # Backup configuration
 BACKUP_DIR = os.environ.get("MADMIN_BACKUP_DIR", "/opt/madmin/backups")
+IMPORTS_DIR = os.environ.get("MADMIN_IMPORTS_DIR", "/opt/madmin/data/imports")
 MAX_LOCAL_BACKUPS = int(os.environ.get("MADMIN_MAX_BACKUPS", "5"))
+
+settings = get_settings()
 
 
 def ensure_backup_dir():
@@ -29,175 +43,479 @@ def ensure_backup_dir():
     return BACKUP_DIR
 
 
-async def dump_database(backup_path: str) -> bool:
+def ensure_imports_dir():
+    """Ensure imports directory exists."""
+    os.makedirs(IMPORTS_DIR, exist_ok=True)
+    return IMPORTS_DIR
+
+
+# ============== CONFIG EXPORT ==============
+
+
+async def export_config(session: AsyncSession) -> str:
     """
-    Dump PostgreSQL database to file.
-    Uses pg_dump with settings from environment.
+    Export full configuration as a portable tar.gz archive.
+    
+    Contents:
+    - config_manifest.json (version, timestamp, active modules)
+    - core/users.json (users + permissions)
+    - core/firewall.json (machine firewall rules)  
+    - core/settings.json (SystemSettings + SMTP + Backup)
+    - modules/{id}/data.json (module DB data)
+    - modules/{id}/files/ (irrecoverable filesystem files)
+    
+    Returns path to created archive.
     """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    export_name = f"madmin-config-{MADMIN_VERSION}-{timestamp}"
+    export_path = os.path.join(ensure_backup_dir(), export_name)
+    os.makedirs(export_path, exist_ok=True)
+    
     try:
-        from config import get_settings
+        # --- Config manifest ---
+        active_modules = await _get_active_modules(session)
+        manifest = {
+            "madmin_version": MADMIN_VERSION,
+            "timestamp": datetime.now().isoformat(),
+            "active_modules": [m["id"] for m in active_modules]
+        }
+        _write_json(os.path.join(export_path, "config_manifest.json"), manifest)
         
-        db_url = get_settings().database_url
-        if not db_url:
-            logger.error("DATABASE_URL not configured for backup")
-            return False
+        # --- Core data ---
+        core_dir = os.path.join(export_path, "core")
+        os.makedirs(core_dir, exist_ok=True)
         
-        # Convert asyncpg URL to standard postgresql format for pg_dump
-        # postgresql+asyncpg://... -> postgresql://...
-        if "+asyncpg" in db_url:
-            db_url = db_url.replace("+asyncpg", "")
+        # Users + permissions
+        users_data = await _export_users(session)
+        _write_json(os.path.join(core_dir, "users.json"), users_data)
+        logger.info(f"Exported {len(users_data)} users")
         
-        # Parse database URL
-        # Format: postgresql://user:password@host:port/database
-        from urllib.parse import urlparse
-        parsed = urlparse(db_url)
+        # Firewall rules
+        firewall_data = await _export_firewall_rules(session)
+        _write_json(os.path.join(core_dir, "firewall.json"), firewall_data)
+        logger.info(f"Exported {len(firewall_data)} firewall rules")
         
-        dump_file = os.path.join(backup_path, "database.sql")
+        # Settings
+        settings_data = await _export_settings(session)
+        _write_json(os.path.join(core_dir, "settings.json"), settings_data)
+        logger.info("Exported system settings")
         
-        # Build pg_dump command
-        env = os.environ.copy()
-        env["PGPASSWORD"] = parsed.password or ""
+        # --- Module data ---
+        modules_dir_path = os.path.join(export_path, "modules")
+        os.makedirs(modules_dir_path, exist_ok=True)
         
-        cmd = [
-            "pg_dump",
-            "-h", parsed.hostname or "localhost",
-            "-p", str(parsed.port or 5432),
-            "-U", parsed.username or "madmin",
-            "-d", parsed.path.lstrip("/"),
-            "-F", "c",  # Custom format for compression
-            "-f", dump_file
-        ]
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            logger.error(f"pg_dump failed: {stderr.decode()}")
-            return False
-        
-        logger.info(f"Database dumped to {dump_file}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Database dump failed: {e}")
-        return False
-
-
-def backup_config_files(backup_path: str) -> bool:
-    """
-    Copy important configuration files to backup.
-    """
-    try:
-        config_dir = os.path.join(backup_path, "config")
-        os.makedirs(config_dir, exist_ok=True)
-        
-        # Files to backup
-        files_to_backup = [
-            "/opt/madmin/backend/.env",
-            "/etc/nginx/sites-available/madmin.conf",
-            "/etc/nginx/sites-enabled/madmin.conf",
-            "/etc/systemd/system/madmin.service",
-        ]
-        
-        import shutil
-        for filepath in files_to_backup:
-            if os.path.exists(filepath):
-                dest = os.path.join(config_dir, os.path.basename(filepath))
-                shutil.copy2(filepath, dest)
-                logger.info(f"Backed up {filepath}")
-        
-        # Backup installed modules directory
-        modules_dir = "/opt/madmin/backend/modules"
-        if os.path.exists(modules_dir) and os.listdir(modules_dir):
-            shutil.copytree(
-                modules_dir, 
-                os.path.join(config_dir, "modules"),
-                dirs_exist_ok=True
-            )
-            logger.info(f"Backed up {modules_dir}")
-        
-
-        # Backup module external_paths from manifests
-        backup_module_external_paths(backup_path)
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Config backup failed: {e}")
-        return False
-
-
-def backup_module_external_paths(backup_path: str):
-    """
-    Backup external paths defined in module manifests.
-    """
-    import shutil
-    import json
-    
-    external_dir = os.path.join(backup_path, "external")
-    os.makedirs(external_dir, exist_ok=True)
-    
-    # Check modules directory
-    module_dirs = [
-        "/opt/madmin/backend/modules"
-    ]
-    
-    for modules_base in module_dirs:
-        if not os.path.exists(modules_base):
-            continue
+        for mod_info in active_modules:
+            module_id = mod_info["id"]
+            module_export_dir = os.path.join(modules_dir_path, module_id)
+            os.makedirs(module_export_dir, exist_ok=True)
             
-        for module_name in os.listdir(modules_base):
-            manifest_path = os.path.join(modules_base, module_name, "manifest.json")
-            if not os.path.exists(manifest_path):
+            # Load manifest for config_export settings
+            mod_manifest = _load_module_manifest(module_id)
+            if not mod_manifest:
                 continue
             
+            config_export = mod_manifest.get("config_export", {})
+            
+            # Export DB tables
+            tables = config_export.get("tables", [])
+            if tables:
+                table_data = await _export_module_tables(session, tables)
+                _write_json(os.path.join(module_export_dir, "data.json"), table_data)
+                total_rows = sum(len(rows) for rows in table_data.values())
+                logger.info(f"Exported {total_rows} rows from {len(tables)} tables for {module_id}")
+            
+            # Copy irrecoverable files
+            irrecoverable = config_export.get("irrecoverable_files", [])
+            if irrecoverable:
+                files_dir = os.path.join(module_export_dir, "files")
+                os.makedirs(files_dir, exist_ok=True)
+                _copy_irrecoverable_files(irrecoverable, files_dir)
+                logger.info(f"Copied irrecoverable files for {module_id}")
+        
+        # --- Create archive ---
+        archive_name = f"{export_name}.tar.gz"
+        archive_path = os.path.join(BACKUP_DIR, archive_name)
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(export_path, arcname=export_name)
+        
+        logger.info(f"Config export created: {archive_path}")
+        return archive_path
+    
+    finally:
+        # Cleanup temp directory
+        shutil.rmtree(export_path, ignore_errors=True)
+
+
+# ============== CONFIG PREVIEW ==============
+
+
+async def preview_config(archive_path: str) -> dict:
+    """
+    Preview contents of a config archive without applying.
+    
+    Returns structured data divided into sections for the frontend:
+    - source_version, timestamp
+    - core: users, firewall rules count, settings
+    - modules: per-module summary
+    """
+    if not os.path.exists(archive_path):
+        return {"error": "File non trovato"}
+    
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            members = tar.getnames()
+            
+            # Find root dir
+            root_dir = members[0].split("/")[0] if members else ""
+            
+            # Read config_manifest.json
+            manifest_data = _read_json_from_tar(tar, f"{root_dir}/config_manifest.json")
+            if not manifest_data:
+                return {"error": "Archivio non valido: config_manifest.json mancante"}
+            
+            result = {
+                "source_version": manifest_data.get("madmin_version", "sconosciuta"),
+                "timestamp": manifest_data.get("timestamp", ""),
+                "current_version": MADMIN_VERSION,
+                "core": {},
+                "modules": {}
+            }
+            
+            # Core data preview
+            users_data = _read_json_from_tar(tar, f"{root_dir}/core/users.json")
+            if users_data:
+                result["core"]["users"] = [
+                    {
+                        "username": u.get("username"),
+                        "is_superuser": u.get("is_superuser", False),
+                        "is_active": u.get("is_active", True)
+                    }
+                    for u in users_data
+                ]
+            
+            firewall_data = _read_json_from_tar(tar, f"{root_dir}/core/firewall.json")
+            result["core"]["firewall_rules"] = len(firewall_data) if firewall_data else 0
+            
+            settings_data = _read_json_from_tar(tar, f"{root_dir}/core/settings.json")
+            if settings_data:
+                sys_settings = settings_data.get("system", {})
+                result["core"]["settings"] = {
+                    "company_name": sys_settings.get("company_name", ""),
+                    "primary_color": sys_settings.get("primary_color", "")
+                }
+            
+            # Module data preview
+            for module_id in manifest_data.get("active_modules", []):
+                mod_data = _read_json_from_tar(tar, f"{root_dir}/modules/{module_id}/data.json")
+                if mod_data:
+                    mod_summary = {}
+                    for table_name, rows in mod_data.items():
+                        mod_summary[table_name] = len(rows)
+                    result["modules"][module_id] = {
+                        "tables": mod_summary,
+                        "has_files": any(
+                            m.startswith(f"{root_dir}/modules/{module_id}/files/")
+                            for m in members
+                        )
+                    }
+            
+            return result
+    
+    except Exception as e:
+        logger.error(f"Preview failed: {e}")
+        return {"error": f"Errore durante la preview: {str(e)}"}
+
+
+# ============== CONFIG IMPORT ==============
+
+
+async def import_config(session: AsyncSession, archive_path: str) -> dict:
+    """
+    Import configuration from a config archive.
+    
+    Steps:
+    1. Extract and validate archive
+    2. Import core data (users, firewall, settings)
+    3. For each module: activate → insert DB data → restore files → post_restore hook
+    
+    Returns detailed result dict.
+    """
+    if not os.path.exists(archive_path):
+        return {"success": False, "errors": ["File non trovato"]}
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    restore_path = os.path.join(BACKUP_DIR, f"import_temp_{timestamp}")
+    os.makedirs(restore_path, exist_ok=True)
+    
+    result = {
+        "success": False,
+        "users_imported": 0,
+        "firewall_rules_imported": 0,
+        "settings_restored": False,
+        "modules_imported": [],
+        "errors": [],
+        "warnings": []
+    }
+    
+    try:
+        # Extract
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(restore_path)
+        
+        # Find root dir
+        extracted = os.listdir(restore_path)
+        if not extracted:
+            result["errors"].append("Archivio vuoto")
+            return result
+        
+        root_path = os.path.join(restore_path, extracted[0])
+        
+        # Read manifest
+        manifest_path_file = os.path.join(root_path, "config_manifest.json")
+        if not os.path.exists(manifest_path_file):
+            result["errors"].append("config_manifest.json mancante")
+            return result
+        
+        with open(manifest_path_file) as f:
+            config_manifest = json.load(f)
+        
+        source_version = config_manifest.get("madmin_version", "sconosciuta")
+        if source_version != MADMIN_VERSION:
+            result["warnings"].append(
+                f"Versione sorgente ({source_version}) diversa da quella corrente ({MADMIN_VERSION})"
+            )
+        
+        # --- Import core ---
+        core_path = os.path.join(root_path, "core")
+        
+        # 1. Users
+        users_file = os.path.join(core_path, "users.json")
+        if os.path.exists(users_file):
+            count = await _import_users(session, users_file)
+            result["users_imported"] = count
+            logger.info(f"Imported {count} users")
+        
+        # 2. Firewall rules
+        firewall_file = os.path.join(core_path, "firewall.json")
+        if os.path.exists(firewall_file):
+            count = await _import_firewall_rules(session, firewall_file)
+            result["firewall_rules_imported"] = count
+            logger.info(f"Imported {count} firewall rules")
+        
+        # 3. Settings
+        settings_file = os.path.join(core_path, "settings.json")
+        if os.path.exists(settings_file):
+            await _import_settings(session, settings_file)
+            result["settings_restored"] = True
+            logger.info("Imported settings")
+        
+        await session.commit()
+        
+        # --- Import modules ---
+        from core.modules.loader import module_loader
+        
+        modules_path = os.path.join(root_path, "modules")
+        for module_id in config_manifest.get("active_modules", []):
+            module_dir = os.path.join(modules_path, module_id)
+            if not os.path.isdir(module_dir):
+                result["warnings"].append(f"Dati modulo '{module_id}' non trovati nell'archivio")
+                continue
+            
+            mod_result = {"id": module_id, "tables_imported": 0, "files_restored": False}
+            
             try:
-                with open(manifest_path, 'r') as f:
-                    manifest = json.load(f)
+                # Activate module if not active (runs migrations + post_install)
+                activate_result = await module_loader.activate_module(session, module_id)
+                if not activate_result.get("success") and "già attivo" not in activate_result.get("message", ""):
+                    result["errors"].append(
+                        f"Attivazione modulo '{module_id}' fallita: {activate_result.get('error', '')}"
+                    )
+                    continue
                 
-                backup_config = manifest.get("backup", {})
-                external_paths = backup_config.get("external_paths", [])
+                # Import DB data
+                data_file = os.path.join(module_dir, "data.json")
+                if os.path.exists(data_file):
+                    rows = await _import_module_tables(session, data_file)
+                    mod_result["tables_imported"] = rows
                 
-                for ext_path in external_paths:
-                    if os.path.exists(ext_path):
-                        # Create module-specific subdirectory
-                        dest_dir = os.path.join(external_dir, module_name)
-                        os.makedirs(dest_dir, exist_ok=True)
-                        
-                        dest = os.path.join(dest_dir, os.path.basename(ext_path.rstrip("/")))
-                        
-                        if os.path.isdir(ext_path):
-                            shutil.copytree(ext_path, dest, dirs_exist_ok=True)
-                        else:
-                            shutil.copy2(ext_path, dest)
-                        
-                        logger.info(f"Backed up module external path: {ext_path}")
-                        
+                # Restore irrecoverable files
+                files_dir = os.path.join(module_dir, "files")
+                if os.path.isdir(files_dir):
+                    _restore_irrecoverable_files(files_dir)
+                    mod_result["files_restored"] = True
+                
+                await session.commit()
+                
+                # Execute post_restore hook
+                mod_manifest = _load_module_manifest(module_id)
+                if mod_manifest:
+                    config_export = mod_manifest.get("config_export", {})
+                    post_restore = config_export.get("post_restore")
+                    if post_restore:
+                        module_path = Path(settings.modules_dir) / module_id
+                        await _execute_restore_hook(post_restore, module_path, session)
+                
+                result["modules_imported"].append(mod_result)
+                logger.info(f"Imported module: {module_id}")
+                
             except Exception as e:
-                logger.warning(f"Failed to backup external paths for {module_name}: {e}")
+                logger.error(f"Failed to import module {module_id}: {e}", exc_info=True)
+                result["errors"].append(f"Errore importazione modulo '{module_id}': {str(e)}")
+        
+        result["success"] = len(result["errors"]) == 0
+        
+    except Exception as e:
+        logger.error(f"Config import failed: {e}", exc_info=True)
+        result["errors"].append(f"Errore generale: {str(e)}")
+    finally:
+        shutil.rmtree(restore_path, ignore_errors=True)
+    
+    return result
+
+
+# ============== SCHEDULED BACKUP (uses export_config) ==============
+
+
+async def run_backup(
+    session: AsyncSession,
+    remote_protocol: Optional[str] = None,
+    remote_host: Optional[str] = None,
+    remote_port: int = 22,
+    remote_user: Optional[str] = None,
+    remote_password: Optional[str] = None,
+    remote_path: str = "/",
+    retention_days: int = 30
+) -> dict:
+    """
+    Run a full backup operation using config export.
+    
+    Returns dict with status and details.
+    """
+    result = {
+        "success": False,
+        "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        "archive": None,
+        "remote_uploaded": False,
+        "errors": []
+    }
+    
+    try:
+        # Export config
+        archive_path = await export_config(session)
+        result["archive"] = archive_path
+        
+        # Upload to remote if configured
+        if remote_protocol and remote_host and remote_user:
+            if remote_protocol == "sftp":
+                uploaded = await upload_sftp(
+                    archive_path, remote_host, remote_port,
+                    remote_user, remote_password or "", remote_path
+                )
+            elif remote_protocol == "ftp":
+                uploaded = await upload_ftp(
+                    archive_path, remote_host, remote_port or 21,
+                    remote_user, remote_password or "", remote_path
+                )
+            else:
+                uploaded = False
+            
+            result["remote_uploaded"] = uploaded
+            if not uploaded:
+                result["errors"].append("Upload remoto fallito")
+        
+        # Cleanup old exports
+        cleanup_old_backups(retention_days)
+        
+        result["success"] = len(result["errors"]) == 0
+    
+    except Exception as e:
+        logger.error(f"Backup failed: {e}", exc_info=True)
+        result["errors"].append(str(e))
+    
+    return result
+
+
+# ============== ARCHIVE MANAGEMENT ==============
 
 
 def create_archive(backup_path: str, archive_name: str) -> Optional[str]:
-    """
-    Create tar.gz archive of backup directory.
-    """
+    """Create tar.gz archive."""
     try:
         archive_path = os.path.join(BACKUP_DIR, archive_name)
-        
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(backup_path, arcname=os.path.basename(backup_path))
-        
-        logger.info(f"Created archive: {archive_path}")
         return archive_path
-        
     except Exception as e:
         logger.error(f"Archive creation failed: {e}")
         return None
+
+
+def cleanup_old_backups(retention_days: int = 30):
+    """
+    Remove old backups based on retention policy.
+    retention_days=0 means keep forever.
+    """
+    if retention_days <= 0:
+        return
+    
+    backup_dir = ensure_backup_dir()
+    now = datetime.now()
+    
+    for filename in os.listdir(backup_dir):
+        if not filename.endswith(".tar.gz"):
+            continue
+        
+        filepath = os.path.join(backup_dir, filename)
+        file_mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+        age_days = (now - file_mtime).days
+        
+        if age_days > retention_days:
+            os.remove(filepath)
+            logger.info(f"Cleaned up old backup: {filename} ({age_days} days old)")
+
+
+def list_local_backups() -> List[dict]:
+    """List all local backup archives."""
+    backup_dir = ensure_backup_dir()
+    backups = []
+    
+    for filename in sorted(os.listdir(backup_dir), reverse=True):
+        if not filename.endswith(".tar.gz"):
+            continue
+        
+        filepath = os.path.join(backup_dir, filename)
+        stat = os.stat(filepath)
+        backups.append({
+            "filename": filename,
+            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        })
+    
+    return backups
+
+
+def list_import_files() -> List[dict]:
+    """List tar.gz files available in the imports directory (uploaded via SCP)."""
+    imports_dir = ensure_imports_dir()
+    files = []
+    
+    for filename in sorted(os.listdir(imports_dir), reverse=True):
+        if not filename.endswith(".tar.gz"):
+            continue
+        
+        filepath = os.path.join(imports_dir, filename)
+        stat = os.stat(filepath)
+        files.append({
+            "filename": filename,
+            "path": filepath,
+            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        })
+    
+    return files
+
+
+# ============== REMOTE STORAGE (SFTP/FTP) ==============
 
 
 async def upload_sftp(
@@ -208,28 +526,25 @@ async def upload_sftp(
     password: str,
     remote_path: str
 ) -> bool:
-    """
-    Upload backup archive via SFTP.
-    """
+    """Upload backup archive via SFTP."""
     try:
-        import asyncssh
+        import paramiko
         
-        async with asyncssh.connect(
-            host,
-            port=port,
-            username=username,
-            password=password,
-            known_hosts=None
-        ) as conn:
-            async with conn.start_sftp_client() as sftp:
-                remote_file = os.path.join(remote_path, os.path.basename(archive_path))
-                await sftp.put(archive_path, remote_file)
-                logger.info(f"Uploaded to SFTP: {remote_file}")
-                return True
-                
-    except ImportError:
-        logger.error("asyncssh not installed for SFTP upload")
-        return False
+        transport = paramiko.Transport((host, port))
+        transport.connect(username=username, password=password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        
+        filename = os.path.basename(archive_path)
+        remote_file = os.path.join(remote_path, filename).replace("\\", "/")
+        
+        sftp.put(archive_path, remote_file)
+        
+        sftp.close()
+        transport.close()
+        
+        logger.info(f"Uploaded to SFTP: {remote_file}")
+        return True
+        
     except Exception as e:
         logger.error(f"SFTP upload failed: {e}")
         return False
@@ -243,665 +558,663 @@ async def upload_ftp(
     password: str,
     remote_path: str
 ) -> bool:
-    """
-    Upload backup archive via FTP.
-    """
+    """Upload backup archive via FTP."""
     try:
-        import aioftp
+        from ftplib import FTP
         
-        async with aioftp.Client.context(host, port, username, password) as client:
-            await client.change_directory(remote_path)
-            await client.upload(archive_path)
-            logger.info(f"Uploaded to FTP: {remote_path}")
-            return True
-            
-    except ImportError:
-        logger.error("aioftp not installed for FTP upload")
-        return False
+        ftp = FTP()
+        ftp.connect(host, port)
+        ftp.login(username, password)
+        
+        if remote_path and remote_path != "/":
+            ftp.cwd(remote_path)
+        
+        filename = os.path.basename(archive_path)
+        with open(archive_path, "rb") as f:
+            ftp.storbinary(f"STOR {filename}", f)
+        
+        ftp.quit()
+        
+        logger.info(f"Uploaded to FTP: {filename}")
+        return True
+        
     except Exception as e:
         logger.error(f"FTP upload failed: {e}")
         return False
 
 
-# ============== REMOTE BACKUP MANAGEMENT ==============
+# --- Remote listing ---
 
-async def list_remote_backups_sftp(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str
-) -> list:
+def list_remote_backups_sftp(
+    host: str, port: int, username: str, password: str, remote_path: str
+) -> List[dict]:
     """List backup files on remote SFTP server."""
     try:
-        import asyncssh
+        import paramiko
         
-        async with asyncssh.connect(
-            host,
-            port=port,
-            username=username,
-            password=password,
-            known_hosts=None
-        ) as conn:
-            async with conn.start_sftp_client() as sftp:
-                files = []
-                for entry in await sftp.readdir(remote_path):
-                    if entry.filename.startswith("madmin_backup_") and entry.filename.endswith(".tar.gz"):
-                        files.append({
-                            "filename": entry.filename,
-                            "size_bytes": entry.attrs.size or 0,
-                            "mtime": entry.attrs.mtime
-                        })
-                return sorted(files, key=lambda x: x.get("mtime", 0), reverse=True)
-                
-    except ImportError:
-        logger.error("asyncssh not installed")
-        return []
+        transport = paramiko.Transport((host, port))
+        transport.connect(username=username, password=password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        
+        files = []
+        for entry in sftp.listdir_attr(remote_path):
+            if entry.filename.endswith(".tar.gz"):
+                files.append({
+                    "filename": entry.filename,
+                    "size_mb": round(entry.st_size / (1024 * 1024), 2),
+                    "mtime": datetime.fromtimestamp(entry.st_mtime).isoformat() if entry.st_mtime else None
+                })
+        
+        sftp.close()
+        transport.close()
+        return files
     except Exception as e:
         logger.error(f"SFTP list failed: {e}")
         return []
 
 
-async def list_remote_backups_ftp(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str
-) -> list:
+def list_remote_backups_ftp(
+    host: str, port: int, username: str, password: str, remote_path: str
+) -> List[dict]:
     """List backup files on remote FTP server."""
     try:
-        import aioftp
+        from ftplib import FTP
         
-        async with aioftp.Client.context(host, port, username, password) as client:
-            await client.change_directory(remote_path)
-            files = []
-            async for path, info in client.list():
-                filename = str(path)
-                if filename.startswith("madmin_backup_") and filename.endswith(".tar.gz"):
-                    files.append({
-                        "filename": filename,
-                        "size_bytes": int(info.get("size", 0)),
-                        "mtime": None  # FTP doesn't always provide mtime reliably
-                    })
-            return files
-            
-    except ImportError:
-        logger.error("aioftp not installed")
-        return []
+        ftp = FTP()
+        ftp.connect(host, port)
+        ftp.login(username, password)
+        if remote_path and remote_path != "/":
+            ftp.cwd(remote_path)
+        
+        files = []
+        ftp.retrlines("LIST", lambda line: files.append(line))
+        
+        result = []
+        for line in files:
+            parts = line.split()
+            if parts and parts[-1].endswith(".tar.gz"):
+                size = int(parts[4]) if len(parts) > 4 else 0
+                result.append({
+                    "filename": parts[-1],
+                    "size_mb": round(size / (1024 * 1024), 2),
+                    "mtime": None
+                })
+        
+        ftp.quit()
+        return result
     except Exception as e:
         logger.error(f"FTP list failed: {e}")
         return []
 
 
-async def list_remote_backups(
-    protocol: str,
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str
-) -> list:
+def list_remote_backups(
+    protocol: str, host: str, port: int, username: str, password: str, remote_path: str
+) -> List[dict]:
     """List backup files on remote server."""
     if protocol == "sftp":
-        return await list_remote_backups_sftp(host, port, username, password, remote_path)
+        return list_remote_backups_sftp(host, port, username, password, remote_path)
     elif protocol == "ftp":
-        return await list_remote_backups_ftp(host, port, username, password, remote_path)
+        return list_remote_backups_ftp(host, port, username, password, remote_path)
     return []
 
 
-async def download_remote_backup_sftp(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str,
-    filename: str
+# --- Remote download ---
+
+def download_remote_backup_sftp(
+    host: str, port: int, username: str, password: str, remote_path: str, filename: str
 ) -> Optional[str]:
     """Download a backup file from remote SFTP server."""
     try:
-        import asyncssh
+        import paramiko
         
-        local_path = os.path.join(BACKUP_DIR, filename)
-        remote_file = os.path.join(remote_path, filename)
+        transport = paramiko.Transport((host, port))
+        transport.connect(username=username, password=password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
         
-        async with asyncssh.connect(
-            host,
-            port=port,
-            username=username,
-            password=password,
-            known_hosts=None
-        ) as conn:
-            async with conn.start_sftp_client() as sftp:
-                await sftp.get(remote_file, local_path)
-                logger.info(f"Downloaded from SFTP: {filename}")
-                return local_path
-                
+        remote_file = os.path.join(remote_path, filename).replace("\\", "/")
+        local_path = os.path.join(ensure_backup_dir(), filename)
+        
+        sftp.get(remote_file, local_path)
+        
+        sftp.close()
+        transport.close()
+        
+        logger.info(f"Downloaded from SFTP: {filename}")
+        return local_path
     except Exception as e:
         logger.error(f"SFTP download failed: {e}")
         return None
 
 
-async def download_remote_backup_ftp(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str,
-    filename: str
+def download_remote_backup_ftp(
+    host: str, port: int, username: str, password: str, remote_path: str, filename: str
 ) -> Optional[str]:
     """Download a backup file from remote FTP server."""
     try:
-        import aioftp
+        from ftplib import FTP
         
-        local_path = os.path.join(BACKUP_DIR, filename)
+        ftp = FTP()
+        ftp.connect(host, port)
+        ftp.login(username, password)
+        if remote_path and remote_path != "/":
+            ftp.cwd(remote_path)
         
-        async with aioftp.Client.context(host, port, username, password) as client:
-            await client.change_directory(remote_path)
-            await client.download(filename, local_path)
-            logger.info(f"Downloaded from FTP: {filename}")
-            return local_path
-            
+        local_path = os.path.join(ensure_backup_dir(), filename)
+        with open(local_path, "wb") as f:
+            ftp.retrbinary(f"RETR {filename}", f.write)
+        
+        ftp.quit()
+        logger.info(f"Downloaded from FTP: {filename}")
+        return local_path
     except Exception as e:
         logger.error(f"FTP download failed: {e}")
         return None
 
 
-async def download_remote_backup(
-    protocol: str,
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str,
-    filename: str
+def download_remote_backup(
+    protocol: str, host: str, port: int, username: str, password: str,
+    remote_path: str, filename: str
 ) -> Optional[str]:
     """Download a backup file from remote server."""
     if protocol == "sftp":
-        return await download_remote_backup_sftp(host, port, username, password, remote_path, filename)
+        return download_remote_backup_sftp(host, port, username, password, remote_path, filename)
     elif protocol == "ftp":
-        return await download_remote_backup_ftp(host, port, username, password, remote_path, filename)
+        return download_remote_backup_ftp(host, port, username, password, remote_path, filename)
     return None
 
 
-async def delete_remote_backup_sftp(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str,
-    filename: str
+# --- Remote delete ---
+
+def delete_remote_backup_sftp(
+    host: str, port: int, username: str, password: str, remote_path: str, filename: str
 ) -> bool:
     """Delete a backup file from remote SFTP server."""
     try:
-        import asyncssh
+        import paramiko
         
-        remote_file = os.path.join(remote_path, filename)
+        transport = paramiko.Transport((host, port))
+        transport.connect(username=username, password=password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
         
-        async with asyncssh.connect(
-            host,
-            port=port,
-            username=username,
-            password=password,
-            known_hosts=None
-        ) as conn:
-            async with conn.start_sftp_client() as sftp:
-                await sftp.remove(remote_file)
-                logger.info(f"Deleted from SFTP: {filename}")
-                return True
-                
+        remote_file = os.path.join(remote_path, filename).replace("\\", "/")
+        sftp.remove(remote_file)
+        
+        sftp.close()
+        transport.close()
+        
+        logger.info(f"Deleted from SFTP: {filename}")
+        return True
     except Exception as e:
         logger.error(f"SFTP delete failed: {e}")
         return False
 
 
-async def delete_remote_backup_ftp(
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str,
-    filename: str
+def delete_remote_backup_ftp(
+    host: str, port: int, username: str, password: str, remote_path: str, filename: str
 ) -> bool:
     """Delete a backup file from remote FTP server."""
     try:
-        import aioftp
+        from ftplib import FTP
         
-        async with aioftp.Client.context(host, port, username, password) as client:
-            await client.change_directory(remote_path)
-            await client.remove(filename)
-            logger.info(f"Deleted from FTP: {filename}")
-            return True
-            
+        ftp = FTP()
+        ftp.connect(host, port)
+        ftp.login(username, password)
+        if remote_path and remote_path != "/":
+            ftp.cwd(remote_path)
+        
+        ftp.delete(filename)
+        ftp.quit()
+        
+        logger.info(f"Deleted from FTP: {filename}")
+        return True
     except Exception as e:
         logger.error(f"FTP delete failed: {e}")
         return False
 
 
-async def delete_remote_backup(
-    protocol: str,
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str,
-    filename: str
+def delete_remote_backup(
+    protocol: str, host: str, port: int, username: str, password: str,
+    remote_path: str, filename: str
 ) -> bool:
     """Delete a backup file from remote server."""
     if protocol == "sftp":
-        return await delete_remote_backup_sftp(host, port, username, password, remote_path, filename)
+        return delete_remote_backup_sftp(host, port, username, password, remote_path, filename)
     elif protocol == "ftp":
-        return await delete_remote_backup_ftp(host, port, username, password, remote_path, filename)
+        return delete_remote_backup_ftp(host, port, username, password, remote_path, filename)
     return False
 
 
-async def cleanup_remote_backups(
-    protocol: str,
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str,
-    retention_days: int
+def cleanup_remote_backups(
+    protocol: str, host: str, port: int, username: str, password: str,
+    remote_path: str, retention_days: int
 ) -> int:
-    """
-    Remove old backups from remote storage based on retention policy.
-    Returns count of deleted files.
-    """
+    """Remove old backups from remote storage based on retention policy."""
     if retention_days <= 0:
-        return 0  # Keep forever
+        return 0
     
+    files = list_remote_backups(protocol, host, port, username, password, remote_path)
     deleted = 0
-    try:
-        from datetime import timedelta
-        cutoff_timestamp = (datetime.now() - timedelta(days=retention_days)).timestamp()
-        
-        # List remote backups
-        backups = await list_remote_backups(protocol, host, port, username, password, remote_path)
-        
-        for backup in backups:
-            mtime = backup.get("mtime")
-            if mtime and mtime < cutoff_timestamp:
-                success = await delete_remote_backup(
-                    protocol, host, port, username, password, remote_path, backup["filename"]
-                )
-                if success:
-                    deleted += 1
-                    logger.info(f"Remote cleanup: deleted {backup['filename']}")
-                    
-    except Exception as e:
-        logger.error(f"Remote cleanup failed: {e}")
+    now = datetime.now()
+    
+    for f in files:
+        if f.get("mtime"):
+            try:
+                mtime = datetime.fromisoformat(f["mtime"])
+                age = (now - mtime).days
+                if age > retention_days:
+                    if delete_remote_backup(protocol, host, port, username, password, remote_path, f["filename"]):
+                        deleted += 1
+            except Exception:
+                pass
     
     return deleted
 
 
-def cleanup_old_backups(retention_days: int = 30):
-    """
-    Remove old backups based on retention policy.
-    retention_days=0 means keep forever.
-    """
-    if retention_days <= 0:
-        return  # Keep forever
-        
+# ============== INTERNAL HELPERS ==============
+
+
+def _write_json(path: str, data: Any):
+    """Write data as JSON to file."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, default=str, ensure_ascii=False)
+
+
+def _read_json_from_tar(tar: tarfile.TarFile, member_name: str) -> Any:
+    """Read a JSON file from a tar archive."""
     try:
-        from datetime import timedelta
-        cutoff_date = datetime.now() - timedelta(days=retention_days)
-        
-        for backup_file in Path(BACKUP_DIR).glob("madmin_backup_*.tar.gz"):
-            if datetime.fromtimestamp(backup_file.stat().st_mtime) < cutoff_date:
-                backup_file.unlink()
-                logger.info(f"Removed old backup (>{retention_days} days): {backup_file}")
-            
-    except Exception as e:
-        logger.error(f"Cleanup failed: {e}")
+        member = tar.getmember(member_name)
+        f = tar.extractfile(member)
+        if f:
+            return json.loads(f.read().decode("utf-8"))
+    except (KeyError, json.JSONDecodeError):
+        pass
+    return None
 
 
-async def run_backup(
-    remote_protocol: Optional[str] = None,
-    remote_host: Optional[str] = None,
-    remote_port: int = 22,
-    remote_user: Optional[str] = None,
-    remote_password: Optional[str] = None,
-    remote_path: str = "/",
-    retention_days: int = 30
-) -> dict:
-    """
-    Run a full backup operation.
-    
-    Returns dict with status and details.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_name = f"madmin_backup_{timestamp}"
-    backup_path = os.path.join(ensure_backup_dir(), backup_name)
-    
-    os.makedirs(backup_path, exist_ok=True)
-    
-    result = {
-        "success": False,
-        "timestamp": timestamp,
-        "archive": None,
-        "remote_uploaded": False,
-        "errors": []
-    }
-    
-    # 1. Dump database
-    if not await dump_database(backup_path):
-        result["errors"].append("Database dump failed")
-    
-    # 2. Backup config files
-    if not backup_config_files(backup_path):
-        result["errors"].append("Config backup failed")
-    
-    # 3. Create archive
-    archive_name = f"{backup_name}.tar.gz"
-    archive_path = create_archive(backup_path, archive_name)
-    
-    if not archive_path:
-        result["errors"].append("Archive creation failed")
-        return result
-    
-    result["archive"] = archive_path
-    
-    # 4. Upload to remote if configured
-    if remote_protocol and remote_host and remote_user:
-        if remote_protocol == "sftp":
-            uploaded = await upload_sftp(
-                archive_path, remote_host, remote_port,
-                remote_user, remote_password or "", remote_path
-            )
-        elif remote_protocol == "ftp":
-            uploaded = await upload_ftp(
-                archive_path, remote_host, remote_port or 21,
-                remote_user, remote_password or "", remote_path
-            )
-        else:
-            uploaded = False
-            
-        result["remote_uploaded"] = uploaded
-        if not uploaded:
-            result["errors"].append("Remote upload failed")
-    
-    # 5. Cleanup old backups
-    cleanup_old_backups(retention_days)
-    
-    # 6. Cleanup temp directory
-    import shutil
-    shutil.rmtree(backup_path, ignore_errors=True)
-    
-    result["success"] = len(result["errors"]) == 0
-    return result
-
-
-# ============== RESTORE FUNCTIONS ==============
-
-async def restore_database(backup_path: str) -> bool:
-    """
-    Restore PostgreSQL database from backup.
-    Uses pg_restore with settings from config.
-    """
+def _load_module_manifest(module_id: str) -> Optional[dict]:
+    """Load a module's manifest.json as dict."""
+    manifest_path = Path(settings.modules_dir) / module_id / "manifest.json"
+    if not manifest_path.exists():
+        return None
     try:
-        from config import get_settings
-        
-        db_url = get_settings().database_url
-        if not db_url:
-            logger.error("DATABASE_URL not configured for restore")
-            return False
-        
-        # Convert asyncpg URL to standard postgresql format
-        if "+asyncpg" in db_url:
-            db_url = db_url.replace("+asyncpg", "")
-        
-        from urllib.parse import urlparse
-        parsed = urlparse(db_url)
-        
-        dump_file = os.path.join(backup_path, "database.sql")
-        if not os.path.exists(dump_file):
-            logger.warning("No database.sql found in backup")
-            return False
-        
-        # Build pg_restore command
-        env = os.environ.copy()
-        env["PGPASSWORD"] = parsed.password or ""
-        
-        # First, drop and recreate database connections
-        # Use pg_restore with --clean to drop objects before recreating
-        cmd = [
-            "pg_restore",
-            "-h", parsed.hostname or "localhost",
-            "-p", str(parsed.port or 5432),
-            "-U", parsed.username or "madmin",
-            "-d", parsed.path.lstrip("/"),
-            "--clean",  # Drop objects before recreating
-            "--if-exists",  # Don't error if objects don't exist
-            "--no-owner",  # Don't set ownership
-            "-v",  # Verbose
-            dump_file
-        ]
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+        with open(manifest_path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+async def _get_active_modules(session: AsyncSession) -> List[dict]:
+    """Get list of active modules from DB."""
+    from core.modules.models import InstalledModule
+    
+    result = await session.execute(
+        select(InstalledModule).where(InstalledModule.enabled == True)
+    )
+    modules = result.scalars().all()
+    return [{"id": m.id, "name": m.name, "version": m.version} for m in modules]
+
+
+# --- Export helpers ---
+
+
+async def _export_users(session: AsyncSession) -> List[dict]:
+    """Export all users with their permissions."""
+    from core.auth.models import User, UserPermission
+    
+    result = await session.execute(select(User))
+    users = result.scalars().all()
+    
+    users_data = []
+    for user in users:
+        # Get permission slugs
+        perms_result = await session.execute(
+            select(UserPermission.permission_slug).where(UserPermission.user_id == user.id)
         )
-        stdout, stderr = await process.communicate()
+        permission_slugs = [row[0] for row in perms_result.all()]
         
-        # pg_restore may return non-zero even on success with --clean --if-exists
-        # Check stderr for actual errors
-        if process.returncode != 0:
-            stderr_text = stderr.decode()
-            # Ignore errors about objects not existing (expected with --clean)
-            if "ERROR" in stderr_text and "does not exist" not in stderr_text:
-                logger.error(f"pg_restore failed: {stderr_text}")
-                return False
-        
-        logger.info(f"Database restored from {dump_file}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Database restore failed: {e}")
-        return False
+        users_data.append({
+            "username": user.username,
+            "email": user.email,
+            "hashed_password": user.hashed_password,
+            "is_active": user.is_active,
+            "is_superuser": user.is_superuser,
+            "totp_secret": user.totp_secret,
+            "totp_enabled": user.totp_enabled,
+            "totp_enforced": user.totp_enforced,
+            "backup_codes": user.backup_codes,
+            "preferences": user.preferences,
+            "permissions": permission_slugs
+        })
+    
+    return users_data
 
 
-def restore_modules(backup_path: str) -> dict:
-    """
-    Restore modules from backup to their directories.
-    Returns dict with counts of restored modules.
-    """
-    import shutil
-    result = {"modules": 0}
+async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
+    """Export machine firewall rules using the orchestrator."""
+    from core.firewall.models import MachineFirewallRule
     
-    config_dir = os.path.join(backup_path, "config")
+    result = await session.execute(
+        select(MachineFirewallRule).order_by(MachineFirewallRule.order)
+    )
+    rules = result.scalars().all()
     
-    # Restore installed modules
-    backup_modules = os.path.join(config_dir, "modules")
-    if os.path.exists(backup_modules):
-        dest = "/opt/madmin/backend/modules"
-        os.makedirs(dest, exist_ok=True)
-        for item in os.listdir(backup_modules):
-            src = os.path.join(backup_modules, item)
-            dst = os.path.join(dest, item)
-            if os.path.isdir(src):
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-                result["modules"] += 1
-                logger.info(f"Restored module: {item}")
+    return [
+        {
+            "chain": r.chain,
+            "action": r.action,
+            "protocol": r.protocol,
+            "source": r.source,
+            "destination": r.destination,
+            "port": r.port,
+            "in_interface": r.in_interface,
+            "out_interface": r.out_interface,
+            "state": r.state,
+            "limit_rate": r.limit_rate,
+            "limit_burst": r.limit_burst,
+            "to_destination": r.to_destination,
+            "to_source": r.to_source,
+            "to_ports": r.to_ports,
+            "log_prefix": r.log_prefix,
+            "log_level": r.log_level,
+            "reject_with": r.reject_with,
+            "comment": r.comment,
+            "table_name": r.table_name,
+            "order": r.order,
+            "enabled": r.enabled
+        }
+        for r in rules
+    ]
+
+
+async def _export_settings(session: AsyncSession) -> dict:
+    """Export all singleton settings tables."""
+    from core.settings.models import SystemSettings, SMTPSettings, BackupSettings
     
+    result = {}
+    
+    # SystemSettings
+    sys = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
+    sys_row = sys.scalar_one_or_none()
+    if sys_row:
+        result["system"] = {
+            "company_name": sys_row.company_name,
+            "primary_color": sys_row.primary_color,
+            "logo_url": sys_row.logo_url,
+            "favicon_url": sys_row.favicon_url,
+            "support_url": sys_row.support_url
+        }
+    
+    # SMTPSettings
+    smtp = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
+    smtp_row = smtp.scalar_one_or_none()
+    if smtp_row:
+        result["smtp"] = {
+            "smtp_host": smtp_row.smtp_host,
+            "smtp_port": smtp_row.smtp_port,
+            "smtp_encryption": smtp_row.smtp_encryption,
+            "smtp_username": smtp_row.smtp_username,
+            "smtp_password": smtp_row.smtp_password,
+            "sender_email": smtp_row.sender_email,
+            "sender_name": smtp_row.sender_name,
+            "public_url": smtp_row.public_url
+        }
+    
+    # BackupSettings
+    bk = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
+    bk_row = bk.scalar_one_or_none()
+    if bk_row:
+        result["backup"] = {
+            "enabled": bk_row.enabled,
+            "frequency": bk_row.frequency,
+            "time": bk_row.time,
+            "remote_protocol": bk_row.remote_protocol,
+            "remote_host": bk_row.remote_host,
+            "remote_port": bk_row.remote_port,
+            "remote_user": bk_row.remote_user,
+            "remote_password": bk_row.remote_password,
+            "remote_path": bk_row.remote_path,
+            "retention_days": bk_row.retention_days
+        }
     
     return result
 
 
-def restore_external_paths(backup_path: str) -> int:
-    """
-    Restore external paths from backup using manifest info.
-    Returns count of restored paths.
-    """
-    import shutil
-    import json
+async def _export_module_tables(session: AsyncSession, tables: List[str]) -> dict:
+    """Export module DB tables as dicts. Uses raw SQL to be schema-agnostic."""
+    result = {}
     
-    external_dir = os.path.join(backup_path, "external")
-    if not os.path.exists(external_dir):
-        logger.info("No external paths to restore")
-        return 0
+    for table_name in tables:
+        try:
+            rows = await session.execute(text(f'SELECT * FROM "{table_name}"'))
+            columns = rows.keys()
+            data = [dict(zip(columns, row)) for row in rows.fetchall()]
+            result[table_name] = data
+        except Exception as e:
+            logger.warning(f"Failed to export table {table_name}: {e}")
+            result[table_name] = []
     
-    count = 0
-    config_dir = os.path.join(backup_path, "config")
-    
-    # Check manifests in modules from backup
-    for subdir in ["modules"]:
-        modules_dir = os.path.join(config_dir, subdir)
-        if not os.path.exists(modules_dir):
+    return result
+
+
+def _copy_irrecoverable_files(patterns: List[str], dest_dir: str):
+    """Copy irrecoverable files matching glob patterns to dest directory."""
+    for pattern in patterns:
+        matched_paths = glob.glob(pattern)
+        if not matched_paths:
+            logger.info(f"No files matched pattern: {pattern}")
             continue
         
-        for module_name in os.listdir(modules_dir):
-            manifest_path = os.path.join(modules_dir, module_name, "manifest.json")
-            if not os.path.exists(manifest_path):
+        for src_path in matched_paths:
+            if not os.path.exists(src_path):
                 continue
             
-            try:
-                with open(manifest_path, 'r') as f:
-                    manifest = json.load(f)
-                
-                backup_config = manifest.get("backup", {})
-                external_paths = backup_config.get("external_paths", [])
-                
-                # Look for this module's backed up external data
-                module_external = os.path.join(external_dir, module_name)
-                if not os.path.exists(module_external):
-                    continue
-                
-                for ext_path in external_paths:
-                    basename = os.path.basename(ext_path.rstrip("/"))
-                    src = os.path.join(module_external, basename)
-                    
-                    if os.path.exists(src):
-                        # Ensure parent directory exists
-                        os.makedirs(os.path.dirname(ext_path), exist_ok=True)
-                        
-                        if os.path.isdir(src):
-                            shutil.copytree(src, ext_path, dirs_exist_ok=True)
-                        else:
-                            shutil.copy2(src, ext_path)
-                        
-                        count += 1
-                        logger.info(f"Restored external path: {ext_path}")
-                        
-            except Exception as e:
-                logger.warning(f"Failed to restore external paths for {module_name}: {e}")
+            # Preserve full path structure under dest
+            # e.g., /etc/openvpn/server/inst1/pki → dest/etc/openvpn/server/inst1/pki
+            rel_path = src_path.lstrip("/")
+            dest_path = os.path.join(dest_dir, rel_path)
+            
+            if os.path.isdir(src_path):
+                shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(src_path, dest_path)
+            
+            logger.info(f"Copied irrecoverable: {src_path}")
+
+
+# --- Import helpers ---
+
+
+async def _import_users(session: AsyncSession, users_file: str) -> int:
+    """Import users from JSON. Creates if new, updates if existing (by username)."""
+    from core.auth.models import User, UserPermission, Permission
+    
+    with open(users_file) as f:
+        users_data = json.load(f)
+    
+    count = 0
+    for u_data in users_data:
+        # Check if user exists
+        result = await session.execute(
+            select(User).where(User.username == u_data["username"])
+        )
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            # Update existing user (preserve ID)
+            existing.email = u_data.get("email") or existing.email
+            existing.hashed_password = u_data.get("hashed_password", existing.hashed_password)
+            existing.is_active = u_data.get("is_active", existing.is_active)
+            existing.is_superuser = u_data.get("is_superuser", existing.is_superuser)
+            existing.totp_secret = u_data.get("totp_secret") or existing.totp_secret
+            existing.totp_enabled = u_data.get("totp_enabled", existing.totp_enabled)
+            existing.totp_enforced = u_data.get("totp_enforced", existing.totp_enforced)
+            existing.backup_codes = u_data.get("backup_codes") or existing.backup_codes
+            existing.preferences = u_data.get("preferences", existing.preferences)
+            user_id = existing.id
+        else:
+            # Create new user
+            new_user = User(
+                username=u_data["username"],
+                email=u_data.get("email"),
+                hashed_password=u_data.get("hashed_password", ""),
+                is_active=u_data.get("is_active", True),
+                is_superuser=u_data.get("is_superuser", False),
+                totp_secret=u_data.get("totp_secret"),
+                totp_enabled=u_data.get("totp_enabled", False),
+                totp_enforced=u_data.get("totp_enforced", False),
+                backup_codes=u_data.get("backup_codes"),
+                preferences=u_data.get("preferences", "{}")
+            )
+            session.add(new_user)
+            await session.flush()
+            user_id = new_user.id
+        
+        # Assign permissions (only those that exist in current system)
+        for perm_slug in u_data.get("permissions", []):
+            perm_exists = await session.execute(
+                select(Permission).where(Permission.slug == perm_slug)
+            )
+            if perm_exists.scalar_one_or_none():
+                # Check if assignment already exists
+                existing_up = await session.execute(
+                    select(UserPermission).where(
+                        UserPermission.user_id == user_id,
+                        UserPermission.permission_slug == perm_slug
+                    )
+                )
+                if not existing_up.scalar_one_or_none():
+                    session.add(UserPermission(user_id=user_id, permission_slug=perm_slug))
+        
+        count += 1
     
     return count
 
 
-def preview_backup(archive_path: str) -> dict:
-    """
-    Preview contents of a backup archive without extracting.
-    Returns dict with backup info.
-    """
-    import tarfile
+async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> int:
+    """Import firewall rules. Replaces all existing rules."""
+    from core.firewall.models import MachineFirewallRule
     
-    result = {
-        "filename": os.path.basename(archive_path),
-        "size_bytes": os.path.getsize(archive_path),
-        "has_database": False,
-        "config_files": [],
-        "modules": [],
-        "external_paths": []
-    }
+    with open(firewall_file) as f:
+        rules_data = json.load(f)
     
-    try:
-        with tarfile.open(archive_path, "r:gz") as tar:
-            for member in tar.getnames():
-                if member.endswith("database.sql"):
-                    result["has_database"] = True
-                elif "/config/" in member:
-                    parts = member.split("/config/")
-                    if len(parts) > 1:
-                        sub = parts[1]
-                        if sub.startswith("modules/"):
-                            module = sub.split("/")[1] if "/" in sub else sub
-                            if module and module not in result["modules"]:
-                                result["modules"].append(module)
-                        elif not "/" in sub:
-                            result["config_files"].append(sub)
-                elif "/external/" in member:
-                    parts = member.split("/external/")
-                    if len(parts) > 1:
-                        path = parts[1]
-                        if "/" in path:
-                            module = path.split("/")[0]
-                            if module not in result["external_paths"]:
-                                result["external_paths"].append(module)
-                                
-    except Exception as e:
-        logger.error(f"Failed to preview backup: {e}")
-        result["error"] = str(e)
+    # Delete existing rules
+    await session.execute(delete(MachineFirewallRule))
     
-    return result
+    count = 0
+    exclude_fields = {"id", "created_at", "updated_at"}
+    
+    for rule_dict in rules_data:
+        clean_data = {k: v for k, v in rule_dict.items() if k not in exclude_fields}
+        rule = MachineFirewallRule(**clean_data)
+        session.add(rule)
+        count += 1
+    
+    return count
 
 
-async def restore_backup(archive_path: str) -> dict:
-    """
-    Restore from a backup archive.
+async def _import_settings(session: AsyncSession, settings_file: str):
+    """Import settings. Merges with existing singletons."""
+    from core.settings.models import SystemSettings, SMTPSettings, BackupSettings
     
-    Steps:
-    1. Extract archive to temp directory
-    2. Restore database
-    3. Restore modules
-    4. Restore external paths
+    with open(settings_file) as f:
+        data = json.load(f)
     
-    Returns dict with status and details.
-    """
-    import shutil
+    if "system" in data:
+        sys_result = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
+        sys_row = sys_result.scalar_one_or_none()
+        if sys_row:
+            for k, v in data["system"].items():
+                if hasattr(sys_row, k) and v is not None:
+                    setattr(sys_row, k, v)
+        else:
+            session.add(SystemSettings(id=1, **data["system"]))
     
-    if not os.path.exists(archive_path):
-        return {"success": False, "errors": ["Backup file not found"]}
+    if "smtp" in data:
+        smtp_result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
+        smtp_row = smtp_result.scalar_one_or_none()
+        if smtp_row:
+            for k, v in data["smtp"].items():
+                if hasattr(smtp_row, k) and v is not None:
+                    setattr(smtp_row, k, v)
+        else:
+            session.add(SMTPSettings(id=1, **data["smtp"]))
     
-    # Extract to temp directory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    restore_path = os.path.join(BACKUP_DIR, f"restore_temp_{timestamp}")
-    os.makedirs(restore_path, exist_ok=True)
+    if "backup" in data:
+        bk_result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
+        bk_row = bk_result.scalar_one_or_none()
+        if bk_row:
+            for k, v in data["backup"].items():
+                if hasattr(bk_row, k) and v is not None:
+                    setattr(bk_row, k, v)
+        else:
+            session.add(BackupSettings(id=1, **data["backup"]))
+
+
+async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
+    """Import module DB tables from JSON. Uses raw SQL INSERT for schema flexibility."""
+    with open(data_file) as f:
+        tables_data = json.load(f)
     
-    result = {
-        "success": False,
-        "database_restored": False,
-        "modules_restored": 0,
-        "external_restored": 0,
-        "errors": []
-    }
+    total_rows = 0
+    
+    for table_name, rows in tables_data.items():
+        if not rows:
+            continue
+        
+        # Clear existing data in this table first
+        try:
+            await session.execute(text(f'DELETE FROM "{table_name}"'))
+        except Exception as e:
+            logger.warning(f"Failed to clear table {table_name}: {e}")
+            continue
+        
+        for row in rows:
+            columns = list(row.keys())
+            placeholders = [f":{col}" for col in columns]
+            sql = f'INSERT INTO "{table_name}" ({", ".join(columns)}) VALUES ({", ".join(placeholders)})'
+            
+            try:
+                await session.execute(text(sql), row)
+                total_rows += 1
+            except Exception as e:
+                logger.warning(f"Failed to insert row in {table_name}: {e}")
+    
+    return total_rows
+
+
+def _restore_irrecoverable_files(files_dir: str):
+    """Restore irrecoverable files from backup to their original paths."""
+    for root, dirs, files in os.walk(files_dir):
+        for filename in files:
+            src = os.path.join(root, filename)
+            # Reconstruct original path
+            rel_path = os.path.relpath(src, files_dir)
+            dest = os.path.join("/", rel_path)
+            
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(src, dest)
+            logger.info(f"Restored irrecoverable file: {dest}")
+
+
+async def _execute_restore_hook(hook_path: str, module_path: Path, session: AsyncSession):
+    """Execute a module's post_restore hook."""
+    full_path = module_path / hook_path
+    
+    if not full_path.exists():
+        logger.warning(f"Post-restore hook not found: {full_path}")
+        return
     
     try:
-        # Extract archive
-        with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(restore_path)
-        
-        # Find the backup directory inside (it's named madmin_backup_TIMESTAMP)
-        extracted_dirs = [d for d in os.listdir(restore_path) if d.startswith("madmin_backup")]
-        if not extracted_dirs:
-            result["errors"].append("Invalid backup archive structure")
-            return result
-        
-        backup_path = os.path.join(restore_path, extracted_dirs[0])
-        
-        # 1. Restore database
-        db_result = await restore_database(backup_path)
-        result["database_restored"] = db_result
-        if not db_result:
-            result["errors"].append("Database restore failed or no database in backup")
-        
-        # 2. Restore modules
-        modules_result = restore_modules(backup_path)
-        result["modules_restored"] = modules_result["modules"]
-        
-        # 3. Restore external paths
-        external_count = restore_external_paths(backup_path)
-        result["external_restored"] = external_count
-        
-        result["success"] = result["database_restored"] or result["modules_restored"] > 0
-        
+        spec = importlib.util.spec_from_file_location("hook_post_restore", full_path)
+        if spec and spec.loader:
+            hook_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hook_module)
+            
+            if hasattr(hook_module, "run"):
+                result = hook_module.run(session)
+                if asyncio.iscoroutine(result):
+                    await result
+                logger.info(f"Executed post_restore hook: {full_path}")
     except Exception as e:
-        logger.error(f"Restore failed: {e}")
-        result["errors"].append(str(e))
-    finally:
-        # Cleanup temp directory
-        shutil.rmtree(restore_path, ignore_errors=True)
-    
-    return result
+        logger.error(f"Post-restore hook failed: {e}", exc_info=True)

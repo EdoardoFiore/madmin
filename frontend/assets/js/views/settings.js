@@ -209,20 +209,57 @@ export async function render(container) {
                 </div>
             </div>
             
-            <!-- Backup Settings -->
+            <!-- Backup & Migrazione -->
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup</h3>
+                        <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup & Migrazione</h3>
                         <div class="card-actions">
                             ${canManage ? `
+                            <button class="btn btn-success btn-sm me-2" id="export-config">
+                                <i class="ti ti-download me-1"></i>Esporta Configurazione
+                            </button>
                             <button class="btn btn-primary btn-sm" id="trigger-backup">
-                                <i class="ti ti-download me-1"></i>Esegui Backup Ora
+                                <i class="ti ti-cloud-upload me-1"></i>Backup Programmato
                             </button>
                             ` : ''}
                         </div>
                     </div>
                     <div class="card-body">
+                        <!-- Import Section -->
+                        ${canManage ? `
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-6">
+                                <h4 class="mb-2"><i class="ti ti-upload me-2"></i>Importa Configurazione</h4>
+                                <div class="border border-2 border-dashed rounded-3 p-4 text-center" id="import-dropzone"
+                                     style="cursor: pointer; transition: all 0.2s;">
+                                    <i class="ti ti-file-upload" style="font-size: 2rem; color: var(--tblr-primary);"></i>
+                                    <p class="mt-2 mb-1 text-muted">Trascina un file .tar.gz o clicca per selezionare</p>
+                                    <small class="text-muted">Esportato da un'altra istanza MADMIN</small>
+                                    <input type="file" id="import-file-input" accept=".tar.gz" class="d-none">
+                                </div>
+                                <div id="import-progress" class="d-none mt-2">
+                                    <div class="progress">
+                                        <div class="progress-bar progress-bar-indeterminate"></div>
+                                    </div>
+                                    <small class="text-muted">Importazione in corso...</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <h4 class="mb-2"><i class="ti ti-server me-2"></i>File da SCP</h4>
+                                <p class="text-muted small mb-2">
+                                    Carica file via SCP in <code>/opt/madmin/data/imports/</code>
+                                </p>
+                                <div id="scp-files-list">
+                                    <div class="text-muted small">Caricamento...</div>
+                                </div>
+                            </div>
+                        </div>
+                        <hr>
+                        ` : ''}
+                        
+                        <!-- Scheduled Backup Settings -->
+                        <h4 class="mb-3"><i class="ti ti-clock me-2"></i>Backup Programmato</h4>
                         <!-- Last backup status -->
                         <div class="alert alert-info mb-3" id="backup-status-alert">
                             <div class="d-flex align-items-center">
@@ -288,7 +325,7 @@ export async function render(container) {
                         
                         <!-- Backup History -->
                         <hr class="my-4">
-                        <h4 class="mb-3"><i class="ti ti-history me-2"></i>Storico Backup</h4>
+                        <h4 class="mb-3"><i class="ti ti-history me-2"></i>Storico Export</h4>
                         <div class="table-responsive">
                             <table class="table table-vcenter">
                                 <thead>
@@ -498,6 +535,9 @@ async function loadSettings() {
         // Load backup history
         await loadBackupHistory();
         await loadRemoteBackupHistory();
+
+        // Setup export/import listeners
+        setupExportImportListeners();
 
     } catch (error) {
         showToast('Errore caricamento impostazioni', 'error');
@@ -948,7 +988,7 @@ async function loadBackupHistory() {
         const history = await apiGet('/backup/history');
 
         if (history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun backup disponibile</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun export disponibile</td></tr>';
             return;
         }
 
@@ -958,9 +998,6 @@ async function loadBackupHistory() {
                 <td>${backup.size_mb} MB</td>
                 <td>${new Date(backup.created_at).toLocaleString('it-IT')}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-ghost-success" onclick="restoreBackup('${backup.filename}')" title="Ripristina">
-                        <i class="ti ti-restore"></i>
-                    </button>
                     <button class="btn btn-sm btn-ghost-primary" onclick="downloadLocalBackup('${backup.filename}')" title="Scarica">
                         <i class="ti ti-download"></i>
                     </button>
@@ -975,12 +1012,362 @@ async function loadBackupHistory() {
     }
 }
 
-/**
- * Delete a backup file
- */
+// ============== EXPORT ==============
+
+function setupExportImportListeners() {
+    // Export config download
+    document.getElementById('export-config')?.addEventListener('click', async () => {
+        const btn = document.getElementById('export-config');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Esportazione...';
+        btn.disabled = true;
+
+        try {
+            const response = await fetch('/api/backup/export', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Esportazione fallita');
+            }
+
+            const blob = await response.blob();
+            const contentDisposition = response.headers.get('content-disposition');
+            const filename = contentDisposition
+                ? contentDisposition.split('filename=')[1]?.replace(/"/g, '')
+                : 'madmin-config.tar.gz';
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+            showToast('Configurazione esportata con successo', 'success');
+            await loadBackupHistory();
+        } catch (e) {
+            showToast('Errore esportazione: ' + e.message, 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
+
+    // Import - Drag & Drop
+    const dropzone = document.getElementById('import-dropzone');
+    const fileInput = document.getElementById('import-file-input');
+
+    if (dropzone && fileInput) {
+        dropzone.addEventListener('click', () => fileInput.click());
+
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.style.borderColor = 'var(--tblr-primary)';
+            dropzone.style.background = 'var(--tblr-bg-surface-secondary)';
+        });
+
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.style.borderColor = '';
+            dropzone.style.background = '';
+        });
+
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.style.borderColor = '';
+            dropzone.style.background = '';
+            const file = e.dataTransfer.files[0];
+            if (file && file.name.endsWith('.tar.gz')) {
+                handleImportFile(file);
+            } else {
+                showToast('Il file deve essere un archivio .tar.gz', 'warning');
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) handleImportFile(file);
+        });
+    }
+
+    // Load SCP files
+    loadScpFiles();
+}
+
+// ============== IMPORT ==============
+
+async function handleImportFile(file) {
+    // First, preview
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/api/backup/import/preview', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` },
+            body: formData
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Preview fallito');
+        }
+
+        const preview = await response.json();
+        showImportPreviewModal(preview, file);
+    } catch (e) {
+        showToast('Errore preview: ' + e.message, 'error');
+    }
+}
+
+function showImportPreviewModal(preview, file, scpFilename = null) {
+    const versionWarning = preview.source_version !== preview.current_version
+        ? `<div class="alert alert-warning mb-3">
+            <i class="ti ti-alert-triangle me-2"></i>
+            <strong>Versione diversa!</strong> Sorgente: ${preview.source_version} → Corrente: ${preview.current_version}
+           </div>`
+        : '';
+
+    // Build core section
+    const coreUsers = (preview.core?.users || []).map(u =>
+        `<tr>
+            <td><i class="ti ti-user me-1"></i>${u.username}</td>
+            <td>${u.is_superuser ? '<span class="badge bg-red-lt">Super Admin</span>' : '<span class="badge bg-blue-lt">Utente</span>'}</td>
+            <td>${u.is_active ? '<span class="badge bg-green-lt">Attivo</span>' : '<span class="badge bg-secondary-lt">Disattivo</span>'}</td>
+        </tr>`
+    ).join('');
+
+    // Build modules section
+    const modulesHtml = Object.entries(preview.modules || {}).map(([modId, modData]) => {
+        const tablesHtml = Object.entries(modData.tables || {}).map(([table, count]) =>
+            `<div class="d-flex justify-content-between"><span class="text-muted">${table}</span><span class="badge bg-blue-lt">${count}</span></div>`
+        ).join('');
+
+        return `
+            <div class="col-md-6">
+                <div class="card card-sm">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="avatar avatar-sm bg-purple-lt me-2"><i class="ti ti-puzzle"></i></span>
+                            <strong>${modId}</strong>
+                            ${modData.has_files ? '<span class="badge bg-cyan-lt ms-2">+ file</span>' : ''}
+                        </div>
+                        ${tablesHtml}
+                    </div>
+                </div>
+            </div>`;
+    }).join('');
+
+    const modalHtml = `
+        <div class="modal fade" id="import-preview-modal" tabindex="-1">
+            <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header bg-primary-lt">
+                        <h5 class="modal-title"><i class="ti ti-file-import me-2"></i>Anteprima Importazione</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        ${versionWarning}
+                        
+                        <div class="d-flex gap-3 mb-3">
+                            <span class="badge bg-blue-lt">Versione: ${preview.source_version}</span>
+                            <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString('it-IT')}</span>
+                        </div>
+
+                        <!-- Core Section -->
+                        <h4 class="mb-2"><i class="ti ti-settings me-2"></i>Core</h4>
+                        
+                        <div class="row g-3 mb-3">
+                            <div class="col-12">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center mb-2">
+                                            <span class="avatar avatar-sm bg-green-lt me-2"><i class="ti ti-users"></i></span>
+                                            <strong>Utenti (${preview.core?.users?.length || 0})</strong>
+                                        </div>
+                                        ${coreUsers ? `
+                                        <table class="table table-sm table-vcenter mb-0">
+                                            <thead><tr><th>Username</th><th>Ruolo</th><th>Stato</th></tr></thead>
+                                            <tbody>${coreUsers}</tbody>
+                                        </table>` : '<span class="text-muted">Nessun utente</span>'}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar avatar-sm bg-orange-lt me-2"><i class="ti ti-shield"></i></span>
+                                            <strong>Regole Firewall</strong>
+                                            <span class="badge bg-orange-lt ms-auto">${preview.core?.firewall_rules || 0}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar avatar-sm bg-cyan-lt me-2"><i class="ti ti-adjustments"></i></span>
+                                            <strong>Impostazioni</strong>
+                                            <span class="badge bg-cyan-lt ms-auto">${preview.core?.settings?.company_name || '-'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Modules Section -->
+                        ${modulesHtml ? `
+                        <h4 class="mb-2"><i class="ti ti-puzzle me-2"></i>Moduli</h4>
+                        <div class="row g-3">${modulesHtml}</div>
+                        ` : ''}
+
+                        <div class="alert alert-warning mt-3 mb-0">
+                            <i class="ti ti-alert-circle me-2"></i>
+                            <strong>Attenzione!</strong> L'importazione sovrascriverà le regole firewall e i dati dei moduli esistenti.
+                            I moduli non attivi verranno attivati automaticamente.
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
+                        <button type="button" class="btn btn-primary" id="confirm-import-btn">
+                            <i class="ti ti-file-import me-1"></i>Importa
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Remove existing modal if any
+    document.getElementById('import-preview-modal')?.remove();
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    const modal = new bootstrap.Modal(document.getElementById('import-preview-modal'));
+    modal.show();
+
+    // Handle confirm
+    document.getElementById('confirm-import-btn').addEventListener('click', async () => {
+        modal.hide();
+
+        const progressEl = document.getElementById('import-progress');
+        if (progressEl) progressEl.classList.remove('d-none');
+
+        try {
+            let response;
+
+            if (scpFilename) {
+                // Import from SCP file
+                response = await fetch(`/api/backup/import/from-file?filename=${encodeURIComponent(scpFilename)}`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
+                });
+            } else {
+                // Import from uploaded file
+                const formData = new FormData();
+                formData.append('file', file);
+
+                response = await fetch('/api/backup/import', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` },
+                    body: formData
+                });
+            }
+
+            const result = await response.json();
+
+            if (progressEl) progressEl.classList.add('d-none');
+
+            if (result.success || response.ok) {
+                let summary = 'Importazione completata: ';
+                summary += `${result.users_imported || 0} utenti, `;
+                summary += `${result.firewall_rules_imported || 0} regole firewall, `;
+                summary += `${result.modules_imported?.length || 0} moduli`;
+
+                if (result.warnings?.length > 0) {
+                    summary += '. Avvisi: ' + result.warnings.join(', ');
+                }
+
+                showToast(summary, 'success');
+
+                const reload = await confirmDialog(
+                    'Importazione Completata',
+                    'Ricaricare la pagina per applicare le modifiche?',
+                    'Ricarica',
+                    'btn-primary'
+                );
+                if (reload) location.reload();
+            } else {
+                const errors = result.result?.errors || result.errors || ['Errore sconosciuto'];
+                showToast('Importazione fallita: ' + errors.join(', '), 'error');
+            }
+        } catch (err) {
+            if (progressEl) progressEl.classList.add('d-none');
+            showToast('Errore importazione: ' + err.message, 'error');
+        }
+    });
+}
+
+// ============== SCP FILES ==============
+
+async function loadScpFiles() {
+    const container = document.getElementById('scp-files-list');
+    if (!container) return;
+
+    try {
+        const files = await apiGet('/backup/import/files');
+
+        if (files.length === 0) {
+            container.innerHTML = '<div class="text-muted small">Nessun file disponibile</div>';
+            return;
+        }
+
+        container.innerHTML = files.map(f => `
+            <div class="d-flex align-items-center justify-content-between mb-2 p-2 bg-surface-secondary rounded">
+                <div>
+                    <i class="ti ti-file-zip me-1"></i>
+                    <span class="small">${f.filename}</span>
+                    <span class="badge bg-secondary-lt ms-1">${f.size_mb} MB</span>
+                </div>
+                <button class="btn btn-sm btn-outline-primary" onclick="importScpFile('${f.filename}')">
+                    <i class="ti ti-file-import me-1"></i>Importa
+                </button>
+            </div>
+        `).join('');
+    } catch (e) {
+        container.innerHTML = '<div class="text-muted small">Errore caricamento</div>';
+    }
+}
+
+window.importScpFile = async function (filename) {
+    try {
+        const response = await fetch(`/api/backup/import/preview/from-file?filename=${encodeURIComponent(filename)}`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detail || 'Preview fallito');
+        }
+
+        const preview = await response.json();
+        showImportPreviewModal(preview, null, filename);
+    } catch (e) {
+        showToast('Errore preview: ' + e.message, 'error');
+    }
+};
+
+// ============== LOCAL FILE MANAGEMENT ==============
+
 window.deleteBackup = async function (filename) {
     const confirmed = await confirmDialog(
-        'Elimina Backup',
+        'Elimina File',
         `Eliminare definitivamente ${filename}?`,
         'Elimina',
         'btn-danger'
@@ -990,197 +1377,39 @@ window.deleteBackup = async function (filename) {
     try {
         await fetch(`/api/backup/delete/${filename}`, {
             method: 'DELETE',
-            headers: {
-                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`
-            }
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
         });
-        showToast('Backup eliminato', 'success');
+        showToast('File eliminato', 'success');
         await loadBackupHistory();
     } catch (e) {
         showToast('Errore eliminazione: ' + e.message, 'error');
     }
 };
 
-/**
- * Restore from a backup file
- */
-window.restoreBackup = async function (filename, isRemote = false) {
+async function downloadLocalBackup(filename) {
     try {
-        // If remote, download first
-        if (isRemote) {
-            showToast('Download backup remoto...', 'info');
-            const dlResult = await apiPost(`/backup/remote/download/${filename}`, {});
-            if (!dlResult.status === 'ok') {
-                showToast('Download fallito', 'error');
-                return;
-            }
-        }
-
-        // Get preview
-        const preview = await apiGet(`/backup/preview/${filename}`);
-
-        // Build modal HTML
-        const modalHtml = `
-            <div class="modal fade" id="restore-preview-modal" tabindex="-1">
-                <div class="modal-dialog modal-lg modal-dialog-centered">
-                    <div class="modal-content">
-                        <div class="modal-header bg-warning-lt">
-                            <h5 class="modal-title"><i class="ti ti-alert-triangle me-2"></i>Conferma Ripristino</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <div class="alert alert-warning mb-3">
-                                <i class="ti ti-alert-circle me-2"></i>
-                                <strong>Attenzione!</strong> Questo sovrascriverà i dati attuali.
-                            </div>
-                            
-                            <h4 class="mb-3">${filename}</h4>
-                            <div class="mb-3">
-                                <span class="badge ${preview.size_bytes > 0 ? 'bg-blue-lt' : 'bg-secondary-lt'}">
-                                    ${(preview.size_bytes / 1024 / 1024).toFixed(2)} MB
-                                </span>
-                            </div>
-                            
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <div class="card card-sm">
-                                        <div class="card-body">
-                                            <div class="d-flex align-items-center mb-2">
-                                                <span class="avatar avatar-sm bg-${preview.has_database ? 'success' : 'secondary'}-lt me-2">
-                                                    <i class="ti ti-database"></i>
-                                                </span>
-                                                <strong>Database</strong>
-                                            </div>
-                                            <span class="text-${preview.has_database ? 'success' : 'muted'}">
-                                                ${preview.has_database ? 'Incluso nel backup' : 'Non presente'}
-                                            </span>
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <div class="col-md-6">
-                                    <div class="card card-sm">
-                                        <div class="card-body">
-                                            <div class="d-flex align-items-center mb-2">
-                                                <span class="avatar avatar-sm bg-${preview.config_files.length > 0 ? 'purple' : 'secondary'}-lt me-2">
-                                                    <i class="ti ti-file-settings"></i>
-                                                </span>
-                                                <strong>Config</strong>
-                                            </div>
-                                            <span class="text-muted">
-                                                ${preview.config_files.length > 0 ? preview.config_files.join(', ') : 'Nessuno'}
-                                            </span>
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                ${preview.modules.length > 0 ? `
-                                <div class="col-md-6">
-                                    <div class="card card-sm">
-                                        <div class="card-body">
-                                            <div class="d-flex align-items-center mb-2">
-                                                <span class="avatar avatar-sm bg-blue-lt me-2">
-                                                    <i class="ti ti-puzzle"></i>
-                                                </span>
-                                                <strong>Moduli</strong>
-                                            </div>
-                                            <span class="text-muted">${preview.modules.join(', ')}</span>
-                                        </div>
-                                    </div>
-                                </div>` : ''}
-                                
-                                ${preview.staging.length > 0 ? `
-                                <div class="col-md-6">
-                                    <div class="card card-sm">
-                                        <div class="card-body">
-                                            <div class="d-flex align-items-center mb-2">
-                                                <span class="avatar avatar-sm bg-orange-lt me-2">
-                                                    <i class="ti ti-code"></i>
-                                                </span>
-                                                <strong>Staging</strong>
-                                            </div>
-                                            <span class="text-muted">${preview.staging.join(', ')}</span>
-                                        </div>
-                                    </div>
-                                </div>` : ''}
-                                
-                                ${preview.external_paths.length > 0 ? `
-                                <div class="col-12">
-                                    <div class="card card-sm">
-                                        <div class="card-body">
-                                            <div class="d-flex align-items-center mb-2">
-                                                <span class="avatar avatar-sm bg-cyan-lt me-2">
-                                                    <i class="ti ti-folder"></i>
-                                                </span>
-                                                <strong>Path Esterni</strong>
-                                            </div>
-                                            <span class="text-muted">${preview.external_paths.join(', ')}</span>
-                                        </div>
-                                    </div>
-                                </div>` : ''}
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                            <button type="button" class="btn btn-warning" id="confirm-restore-btn">
-                                <i class="ti ti-restore me-1"></i>Ripristina
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        // Remove existing modal if any
-        document.getElementById('restore-preview-modal')?.remove();
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-        const modal = new bootstrap.Modal(document.getElementById('restore-preview-modal'));
-        modal.show();
-
-        // Handle confirm
-        document.getElementById('confirm-restore-btn').addEventListener('click', async () => {
-            modal.hide();
-            showToast('Ripristino in corso...', 'info');
-
-            try {
-                const result = await apiPost(`/backup/restore/${filename}`, {});
-
-                if (result.success) {
-                    let summary = 'Ripristino completato: ';
-                    if (result.database_restored) summary += 'DB ✓ ';
-                    if (result.modules_restored > 0) summary += `${result.modules_restored} moduli ✓ `;
-                    if (result.staging_restored > 0) summary += `${result.staging_restored} staging ✓ `;
-                    if (result.external_restored > 0) summary += `${result.external_restored} external ✓`;
-
-                    showToast(summary, 'success');
-
-                    const reload = await confirmDialog(
-                        'Ripristino Completato',
-                        'Ricaricare la pagina per applicare le modifiche?',
-                        'Ricarica',
-                        'btn-primary'
-                    );
-                    if (reload) location.reload();
-                } else {
-                    showToast('Ripristino fallito: ' + result.errors.join(', '), 'error');
-                }
-            } catch (err) {
-                showToast('Errore ripristino: ' + err.message, 'error');
-            }
+        const response = await fetch(`/api/backup/download/${filename}`, {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
         });
 
-    } catch (e) {
-        showToast('Errore: ' + e.message, 'error');
-    }
-};
+        if (!response.ok) throw new Error('Download fallito');
 
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
 
 // ============== REMOTE BACKUP FUNCTIONS ==============
 
-/**
- * Load remote backup history
- */
 async function loadRemoteBackupHistory() {
     const tbody = document.getElementById('remote-backup-history-body');
     if (!tbody) return;
@@ -1199,9 +1428,6 @@ async function loadRemoteBackupHistory() {
                 <td>${backup.size_mb} MB</td>
                 <td>${backup.mtime ? new Date(backup.mtime).toLocaleString('it-IT') : '-'}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-ghost-success" onclick="restoreBackup('${backup.filename}', true)" title="Ripristina">
-                        <i class="ti ti-restore"></i>
-                    </button>
                     <button class="btn btn-sm btn-ghost-primary" onclick="downloadRemoteBackup('${backup.filename}')" title="Scarica in locale">
                         <i class="ti ti-download"></i>
                     </button>
@@ -1216,23 +1442,17 @@ async function loadRemoteBackupHistory() {
     }
 }
 
-/**
- * Download remote backup to local
- */
 window.downloadRemoteBackup = async function (filename) {
     try {
         showToast('Download in corso...', 'info');
         const result = await apiPost(`/backup/remote/download/${filename}`, {});
-        showToast('Backup scaricato in locale', 'success');
+        showToast('File scaricato in locale', 'success');
         await loadBackupHistory();
     } catch (e) {
         showToast('Errore download: ' + e.message, 'error');
     }
 };
 
-/**
- * Delete remote backup
- */
 window.deleteRemoteBackup = async function (filename) {
     const confirmed = await confirmDialog(
         'Elimina Backup Remoto',
@@ -1251,9 +1471,6 @@ window.deleteRemoteBackup = async function (filename) {
     }
 };
 
-/**
- * Cleanup remote backups based on retention
- */
 window.cleanupRemoteBackups = async function () {
     const confirmed = await confirmDialog(
         'Pulizia Backup Remoti',
@@ -1265,43 +1482,13 @@ window.cleanupRemoteBackups = async function () {
 
     try {
         const result = await apiPost('/backup/remote/cleanup', {});
-        showToast(`Pulizia completata: ${result.deleted_count} backup eliminati`, 'success');
+        showToast(`Pulizia completata: ${result.deleted_count} file eliminati`, 'success');
         await loadRemoteBackupHistory();
     } catch (e) {
         showToast('Errore pulizia: ' + e.message, 'error');
     }
 };
-async function downloadLocalBackup(filename) {
-    const btn = event.currentTarget;
-    const originalIcon = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-
-    try {
-        const response = await fetch(`/api/backup/download/${filename}`, {
-            headers: {
-                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`
-            }
-        });
-
-        if (!response.ok) throw new Error('Download fallito');
-
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-    } catch (err) {
-        showToast(err.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = originalIcon;
-    }
-}
 
 // Make globally available
 window.downloadLocalBackup = downloadLocalBackup;
+

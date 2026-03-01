@@ -62,16 +62,18 @@
             "priority": 40
         }
     ],
-    "backup": {
-        "external_paths": [
-            "/etc/swanctl/conf.d",
+    "config_export": {
+        "tables": [
+            "ipsec_tunnel",
+            "ipsec_child_sa",
+            "ipsec_tunnel_firewall_rule"
+        ],
+        "irrecoverable_files": [
             "/etc/swanctl/x509",
             "/etc/swanctl/x509ca",
             "/etc/swanctl/private"
         ],
-        "restore_hooks": {
-            "post_restore": "hooks/post_restore.py"
-        }
+        "post_restore": "hooks/post_restore.py"
     },
     "dependencies": []
 }

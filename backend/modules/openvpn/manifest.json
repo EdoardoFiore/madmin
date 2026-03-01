@@ -66,15 +66,18 @@
             "priority": 50
         }
     ],
-    "backup": {
-        "external_paths": [
-            "/etc/openvpn/server",
-            "/etc/openvpn/client",
-            "/etc/openvpn/easy-rsa"
+    "config_export": {
+        "tables": [
+            "ovpn_instance",
+            "ovpn_client",
+            "ovpn_group",
+            "ovpn_group_member",
+            "ovpn_group_rule"
         ],
-        "restore_hooks": {
-            "post_restore": "hooks/post_restore.py"
-        }
+        "irrecoverable_files": [
+            "/etc/openvpn/server/*/pki"
+        ],
+        "post_restore": "hooks/post_restore.py"
     },
     "dependencies": []
 }

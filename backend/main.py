@@ -13,6 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from config import MADMIN_VERSION
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
@@ -142,6 +143,7 @@ async def lifespan(app: FastAPI):
                             last_backup_date = current_date
                             
                             backup_result = await run_backup(
+                                session=session,
                                 remote_protocol=settings.remote_protocol if settings.remote_host else None,
                                 remote_host=settings.remote_host or None,
                                 remote_port=settings.remote_port,
@@ -198,7 +200,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MADMIN",
         description="Modular Admin System - Manage your server with ease",
-        version="1.0.0",
+        version=MADMIN_VERSION,
         lifespan=lifespan
     )
     
@@ -271,7 +273,7 @@ def create_app() -> FastAPI:
         return {
             "status": "healthy" if db_healthy else "degraded",
             "database": "connected" if db_healthy else "disconnected",
-            "version": "1.0.0"
+            "version": MADMIN_VERSION
         }
     
     # Mount static frontend files

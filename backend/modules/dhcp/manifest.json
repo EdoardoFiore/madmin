@@ -44,13 +44,14 @@
         }
     ],
     "firewall_chains": [],
-    "backup": {
-        "external_paths": [
-            "/etc/dhcp"
+    "config_export": {
+        "tables": [
+            "dhcp_subnet",
+            "dhcp_host",
+            "dhcp_option"
         ],
-        "restore_hooks": {
-            "post_restore": "hooks/post_install.py"
-        }
+        "irrecoverable_files": [],
+        "post_restore": null
     },
     "dependencies": []
 }

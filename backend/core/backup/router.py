@@ -1,13 +1,14 @@
 """
 MADMIN Backup Router
 
-API endpoints for backup management.
+API endpoints for config export/import and backup management.
 """
+import os
 import logging
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,13 +19,156 @@ from core.auth.dependencies import require_permission
 from core.auth.models import User
 from core.settings.models import BackupSettings
 from .service import (
-    run_backup, restore_backup, preview_backup, BACKUP_DIR,
+    export_config, import_config, preview_config,
+    run_backup, list_local_backups, list_import_files,
+    BACKUP_DIR, IMPORTS_DIR,
     list_remote_backups, download_remote_backup, delete_remote_backup, cleanup_remote_backups
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/backup", tags=["Backup"])
+
+
+# ============== CONFIG EXPORT ==============
+
+
+@router.post("/export")
+async def export_configuration(
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Export full configuration as downloadable tar.gz archive."""
+    try:
+        archive_path = await export_config(session)
+        
+        return FileResponse(
+            path=archive_path,
+            filename=os.path.basename(archive_path),
+            media_type="application/gzip"
+        )
+    except Exception as e:
+        logger.error(f"Export failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Esportazione fallita: {str(e)}")
+
+
+# ============== CONFIG IMPORT ==============
+
+
+@router.post("/import/preview")
+async def preview_import(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("settings.manage"))
+):
+    """Preview contents of a config archive without applying."""
+    if not file.filename.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+    
+    # Save uploaded file temporarily
+    temp_path = os.path.join(BACKUP_DIR, f"_preview_temp_{file.filename}")
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        with open(temp_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        result = await preview_config(temp_path)
+        
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@router.post("/import")
+async def import_configuration(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Import configuration from uploaded tar.gz archive."""
+    if not file.filename.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+    
+    # Save uploaded file
+    temp_path = os.path.join(BACKUP_DIR, f"_import_{file.filename}")
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        with open(temp_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        result = await import_config(session, temp_path)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail={
+                "message": "Importazione completata con errori",
+                "result": result
+            })
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Import failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Importazione fallita: {str(e)}")
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+@router.post("/import/from-file")
+async def import_from_scp_file(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Import configuration from file uploaded via SCP to imports directory."""
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+    
+    file_path = os.path.join(IMPORTS_DIR, safe_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File non trovato nella cartella imports")
+    
+    result = await import_config(session, file_path)
+    return result
+
+
+@router.get("/import/files")
+async def list_scp_import_files(
+    current_user: User = Depends(require_permission("settings.view"))
+):
+    """List config archives available in the imports directory (uploaded via SCP)."""
+    return list_import_files()
+
+
+@router.post("/import/preview/from-file")
+async def preview_scp_file(
+    filename: str,
+    current_user: User = Depends(require_permission("settings.view"))
+):
+    """Preview a config archive from the imports directory."""
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+    
+    file_path = os.path.join(IMPORTS_DIR, safe_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File non trovato")
+    
+    result = await preview_config(file_path)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+
+# ============== SCHEDULED BACKUP (triggers export + remote upload) ==============
 
 
 class BackupResult(BaseModel):
@@ -35,97 +179,52 @@ class BackupResult(BaseModel):
     errors: List[str] = []
 
 
-class RestoreResult(BaseModel):
-    success: bool
-    database_restored: bool = False
-    modules_restored: int = 0
-    staging_restored: int = 0
-    external_restored: int = 0
-    errors: List[str] = []
-
-
-class BackupPreview(BaseModel):
-    filename: str
-    size_bytes: int
-    has_database: bool
-    config_files: List[str] = []
-    modules: List[str] = []
-    staging: List[str] = []
-    external_paths: List[str] = []
-
-
-class BackupHistoryItem(BaseModel):
-    filename: str
-    size_mb: float
-    created_at: datetime
-
-
 async def update_backup_status(session: AsyncSession, success: bool, errors: List[str]):
     """Update backup settings with last run status."""
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
-    settings = result.scalar_one_or_none()
+    bk_settings = result.scalar_one_or_none()
     
-    if settings:
-        settings.last_run_time = datetime.utcnow()
-        settings.last_run_status = "success" if success else f"failed: {', '.join(errors)}"
-        session.add(settings)
+    if bk_settings:
+        bk_settings.last_run_time = datetime.utcnow()
+        bk_settings.last_run_status = "success" if success else f"failed: {', '.join(errors)}"
+        session.add(bk_settings)
         await session.commit()
 
 
 @router.post("/run", response_model=BackupResult)
 async def trigger_backup(
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_permission("settings.manage")),
     session: AsyncSession = Depends(get_session)
 ):
-    """
-    Trigger a manual backup.
-    This runs in the background and updates status when complete.
-    """
-    # Get backup settings
+    """Trigger a manual backup (export + remote upload)."""
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
-    settings = result.scalar_one_or_none()
+    bk_settings = result.scalar_one_or_none()
     
-    if not settings:
-        raise HTTPException(status_code=400, detail="Configura prima le impostazioni di backup")
-    
-    # Run backup
     backup_result = await run_backup(
-        remote_protocol=settings.remote_protocol,
-        remote_host=settings.remote_host,
-        remote_port=settings.remote_port or 22,
-        remote_user=settings.remote_user,
-        remote_password=settings.remote_password,
-        remote_path=settings.remote_path or "/",
-        retention_days=settings.retention_days or 30
+        session=session,
+        remote_protocol=bk_settings.remote_protocol if bk_settings else None,
+        remote_host=bk_settings.remote_host if bk_settings else None,
+        remote_port=(bk_settings.remote_port or 22) if bk_settings else 22,
+        remote_user=bk_settings.remote_user if bk_settings else None,
+        remote_password=bk_settings.remote_password if bk_settings else None,
+        remote_path=(bk_settings.remote_path or "/") if bk_settings else "/",
+        retention_days=(bk_settings.retention_days or 30) if bk_settings else 30
     )
     
-    # Update status
     await update_backup_status(session, backup_result["success"], backup_result["errors"])
     
     return BackupResult(**backup_result)
 
 
-@router.get("/history", response_model=List[BackupHistoryItem])
+# ============== LOCAL ARCHIVE MANAGEMENT ==============
+
+
+@router.get("/history")
 async def get_backup_history(
     current_user: User = Depends(require_permission("settings.view")),
 ):
-    """Get list of local backup archives."""
-    backups = []
-    
-    backup_path = Path(BACKUP_DIR)
-    if not backup_path.exists():
-        return []
-    
-    for file in sorted(backup_path.glob("madmin_backup_*.tar.gz"), reverse=True):
-        stat = file.stat()
-        backups.append(BackupHistoryItem(
-            filename=file.name,
-            size_mb=round(stat.st_size / (1024 * 1024), 2),
-            created_at=datetime.fromtimestamp(stat.st_mtime)
-        ))
-    
-    return backups[:10]  # Limit to 10 most recent
+    """Get list of local config export archives."""
+    return list_local_backups()
 
 
 @router.get("/download/{filename}")
@@ -133,15 +232,14 @@ async def download_backup(
     filename: str,
     current_user: User = Depends(require_permission("settings.manage"))
 ):
-    """Download a backup archive."""
-    # Sanitize filename
+    """Download a config export archive."""
     safe_name = Path(filename).name
-    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+    if not safe_name.endswith(".tar.gz"):
         raise HTTPException(status_code=400, detail="Nome file non valido")
     
     file_path = Path(BACKUP_DIR) / safe_name
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Backup non trovato")
+        raise HTTPException(status_code=404, detail="File non trovato")
     
     return FileResponse(
         path=str(file_path),
@@ -155,62 +253,20 @@ async def delete_backup(
     filename: str,
     current_user: User = Depends(require_permission("settings.manage"))
 ):
-    """Delete a backup archive."""
+    """Delete a config export archive."""
     safe_name = Path(filename).name
-    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+    if not safe_name.endswith(".tar.gz"):
         raise HTTPException(status_code=400, detail="Nome file non valido")
     
     file_path = Path(BACKUP_DIR) / safe_name
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Backup non trovato")
+        raise HTTPException(status_code=404, detail="File non trovato")
     
     file_path.unlink()
-    return {"status": "ok", "message": "Backup eliminato"}
+    return {"status": "ok", "message": "File eliminato"}
 
 
-@router.get("/preview/{filename}", response_model=BackupPreview)
-async def preview_backup_contents(
-    filename: str,
-    current_user: User = Depends(require_permission("settings.view"))
-):
-    """Preview contents of a backup archive before restore."""
-    safe_name = Path(filename).name
-    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Nome file non valido")
-    
-    file_path = Path(BACKUP_DIR) / safe_name
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Backup non trovato")
-    
-    preview = preview_backup(str(file_path))
-    
-    if "error" in preview:
-        raise HTTPException(status_code=500, detail=preview["error"])
-    
-    return BackupPreview(**preview)
-
-
-@router.post("/restore/{filename}", response_model=RestoreResult)
-async def restore_from_backup(
-    filename: str,
-    current_user: User = Depends(require_permission("settings.manage"))
-):
-    """
-    Restore from a backup archive.
-    
-    WARNING: This will overwrite current database and module files!
-    """
-    safe_name = Path(filename).name
-    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Nome file non valido")
-    
-    file_path = Path(BACKUP_DIR) / safe_name
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Backup non trovato")
-    
-    result = await restore_backup(str(file_path))
-    
-    return RestoreResult(**result)
+# ============== REMOTE STORAGE ==============
 
 
 class RemoteBackupItem(BaseModel):
@@ -226,28 +282,28 @@ async def list_remote_backup_files(
 ):
     """List backup files on remote storage."""
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
-    settings = result.scalar_one_or_none()
+    bk_settings = result.scalar_one_or_none()
     
-    if not settings or not settings.remote_protocol or not settings.remote_host:
-        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    if not bk_settings or not bk_settings.remote_protocol or not bk_settings.remote_host:
+        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
     
-    backups = await list_remote_backups(
-        settings.remote_protocol,
-        settings.remote_host,
-        settings.remote_port or 22,
-        settings.remote_user or "",
-        settings.remote_password or "",
-        settings.remote_path or "/"
+    backups = list_remote_backups(
+        bk_settings.remote_protocol,
+        bk_settings.remote_host,
+        bk_settings.remote_port or 22,
+        bk_settings.remote_user or "",
+        bk_settings.remote_password or "",
+        bk_settings.remote_path or "/"
     )
     
     return [
         RemoteBackupItem(
             filename=b["filename"],
-            size_mb=round(b.get("size_bytes", 0) / (1024 * 1024), 2),
-            mtime=datetime.fromtimestamp(b["mtime"]) if b.get("mtime") else None
+            size_mb=b.get("size_mb", 0),
+            mtime=b.get("mtime")
         )
         for b in backups
-    ][:10]  # Limit to 10 most recent
+    ][:10]
 
 
 @router.post("/remote/download/{filename}")
@@ -258,27 +314,27 @@ async def download_remote_backup_file(
 ):
     """Download a backup from remote storage to local."""
     safe_name = Path(filename).name
-    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+    if not safe_name.endswith(".tar.gz"):
         raise HTTPException(status_code=400, detail="Nome file non valido")
     
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
-    settings = result.scalar_one_or_none()
+    bk_settings = result.scalar_one_or_none()
     
-    if not settings or not settings.remote_protocol:
-        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    if not bk_settings or not bk_settings.remote_protocol:
+        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
     
-    local_path = await download_remote_backup(
-        settings.remote_protocol,
-        settings.remote_host,
-        settings.remote_port or 22,
-        settings.remote_user or "",
-        settings.remote_password or "",
-        settings.remote_path or "/",
+    local_path = download_remote_backup(
+        bk_settings.remote_protocol,
+        bk_settings.remote_host,
+        bk_settings.remote_port or 22,
+        bk_settings.remote_user or "",
+        bk_settings.remote_password or "",
+        bk_settings.remote_path or "/",
         safe_name
     )
     
     if local_path:
-        return {"status": "ok", "message": "Backup scaricato", "local_path": local_path}
+        return {"status": "ok", "message": "File scaricato", "local_path": local_path}
     else:
         raise HTTPException(status_code=500, detail="Download fallito")
 
@@ -291,27 +347,27 @@ async def delete_remote_backup_file(
 ):
     """Delete a backup from remote storage."""
     safe_name = Path(filename).name
-    if not safe_name.startswith("madmin_backup_") or not safe_name.endswith(".tar.gz"):
+    if not safe_name.endswith(".tar.gz"):
         raise HTTPException(status_code=400, detail="Nome file non valido")
     
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
-    settings = result.scalar_one_or_none()
+    bk_settings = result.scalar_one_or_none()
     
-    if not settings or not settings.remote_protocol:
-        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    if not bk_settings or not bk_settings.remote_protocol:
+        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
     
-    success = await delete_remote_backup(
-        settings.remote_protocol,
-        settings.remote_host,
-        settings.remote_port or 22,
-        settings.remote_user or "",
-        settings.remote_password or "",
-        settings.remote_path or "/",
+    success = delete_remote_backup(
+        bk_settings.remote_protocol,
+        bk_settings.remote_host,
+        bk_settings.remote_port or 22,
+        bk_settings.remote_user or "",
+        bk_settings.remote_password or "",
+        bk_settings.remote_path or "/",
         safe_name
     )
     
     if success:
-        return {"status": "ok", "message": "Backup remoto eliminato"}
+        return {"status": "ok", "message": "File remoto eliminato"}
     else:
         raise HTTPException(status_code=500, detail="Eliminazione fallita")
 
@@ -323,20 +379,19 @@ async def cleanup_remote_storage(
 ):
     """Apply retention policy to remote storage."""
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
-    settings = result.scalar_one_or_none()
+    bk_settings = result.scalar_one_or_none()
     
-    if not settings or not settings.remote_protocol:
-        raise HTTPException(status_code=400, detail="Remote backup non configurato")
+    if not bk_settings or not bk_settings.remote_protocol:
+        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
     
-    deleted = await cleanup_remote_backups(
-        settings.remote_protocol,
-        settings.remote_host,
-        settings.remote_port or 22,
-        settings.remote_user or "",
-        settings.remote_password or "",
-        settings.remote_path or "/",
-        settings.retention_days or 30
+    deleted = cleanup_remote_backups(
+        bk_settings.remote_protocol,
+        bk_settings.remote_host,
+        bk_settings.remote_port or 22,
+        bk_settings.remote_user or "",
+        bk_settings.remote_password or "",
+        bk_settings.remote_path or "/",
+        bk_settings.retention_days or 30
     )
     
     return {"status": "ok", "deleted_count": deleted}
-

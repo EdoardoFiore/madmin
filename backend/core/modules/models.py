@@ -67,10 +67,11 @@ class ModuleInstallHooks(SQLModel):
     on_disable: Optional[str] = None    # e.g., "hooks/on_disable.py" — runs on deactivation
 
 
-class ModuleBackupConfig(SQLModel):
-    """Backup configuration for a module."""
-    external_paths: List[str] = []  # Paths outside /opt/madmin to backup (e.g., /etc/wireguard)
-    restore_hooks: Optional[Dict[str, str]] = None  # e.g., {"post_restore": "hooks/post_restore.py"}
+class ModuleConfigExport(SQLModel):
+    """Config export settings for a module."""
+    tables: List[str] = []                    # DB tables to export (FK order)
+    irrecoverable_files: List[str] = []       # Filesystem paths that can't be regenerated
+    post_restore: Optional[str] = None        # Hook to regenerate config from DB
 
 
 class ModuleManifest(SQLModel):
@@ -102,20 +103,20 @@ class ModuleManifest(SQLModel):
     # Static files directory (relative to module dir)
     static_dir: str = "static"
     
-    # NEW: System-level dependencies (apt, pip)
+    # System-level dependencies (apt, pip)
     system_dependencies: ModuleSystemDependencies = ModuleSystemDependencies()
     
-    # NEW: Database migration scripts (relative paths)
-    database_migrations: List[str] = []  # e.g., ["migrations/001_initial.py"]
+    # Database migration scripts (relative paths)
+    database_migrations: List[str] = []
     
-    # NEW: Install lifecycle hooks
+    # Install lifecycle hooks
     install_hooks: ModuleInstallHooks = ModuleInstallHooks()
     
-    # NEW: Frontend view entry point (relative to static/)
-    frontend_entry: Optional[str] = None  # e.g., "views/main.js"
+    # Frontend view entry point (relative to static/)
+    frontend_entry: Optional[str] = None
     
-    # NEW: Backup configuration for module-specific data
-    backup: Optional[ModuleBackupConfig] = None
+    # Config export settings (tables, irrecoverable files, post_restore hook)
+    config_export: Optional[ModuleConfigExport] = None
 
 
 
