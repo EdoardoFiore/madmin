@@ -16,7 +16,7 @@ SWANCTL_CONF_DIR = Path("/etc/swanctl/conf.d")
 
 async def run(session: AsyncSession):
     """Regenerate strongSwan configs from imported DB data."""
-    from modules.strongswan.models import IpsecTunnel, IpsecChildSA
+    from modules.strongswan.models import IpsecTunnel, IpsecChildSa
     from modules.strongswan.service import StrongSwanService
     
     logger.info("Running strongSwan post_restore hook")
@@ -32,7 +32,7 @@ async def run(session: AsyncSession):
     for tunnel in tunnels:
         # Get child SAs for this tunnel
         children_result = await session.execute(
-            select(IpsecChildSA).where(IpsecChildSA.tunnel_id == tunnel.id)
+            select(IpsecChildSa).where(IpsecChildSa.tunnel_id == tunnel.id)
         )
         children = children_result.scalars().all()
         

@@ -19,6 +19,8 @@ import asyncio
 import tarfile
 import logging
 import importlib.util
+import subprocess
+import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -361,8 +363,17 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
             except Exception as e:
                 logger.error(f"Failed to import module {module_id}: {e}", exc_info=True)
                 result["errors"].append(f"Errore importazione modulo '{module_id}': {str(e)}")
+                # Rollback to recover the session for subsequent modules
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
         
         result["success"] = len(result["errors"]) == 0
+        
+        # Schedule auto-restart after successful import
+        if result["success"]:
+            _schedule_restart()
         
     except Exception as e:
         logger.error(f"Config import failed: {e}", exc_info=True)
@@ -371,6 +382,22 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
         shutil.rmtree(restore_path, ignore_errors=True)
     
     return result
+
+
+def _schedule_restart():
+    """Schedule MADMIN service restart after a short delay (allows HTTP response to complete)."""
+    def _do_restart():
+        import time
+        time.sleep(3)
+        logger.info("Restarting MADMIN service after config import...")
+        try:
+            subprocess.run(["systemctl", "restart", "madmin"], check=True)
+        except Exception as e:
+            logger.error(f"Failed to restart MADMIN: {e}")
+    
+    thread = threading.Thread(target=_do_restart, daemon=True)
+    thread.start()
+    logger.info("MADMIN restart scheduled in 3 seconds")
 
 
 # ============== SCHEDULED BACKUP (uses export_config) ==============
@@ -1152,35 +1179,116 @@ async def _import_settings(session: AsyncSession, settings_file: str):
 
 
 async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
-    """Import module DB tables from JSON. Uses raw SQL INSERT for schema flexibility."""
+    """Import module DB tables from JSON. Uses raw SQL INSERT for schema flexibility.
+    
+    Handles foreign key ordering: deletes children first, inserts parents first.
+    """
     with open(data_file) as f:
         tables_data = json.load(f)
     
-    total_rows = 0
+    if not tables_data:
+        return 0
     
-    for table_name, rows in tables_data.items():
+    total_rows = 0
+    table_names = list(tables_data.keys())
+    
+    # Sort tables by FK dependencies using SQLAlchemy metadata reflection
+    sorted_tables = await _get_sorted_tables(session, table_names)
+    
+    # Delete in reverse order (children first, parents last)
+    for table_name in reversed(sorted_tables):
+        try:
+            await session.execute(text(f'DELETE FROM "{table_name}"'))
+            logger.info(f"Cleared table: {table_name}")
+        except Exception as e:
+            logger.error(f"Failed to clear table {table_name}: {e}")
+            raise
+    
+    # Insert in order (parents first, children last)
+    for table_name in sorted_tables:
+        rows = tables_data.get(table_name, [])
         if not rows:
             continue
         
-        # Clear existing data in this table first
-        try:
-            await session.execute(text(f'DELETE FROM "{table_name}"'))
-        except Exception as e:
-            logger.warning(f"Failed to clear table {table_name}: {e}")
-            continue
-        
         for row in rows:
-            columns = list(row.keys())
+            # Serialize list/dict values to JSON strings for PostgreSQL JSON columns
+            processed_row = {}
+            for k, v in row.items():
+                if isinstance(v, (list, dict)):
+                    processed_row[k] = json.dumps(v)
+                else:
+                    processed_row[k] = v
+            
+            columns = list(processed_row.keys())
             placeholders = [f":{col}" for col in columns]
-            sql = f'INSERT INTO "{table_name}" ({", ".join(columns)}) VALUES ({", ".join(placeholders)})'
+            col_list = ", ".join(f'"{c}"' for c in columns)
+            sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({", ".join(placeholders)})'
             
             try:
-                await session.execute(text(sql), row)
+                await session.execute(text(sql), processed_row)
                 total_rows += 1
             except Exception as e:
-                logger.warning(f"Failed to insert row in {table_name}: {e}")
+                logger.error(f"Failed to insert row in {table_name}: {e}")
+                logger.error(f"Row data: {processed_row}")
+                raise
     
+    logger.info(f"Module tables imported: {total_rows} rows across {len(sorted_tables)} tables")
     return total_rows
+
+
+async def _get_sorted_tables(session: AsyncSession, table_names: list) -> list:
+    """Sort table names by FK dependencies (parents before children).
+    
+    Uses information_schema to discover FK relationships.
+    Tables with no FK on others come first.
+    """
+    if len(table_names) <= 1:
+        return table_names
+    
+    # Get FK relationships between our tables
+    deps = {t: set() for t in table_names}
+    
+    try:
+        # Query FK constraints from the database
+        for table_name in table_names:
+            result = await session.execute(text("""
+                SELECT ccu.table_name AS referenced_table
+                FROM information_schema.table_constraints AS tc
+                JOIN information_schema.constraint_column_usage AS ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                    AND tc.table_name = :table_name
+                    AND ccu.table_name != :table_name
+            """), {"table_name": table_name})
+            
+            for row in result:
+                referenced = row[0]
+                if referenced in deps:
+                    deps[table_name].add(referenced)  # table_name depends on referenced
+    except Exception as e:
+        logger.warning(f"Could not determine FK ordering, using original order: {e}")
+        return table_names
+    
+    # Topological sort (Kahn's algorithm)
+    sorted_list = []
+    no_deps = [t for t in table_names if not deps[t]]
+    
+    while no_deps:
+        table = no_deps.pop(0)
+        sorted_list.append(table)
+        for t in table_names:
+            if table in deps.get(t, set()):
+                deps[t].discard(table)
+                if not deps[t]:
+                    no_deps.append(t)
+    
+    # Add any remaining (circular deps or unresolved)
+    for t in table_names:
+        if t not in sorted_list:
+            sorted_list.append(t)
+    
+    logger.info(f"Table import order: {sorted_list}")
+    return sorted_list
 
 
 def _restore_irrecoverable_files(files_dir: str):

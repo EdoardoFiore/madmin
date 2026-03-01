@@ -1300,15 +1300,8 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
                     summary += '. Avvisi: ' + result.warnings.join(', ');
                 }
 
-                showToast(summary, 'success');
-
-                const reload = await confirmDialog(
-                    'Importazione Completata',
-                    'Ricaricare la pagina per applicare le modifiche?',
-                    'Ricarica',
-                    'btn-primary'
-                );
-                if (reload) location.reload();
+                showToast(summary + '. MADMIN si riavvierà automaticamente...', 'success');
+                setTimeout(() => location.reload(), 5000);
             } else {
                 const errors = result.result?.errors || result.errors || ['Errore sconosciuto'];
                 showToast('Importazione fallita: ' + errors.join(', '), 'error');
@@ -1514,15 +1507,8 @@ function showRestorePreviewModal(preview, filename) {
                 summary += `${result.firewall_rules_imported || 0} regole firewall, `;
                 summary += `${result.modules_imported?.length || 0} moduli`;
 
-                showToast(summary, 'success');
-
-                const reload = await confirmDialog(
-                    'Ripristino Completato',
-                    'Ricaricare la pagina per applicare le modifiche?',
-                    'Ricarica',
-                    'btn-primary'
-                );
-                if (reload) location.reload();
+                showToast(summary + '. MADMIN si riavvierà automaticamente...', 'success');
+                setTimeout(() => location.reload(), 5000);
             } else {
                 showToast('Ripristino fallito: ' + (result.errors || []).join(', '), 'error');
             }
