@@ -75,7 +75,10 @@
             "ovpn_group_rule"
         ],
         "irrecoverable_files": [
-            "/etc/openvpn/server/*/pki"
+            "/etc/openvpn/server/*/*.crt",
+            "/etc/openvpn/server/*/*.key",
+            "/etc/openvpn/server/*/*.pem",
+            "/etc/openvpn/server/*/easy-rsa"
         ],
         "post_restore": "hooks/post_restore.py"
     },

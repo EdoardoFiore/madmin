@@ -32,22 +32,24 @@ async def run(session: AsyncSession):
         ccd_dir = instance_dir / "ccd"
         ccd_dir.mkdir(exist_ok=True)
         
-        # Generate server.conf using existing function
-        config_content = OpenVPNService.create_server_config(instance)
-        config_path = instance_dir / "server.conf"
-        config_path.write_text(config_content)
-        logger.info(f"Regenerated server.conf for instance {instance.name}")
+        from modules.openvpn.service import OPENVPN_BASE_DIR
         
-        # Regenerate CCD files for all clients with static IPs
+        # Generate server config
+        config_content = OpenVPNService.create_server_config(instance)
+        config_path = OPENVPN_BASE_DIR / f"{instance.id}.conf"
+        config_path.write_text(config_content)
+        logger.info(f"Regenerated {instance.id}.conf for instance {instance.name}")
+        
+        # Regenerate CCD files for all clients with allocated IPs
         clients_result = await session.execute(
             select(OvpnClient).where(OvpnClient.instance_id == instance.id)
         )
         clients = clients_result.scalars().all()
         
         for client in clients:
-            if client.static_ip:
+            if client.allocated_ip:
                 OpenVPNService.create_ccd_file(
-                    instance.id, client.name, client.static_ip
+                    instance.id, client.name, client.allocated_ip
                 )
     
     logger.info(f"OpenVPN post_restore complete: {len(instances)} instances regenerated")
