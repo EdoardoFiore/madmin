@@ -1211,13 +1211,7 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
             continue
         
         for row in rows:
-            # Serialize list/dict values to JSON strings for PostgreSQL JSON columns
-            processed_row = {}
-            for k, v in row.items():
-                if isinstance(v, (list, dict)):
-                    processed_row[k] = json.dumps(v)
-                else:
-                    processed_row[k] = v
+            processed_row = {k: _convert_value(v) for k, v in row.items()}
             
             columns = list(processed_row.keys())
             placeholders = [f":{col}" for col in columns]
@@ -1234,6 +1228,32 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
     
     logger.info(f"Module tables imported: {total_rows} rows across {len(sorted_tables)} tables")
     return total_rows
+
+
+# Regex for datetime strings: "2026-03-01 14:52:36.077484" or "2026-03-01T14:52:36.077484"
+import re
+_DATETIME_RE = re.compile(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}')
+
+
+def _convert_value(v):
+    """Convert a JSON value to a Python type suitable for asyncpg binding.
+    
+    Handles:
+    - list/dict → json.dumps() for JSON/JSONB columns
+    - datetime strings → datetime objects for TIMESTAMP columns
+    - everything else passes through
+    """
+    if v is None:
+        return v
+    if isinstance(v, (list, dict)):
+        return json.dumps(v)
+    if isinstance(v, str) and _DATETIME_RE.match(v):
+        try:
+            # Handle both "2026-03-01 14:52:36" and "2026-03-01T14:52:36" formats
+            return datetime.fromisoformat(v.replace(" ", "T"))
+        except (ValueError, TypeError):
+            return v
+    return v
 
 
 async def _get_sorted_tables(session: AsyncSession, table_names: list) -> list:

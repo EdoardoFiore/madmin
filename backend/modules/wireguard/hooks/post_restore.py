@@ -6,6 +6,7 @@ Uses existing WireGuardService functions — no code duplication.
 """
 import logging
 from pathlib import Path
+from ipaddress import ip_network
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -28,12 +29,17 @@ async def run(session: AsyncSession):
     instances = result.scalars().all()
     
     for instance in instances:
+        # Compute server address from subnet (first host IP + prefix length)
+        network = ip_network(instance.subnet, strict=False)
+        server_ip = str(list(network.hosts())[0])
+        address = f"{server_ip}/{network.prefixlen}"
+        
         # Generate server [Interface] section
         config = WireGuardService.create_server_config(
             interface=instance.interface,
             port=instance.port,
             private_key=instance.private_key,
-            address=instance.address
+            address=address
         )
         
         # Add [Peer] sections for all clients
@@ -43,9 +49,6 @@ async def run(session: AsyncSession):
         clients = clients_result.scalars().all()
         
         for client in clients:
-            if not client.enabled:
-                continue
-            
             peer_section = f"\n[Peer]\n"
             peer_section += f"# {client.name}\n"
             peer_section += f"PublicKey = {client.public_key}\n"
@@ -53,7 +56,8 @@ async def run(session: AsyncSession):
             if client.preshared_key:
                 peer_section += f"PresharedKey = {client.preshared_key}\n"
             
-            peer_section += f"AllowedIPs = {client.allocated_ip}/32\n"
+            # AllowedIPs for server side is always client's allocated IP
+            peer_section += f"AllowedIPs = {client.allocated_ip}\n"
             config += peer_section
         
         # Write config file
