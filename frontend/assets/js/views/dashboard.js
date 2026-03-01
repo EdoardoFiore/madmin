@@ -506,7 +506,7 @@ async function loadDashboardData() {
 
     // Modules count
     try {
-        const modules = await apiGet('/modules/');
+        const modules = await apiGet('/modules/available');
         const activeModules = modules.filter(m => m.enabled).length;
         document.getElementById('modules-count').textContent = activeModules;
     } catch (error) {
