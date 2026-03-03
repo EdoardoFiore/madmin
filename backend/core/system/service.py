@@ -444,12 +444,19 @@ async def get_system_alerts(session) -> List[dict]:
                         "icon": "ti-clock",
                         "message": f"Ultimo backup: {days_ago} giorni fa"
                     })
-                if bk.last_run_status and bk.last_run_status.startswith("failed"):
+                if bk.last_run_status == "failed":
                     alerts.append({
                         "type": "backup_failed",
                         "severity": "danger",
                         "icon": "ti-alert-triangle",
-                        "message": f"Ultimo backup fallito"
+                        "message": "Ultimo backup fallito"
+                    })
+                elif bk.last_run_status == "upload_failed":
+                    alerts.append({
+                        "type": "backup_upload_failed",
+                        "severity": "warning",
+                        "icon": "ti-cloud-off",
+                        "message": "Upload remoto fallito (backup locale OK)"
                     })
         else:
             alerts.append({

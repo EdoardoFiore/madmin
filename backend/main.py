@@ -159,7 +159,13 @@ async def lifespan(app: FastAPI):
                             
                             # Update last run status
                             settings.last_run_time = datetime.utcnow()
-                            settings.last_run_status = "success" if backup_result.get("success") else "failed"
+                            if backup_result.get("success"):
+                                settings.last_run_status = "success"
+                            elif backup_result.get("archive"):
+                                # Archive created locally, but upload failed
+                                settings.last_run_status = "upload_failed"
+                            else:
+                                settings.last_run_status = "failed"
                             session.add(settings)
                             await session.commit()
                             

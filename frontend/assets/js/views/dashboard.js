@@ -5,7 +5,7 @@
  * Each widget is a self-contained card with render + load functions.
  */
 
-import { apiGet } from '../api.js';
+import { apiGet, apiPatch } from '../api.js';
 import { formatRelativeTime } from '../utils.js';
 
 let autoRefreshInterval = null;
@@ -36,45 +36,122 @@ const CORE_WIDGETS = [
     { id: 'net_traffic', title: 'Traffico Rete', col: 6, fixed: false, render: renderNetTraffic, load: loadNetTraffic },
     { id: 'alerts', title: 'Alert Sistema', col: 6, fixed: false, render: renderAlerts, load: loadAlerts },
     { id: 'backup_status', title: 'Stato Backup', col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus },
-    { id: 'system_info', title: 'Info Sistema', col: 6, fixed: false, render: renderSystemInfo, load: loadSystemInfo },
-    { id: 'stat_cards', title: 'Contatori', col: 12, fixed: false, render: renderStatCards, load: loadStatCards },
     { id: 'quick_actions', title: 'Azioni Rapide', col: 6, fixed: false, render: renderQuickActions, load: null },
+    { id: 'stat_cards', title: 'Contatori', col: 12, fixed: false, render: renderStatCards, load: loadStatCards },
 ];
+
+// Build a lookup map for quick access
+const WIDGET_MAP = Object.fromEntries(CORE_WIDGETS.map(w => [w.id, w]));
 
 
 // ============== WIDGET PREFERENCES ==============
 
-const PREFS_KEY = 'madmin_dashboard_widgets';
+// In-memory cache of prefs (loaded from DB on dashboard render)
+let _widgetPrefsCache = null;
 
-function getWidgetPrefs() {
+/**
+ * Load widget preferences from the server (user.preferences JSON field).
+ * Called once on dashboard render.
+ */
+async function loadWidgetPrefsFromServer() {
     try {
-        const saved = localStorage.getItem(PREFS_KEY);
-        if (saved) return JSON.parse(saved);
-    } catch (e) { }
-    // Default: all enabled
-    return CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+        const user = await apiGet('/auth/me');
+        const allPrefs = JSON.parse(user.preferences || '{}');
+        const raw = allPrefs.dashboard_widgets || null;
+        if (Array.isArray(raw)) {
+            // Deduplicate and validate
+            const seen = new Set();
+            const prefs = [];
+            for (const p of raw) {
+                if (p.id && !seen.has(p.id) && WIDGET_MAP[p.id]) {
+                    seen.add(p.id);
+                    prefs.push(p);
+                }
+            }
+            // Add any new widgets not yet in saved prefs
+            for (const w of CORE_WIDGETS) {
+                if (!seen.has(w.id)) {
+                    seen.add(w.id);
+                    prefs.push({ id: w.id, enabled: true });
+                }
+            }
+            _widgetPrefsCache = prefs;
+        } else {
+            _widgetPrefsCache = CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+        }
+    } catch (e) {
+        console.error('Failed to load widget prefs from server:', e);
+        _widgetPrefsCache = CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+    }
 }
 
+/**
+ * Get widget prefs from in-memory cache.
+ */
+function getWidgetPrefs() {
+    if (!_widgetPrefsCache) {
+        return CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+    }
+    return _widgetPrefsCache;
+}
+
+/**
+ * Save widget prefs to cache and to the server (async, fire-and-forget).
+ */
 function saveWidgetPrefs(prefs) {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    _widgetPrefsCache = prefs;
+    // Save to server in background
+    (async () => {
+        try {
+            const user = await apiGet('/auth/me');
+            const allPrefs = JSON.parse(user.preferences || '{}');
+            allPrefs.dashboard_widgets = prefs;
+            await apiPatch('/auth/me/preferences', { preferences: JSON.stringify(allPrefs) });
+        } catch (e) {
+            console.error('Failed to save widget prefs:', e);
+        }
+    })();
 }
 
-function isWidgetEnabled(widgetId) {
-    const widget = CORE_WIDGETS.find(w => w.id === widgetId);
-    if (widget?.fixed) return true;
+/**
+ * Get ordered list of widgets to render, respecting user prefs.
+ * Fixed widgets (welcome) always come first regardless of order.
+ */
+function getOrderedWidgets() {
     const prefs = getWidgetPrefs();
-    const pref = prefs.find(p => p.id === widgetId);
-    return pref ? pref.enabled : true;
+    const ordered = [];
+
+    // Fixed widgets first
+    for (const w of CORE_WIDGETS) {
+        if (w.fixed) ordered.push({ widget: w, enabled: true });
+    }
+
+    // Then user-ordered widgets
+    for (const pref of prefs) {
+        const w = WIDGET_MAP[pref.id];
+        if (w && !w.fixed) {
+            ordered.push({ widget: w, enabled: pref.enabled });
+        }
+    }
+
+    return ordered;
 }
 
 
 // ============== MAIN RENDER ==============
 
 export async function render(container) {
-    // Build widget HTML
+    // Load prefs from server only on first render (when cache is empty)
+    if (!_widgetPrefsCache) {
+        await loadWidgetPrefsFromServer();
+    }
+
+    const ordered = getOrderedWidgets();
+
+    // Build widget HTML (only enabled)
     let widgetsHtml = '';
-    for (const widget of CORE_WIDGETS) {
-        if (!isWidgetEnabled(widget.id)) continue;
+    for (const { widget, enabled } of ordered) {
+        if (!enabled) continue;
         widgetsHtml += `
             <div class="col-lg-${widget.col}" data-widget-id="${widget.id}">
                 ${widget.render()}
@@ -96,34 +173,125 @@ export async function render(container) {
 
     // Load data for all visible widgets
     const loadPromises = [];
-    for (const widget of CORE_WIDGETS) {
-        if (!isWidgetEnabled(widget.id) || !widget.load) continue;
+    for (const { widget, enabled } of ordered) {
+        if (!enabled || !widget.load) continue;
         loadPromises.push(widget.load().catch(e => console.error(`Widget ${widget.id} error:`, e)));
     }
     await Promise.all(loadPromises);
 }
 
 
-// ============== WIDGET CONFIG UI ==============
-
 function renderWidgetConfigButton() {
     return `
-        <div class="dropdown">
-            <button class="btn btn-ghost-secondary btn-sm" data-bs-toggle="dropdown" title="Configura widget">
-                <i class="ti ti-layout-dashboard"></i>
-            </button>
-            <div class="dropdown-menu dropdown-menu-end p-3" style="min-width: 220px;" id="widget-config-menu">
-                <h6 class="dropdown-header px-0">Widget visibili</h6>
-                ${CORE_WIDGETS.filter(w => !w.fixed).map(w => `
-                    <label class="dropdown-item d-flex align-items-center cursor-pointer">
-                        <input type="checkbox" class="form-check-input me-2 widget-toggle" 
-                               data-widget-id="${w.id}" ${isWidgetEnabled(w.id) ? 'checked' : ''}>
-                        ${w.title}
-                    </label>
-                `).join('')}
+        <button class="btn btn-sm px-2 py-1" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3);" 
+                id="btn-widget-config" title="Configura widget">
+            <i class="ti ti-layout-dashboard fs-3"></i>
+        </button>
+    `;
+}
+
+/**
+ * Open or refresh the widget config modal.
+ * Modal is appended to document.body so it persists across dashboard re-renders.
+ */
+function openWidgetConfigModal() {
+    // Remove existing modal if any
+    document.getElementById('widget-config-modal')?.remove();
+
+    const prefs = getWidgetPrefs();
+    const nonFixed = prefs.filter(p => WIDGET_MAP[p.id] && !WIDGET_MAP[p.id].fixed);
+
+    const modalHtml = `
+        <div class="modal modal-blur" id="widget-config-modal" tabindex="-1">
+            <div class="modal-dialog modal-sm modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="ti ti-layout-dashboard me-2"></i>Gestione Widget</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body p-0">
+                        <div class="list-group list-group-flush" id="widget-sortable-list">
+                            ${nonFixed.map(p => {
+        const w = WIDGET_MAP[p.id];
+        return `
+                                    <div class="list-group-item d-flex align-items-center" data-widget-id="${p.id}">
+                                        <i class="ti ti-grip-vertical text-muted me-2 drag-handle" style="cursor: grab;"></i>
+                                        <label class="form-check form-switch mb-0 flex-fill">
+                                            <input type="checkbox" class="form-check-input widget-modal-toggle" 
+                                                   data-widget-id="${p.id}" ${p.enabled ? 'checked' : ''}>
+                                            <span class="form-check-label">${w.title}</span>
+                                        </label>
+                                    </div>
+                                `;
+    }).join('')}
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modalEl = document.getElementById('widget-config-modal');
+    const modal = new bootstrap.Modal(modalEl);
+
+    // Initialize SortableJS on the list
+    const listEl = document.getElementById('widget-sortable-list');
+    if (listEl && typeof Sortable !== 'undefined') {
+        Sortable.create(listEl, {
+            handle: '.drag-handle',
+            animation: 150,
+            ghostClass: 'bg-blue-lt',
+            onEnd: () => {
+                saveOrderFromModal();
+            }
+        });
+    }
+
+    // Toggle listeners — save immediately but don't re-render yet
+    modalEl.querySelectorAll('.widget-modal-toggle').forEach(cb => {
+        cb.addEventListener('change', () => {
+            saveOrderFromModal();
+        });
+    });
+
+    // Refresh dashboard on modal close
+    modalEl.addEventListener('hidden.bs.modal', () => {
+        saveOrderFromModal();
+        modalEl.remove();
+        window.location.reload();
+    });
+
+    modal.show();
+}
+
+/**
+ * Read current order and enabled state from the modal DOM and save to preferences.
+ */
+function saveOrderFromModal() {
+    const listEl = document.getElementById('widget-sortable-list');
+    if (!listEl) return;
+
+    const fixedPrefs = CORE_WIDGETS.filter(w => w.fixed).map(w => ({ id: w.id, enabled: true }));
+    const items = listEl.querySelectorAll('[data-widget-id]');
+    const nonFixedPrefs = [];
+
+    items.forEach(item => {
+        const id = item.dataset.widgetId;
+        const enabled = item.querySelector('.widget-modal-toggle')?.checked ?? true;
+        nonFixedPrefs.push({ id, enabled });
+    });
+
+    saveWidgetPrefs([...fixedPrefs, ...nonFixedPrefs]);
+}
+
+/**
+ * Re-render the dashboard widgets.
+ * Uses cached prefs (no server refetch).
+ */
+async function refreshDashboard() {
+    const container = document.querySelector('[data-page="dashboard"]') || document.getElementById('page-content');
+    if (container) await render(container);
 }
 
 
@@ -218,8 +386,8 @@ function renderServices() {
             </div>
             <div class="card-body">
                 <div class="row g-3" id="services-status-container">
-                    ${['madmin|ti-server|bg-primary-lt|MADMIN', 'postgresql|ti-database|bg-blue-lt|PostgreSQL',
-            'nginx|ti-world|bg-green-lt|Nginx', 'iptables|ti-shield|bg-orange-lt|iptables']
+                    ${['madmin|ti ti-server|bg-primary-lt|MADMIN', 'postgresql|ti ti-database|bg-blue-lt|PostgreSQL',
+            'nginx|ti ti-world|bg-green-lt|Nginx', 'iptables|ti ti-shield-lock|bg-orange-lt|iptables']
             .map(s => {
                 const [id, icon, bg, name] = s.split('|');
                 return `
@@ -352,59 +520,43 @@ function renderBackupStatus() {
     `;
 }
 
-function renderSystemInfo() {
+
+
+function renderStatCards() {
     return `
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-info-circle me-2"></i>Informazioni Sistema
+                    <i class="ti ti-chart-bar me-2"></i>Contatori
                 </h3>
             </div>
             <div class="card-body">
-                <dl class="row mb-0">
-                    <dt class="col-5">Versione:</dt>
-                    <dd class="col-7" id="system-version">-</dd>
-                    
-                    <dt class="col-5">Backend:</dt>
-                    <dd class="col-7">FastAPI + PostgreSQL</dd>
-                    
-                    <dt class="col-5">Frontend:</dt>
-                    <dd class="col-7">Tabler UI + ES Modules</dd>
-                    
-                    <dt class="col-5">Ultimo Aggiornamento:</dt>
-                    <dd class="col-7" id="last-update">-</dd>
-                </dl>
-            </div>
-        </div>
-    `;
-}
-
-function renderStatCards() {
-    return `
-        <div class="row g-3">
-            ${[
+                <div class="row g-3">
+                    ${[
             { id: 'system-status', title: 'Stato Sistema', sub: 'Database', subId: 'db-status' },
             { id: 'firewall-count', title: 'Regole Firewall', sub: 'Regole attive', subId: null },
             { id: 'modules-count', title: 'Moduli Installati', sub: 'Moduli attivi', subId: null },
             { id: 'users-count', title: 'Utenti', sub: 'Utenti registrati', subId: null },
         ].map(c => `
-                <div class="col-sm-6 col-lg-3">
-                    <div class="card">
-                        <div class="card-body">
-                            <div class="d-flex align-items-center">
-                                <div class="subheader">${c.title}</div>
-                            </div>
-                            <div class="h1 mb-3" id="${c.id}">
-                                <span class="spinner-border spinner-border-sm"></span>
-                            </div>
-                            <div class="d-flex mb-2">
-                                <div class="text-muted">${c.sub}</div>
-                                ${c.subId ? `<div class="ms-auto" id="${c.subId}"><span class="spinner-border spinner-border-sm"></span></div>` : ''}
+                        <div class="col-sm-6 col-lg-3">
+                            <div class="card card-sm">
+                                <div class="card-body">
+                                    <div class="d-flex align-items-center">
+                                        <div class="subheader">${c.title}</div>
+                                    </div>
+                                    <div class="h1 mb-3" id="${c.id}">
+                                        <span class="spinner-border spinner-border-sm"></span>
+                                    </div>
+                                    <div class="d-flex mb-2">
+                                        <div class="text-muted">${c.sub}</div>
+                                        ${c.subId ? `<div class="ms-auto" id="${c.subId}"><span class="spinner-border spinner-border-sm"></span></div>` : ''}
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    `).join('')}
                 </div>
-            `).join('')}
+            </div>
         </div>
     `;
 }
@@ -646,7 +798,7 @@ async function loadNetTrafficGraph(iface, hours) {
         const history = await apiGet(`/system/network/history?hours=${hours}&interface=${iface}`);
 
         if (history.length === 0) {
-            container.innerHTML = '<div class="text-muted text-center py-4">Dati non ancora disponibili per questa interfaccia</div>';
+            container.innerHTML = '<div class="text-muted text-center py-4"><i class="ti ti-clock me-2"></i>In attesa dei primi dati di traffico (circa 2 minuti)</div>';
             return;
         }
 
@@ -666,6 +818,7 @@ async function loadNetTrafficGraph(iface, hours) {
         }
 
         if (netTrafficChart) netTrafficChart.destroy();
+        container.innerHTML = '';
 
         const options = {
             series: [
@@ -760,20 +913,30 @@ async function loadBackupStatus() {
             }
 
             // Check for failures
-            let isFailed = false;
-            if (settings && settings.last_run_status && settings.last_run_status.startsWith('failed')) {
-                const failTime = new Date(settings.last_run_time);
-                if (failTime > backupDate) isFailed = true;
+            let status = 'success';
+            if (settings && settings.last_run_status) {
+                const runTime = new Date(settings.last_run_time);
+                if (runTime >= backupDate) {
+                    status = settings.last_run_status; // success, upload_failed, or failed
+                }
             }
 
-            const badge = isFailed
-                ? '<span class="badge bg-danger">Fallito</span>'
-                : '<span class="badge bg-success">Successo</span>';
+            let badge, avatarColor, avatarIcon;
+            if (status === 'failed') {
+                badge = '<span class="badge bg-danger">Fallito</span>';
+                avatarColor = 'danger'; avatarIcon = 'x';
+            } else if (status === 'upload_failed') {
+                badge = '<span class="badge bg-warning">Upload remoto fallito</span>';
+                avatarColor = 'warning'; avatarIcon = 'cloud-off';
+            } else {
+                badge = '<span class="badge bg-success">Successo</span>';
+                avatarColor = 'blue'; avatarIcon = 'check';
+            }
 
             content = `
                 <div class="d-flex align-items-center">
-                    <span class="avatar bg-${isFailed ? 'danger' : 'blue'} text-white me-3">
-                        <i class="ti ti-${isFailed ? 'x' : 'check'}"></i>
+                    <span class="avatar bg-${avatarColor} text-white me-3">
+                        <i class="ti ti-${avatarIcon}"></i>
                     </span>
                     <div>
                         <div class="fw-bold">${timeStr}</div>
@@ -810,17 +973,7 @@ async function loadBackupStatus() {
     }
 }
 
-async function loadSystemInfo() {
-    try {
-        const health = await apiGet('/health');
-        const versionEl = document.getElementById('system-version');
-        const updateEl = document.getElementById('last-update');
-        if (versionEl) versionEl.textContent = `v${health.version}`;
-        if (updateEl) updateEl.textContent = formatRelativeTime(new Date());
-    } catch (e) {
-        console.error('Failed to load system info:', e);
-    }
-}
+
 
 async function loadStatCards() {
     // Health check → system status
@@ -947,21 +1100,8 @@ function setupEventListeners() {
         });
     });
 
-    // Widget config toggles
-    document.querySelectorAll('.widget-toggle')?.forEach(cb => {
-        cb.addEventListener('change', (e) => {
-            const widgetId = e.target.dataset.widgetId;
-            const prefs = getWidgetPrefs();
-            const existing = prefs.find(p => p.id === widgetId);
-            if (existing) {
-                existing.enabled = e.target.checked;
-            } else {
-                prefs.push({ id: widgetId, enabled: e.target.checked });
-            }
-            saveWidgetPrefs(prefs);
-            // Re-render
-            const container = document.querySelector('[data-page="dashboard"]') || document.getElementById('page-content');
-            if (container) render(container);
-        });
+    // Widget config button -> open modal
+    document.getElementById('btn-widget-config')?.addEventListener('click', () => {
+        openWidgetConfigModal();
     });
 }
