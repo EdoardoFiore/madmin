@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
     
     # Start background stats collection task
     import asyncio
-    from core.system.service import system_service, save_stats_to_history
+    from core.system.service import system_service, save_stats_to_history, save_network_traffic
     
     stats_task_running = True
     
@@ -78,9 +78,10 @@ async def lifespan(app: FastAPI):
         """Background task to collect system stats every 60 seconds."""
         while stats_task_running:
             try:
-                stats = system_service.get_stats()
-                if stats.get("available"):
-                    async with async_session_maker() as session:
+                async with async_session_maker() as session:
+                    # Collect system stats
+                    stats = system_service.get_stats()
+                    if stats.get("available"):
                         await save_stats_to_history(
                             session,
                             cpu=stats["cpu"]["percent"],
@@ -91,6 +92,9 @@ async def lifespan(app: FastAPI):
                             disk_used=stats["disk"]["used"],
                             disk_total=stats["disk"]["total"]
                         )
+                    
+                    # Collect network traffic
+                    await save_network_traffic(session)
             except Exception as e:
                 logger.error(f"Background stats collection error: {e}")
             

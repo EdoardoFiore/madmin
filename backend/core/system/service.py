@@ -142,6 +142,64 @@ class SystemService:
             bytes_value /= 1024
         return f"{bytes_value:.1f} PB"
 
+    @staticmethod
+    def get_network_traffic() -> dict:
+        """
+        Get current network traffic counters per interface.
+        Excludes loopback (lo).
+        """
+        if not PSUTIL_AVAILABLE:
+            return {"available": False, "error": "psutil not installed"}
+        
+        try:
+            counters = psutil.net_io_counters(pernic=True)
+            result = {}
+            for iface, stats in counters.items():
+                if iface == 'lo':
+                    continue
+                result[iface] = {
+                    "bytes_sent": stats.bytes_sent,
+                    "bytes_recv": stats.bytes_recv,
+                    "packets_sent": stats.packets_sent,
+                    "packets_recv": stats.packets_recv,
+                }
+            return {"available": True, "interfaces": result}
+        except Exception as e:
+            logger.error(f"Error getting network traffic: {e}")
+            return {"available": False, "error": str(e)}
+
+    @staticmethod
+    def get_uptime() -> dict:
+        """Get system uptime formatted."""
+        if not PSUTIL_AVAILABLE:
+            return {"available": False, "error": "psutil not installed"}
+        
+        try:
+            boot = datetime.fromtimestamp(psutil.boot_time())
+            delta = datetime.now() - boot
+            total_seconds = int(delta.total_seconds())
+            
+            days = total_seconds // 86400
+            hours = (total_seconds % 86400) // 3600
+            minutes = (total_seconds % 3600) // 60
+            
+            parts = []
+            if days > 0:
+                parts.append(f"{days}g")
+            if hours > 0:
+                parts.append(f"{hours}h")
+            parts.append(f"{minutes}m")
+            
+            return {
+                "available": True,
+                "boot_time": boot.isoformat(),
+                "uptime_seconds": total_seconds,
+                "uptime_formatted": " ".join(parts)
+            }
+        except Exception as e:
+            logger.error(f"Error getting uptime: {e}")
+            return {"available": False, "error": str(e)}
+
 
 # Async functions for database operations (called from router)
 async def save_stats_to_history(
@@ -195,7 +253,7 @@ async def get_stats_history(session, hours: int = 1) -> List[dict]:
     
     Args:
         session: Database session
-        hours: Number of hours to look back (1 or 24)
+        hours: Number of hours to look back (1, 6, or 24)
     
     Returns:
         List of stats records ordered by timestamp
@@ -227,5 +285,185 @@ async def get_stats_history(session, hours: int = 1) -> List[dict]:
     ]
 
 
+async def save_network_traffic(session):
+    """Save current network traffic counters to history."""
+    from core.settings.models import NetworkTrafficHistory
+    
+    if not PSUTIL_AVAILABLE:
+        return
+    
+    try:
+        counters = psutil.net_io_counters(pernic=True)
+        now = datetime.utcnow()
+        
+        for iface, stats in counters.items():
+            if iface == 'lo':
+                continue
+            record = NetworkTrafficHistory(
+                timestamp=now,
+                interface=iface,
+                bytes_sent=stats.bytes_sent,
+                bytes_recv=stats.bytes_recv,
+            )
+            session.add(record)
+        
+        await session.commit()
+        
+        # Cleanup old records (keep only last 24h)
+        await cleanup_old_network_traffic(session)
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error saving network traffic: {e}")
+
+
+async def cleanup_old_network_traffic(session):
+    """Remove network traffic records older than 24 hours."""
+    from sqlalchemy import delete
+    from core.settings.models import NetworkTrafficHistory
+    
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    await session.execute(
+        delete(NetworkTrafficHistory).where(NetworkTrafficHistory.timestamp < cutoff)
+    )
+    await session.commit()
+
+
+async def get_network_traffic_history(session, hours: int = 1, interface: str = None) -> List[dict]:
+    """
+    Get historical network traffic data.
+    Returns rate (bytes/sec) calculated from cumulative counters.
+    
+    Args:
+        session: Database session
+        hours: Time range (1, 6, 24)
+        interface: Optional, filter by interface name
+    """
+    from sqlalchemy import select
+    from core.settings.models import NetworkTrafficHistory
+    
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    
+    query = (
+        select(NetworkTrafficHistory)
+        .where(NetworkTrafficHistory.timestamp >= cutoff)
+    )
+    if interface:
+        query = query.where(NetworkTrafficHistory.interface == interface)
+    query = query.order_by(NetworkTrafficHistory.timestamp.asc())
+    
+    result = await session.execute(query)
+    records = result.scalars().all()
+    
+    # Convert cumulative counters to rates (bytes/sec)
+    rates = []
+    prev = {}
+    for r in records:
+        key = r.interface
+        if key in prev:
+            dt = (r.timestamp - prev[key]["ts"]).total_seconds()
+            if dt > 0:
+                rates.append({
+                    "timestamp": r.timestamp.isoformat(),
+                    "interface": r.interface,
+                    "tx_rate": max(0, (r.bytes_sent - prev[key]["sent"]) / dt),
+                    "rx_rate": max(0, (r.bytes_recv - prev[key]["recv"]) / dt),
+                })
+        prev[key] = {"ts": r.timestamp, "sent": r.bytes_sent, "recv": r.bytes_recv}
+    
+    return rates
+
+
+async def get_system_alerts(session) -> List[dict]:
+    """
+    Get active system alerts.
+    Checks CPU (5-min avg > 90%), RAM (> 80%), backup status.
+    """
+    from sqlalchemy import select
+    from core.settings.models import SystemStatsHistory, BackupSettings
+    
+    alerts = []
+    
+    # --- CPU check: average of last 5 minutes ---
+    try:
+        cutoff_5m = datetime.utcnow() - timedelta(minutes=5)
+        result = await session.execute(
+            select(SystemStatsHistory)
+            .where(SystemStatsHistory.timestamp >= cutoff_5m)
+        )
+        recent_stats = result.scalars().all()
+        
+        if recent_stats:
+            avg_cpu = sum(r.cpu_percent for r in recent_stats) / len(recent_stats)
+            if avg_cpu > 90:
+                alerts.append({
+                    "type": "cpu_high",
+                    "severity": "danger",
+                    "icon": "ti-cpu",
+                    "message": f"CPU elevata: {avg_cpu:.0f}% (media 5min)"
+                })
+    except Exception:
+        pass
+    
+    # --- RAM check: current usage ---
+    try:
+        if PSUTIL_AVAILABLE:
+            mem = psutil.virtual_memory()
+            if mem.percent > 80:
+                severity = "danger" if mem.percent > 90 else "warning"
+                alerts.append({
+                    "type": "ram_high",
+                    "severity": severity,
+                    "icon": "ti-device-desktop",
+                    "message": f"RAM elevata: {mem.percent:.0f}%"
+                })
+    except Exception:
+        pass
+    
+    # --- Backup checks ---
+    try:
+        result = await session.execute(
+            select(BackupSettings).where(BackupSettings.id == 1)
+        )
+        bk = result.scalar_one_or_none()
+        
+        if bk:
+            if not bk.enabled:
+                alerts.append({
+                    "type": "backup_not_configured",
+                    "severity": "warning",
+                    "icon": "ti-settings",
+                    "message": "Backup periodico non abilitato"
+                })
+            
+            if bk.last_run_time:
+                days_ago = (datetime.utcnow() - bk.last_run_time).days
+                if days_ago > 7:
+                    alerts.append({
+                        "type": "backup_stale",
+                        "severity": "warning",
+                        "icon": "ti-clock",
+                        "message": f"Ultimo backup: {days_ago} giorni fa"
+                    })
+                if bk.last_run_status and bk.last_run_status.startswith("failed"):
+                    alerts.append({
+                        "type": "backup_failed",
+                        "severity": "danger",
+                        "icon": "ti-alert-triangle",
+                        "message": f"Ultimo backup fallito"
+                    })
+        else:
+            alerts.append({
+                "type": "backup_not_configured",
+                "severity": "warning",
+                "icon": "ti-settings",
+                "message": "Backup non configurato"
+            })
+    except Exception:
+        pass
+    
+    return alerts
+
+
 system_service = SystemService()
+
 

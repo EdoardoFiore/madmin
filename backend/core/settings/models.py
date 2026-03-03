@@ -29,6 +29,21 @@ class SystemStatsHistory(SQLModel, table=True):
     disk_total: int = Field(default=0, sa_column=Column(BigInteger))
 
 
+class NetworkTrafficHistory(SQLModel, table=True):
+    """
+    Historical network traffic per interface for dashboard graphs.
+    Stores cumulative bytes sent/received snapshots every 60s.
+    """
+    __tablename__ = "network_traffic_history"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    interface: str = Field(max_length=50, index=True)
+    bytes_sent: int = Field(default=0, sa_column=Column(BigInteger))
+    bytes_recv: int = Field(default=0, sa_column=Column(BigInteger))
+
+
+
 class SystemSettings(SQLModel, table=True):
     """
     Portal customization settings.

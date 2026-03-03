@@ -1,416 +1,470 @@
 /**
  * MADMIN - Dashboard View
+ * 
+ * Widget-based dashboard with configurable visibility.
+ * Each widget is a self-contained card with render + load functions.
  */
 
 import { apiGet } from '../api.js';
 import { formatRelativeTime } from '../utils.js';
 
 let autoRefreshInterval = null;
+let netTrafficChart = null;
+let cpuChart = null;
+let ramChart = null;
+let diskChart = null;
+
+// ============== WIDGET REGISTRY ==============
 
 /**
- * Render the dashboard view
+ * Core widget definitions.
+ * Future: module widgets will be appended here by the module loader.
+ * 
+ * Each widget has:
+ *  - id: unique identifier
+ *  - title: display name
+ *  - col: Bootstrap column width (12=full, 6=half)
+ *  - fixed: if true, cannot be hidden
+ *  - render: function returning HTML string
+ *  - load: async function to populate data (null if static)
  */
+const CORE_WIDGETS = [
+    { id: 'welcome', title: 'Benvenuto', col: 12, fixed: true, render: renderWelcome, load: loadWelcome },
+    { id: 'system_stats', title: 'Statistiche', col: 12, fixed: false, render: renderSystemStats, load: loadSystemStats },
+    { id: 'services', title: 'Stato Servizi', col: 12, fixed: false, render: renderServices, load: loadServicesStatus },
+    { id: 'resource_graphs', title: 'Grafici Risorse', col: 12, fixed: false, render: renderResourceGraphs, load: loadResourceGraphs },
+    { id: 'net_traffic', title: 'Traffico Rete', col: 6, fixed: false, render: renderNetTraffic, load: loadNetTraffic },
+    { id: 'alerts', title: 'Alert Sistema', col: 6, fixed: false, render: renderAlerts, load: loadAlerts },
+    { id: 'backup_status', title: 'Stato Backup', col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus },
+    { id: 'system_info', title: 'Info Sistema', col: 6, fixed: false, render: renderSystemInfo, load: loadSystemInfo },
+    { id: 'stat_cards', title: 'Contatori', col: 12, fixed: false, render: renderStatCards, load: loadStatCards },
+    { id: 'quick_actions', title: 'Azioni Rapide', col: 6, fixed: false, render: renderQuickActions, load: null },
+];
+
+
+// ============== WIDGET PREFERENCES ==============
+
+const PREFS_KEY = 'madmin_dashboard_widgets';
+
+function getWidgetPrefs() {
+    try {
+        const saved = localStorage.getItem(PREFS_KEY);
+        if (saved) return JSON.parse(saved);
+    } catch (e) { }
+    // Default: all enabled
+    return CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+}
+
+function saveWidgetPrefs(prefs) {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+}
+
+function isWidgetEnabled(widgetId) {
+    const widget = CORE_WIDGETS.find(w => w.id === widgetId);
+    if (widget?.fixed) return true;
+    const prefs = getWidgetPrefs();
+    const pref = prefs.find(p => p.id === widgetId);
+    return pref ? pref.enabled : true;
+}
+
+
+// ============== MAIN RENDER ==============
+
 export async function render(container) {
+    // Build widget HTML
+    let widgetsHtml = '';
+    for (const widget of CORE_WIDGETS) {
+        if (!isWidgetEnabled(widget.id)) continue;
+        widgetsHtml += `
+            <div class="col-lg-${widget.col}" data-widget-id="${widget.id}">
+                ${widget.render()}
+            </div>
+        `;
+    }
+
     container.innerHTML = `
-        <div class="row row-deck row-cards">
-            <!-- Welcome Card -->
-            <div class="col-12">
-                <div class="card bg-primary text-white">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="me-3">
-                                <i class="ti ti-server-cog" style="font-size: 3rem;"></i>
-                            </div>
-                            <div>
-                                <h2 class="mb-1" id="dashboard-welcome">Benvenuto in MADMIN</h2>
-                                <p class="mb-0 opacity-75">Sistema di amministrazione modulare per il tuo server</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- System Stats Card -->
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">
-                            <i class="ti ti-cpu me-2"></i>Statistiche Sistema
-                        </h3>
-                        <div class="card-actions">
-                            <div class="form-check form-switch me-3">
-                                <input class="form-check-input" type="checkbox" id="auto-refresh-toggle">
-                                <label class="form-check-label" for="auto-refresh-toggle">Auto (30s)</label>
-                            </div>
-                            <button class="btn btn-ghost-primary" id="btn-refresh-stats" title="Aggiorna">
-                                <i class="ti ti-refresh"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="row" id="system-stats-container">
-                            <div class="col-md-4 mb-3">
-                                <div class="d-flex align-items-center mb-2">
-                                    <i class="ti ti-cpu me-2 text-blue"></i>
-                                    <span class="fw-bold">CPU</span>
-                                    <span class="ms-auto text-muted" id="cpu-percent">--</span>
-                                </div>
-                                <div class="progress progress-sm">
-                                    <div class="progress-bar bg-blue" id="cpu-bar" style="width: 0%"></div>
-                                </div>
-                            </div>
-                            <div class="col-md-4 mb-3">
-                                <div class="d-flex align-items-center mb-2">
-                                    <i class="ti ti-device-desktop me-2 text-green"></i>
-                                    <span class="fw-bold">RAM</span>
-                                    <span class="ms-auto text-muted" id="ram-info">--</span>
-                                </div>
-                                <div class="progress progress-sm">
-                                    <div class="progress-bar bg-green" id="ram-bar" style="width: 0%"></div>
-                                </div>
-                            </div>
-                            <div class="col-md-4 mb-3">
-                                <div class="d-flex align-items-center mb-2">
-                                    <i class="ti ti-database me-2 text-orange"></i>
-                                    <span class="fw-bold">Disco</span>
-                                    <span class="ms-auto text-muted" id="disk-info">--</span>
-                                </div>
-                                <div class="progress progress-sm">
-                                    <div class="progress-bar bg-orange" id="disk-bar" style="width: 0%"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Services Status -->
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">
-                            <i class="ti ti-activity me-2"></i>Stato Servizi
-                        </h3>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-3" id="services-status-container">
-                            <div class="col-6 col-md-3">
-                                <div class="card card-sm">
-                                    <div class="card-body">
-                                        <div class="d-flex align-items-center">
-                                            <span class="avatar bg-primary-lt me-3">
-                                                <i class="ti ti-server"></i>
-                                            </span>
-                                            <div>
-                                                <div class="font-weight-medium">MADMIN</div>
-                                                <div id="svc-madmin" class="text-muted">
-                                                    <span class="spinner-border spinner-border-sm"></span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-6 col-md-3">
-                                <div class="card card-sm">
-                                    <div class="card-body">
-                                        <div class="d-flex align-items-center">
-                                            <span class="avatar bg-blue-lt me-3">
-                                                <i class="ti ti-database"></i>
-                                            </span>
-                                            <div>
-                                                <div class="font-weight-medium">PostgreSQL</div>
-                                                <div id="svc-postgresql" class="text-muted">
-                                                    <span class="spinner-border spinner-border-sm"></span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-6 col-md-3">
-                                <div class="card card-sm">
-                                    <div class="card-body">
-                                        <div class="d-flex align-items-center">
-                                            <span class="avatar bg-green-lt me-3">
-                                                <i class="ti ti-world"></i>
-                                            </span>
-                                            <div>
-                                                <div class="font-weight-medium">Nginx</div>
-                                                <div id="svc-nginx" class="text-muted">
-                                                    <span class="spinner-border spinner-border-sm"></span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-6 col-md-3">
-                                <div class="card card-sm">
-                                    <div class="card-body">
-                                        <div class="d-flex align-items-center">
-                                            <span class="avatar bg-orange-lt me-3">
-                                                <i class="ti ti-shield"></i>
-                                            </span>
-                                            <div>
-                                                <div class="font-weight-medium">iptables</div>
-                                                <div id="svc-iptables" class="text-muted">
-                                                    <span class="spinner-border spinner-border-sm"></span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Resource Graphs -->
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">
-                            <i class="ti ti-chart-line me-2"></i>Andamento Risorse
-                        </h3>
-                        <div class="card-actions">
-                            <div class="btn-group" role="group">
-                                <input type="radio" class="btn-check" name="graph-range" id="graph-1h" value="1" checked>
-                                <label class="btn btn-sm" for="graph-1h">1h</label>
-                                <input type="radio" class="btn-check" name="graph-range" id="graph-24h" value="24">
-                                <label class="btn btn-sm" for="graph-24h">24h</label>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="row">
-                            <div class="col-md-4">
-                                <h4 class="subheader">CPU</h4>
-                                <div id="chart-cpu" style="height: 150px;"></div>
-                            </div>
-                            <div class="col-md-4">
-                                <h4 class="subheader">RAM</h4>
-                                <div id="chart-ram" style="height: 150px;"></div>
-                            </div>
-                            <div class="col-md-4">
-                                <h4 class="subheader">Disco</h4>
-                                <div id="chart-disk" style="height: 150px;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Stats Cards -->
-            <div class="col-sm-6 col-lg-3">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="subheader">Stato Sistema</div>
-                        </div>
-                        <div class="h1 mb-3" id="system-status">
-                            <span class="spinner-border spinner-border-sm"></span>
-                        </div>
-                        <div class="d-flex mb-2">
-                            <div class="text-muted">Database</div>
-                            <div class="ms-auto" id="db-status">
-                                <span class="spinner-border spinner-border-sm"></span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="col-sm-6 col-lg-3">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="subheader">Regole Firewall</div>
-                        </div>
-                        <div class="h1 mb-3" id="firewall-count">
-                            <span class="spinner-border spinner-border-sm"></span>
-                        </div>
-                        <div class="d-flex mb-2">
-                            <div class="text-muted">Regole attive</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="col-sm-6 col-lg-3">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="subheader">Moduli Installati</div>
-                        </div>
-                        <div class="h1 mb-3" id="modules-count">
-                            <span class="spinner-border spinner-border-sm"></span>
-                        </div>
-                        <div class="d-flex mb-2">
-                            <div class="text-muted">Moduli attivi</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="col-sm-6 col-lg-3">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="subheader">Utenti</div>
-                        </div>
-                        <div class="h1 mb-3" id="users-count">
-                            <span class="spinner-border spinner-border-sm"></span>
-                        </div>
-                        <div class="d-flex mb-2">
-                            <div class="text-muted">Utenti registrati</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Quick Actions -->
-            <div class="col-lg-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">
-                            <i class="ti ti-bolt me-2"></i>Azioni Rapide
-                        </h3>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-3">
-                            <div class="col-6">
-                                <a href="#users" class="btn btn-outline-primary w-100">
-                                    <i class="ti ti-user-plus me-2"></i>Nuovo Utente
-                                </a>
-                            </div>
-                            <div class="col-6">
-                                <a href="#firewall" class="btn btn-outline-primary w-100">
-                                    <i class="ti ti-shield-plus me-2"></i>Nuova Regola
-                                </a>
-                            </div>
-                            <div class="col-6">
-                                <a href="#settings" class="btn btn-outline-primary w-100">
-                                    <i class="ti ti-settings me-2"></i>Impostazioni
-                                </a>
-                            </div>
-                            <div class="col-6">
-                                <a href="#modules" class="btn btn-outline-primary w-100">
-                                    <i class="ti ti-puzzle me-2"></i>Moduli
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- System Info -->
-            <div class="col-lg-6">
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">
-                            <i class="ti ti-info-circle me-2"></i>Informazioni Sistema
-                        </h3>
-                    </div>
-                    <div class="card-body">
-                        <dl class="row mb-0">
-                            <dt class="col-5">Versione:</dt>
-                            <dd class="col-7" id="system-version">-</dd>
-                            
-                            <dt class="col-5">Backend:</dt>
-                            <dd class="col-7">FastAPI + PostgreSQL</dd>
-                            
-                            <dt class="col-5">Frontend:</dt>
-                            <dd class="col-7">Tabler UI + ES Modules</dd>
-                            
-                            <dt class="col-5">Ultimo Aggiornamento:</dt>
-                            <dd class="col-7" id="last-update">-</dd>
-                        </dl>
-                    </div>
-                </div>
-            </div>
+        <div class="row row-deck row-cards" id="dashboard-widgets">
+            ${widgetsHtml}
         </div>
     `;
 
     // Setup event listeners
     setupEventListeners();
 
-    // Load company name for welcome message
+    // Load company name
     await loadCompanyName();
 
-    // Load data
-    await loadDashboardData();
-    await loadSystemStats();
-    await loadServicesStatus();
-    await loadResourceGraphs(1);
+    // Load data for all visible widgets
+    const loadPromises = [];
+    for (const widget of CORE_WIDGETS) {
+        if (!isWidgetEnabled(widget.id) || !widget.load) continue;
+        loadPromises.push(widget.load().catch(e => console.error(`Widget ${widget.id} error:`, e)));
+    }
+    await Promise.all(loadPromises);
 }
 
-/**
- * Load company name for welcome message
- */
-async function loadCompanyName() {
+
+// ============== WIDGET CONFIG UI ==============
+
+function renderWidgetConfigButton() {
+    return `
+        <div class="dropdown">
+            <button class="btn btn-ghost-secondary btn-sm" data-bs-toggle="dropdown" title="Configura widget">
+                <i class="ti ti-layout-dashboard"></i>
+            </button>
+            <div class="dropdown-menu dropdown-menu-end p-3" style="min-width: 220px;" id="widget-config-menu">
+                <h6 class="dropdown-header px-0">Widget visibili</h6>
+                ${CORE_WIDGETS.filter(w => !w.fixed).map(w => `
+                    <label class="dropdown-item d-flex align-items-center cursor-pointer">
+                        <input type="checkbox" class="form-check-input me-2 widget-toggle" 
+                               data-widget-id="${w.id}" ${isWidgetEnabled(w.id) ? 'checked' : ''}>
+                        ${w.title}
+                    </label>
+                `).join('')}
+            </div>
+        </div>
+    `;
+}
+
+
+// ============== WIDGET RENDERERS ==============
+
+function renderWelcome() {
+    return `
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="me-3">
+                        <i class="ti ti-server-cog" style="font-size: 3rem;"></i>
+                    </div>
+                    <div class="flex-fill">
+                        <h2 class="mb-1" id="dashboard-welcome">Benvenuto in MADMIN</h2>
+                        <p class="mb-0 opacity-75">Sistema di amministrazione modulare per il tuo server</p>
+                    </div>
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="text-end" id="uptime-display">
+                            <span class="spinner-border spinner-border-sm"></span>
+                        </div>
+                        ${renderWidgetConfigButton()}
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderSystemStats() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-cpu me-2"></i>Statistiche Sistema
+                </h3>
+                <div class="card-actions">
+                    <div class="form-check form-switch me-3">
+                        <input class="form-check-input" type="checkbox" id="auto-refresh-toggle">
+                        <label class="form-check-label" for="auto-refresh-toggle">Auto (30s)</label>
+                    </div>
+                    <button class="btn btn-ghost-primary" id="btn-refresh-stats" title="Aggiorna">
+                        <i class="ti ti-refresh"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row" id="system-stats-container">
+                    <div class="col-md-4 mb-3">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="ti ti-cpu me-2 text-blue"></i>
+                            <span class="fw-bold">CPU</span>
+                            <span class="ms-auto text-muted" id="cpu-percent">--</span>
+                        </div>
+                        <div class="progress progress-sm">
+                            <div class="progress-bar bg-blue" id="cpu-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="ti ti-device-desktop me-2 text-green"></i>
+                            <span class="fw-bold">RAM</span>
+                            <span class="ms-auto text-muted" id="ram-info">--</span>
+                        </div>
+                        <div class="progress progress-sm">
+                            <div class="progress-bar bg-green" id="ram-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="ti ti-database me-2 text-orange"></i>
+                            <span class="fw-bold">Disco</span>
+                            <span class="ms-auto text-muted" id="disk-info">--</span>
+                        </div>
+                        <div class="progress progress-sm">
+                            <div class="progress-bar bg-orange" id="disk-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderServices() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-activity me-2"></i>Stato Servizi
+                </h3>
+            </div>
+            <div class="card-body">
+                <div class="row g-3" id="services-status-container">
+                    ${['madmin|ti-server|bg-primary-lt|MADMIN', 'postgresql|ti-database|bg-blue-lt|PostgreSQL',
+            'nginx|ti-world|bg-green-lt|Nginx', 'iptables|ti-shield|bg-orange-lt|iptables']
+            .map(s => {
+                const [id, icon, bg, name] = s.split('|');
+                return `
+                            <div class="col-6 col-md-3">
+                                <div class="card card-sm">
+                                    <div class="card-body">
+                                        <div class="d-flex align-items-center">
+                                            <span class="avatar ${bg} me-3"><i class="${icon}"></i></span>
+                                            <div>
+                                                <div class="font-weight-medium">${name}</div>
+                                                <div id="svc-${id}" class="text-muted">
+                                                    <span class="spinner-border spinner-border-sm"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                          `;
+            }).join('')}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderResourceGraphs() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-chart-line me-2"></i>Andamento Risorse
+                </h3>
+                <div class="card-actions">
+                    <div class="btn-group" role="group">
+                        <input type="radio" class="btn-check" name="graph-range" id="graph-1h" value="1" checked>
+                        <label class="btn btn-sm" for="graph-1h">1h</label>
+                        <input type="radio" class="btn-check" name="graph-range" id="graph-6h" value="6">
+                        <label class="btn btn-sm" for="graph-6h">6h</label>
+                        <input type="radio" class="btn-check" name="graph-range" id="graph-24h" value="24">
+                        <label class="btn btn-sm" for="graph-24h">24h</label>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <h4 class="subheader">CPU</h4>
+                        <div id="chart-cpu" style="height: 150px;"></div>
+                    </div>
+                    <div class="col-md-4">
+                        <h4 class="subheader">RAM</h4>
+                        <div id="chart-ram" style="height: 150px;"></div>
+                    </div>
+                    <div class="col-md-4">
+                        <h4 class="subheader">Disco</h4>
+                        <div id="chart-disk" style="height: 150px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderNetTraffic() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-arrows-transfer-down me-2"></i>Traffico di Rete
+                </h3>
+                <div class="card-actions d-flex align-items-center gap-2">
+                    <select class="form-select form-select-sm" id="net-interface-select" style="width: auto; min-width: 120px;">
+                        <option value="">Caricamento...</option>
+                    </select>
+                    <div class="btn-group" role="group">
+                        <input type="radio" class="btn-check" name="net-range" id="net-1h" value="1" checked>
+                        <label class="btn btn-sm" for="net-1h">1h</label>
+                        <input type="radio" class="btn-check" name="net-range" id="net-6h" value="6">
+                        <label class="btn btn-sm" for="net-6h">6h</label>
+                        <input type="radio" class="btn-check" name="net-range" id="net-24h" value="24">
+                        <label class="btn btn-sm" for="net-24h">24h</label>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="chart-net-traffic" style="height: 200px;">
+                    <div class="text-muted text-center py-5">
+                        <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderAlerts() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-bell me-2"></i>Alert Sistema
+                </h3>
+            </div>
+            <div class="card-body" id="alerts-container">
+                <div class="text-muted text-center py-3">
+                    <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderBackupStatus() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-archive me-2"></i>Stato Backup
+                </h3>
+                <div class="card-actions" id="backup-icons">
+                </div>
+            </div>
+            <div class="card-body" id="backup-status-container">
+                <div class="text-muted text-center py-3">
+                    <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderSystemInfo() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-info-circle me-2"></i>Informazioni Sistema
+                </h3>
+            </div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-5">Versione:</dt>
+                    <dd class="col-7" id="system-version">-</dd>
+                    
+                    <dt class="col-5">Backend:</dt>
+                    <dd class="col-7">FastAPI + PostgreSQL</dd>
+                    
+                    <dt class="col-5">Frontend:</dt>
+                    <dd class="col-7">Tabler UI + ES Modules</dd>
+                    
+                    <dt class="col-5">Ultimo Aggiornamento:</dt>
+                    <dd class="col-7" id="last-update">-</dd>
+                </dl>
+            </div>
+        </div>
+    `;
+}
+
+function renderStatCards() {
+    return `
+        <div class="row g-3">
+            ${[
+            { id: 'system-status', title: 'Stato Sistema', sub: 'Database', subId: 'db-status' },
+            { id: 'firewall-count', title: 'Regole Firewall', sub: 'Regole attive', subId: null },
+            { id: 'modules-count', title: 'Moduli Installati', sub: 'Moduli attivi', subId: null },
+            { id: 'users-count', title: 'Utenti', sub: 'Utenti registrati', subId: null },
+        ].map(c => `
+                <div class="col-sm-6 col-lg-3">
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="d-flex align-items-center">
+                                <div class="subheader">${c.title}</div>
+                            </div>
+                            <div class="h1 mb-3" id="${c.id}">
+                                <span class="spinner-border spinner-border-sm"></span>
+                            </div>
+                            <div class="d-flex mb-2">
+                                <div class="text-muted">${c.sub}</div>
+                                ${c.subId ? `<div class="ms-auto" id="${c.subId}"><span class="spinner-border spinner-border-sm"></span></div>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderQuickActions() {
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="ti ti-bolt me-2"></i>Azioni Rapide
+                </h3>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-6">
+                        <a href="#users" class="btn btn-outline-primary w-100">
+                            <i class="ti ti-user-plus me-2"></i>Nuovo Utente
+                        </a>
+                    </div>
+                    <div class="col-6">
+                        <a href="#firewall" class="btn btn-outline-primary w-100">
+                            <i class="ti ti-shield-plus me-2"></i>Nuova Regola
+                        </a>
+                    </div>
+                    <div class="col-6">
+                        <a href="#settings" class="btn btn-outline-primary w-100">
+                            <i class="ti ti-settings me-2"></i>Impostazioni
+                        </a>
+                    </div>
+                    <div class="col-6">
+                        <a href="#modules" class="btn btn-outline-primary w-100">
+                            <i class="ti ti-puzzle me-2"></i>Moduli
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+
+// ============== WIDGET LOADERS ==============
+
+async function loadWelcome() {
+    // Uptime
     try {
-        const response = await fetch('/api/settings/system', {
-            headers: {
-                'Authorization': `Bearer ${localStorage.getItem('madmin_token')}`
-            }
-        });
-        if (response.ok) {
-            const settings = await response.json();
-            if (settings.company_name) {
-                const welcomeEl = document.getElementById('dashboard-welcome');
-                if (welcomeEl) {
-                    welcomeEl.textContent = `Benvenuto in ${settings.company_name}`;
-                }
-            }
+        const uptime = await apiGet('/system/uptime');
+        const el = document.getElementById('uptime-display');
+        if (el && uptime.available) {
+            el.innerHTML = `
+                <div class="text-white opacity-75" style="font-size: 0.85rem;">
+                    <i class="ti ti-clock me-1"></i>Online da <strong>${uptime.uptime_formatted}</strong>
+                </div>
+            `;
         }
     } catch (e) {
-        console.error('Failed to load company name:', e);
+        console.error('Failed to load uptime:', e);
     }
 }
 
-/**
- * Setup event listeners
- */
-function setupEventListeners() {
-    // Refresh stats button
-    document.getElementById('btn-refresh-stats')?.addEventListener('click', async () => {
-        const btn = document.getElementById('btn-refresh-stats');
-        btn.innerHTML = '<i class="ti ti-loader ti-spin"></i>';
-        await loadSystemStats();
-        btn.innerHTML = '<i class="ti ti-refresh"></i>';
-    });
-
-    // Auto-refresh toggle
-    document.getElementById('auto-refresh-toggle')?.addEventListener('change', (e) => {
-        if (e.target.checked) {
-            // Start auto-refresh every 30 seconds
-            autoRefreshInterval = setInterval(loadSystemStats, 30000);
-        } else {
-            // Stop auto-refresh
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshInterval = null;
-            }
-        }
-    });
-}
-
-/**
- * Format bytes to human readable string
- */
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-/**
- * Load system statistics
- */
 async function loadSystemStats() {
     try {
         const stats = await apiGet('/system/stats');
@@ -449,93 +503,18 @@ async function loadSystemStats() {
 
     } catch (error) {
         console.error('Error loading system stats:', error);
-        document.getElementById('system-stats-container').innerHTML = `
+        const el = document.getElementById('system-stats-container');
+        if (el) el.innerHTML = `
             <div class="col-12 text-center text-danger">
-                <i class="ti ti-alert-circle me-2"></i>
-                Errore caricamento statistiche
+                <i class="ti ti-alert-circle me-2"></i>Errore caricamento statistiche
             </div>
         `;
     }
 }
 
-/**
- * Get progress bar color based on percentage
- */
-function getProgressColor(percent) {
-    if (percent < 60) return 'bg-green';
-    if (percent < 80) return 'bg-yellow';
-    return 'bg-red';
-}
-
-/**
- * Load dashboard data from API
- */
-async function loadDashboardData() {
-    // Health check
-    try {
-        const health = await apiGet('/health');
-
-        document.getElementById('system-status').innerHTML = `
-            <span class="status-dot status-dot-${health.status === 'healthy' ? 'active' : 'warning'} me-2"></span>
-            ${health.status === 'healthy' ? 'Operativo' : 'Degradato'}
-        `;
-
-        document.getElementById('db-status').innerHTML = `
-            <span class="badge bg-${health.database === 'connected' ? 'success' : 'danger'}">
-                ${health.database === 'connected' ? 'Connesso' : 'Disconnesso'}
-            </span>
-        `;
-
-        document.getElementById('system-version').textContent = `v${health.version}`;
-
-    } catch (error) {
-        document.getElementById('system-status').innerHTML = `
-            <span class="status-dot status-dot-warning me-2"></span>
-            Errore
-        `;
-    }
-
-    // Firewall rules count
-    try {
-        const rules = await apiGet('/firewall/rules');
-        const activeRules = rules.filter(r => r.enabled).length;
-        document.getElementById('firewall-count').textContent = activeRules;
-    } catch (error) {
-        document.getElementById('firewall-count').textContent = '-';
-    }
-
-    // Modules count
-    try {
-        const modules = await apiGet('/modules/available');
-        const activeModules = modules.filter(m => m.enabled).length;
-        document.getElementById('modules-count').textContent = activeModules;
-    } catch (error) {
-        document.getElementById('modules-count').textContent = '-';
-    }
-
-    // Users count
-    try {
-        const users = await apiGet('/auth/users');
-        document.getElementById('users-count').textContent = users.length;
-    } catch (error) {
-        document.getElementById('users-count').textContent = '-';
-    }
-
-    // Last update
-    document.getElementById('last-update').textContent = formatRelativeTime(new Date());
-}
-
-
-// ============== SERVICES STATUS ==============
-
-/**
- * Load services status from API
- */
 async function loadServicesStatus() {
     try {
         const services = await apiGet('/system/services');
-
-        // Update each service status
         for (const [svc, data] of Object.entries(services)) {
             const el = document.getElementById(`svc-${svc}`);
             if (el) {
@@ -549,35 +528,22 @@ async function loadServicesStatus() {
         }
     } catch (error) {
         console.error('Error loading services status:', error);
-        // Set all to unknown
         ['madmin', 'postgresql', 'nginx', 'iptables'].forEach(svc => {
             const el = document.getElementById(`svc-${svc}`);
-            if (el) {
-                el.innerHTML = '<span class="badge bg-secondary-lt">Sconosciuto</span>';
-            }
+            if (el) el.innerHTML = '<span class="badge bg-secondary-lt">Sconosciuto</span>';
         });
     }
 }
 
-
-// ============== RESOURCE GRAPHS ==============
-
-let cpuChart = null;
-let ramChart = null;
-let diskChart = null;
-/**
- * Load resource graphs with historical data
- */
-async function loadResourceGraphs(hours = 1) {
+async function loadResourceGraphs(hours) {
+    if (typeof hours !== 'number') hours = 1;
     try {
-        // Fetch both history and current stats (for totals)
         const [history, currentStats] = await Promise.all([
             apiGet(`/system/stats/history?hours=${hours}`),
             apiGet('/system/stats')
         ]);
 
         if (history.length === 0) {
-            // Show placeholder message
             ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.innerHTML = '<div class="text-muted text-center py-4">Dati non ancora disponibili</div>';
@@ -586,95 +552,36 @@ async function loadResourceGraphs(hours = 1) {
         }
 
         const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
-
-        // CPU data (percentage)
         const cpuData = history.map(h => parseFloat(h.cpu.toFixed(1)));
 
-        // Get totals from current real-time stats
-        const ramTotalGB = currentStats.available
-            ? (currentStats.memory.total / (1024 * 1024 * 1024))
-            : 2; // fallback
-        const diskTotalGB = currentStats.available
-            ? (currentStats.disk.total / (1024 * 1024 * 1024))
-            : 50; // fallback
+        const ramTotalGB = currentStats.available ? (currentStats.memory.total / (1024 ** 3)) : 2;
+        const diskTotalGB = currentStats.available ? (currentStats.disk.total / (1024 ** 3)) : 50;
+        const ramDataGB = history.map(h => parseFloat(((h.ram_used || 0) / (1024 ** 3)).toFixed(2)));
+        const diskDataGB = history.map(h => parseFloat(((h.disk_used || 0) / (1024 ** 3)).toFixed(2)));
 
-        // RAM data (convert to GB)
-        const ramDataGB = history.map(h => parseFloat(((h.ram_used || 0) / (1024 * 1024 * 1024)).toFixed(2)));
-
-        // Disk data (convert to GB)
-        const diskDataGB = history.map(h => parseFloat(((h.disk_used || 0) / (1024 * 1024 * 1024)).toFixed(2)));
-
-        // Calculate min/max for each
         const cpuMinMax = { min: Math.min(...cpuData).toFixed(1), max: Math.max(...cpuData).toFixed(1) };
         const ramMinMax = { min: Math.min(...ramDataGB).toFixed(1), max: Math.max(...ramDataGB).toFixed(1) };
         const diskMinMax = { min: Math.min(...diskDataGB).toFixed(1), max: Math.max(...diskDataGB).toFixed(1) };
 
-        // Base chart options
         const baseOptions = (data, color, categories) => ({
             series: [{ data }],
-            chart: {
-                type: 'area',
-                height: 120,
-                sparkline: { enabled: false },
-                animations: { enabled: false },
-                toolbar: { show: false },
-                zoom: { enabled: false }
-            },
+            chart: { type: 'area', height: 120, sparkline: { enabled: false }, animations: { enabled: false }, toolbar: { show: false }, zoom: { enabled: false } },
             dataLabels: { enabled: false },
             stroke: { curve: 'smooth', width: 2 },
-            fill: {
-                type: 'gradient',
-                gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1 }
-            },
+            fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1 } },
             colors: [color],
-            xaxis: {
-                categories,
-                labels: { show: false },
-                axisBorder: { show: false },
-                axisTicks: { show: false }
-            },
+            xaxis: { categories, labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
             grid: { show: true, borderColor: '#e0e0e0', strokeDashArray: 3, padding: { left: 5, right: 5 } }
         });
 
-        // CPU chart (percentage 0-100%)
-        const cpuOptions = {
-            ...baseOptions(cpuData, '#206bc4', timestamps),
-            yaxis: {
-                min: 0,
-                max: 100,
-                labels: { show: true, formatter: (val) => val.toFixed(0) + '%' }
-            },
-            tooltip: { y: { formatter: (val) => val.toFixed(1) + '%' } }
-        };
+        const cpuOptions = { ...baseOptions(cpuData, '#206bc4', timestamps), yaxis: { min: 0, max: 100, labels: { show: true, formatter: v => v.toFixed(0) + '%' } }, tooltip: { y: { formatter: v => v.toFixed(1) + '%' } } };
+        const ramOptions = { ...baseOptions(ramDataGB, '#2fb344', timestamps), yaxis: { min: 0, max: Math.ceil(ramTotalGB), labels: { show: true, formatter: v => v.toFixed(0) + ' GB' } }, tooltip: { y: { formatter: v => v.toFixed(1) + ' GB' } } };
+        const diskOptions = { ...baseOptions(diskDataGB, '#f76707', timestamps), yaxis: { min: 0, max: Math.ceil(diskTotalGB), labels: { show: true, formatter: v => v.toFixed(0) + ' GB' } }, tooltip: { y: { formatter: v => v.toFixed(1) + ' GB' } } };
 
-        // RAM chart (GB, 0 to total)
-        const ramOptions = {
-            ...baseOptions(ramDataGB, '#2fb344', timestamps),
-            yaxis: {
-                min: 0,
-                max: Math.ceil(ramTotalGB),
-                labels: { show: true, formatter: (val) => val.toFixed(0) + ' GB' }
-            },
-            tooltip: { y: { formatter: (val) => val.toFixed(1) + ' GB' } }
-        };
-
-        // Disk chart (GB, 0 to total)
-        const diskOptions = {
-            ...baseOptions(diskDataGB, '#f76707', timestamps),
-            yaxis: {
-                min: 0,
-                max: Math.ceil(diskTotalGB),
-                labels: { show: true, formatter: (val) => val.toFixed(0) + ' GB' }
-            },
-            tooltip: { y: { formatter: (val) => val.toFixed(1) + ' GB' } }
-        };
-
-        // Destroy existing charts
         if (cpuChart) cpuChart.destroy();
         if (ramChart) ramChart.destroy();
         if (diskChart) diskChart.destroy();
 
-        // Create new charts
         cpuChart = new ApexCharts(document.getElementById('chart-cpu'), cpuOptions);
         ramChart = new ApexCharts(document.getElementById('chart-ram'), ramOptions);
         diskChart = new ApexCharts(document.getElementById('chart-disk'), diskOptions);
@@ -683,7 +590,7 @@ async function loadResourceGraphs(hours = 1) {
         ramChart.render();
         diskChart.render();
 
-        // Update min/max labels
+        // Min/max labels
         document.getElementById('cpu-minmax')?.remove();
         document.getElementById('ram-minmax')?.remove();
         document.getElementById('disk-minmax')?.remove();
@@ -704,16 +611,357 @@ async function loadResourceGraphs(hours = 1) {
     }
 }
 
-// Add event listener for graph range toggle after setupEventListeners
-const originalSetupEventListeners = setupEventListeners;
-setupEventListeners = function () {
-    originalSetupEventListeners();
+async function loadNetTraffic() {
+    const select = document.getElementById('net-interface-select');
+    if (!select) return;
 
-    // Graph range toggle
+    try {
+        // Populate interface dropdown
+        const netData = await apiGet('/system/network');
+        if (!netData.available) {
+            document.getElementById('chart-net-traffic').innerHTML = '<div class="text-muted text-center py-4">Dati non disponibili</div>';
+            return;
+        }
+
+        const interfaces = Object.keys(netData.interfaces);
+        select.innerHTML = interfaces.map((iface, i) =>
+            `<option value="${iface}" ${i === 0 ? 'selected' : ''}>${iface}</option>`
+        ).join('');
+
+        // Load graph for first interface
+        if (interfaces.length > 0) {
+            await loadNetTrafficGraph(interfaces[0], 1);
+        }
+    } catch (error) {
+        console.error('Error loading net traffic:', error);
+        document.getElementById('chart-net-traffic').innerHTML = '<div class="text-muted text-center py-4">Errore caricamento</div>';
+    }
+}
+
+async function loadNetTrafficGraph(iface, hours) {
+    const container = document.getElementById('chart-net-traffic');
+    if (!container) return;
+
+    try {
+        const history = await apiGet(`/system/network/history?hours=${hours}&interface=${iface}`);
+
+        if (history.length === 0) {
+            container.innerHTML = '<div class="text-muted text-center py-4">Dati non ancora disponibili per questa interfaccia</div>';
+            return;
+        }
+
+        const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+        const txData = history.map(h => parseFloat((h.tx_rate / 1024).toFixed(2))); // KB/s
+        const rxData = history.map(h => parseFloat((h.rx_rate / 1024).toFixed(2))); // KB/s
+
+        // Auto-scale: if > 1024 KB/s, show MB/s
+        const maxVal = Math.max(...txData, ...rxData);
+        let unit = 'KB/s';
+        let txDisplay = txData;
+        let rxDisplay = rxData;
+        if (maxVal > 1024) {
+            unit = 'MB/s';
+            txDisplay = txData.map(v => parseFloat((v / 1024).toFixed(2)));
+            rxDisplay = rxData.map(v => parseFloat((v / 1024).toFixed(2)));
+        }
+
+        if (netTrafficChart) netTrafficChart.destroy();
+
+        const options = {
+            series: [
+                { name: `TX (${unit})`, data: txDisplay },
+                { name: `RX (${unit})`, data: rxDisplay }
+            ],
+            chart: { type: 'area', height: 180, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+            dataLabels: { enabled: false },
+            stroke: { curve: 'smooth', width: 2 },
+            fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.05 } },
+            colors: ['#f76707', '#206bc4'],
+            xaxis: { categories: timestamps, labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
+            yaxis: { min: 0, labels: { show: true, formatter: v => v.toFixed(0) + ' ' + unit } },
+            tooltip: { y: { formatter: v => v.toFixed(2) + ' ' + unit } },
+            grid: { show: true, borderColor: '#e0e0e0', strokeDashArray: 3 },
+            legend: { position: 'top', horizontalAlign: 'right' }
+        };
+
+        netTrafficChart = new ApexCharts(container, options);
+        netTrafficChart.render();
+
+    } catch (error) {
+        console.error('Error loading net traffic graph:', error);
+        container.innerHTML = '<div class="text-muted text-center py-4">Errore caricamento dati</div>';
+    }
+}
+
+async function loadAlerts() {
+    const container = document.getElementById('alerts-container');
+    if (!container) return;
+
+    try {
+        const alerts = await apiGet('/system/alerts');
+
+        if (alerts.length === 0) {
+            container.innerHTML = `
+                <div class="d-flex align-items-center text-success py-2">
+                    <i class="ti ti-circle-check me-2 fs-2"></i>
+                    <div>
+                        <div class="fw-bold">Tutto OK</div>
+                        <div class="text-muted small">Nessun avviso attivo</div>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = alerts.map(alert => `
+            <div class="d-flex align-items-center py-2 ${alerts.indexOf(alert) > 0 ? 'border-top' : ''}">
+                <span class="avatar avatar-sm bg-${alert.severity === 'danger' ? 'danger' : 'warning'}-lt me-3">
+                    <i class="ti ${alert.icon}"></i>
+                </span>
+                <div>
+                    <div class="fw-bold text-${alert.severity === 'danger' ? 'danger' : 'warning'}">${alert.message}</div>
+                </div>
+            </div>
+        `).join('');
+
+    } catch (error) {
+        console.error('Error loading alerts:', error);
+        container.innerHTML = '<div class="text-muted">Errore caricamento alert</div>';
+    }
+}
+
+async function loadBackupStatus() {
+    const container = document.getElementById('backup-status-container');
+    const iconsEl = document.getElementById('backup-icons');
+    if (!container) return;
+
+    try {
+        const [history, settings] = await Promise.all([
+            apiGet('/backup/history').catch(() => []),
+            apiGet('/settings/backup').catch(() => null)
+        ]);
+
+        let icons = '';
+        let content = '';
+
+        if (history && history.length > 0) {
+            const latest = history[0];
+            const backupDate = new Date(latest.created_at);
+            const now = new Date();
+            const daysOld = Math.floor((now - backupDate) / (1000 * 60 * 60 * 24));
+
+            let timeStr;
+            if (daysOld === 0) {
+                timeStr = `Oggi alle ${backupDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+            } else if (daysOld === 1) {
+                timeStr = `Ieri alle ${backupDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+            } else {
+                timeStr = `${daysOld} giorni fa (${backupDate.toLocaleDateString()})`;
+            }
+
+            // Check for failures
+            let isFailed = false;
+            if (settings && settings.last_run_status && settings.last_run_status.startsWith('failed')) {
+                const failTime = new Date(settings.last_run_time);
+                if (failTime > backupDate) isFailed = true;
+            }
+
+            const badge = isFailed
+                ? '<span class="badge bg-danger">Fallito</span>'
+                : '<span class="badge bg-success">Successo</span>';
+
+            content = `
+                <div class="d-flex align-items-center">
+                    <span class="avatar bg-${isFailed ? 'danger' : 'blue'} text-white me-3">
+                        <i class="ti ti-${isFailed ? 'x' : 'check'}"></i>
+                    </span>
+                    <div>
+                        <div class="fw-bold">${timeStr}</div>
+                        <div class="mt-1">${badge}</div>
+                    </div>
+                </div>
+            `;
+
+            // Warning icons
+            if (daysOld > 7) {
+                icons += `<i class="ti ti-clock text-warning fs-3 ms-2" title="Backup più vecchio di 7 giorni"></i>`;
+            }
+        } else {
+            content = `
+                <div class="d-flex align-items-center text-muted">
+                    <span class="avatar bg-secondary-lt me-3"><i class="ti ti-archive-off"></i></span>
+                    <div>Nessun backup trovato</div>
+                </div>
+            `;
+            icons += `<i class="ti ti-clock text-warning fs-3 ms-2" title="Nessun backup mai eseguito"></i>`;
+        }
+
+        // Periodic backup not enabled
+        if (!settings || !settings.enabled) {
+            icons += `<i class="ti ti-settings text-warning fs-3 ms-2" title="Backup periodico non abilitato"></i>`;
+        }
+
+        if (iconsEl) iconsEl.innerHTML = icons;
+        container.innerHTML = content;
+
+    } catch (error) {
+        console.error('Error loading backup status:', error);
+        container.innerHTML = '<div class="text-muted">Errore caricamento stato backup</div>';
+    }
+}
+
+async function loadSystemInfo() {
+    try {
+        const health = await apiGet('/health');
+        const versionEl = document.getElementById('system-version');
+        const updateEl = document.getElementById('last-update');
+        if (versionEl) versionEl.textContent = `v${health.version}`;
+        if (updateEl) updateEl.textContent = formatRelativeTime(new Date());
+    } catch (e) {
+        console.error('Failed to load system info:', e);
+    }
+}
+
+async function loadStatCards() {
+    // Health check → system status
+    try {
+        const health = await apiGet('/health');
+        document.getElementById('system-status').innerHTML = `
+            <span class="status-dot status-dot-${health.status === 'healthy' ? 'active' : 'warning'} me-2"></span>
+            ${health.status === 'healthy' ? 'Operativo' : 'Degradato'}
+        `;
+        document.getElementById('db-status').innerHTML = `
+            <span class="badge bg-${health.database === 'connected' ? 'success' : 'danger'}">
+                ${health.database === 'connected' ? 'Connesso' : 'Disconnesso'}
+            </span>
+        `;
+    } catch (e) {
+        const el = document.getElementById('system-status');
+        if (el) el.innerHTML = '<span class="status-dot status-dot-warning me-2"></span>Errore';
+    }
+
+    // Firewall
+    try {
+        const rules = await apiGet('/firewall/rules');
+        document.getElementById('firewall-count').textContent = rules.filter(r => r.enabled).length;
+    } catch (e) {
+        const el = document.getElementById('firewall-count');
+        if (el) el.textContent = '-';
+    }
+
+    // Modules
+    try {
+        const modules = await apiGet('/modules/available');
+        document.getElementById('modules-count').textContent = modules.filter(m => m.enabled).length;
+    } catch (e) {
+        const el = document.getElementById('modules-count');
+        if (el) el.textContent = '-';
+    }
+
+    // Users
+    try {
+        const users = await apiGet('/auth/users');
+        document.getElementById('users-count').textContent = users.length;
+    } catch (e) {
+        const el = document.getElementById('users-count');
+        if (el) el.textContent = '-';
+    }
+}
+
+
+// ============== UTILITY FUNCTIONS ==============
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function getProgressColor(percent) {
+    if (percent < 60) return 'bg-green';
+    if (percent < 80) return 'bg-yellow';
+    return 'bg-red';
+}
+
+async function loadCompanyName() {
+    try {
+        const response = await fetch('/api/settings/system', {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
+        });
+        if (response.ok) {
+            const settings = await response.json();
+            if (settings.company_name) {
+                const welcomeEl = document.getElementById('dashboard-welcome');
+                if (welcomeEl) welcomeEl.textContent = `Benvenuto in ${settings.company_name}`;
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load company name:', e);
+    }
+}
+
+
+// ============== EVENT LISTENERS ==============
+
+function setupEventListeners() {
+    // Refresh stats
+    document.getElementById('btn-refresh-stats')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btn-refresh-stats');
+        btn.innerHTML = '<i class="ti ti-loader ti-spin"></i>';
+        await loadSystemStats();
+        btn.innerHTML = '<i class="ti ti-refresh"></i>';
+    });
+
+    // Auto-refresh toggle
+    document.getElementById('auto-refresh-toggle')?.addEventListener('change', (e) => {
+        if (e.target.checked) {
+            autoRefreshInterval = setInterval(loadSystemStats, 30000);
+        } else {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        }
+    });
+
+    // Resource graph range
     document.querySelectorAll('input[name="graph-range"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
-            const hours = parseInt(e.target.value);
-            loadResourceGraphs(hours);
+            loadResourceGraphs(parseInt(e.target.value));
         });
     });
-};
+
+    // Network traffic interface selector
+    document.getElementById('net-interface-select')?.addEventListener('change', (e) => {
+        const hours = parseInt(document.querySelector('input[name="net-range"]:checked')?.value || '1');
+        loadNetTrafficGraph(e.target.value, hours);
+    });
+
+    // Network traffic range
+    document.querySelectorAll('input[name="net-range"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const iface = document.getElementById('net-interface-select')?.value;
+            if (iface) loadNetTrafficGraph(iface, parseInt(e.target.value));
+        });
+    });
+
+    // Widget config toggles
+    document.querySelectorAll('.widget-toggle')?.forEach(cb => {
+        cb.addEventListener('change', (e) => {
+            const widgetId = e.target.dataset.widgetId;
+            const prefs = getWidgetPrefs();
+            const existing = prefs.find(p => p.id === widgetId);
+            if (existing) {
+                existing.enabled = e.target.checked;
+            } else {
+                prefs.push({ id: widgetId, enabled: e.target.checked });
+            }
+            saveWidgetPrefs(prefs);
+            // Re-render
+            const container = document.querySelector('[data-page="dashboard"]') || document.getElementById('page-content');
+            if (container) render(container);
+        });
+    });
+}

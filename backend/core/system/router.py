@@ -3,7 +3,7 @@ MADMIN System Router
 
 API endpoints for system statistics.
 """
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,7 +11,10 @@ from core.database import get_session
 from core.auth.dependencies import get_current_user, require_permission
 from core.auth.models import User
 
-from .service import system_service, save_stats_to_history, get_stats_history
+from .service import (
+    system_service, save_stats_to_history, get_stats_history,
+    get_network_traffic_history, get_system_alerts
+)
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -77,4 +80,50 @@ async def get_stats_history_endpoint(
         List of stats records with timestamp, cpu, ram, disk
     """
     return await get_stats_history(session, hours)
+
+
+@router.get("/uptime")
+async def get_uptime(
+    _user: User = Depends(get_current_user)
+):
+    """Get system uptime formatted."""
+    return system_service.get_uptime()
+
+
+@router.get("/network")
+async def get_network_traffic(
+    _user: User = Depends(get_current_user)
+):
+    """Get current network traffic counters per interface."""
+    return system_service.get_network_traffic()
+
+
+@router.get("/network/history")
+async def get_network_traffic_history_endpoint(
+    hours: int = Query(default=1, ge=1, le=24),
+    interface: Optional[str] = Query(default=None),
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+) -> List[dict]:
+    """
+    Get historical network traffic rates per interface.
+    
+    Args:
+        hours: Time range (1, 6, 24)
+        interface: Optional, filter by interface name
+    """
+    return await get_network_traffic_history(session, hours, interface)
+
+
+@router.get("/alerts")
+async def get_alerts(
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+) -> List[dict]:
+    """
+    Get active system alerts.
+    Checks CPU, RAM, and backup status.
+    """
+    return await get_system_alerts(session)
+
 
