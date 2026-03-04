@@ -4,7 +4,7 @@
 
 import { apiGet, apiPatch, apiPost, apiDelete } from '../api.js';
 import { showToast, escapeHtml, inputDialog, confirmDialog } from '../utils.js';
-import { checkPermission } from '../app.js';
+import { checkPermission, applyTheme, getCurrentTheme } from '../app.js';
 
 /**
  * Render the settings view
@@ -44,6 +44,15 @@ export async function render(container) {
                                 <div class="input-group">
                                     <input type="url" class="form-control" id="support-url" placeholder="https://..." ${canManage ? '' : 'disabled'}>
                                     ${canManage ? '<button type="button" class="btn btn-outline-secondary" id="reset-support" title="Rimuovi link supporto"><i class="ti ti-x"></i></button>' : ''}
+                                </div>
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <div class="mb-0">
+                                    <label class="form-check form-switch">
+                                        <input type="checkbox" class="form-check-input" id="dark-mode-toggle">
+                                        <span class="form-check-label">Tema scuro</span>
+                                    </label>
+                                    <small class="form-hint">Preferenza personale per utente</small>
                                 </div>
                             </div>
                             <div class="col-md-6">
@@ -492,6 +501,12 @@ async function loadSettings() {
         document.getElementById('primary-color-hex').value = system.primary_color || '#206bc4';
         document.getElementById('support-url').value = system.support_url || '';
 
+        // Dark mode toggle (per-user preference)
+        const darkToggle = document.getElementById('dark-mode-toggle');
+        if (darkToggle) {
+            darkToggle.checked = getCurrentTheme() === 'dark';
+        }
+
         // Logo preview - show uploaded image if URL exists (toggle img/default visibility)
         if (system.logo_url) {
             const logoImg = document.getElementById('logo-preview-img');
@@ -570,6 +585,20 @@ function setupEventListeners() {
     colorHex?.addEventListener('input', () => {
         if (/^#[0-9A-Fa-f]{6}$/.test(colorHex.value)) {
             colorPicker.value = colorHex.value;
+        }
+    });
+
+    // Dark mode toggle
+    document.getElementById('dark-mode-toggle')?.addEventListener('change', async (e) => {
+        const newTheme = e.target.checked ? 'dark' : 'light';
+        applyTheme(newTheme);
+        try {
+            const user = await apiGet('/auth/me');
+            const allPrefs = JSON.parse(user.preferences || '{}');
+            allPrefs.theme = newTheme;
+            await apiPatch('/auth/me/preferences', { preferences: JSON.stringify(allPrefs) });
+        } catch (err) {
+            showToast('Errore salvataggio tema', 'error');
         }
     });
 

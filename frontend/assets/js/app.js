@@ -5,7 +5,7 @@
  * Uses ES modules for dynamic view loading.
  */
 
-import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken } from './api.js';
+import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
 import { showToast, loadingSpinner, copyToClipboard } from './utils.js';
 
 // View registry - maps routes to view modules
@@ -50,10 +50,14 @@ async function init() {
     // Load and apply system settings (customizations)
     await loadSystemSettings();
 
+    // Apply user theme (dark/light)
+    applyUserTheme();
+
     // Setup event listeners
     setupLogout();
     setupNavigation();
     setupMobileMenu();
+    setupThemeToggle();
 
     // Load menu
     await loadMenu();
@@ -302,6 +306,68 @@ function setupLogout() {
             redirectToLogin();
         });
     }
+}
+
+/**
+ * Apply user theme from preferences
+ */
+function applyUserTheme() {
+    if (!currentUser) return;
+    try {
+        const prefs = JSON.parse(currentUser.preferences || '{}');
+        const theme = prefs.theme || 'light';
+        applyTheme(theme);
+    } catch (e) {
+        applyTheme('light');
+    }
+}
+
+/**
+ * Apply a theme and update toggle UI
+ */
+export function applyTheme(theme) {
+    document.documentElement.setAttribute('data-bs-theme', theme);
+    // Update toggle button UI
+    const icon = document.getElementById('theme-toggle-icon');
+    const label = document.getElementById('theme-toggle-label');
+    if (icon) {
+        icon.className = theme === 'dark' ? 'ti ti-sun me-2' : 'ti ti-moon me-2';
+    }
+    if (label) {
+        label.textContent = theme === 'dark' ? 'Tema chiaro' : 'Tema scuro';
+    }
+}
+
+/**
+ * Get current theme
+ */
+export function getCurrentTheme() {
+    return document.documentElement.getAttribute('data-bs-theme') || 'light';
+}
+
+/**
+ * Setup theme toggle in user dropdown
+ */
+function setupThemeToggle() {
+    const toggleBtn = document.getElementById('theme-toggle-btn');
+    if (!toggleBtn) return;
+
+    toggleBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const newTheme = getCurrentTheme() === 'dark' ? 'light' : 'dark';
+        applyTheme(newTheme);
+
+        // Save to user preferences
+        try {
+            const allPrefs = JSON.parse(currentUser.preferences || '{}');
+            allPrefs.theme = newTheme;
+            const prefsStr = JSON.stringify(allPrefs);
+            await apiPatch('/auth/me/preferences', { preferences: prefsStr });
+            currentUser.preferences = prefsStr;
+        } catch (err) {
+            console.error('Failed to save theme preference:', err);
+        }
+    });
 }
 
 /**

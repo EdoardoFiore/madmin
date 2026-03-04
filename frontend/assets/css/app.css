@@ -280,20 +280,207 @@
 /* == Dark Theme Support == */
 [data-bs-theme="dark"] {
     --madmin-bg-dark: #1a1f2c;
+    --tblr-body-bg: #1a1f2c;
+    --tblr-body-color: #edf2f7;
+    color: #edf2f7;
 }
 
 [data-bs-theme="dark"] .card {
-    background: #1e2433;
-    border-color: #2d3748;
+    background: #232a3b;
+    border-color: #2f3a4e;
 }
 
+[data-bs-theme="dark"] .card-header {
+    border-bottom-color: #2f3a4e;
+}
+
+/* Tables */
 [data-bs-theme="dark"] .firewall-table th {
-    background: #2d3748;
+    background: #2a3347;
+    color: #b0bec5;
+}
+
+[data-bs-theme="dark"] .firewall-table tr.disabled {
+    background: #1e2535;
+}
+
+[data-bs-theme="dark"] .table {
+    --tblr-table-bg: transparent;
+}
+
+/* Empty states */
+[data-bs-theme="dark"] .empty-state-icon {
+    color: #4a5568;
+}
+
+/* Loading overlay */
+[data-bs-theme="dark"] .loading-overlay {
+    background: rgba(26, 31, 44, 0.85);
+}
+
+/* Drag & drop */
+[data-bs-theme="dark"] .sortable-ghost {
+    background: #2a3347;
+}
+
+[data-bs-theme="dark"] .sortable-chosen {
+    background: #1e3a5f;
+}
+
+/* Modals */
+[data-bs-theme="dark"] .modal-content {
+    background: #232a3b;
+    border-color: #2f3a4e;
+}
+
+[data-bs-theme="dark"] .modal-header,
+[data-bs-theme="dark"] .modal-footer {
+    border-color: #2f3a4e;
+}
+
+/* Toast notifications */
+[data-bs-theme="dark"] .toast {
+    background: #232a3b;
+    border-color: #2f3a4e;
+    color: #e2e8f0;
+}
+
+[data-bs-theme="dark"] .toast-body {
+    color: #e2e8f0;
+}
+
+[data-bs-theme="dark"] .toast .btn-close {
+    filter: invert(1);
+}
+
+/* Nav tabs */
+[data-bs-theme="dark"] .nav-tabs {
+    border-bottom-color: #2f3a4e;
+}
+
+[data-bs-theme="dark"] .nav-tabs .nav-link {
     color: #a0aec0;
 }
 
-[data-bs-theme="dark"] .empty-state-icon {
-    color: #4a5568;
+[data-bs-theme="dark"] .nav-tabs .nav-link.active {
+    background: #232a3b;
+    border-color: #2f3a4e #2f3a4e #232a3b;
+    color: #e2e8f0;
+}
+
+/* Form controls */
+[data-bs-theme="dark"] .form-control,
+[data-bs-theme="dark"] .form-select {
+    background-color: #1a2033;
+    border-color: #2f3a4e;
+    color: #e2e8f0;
+}
+
+[data-bs-theme="dark"] .form-control:focus,
+[data-bs-theme="dark"] .form-select:focus {
+    border-color: var(--madmin-primary);
+}
+
+[data-bs-theme="dark"] .form-control::placeholder {
+    color: #6c7a8d;
+}
+
+/* Input groups */
+[data-bs-theme="dark"] .input-group-text {
+    background: #1e2535;
+    border-color: #2f3a4e;
+    color: #a0aec0;
+}
+
+/* Dropdown menus */
+[data-bs-theme="dark"] .dropdown-menu {
+    background: #232a3b;
+    border-color: #2f3a4e;
+}
+
+[data-bs-theme="dark"] .dropdown-item {
+    color: #e2e8f0;
+}
+
+[data-bs-theme="dark"] .dropdown-item:hover {
+    background: #2a3347;
+}
+
+[data-bs-theme="dark"] .dropdown-divider {
+    border-color: #2f3a4e;
+}
+
+/* List groups */
+[data-bs-theme="dark"] .list-group-item {
+    background: #232a3b;
+    border-color: #2f3a4e;
+    color: #e2e8f0;
+}
+
+/* Alerts inside dark theme */
+[data-bs-theme="dark"] .alert {
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Code / log containers with hardcoded bg */
+[data-bs-theme="dark"] [style*="background: #f8f9fa"],
+[data-bs-theme="dark"] [style*="background:#f8f9fa"] {
+    background: #1a2033 !important;
+    color: #a0aec0 !important;
+}
+
+/* Bootstrap bg-light / bg-white overrides */
+[data-bs-theme="dark"] .bg-light {
+    background-color: #1e2535 !important;
+}
+
+[data-bs-theme="dark"] .bg-white {
+    background-color: #232a3b !important;
+}
+
+/* Page header */
+[data-bs-theme="dark"] .page-header {
+    background: transparent;
+}
+
+/* Text helpers */
+[data-bs-theme="dark"] .text-muted {
+    color: #9dafc2 !important;
+}
+
+[data-bs-theme="dark"] .form-hint {
+    color: #8a9bb0;
+}
+
+[data-bs-theme="dark"] hr {
+    border-color: #2f3a4e;
+}
+
+/* ApexCharts in dark mode */
+[data-bs-theme="dark"] .apexcharts-text,
+[data-bs-theme="dark"] .apexcharts-xaxis-label,
+[data-bs-theme="dark"] .apexcharts-yaxis-label {
+    fill: #9dafc2 !important;
+}
+
+[data-bs-theme="dark"] .apexcharts-legend-text {
+    color: #c8d6e5 !important;
+}
+
+[data-bs-theme="dark"] .apexcharts-tooltip {
+    background: #232a3b !important;
+    border-color: #2f3a4e !important;
+    color: #edf2f7 !important;
+}
+
+[data-bs-theme="dark"] .apexcharts-tooltip-title {
+    background: #1e2535 !important;
+    border-color: #2f3a4e !important;
+    color: #edf2f7 !important;
+}
+
+[data-bs-theme="dark"] .apexcharts-gridline {
+    stroke: #2f3a4e;
 }
 
 /* == Responsive Adjustments == */
