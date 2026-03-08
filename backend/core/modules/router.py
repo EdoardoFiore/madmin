@@ -14,7 +14,7 @@ from sqlalchemy import select
 from pydantic import BaseModel
 
 from core.database import get_session
-from core.auth.dependencies import require_permission
+from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 from config import get_settings
 from .models import InstalledModule
@@ -47,6 +47,42 @@ async def get_menu_items(
     """Get all menu items from loaded modules for sidebar."""
     return module_loader.get_menu_items()
 
+
+@router.get("/widgets")
+async def get_module_widgets(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all dashboard widgets from active modules, filtered by user permissions."""
+    all_widgets = module_loader.get_dashboard_widgets()
+    
+    # Filter by user permissions
+    result = []
+    for w in all_widgets:
+        perm = w.get("permission")
+        if perm:
+            # Check if user has the required permission
+            if not (currentUser_is_super := currentUser_has_perm(current_user, perm)):
+                continue
+        result.append({
+            "module_id": w["module_id"],
+            "widget_id": w["widget_id"],
+            "title": w["title"],
+            "col": w["col"],
+        })
+    
+    return result
+
+
+def currentUser_has_perm(user: User, permission: str) -> bool:
+    """Check if user has a specific permission."""
+    if user.is_superuser:
+        return True
+    try:
+        import json
+        perms = json.loads(user.permissions) if isinstance(user.permissions, str) else user.permissions
+        return "*" in perms or permission in perms
+    except Exception:
+        return False
 
 @router.post("/{module_id}/activate")
 async def activate_module(

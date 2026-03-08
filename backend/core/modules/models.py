@@ -74,6 +74,14 @@ class ModuleConfigExport(SQLModel):
     post_restore: Optional[str] = None        # Hook to regenerate config from DB
 
 
+class ModuleDashboardWidget(SQLModel):
+    """Dashboard widget declared by a module."""
+    id: str                           # e.g. "active_clients" (prefixed with module_id at runtime)
+    title: str                        # e.g. "Client VPN Attivi"
+    col: int = 6                      # Bootstrap column width (6 = half, 12 = full)
+    permission: Optional[str] = None  # Permission required to see this widget
+
+
 class ModuleManifest(SQLModel):
     """
     Module manifest schema (manifest.json).
@@ -117,6 +125,9 @@ class ModuleManifest(SQLModel):
     
     # Config export settings (tables, irrecoverable files, post_restore hook)
     config_export: Optional[ModuleConfigExport] = None
+    
+    # Dashboard widgets this module provides
+    dashboard_widgets: List[ModuleDashboardWidget] = []
 
 
 

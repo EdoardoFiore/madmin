@@ -1,7 +1,7 @@
 {
     "id": "wireguard",
     "name": "WireGuard VPN",
-    "version": "1.3.3",
+    "version": "1.4.0",
     "description": "WireGuard VPN instance and client management with firewall groups and multi-instance support",
     "author": "MADMIN Team",
     "system_dependencies": {
@@ -79,5 +79,13 @@
         "irrecoverable_files": [],
         "post_restore": "hooks/post_restore.py"
     },
+    "dashboard_widgets": [
+        {
+            "id": "vpn_status",
+            "title": "WireGuard VPN",
+            "col": 6,
+            "permission": "wireguard.view"
+        }
+    ],
     "dependencies": []
 }

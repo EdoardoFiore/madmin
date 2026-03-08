@@ -1,7 +1,7 @@
 {
     "id": "dhcp",
     "name": "DHCP Server",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "description": "ISC DHCP server management with multi-interface subnets, pools, static reservations and live lease monitoring",
     "author": "MADMIN Team",
     "system_dependencies": {
@@ -53,5 +53,13 @@
         "irrecoverable_files": [],
         "post_restore": null
     },
+    "dashboard_widgets": [
+        {
+            "id": "server_status",
+            "title": "DHCP Server",
+            "col": 6,
+            "permission": "dhcp.view"
+        }
+    ],
     "dependencies": []
 }

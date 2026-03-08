@@ -1,7 +1,7 @@
 {
     "id": "openvpn",
     "name": "OpenVPN Manager",
-    "version": "1.1.2",
+    "version": "1.2.0",
     "description": "OpenVPN server and client management with PKI, certificate generation, and multi-instance support",
     "author": "MADMIN Team",
     "system_dependencies": {
@@ -82,5 +82,13 @@
         ],
         "post_restore": "hooks/post_restore.py"
     },
+    "dashboard_widgets": [
+        {
+            "id": "vpn_status",
+            "title": "OpenVPN",
+            "col": 6,
+            "permission": "openvpn.view"
+        }
+    ],
     "dependencies": []
 }

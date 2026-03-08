@@ -43,6 +43,48 @@ const CORE_WIDGETS = [
 // Build a lookup map for quick access
 const WIDGET_MAP = Object.fromEntries(CORE_WIDGETS.map(w => [w.id, w]));
 
+// Track loaded module widget IDs so we can include them in preferences
+let _moduleWidgetIds = [];
+
+/**
+ * Load module widgets from API and register them in WIDGET_MAP.
+ * Called once at dashboard startup.
+ */
+async function loadModuleWidgets() {
+    try {
+        const moduleWidgets = await apiGet('/modules/widgets');
+        if (!Array.isArray(moduleWidgets) || moduleWidgets.length === 0) return;
+
+        for (const mw of moduleWidgets) {
+            // Skip if already registered
+            if (WIDGET_MAP[mw.widget_id]) continue;
+
+            try {
+                // Dynamic import of the module's widgets.js
+                const mod = await import(`/static/modules/${mw.module_id}/views/widgets.js`);
+                const impl = mod.widgets?.[mw.widget_id];
+                if (impl) {
+                    const widget = {
+                        id: mw.widget_id,
+                        title: mw.title,
+                        col: mw.col || 6,
+                        fixed: false,
+                        render: impl.render,
+                        load: impl.load || null,
+                    };
+                    WIDGET_MAP[mw.widget_id] = widget;
+                    _moduleWidgetIds.push(mw.widget_id);
+                }
+            } catch (e) {
+                console.warn(`Module widget ${mw.widget_id} load error:`, e);
+            }
+        }
+    } catch (e) {
+        // Modules API not available or no modules — silently skip
+        console.debug('No module widgets available:', e.message);
+    }
+}
+
 
 // ============== WIDGET PREFERENCES ==============
 
@@ -68,20 +110,23 @@ async function loadWidgetPrefsFromServer() {
                     prefs.push(p);
                 }
             }
-            // Add any new widgets not yet in saved prefs
-            for (const w of CORE_WIDGETS) {
-                if (!seen.has(w.id)) {
-                    seen.add(w.id);
-                    prefs.push({ id: w.id, enabled: true });
+            // Add any new widgets not yet in saved prefs (core + module)
+            const allWidgetIds = [...CORE_WIDGETS.map(w => w.id), ..._moduleWidgetIds];
+            for (const wid of allWidgetIds) {
+                if (!seen.has(wid)) {
+                    seen.add(wid);
+                    prefs.push({ id: wid, enabled: true });
                 }
             }
             _widgetPrefsCache = prefs;
         } else {
-            _widgetPrefsCache = CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+            const allWidgetIds = [...CORE_WIDGETS.map(w => w.id), ..._moduleWidgetIds];
+            _widgetPrefsCache = allWidgetIds.map(id => ({ id, enabled: true }));
         }
     } catch (e) {
         console.error('Failed to load widget prefs from server:', e);
-        _widgetPrefsCache = CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+        const allWidgetIds = [...CORE_WIDGETS.map(w => w.id), ..._moduleWidgetIds];
+        _widgetPrefsCache = allWidgetIds.map(id => ({ id, enabled: true }));
     }
 }
 
@@ -90,7 +135,8 @@ async function loadWidgetPrefsFromServer() {
  */
 function getWidgetPrefs() {
     if (!_widgetPrefsCache) {
-        return CORE_WIDGETS.map(w => ({ id: w.id, enabled: true }));
+        const allWidgetIds = [...CORE_WIDGETS.map(w => w.id), ..._moduleWidgetIds];
+        return allWidgetIds.map(id => ({ id, enabled: true }));
     }
     return _widgetPrefsCache;
 }
@@ -141,6 +187,9 @@ function getOrderedWidgets() {
 // ============== MAIN RENDER ==============
 
 export async function render(container) {
+    // Load module widgets first (registers them in WIDGET_MAP)
+    await loadModuleWidgets();
+
     // Load prefs from server only on first render (when cache is empty)
     if (!_widgetPrefsCache) {
         await loadWidgetPrefsFromServer();

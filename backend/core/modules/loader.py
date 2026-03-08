@@ -365,6 +365,24 @@ class ModuleLoader:
                 })
         return items
     
+    def get_dashboard_widgets(self) -> List[Dict]:
+        """
+        Get all dashboard widgets from loaded modules.
+        Widget IDs are prefixed with module_id to avoid collisions.
+        """
+        widgets = []
+        for module_id, data in self.loaded_modules.items():
+            manifest: ModuleManifest = data["manifest"]
+            for widget in manifest.dashboard_widgets:
+                widgets.append({
+                    "module_id": module_id,
+                    "widget_id": f"{module_id}_{widget.id}",
+                    "title": widget.title,
+                    "col": widget.col,
+                    "permission": widget.permission,
+                })
+        return widgets
+    
     async def activate_module(
         self,
         session: AsyncSession,
