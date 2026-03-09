@@ -1597,6 +1597,14 @@ async function loadRemoteBackupHistory() {
     const tbody = document.getElementById('remote-backup-history-body');
     if (!tbody) return;
 
+    // Pre-flight check: avoid 400 Bad Request if remote is obviously not configured
+    const protocol = document.getElementById('backup-protocol')?.value;
+    const host = document.getElementById('backup-host')?.value;
+    if (!protocol || protocol === 'none' || !host) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Remote non configurato</td></tr>';
+        return;
+    }
+
     try {
         const history = await apiGet('/backup/remote/list');
 

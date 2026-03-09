@@ -51,13 +51,19 @@ EXCLUDED_PATTERNS: list = [
 DEFAULT_RETENTION_DAYS = 90
 
 
-def is_excluded(path: str) -> bool:
+def is_excluded(path: str, method: str = "GET") -> bool:
     """
-    Check if a path should be excluded from DB persistence.
+    Check if a request should be excluded from DB persistence.
     
-    Excluded paths are still logged to journalctl but not saved to the database.
-    Uses both exact match and pattern matching.
+    Write operations (POST, PUT, PATCH, DELETE) are NEVER excluded —
+    only GET requests to polling/navigation paths are skipped.
+    
+    Excluded requests are still logged to journalctl but not saved to the database.
     """
+    # Never exclude write operations
+    if method != "GET":
+        return False
+    
     # Strip query parameters for matching
     clean_path = path.split("?")[0]
     

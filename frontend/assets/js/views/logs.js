@@ -45,7 +45,7 @@ export async function render(container) {
 
     setupTabListeners();
 
-    // Load initial data
+    // Load user list for filter
     try {
         const usersData = await apiGet('/logs/audit/users');
         auditUsers = usersData.users || [];
@@ -65,7 +65,6 @@ function setupTabListeners() {
         const tab = e.target.closest('[data-tab]');
         if (!tab) return;
 
-        // Update active tab
         document.querySelectorAll('#logs-tabs .nav-link').forEach(l => l.classList.remove('active'));
         tab.classList.add('active');
 
@@ -86,68 +85,49 @@ async function renderAuditTab() {
     const content = document.getElementById('logs-tab-content');
     if (!content) return;
 
+    // Build user options
+    const userOptions = auditUsers.map(u =>
+        `<option value="${escapeHtml(u)}" ${auditFilters.user === u ? 'selected' : ''}>${escapeHtml(u)}</option>`
+    ).join('');
+
     content.innerHTML = `
         <div class="card-body border-bottom py-3">
-            <div class="row g-2 align-items-end">
-                <div class="col-md-3">
-                    <label class="form-label small mb-1">Ricerca path</label>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <div class="input-icon flex-grow-1" style="max-width: 250px;">
+                    <span class="input-icon-addon"><i class="ti ti-search"></i></span>
                     <input type="text" class="form-control form-control-sm" id="audit-search" 
-                           placeholder="es. /api/firewall" value="${escapeHtml(auditFilters.search)}">
+                           placeholder="Cerca nel percorso..." value="${escapeHtml(auditFilters.search)}">
                 </div>
-                <div class="col-md-2">
-                    <label class="form-label small mb-1">Utente</label>
-                    <select class="form-select form-select-sm" id="audit-user-filter">
-                        <option value="">Tutti</option>
-                        ${auditUsers.map(u => `<option value="${escapeHtml(u)}" ${auditFilters.user === u ? 'selected' : ''}>${escapeHtml(u)}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <label class="form-label small mb-1">Metodo</label>
-                    <select class="form-select form-select-sm" id="audit-method-filter">
-                        <option value="">Tutti</option>
-                        <option value="GET" ${auditFilters.method === 'GET' ? 'selected' : ''}>GET</option>
-                        <option value="POST" ${auditFilters.method === 'POST' ? 'selected' : ''}>POST</option>
-                        <option value="PUT" ${auditFilters.method === 'PUT' ? 'selected' : ''}>PUT</option>
-                        <option value="PATCH" ${auditFilters.method === 'PATCH' ? 'selected' : ''}>PATCH</option>
-                        <option value="DELETE" ${auditFilters.method === 'DELETE' ? 'selected' : ''}>DELETE</option>
-                    </select>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-check form-switch mb-0 mt-3">
-                        <input class="form-check-input" type="checkbox" id="audit-show-reads" 
-                               ${auditFilters.category === '' ? 'checked' : ''}>
-                        <span class="form-check-label">Mostra anche letture (GET)</span>
-                    </label>
-                </div>
-                <div class="col-md-2 text-end">
-                    <button class="btn btn-sm btn-primary" id="btn-audit-search">
-                        <i class="ti ti-search me-1"></i>Filtra
-                    </button>
-                    <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-refresh" title="Aggiorna">
-                        <i class="ti ti-refresh"></i>
-                    </button>
-                </div>
+                <select class="form-select form-select-sm w-auto" id="audit-user-filter">
+                    <option value="">Tutti gli utenti</option>
+                    ${userOptions}
+                </select>
+                <select class="form-select form-select-sm w-auto" id="audit-category-filter">
+                    <option value="write" ${auditFilters.category === 'write' ? 'selected' : ''}>Solo scritture</option>
+                    <option value="" ${auditFilters.category === '' ? 'selected' : ''}>Tutte le operazioni</option>
+                    <option value="read" ${auditFilters.category === 'read' ? 'selected' : ''}>Solo letture</option>
+                </select>
+                <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-refresh" title="Aggiorna">
+                    <i class="ti ti-refresh"></i>
+                </button>
             </div>
         </div>
         <div id="audit-table-container">
             <div class="card-body text-center py-4 text-muted">
-                <i class="ti ti-loader ti-spin" style="font-size: 2rem;"></i>
-                <p class="mt-2">Caricamento audit log...</p>
+                <div class="spinner-border spinner-border-sm me-2"></div>
+                Caricamento...
             </div>
         </div>
     `;
 
-    // Setup filter listeners
-    document.getElementById('btn-audit-search')?.addEventListener('click', applyAuditFilters);
-    document.getElementById('btn-audit-refresh')?.addEventListener('click', () => loadAuditData());
+    // Listeners
     document.getElementById('audit-search')?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') applyAuditFilters();
     });
-    document.getElementById('audit-show-reads')?.addEventListener('change', (e) => {
-        auditFilters.category = e.target.checked ? '' : 'write';
-        auditPage = 1;
-        loadAuditData();
-    });
+    document.getElementById('audit-search')?.addEventListener('change', applyAuditFilters);
+    document.getElementById('audit-user-filter')?.addEventListener('change', applyAuditFilters);
+    document.getElementById('audit-category-filter')?.addEventListener('change', applyAuditFilters);
+    document.getElementById('btn-audit-refresh')?.addEventListener('click', () => loadAuditData());
 
     await loadAuditData();
 }
@@ -155,7 +135,7 @@ async function renderAuditTab() {
 function applyAuditFilters() {
     auditFilters.search = document.getElementById('audit-search')?.value || '';
     auditFilters.user = document.getElementById('audit-user-filter')?.value || '';
-    auditFilters.method = document.getElementById('audit-method-filter')?.value || '';
+    auditFilters.category = document.getElementById('audit-category-filter')?.value ?? 'write';
     auditPage = 1;
     loadAuditData();
 }
@@ -165,13 +145,12 @@ async function loadAuditData() {
     if (!container) return;
 
     try {
-        // Build query params
         const params = new URLSearchParams();
         params.set('page', auditPage);
         params.set('per_page', '50');
-        if (auditFilters.category) params.set('category', auditFilters.category);
+        // Always send category — empty string = all
+        params.set('category', auditFilters.category);
         if (auditFilters.user) params.set('user', auditFilters.user);
-        if (auditFilters.method) params.set('method', auditFilters.method);
         if (auditFilters.search) params.set('search', auditFilters.search);
 
         const data = await apiGet(`/logs/audit?${params.toString()}`);
@@ -181,7 +160,7 @@ async function loadAuditData() {
             container.innerHTML = `
                 <div class="card-body text-center py-4 text-muted">
                     <i class="ti ti-list-search" style="font-size: 2rem;"></i>
-                    <p class="mt-2">Nessun log trovato con i filtri attuali</p>
+                    <p class="mt-2 mb-0">Nessun log trovato con i filtri attuali</p>
                 </div>
             `;
             return;
@@ -194,8 +173,7 @@ async function loadAuditData() {
                         <tr>
                             <th>Timestamp</th>
                             <th>Utente</th>
-                            <th>Metodo</th>
-                            <th>Percorso</th>
+                            <th>Richiesta</th>
                             <th>Status</th>
                             <th>Durata</th>
                             <th>IP</th>
@@ -209,7 +187,7 @@ async function loadAuditData() {
             ${renderPagination(data.page, data.pages, data.total)}
         `;
 
-        // Setup pagination listeners
+        // Pagination listeners
         container.querySelectorAll('[data-audit-page]').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -222,7 +200,7 @@ async function loadAuditData() {
         container.innerHTML = `
             <div class="card-body text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2">Errore caricamento log: ${escapeHtml(error.message)}</p>
+                <p class="mt-2 mb-0">Errore: ${escapeHtml(error.message)}</p>
             </div>
         `;
     }
@@ -241,37 +219,28 @@ function renderAuditRow(log) {
 
     const ts = new Date(log.timestamp);
     const timeStr = ts.toLocaleString('it-IT', {
-        day: '2-digit', month: '2-digit', year: 'numeric',
+        day: '2-digit', month: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
 
     return `
         <tr>
-            <td class="text-nowrap">
-                <small class="text-muted">${timeStr}</small>
-            </td>
+            <td class="text-nowrap text-muted" style="font-size: .8125rem;">${timeStr}</td>
+            <td><span class="badge bg-cyan-lt">${escapeHtml(log.username)}</span></td>
             <td>
-                <span class="badge bg-cyan-lt">${escapeHtml(log.username)}</span>
+                <span class="badge bg-${methodColor}-lt me-1">${log.method}</span>
+                <code title="${escapeHtml(log.path)}">${escapeHtml(truncatePath(log.path))}</code>
             </td>
-            <td>
-                <span class="badge bg-${methodColor}-lt">${log.method}</span>
-            </td>
-            <td>
-                <code class="text-truncate d-inline-block" style="max-width: 350px;" title="${escapeHtml(log.path)}">
-                    ${escapeHtml(log.path)}
-                </code>
-            </td>
-            <td>
-                <span class="badge bg-${statusColor}-lt">${log.status_code}</span>
-            </td>
-            <td class="text-nowrap">
-                <small class="text-muted">${log.duration_ms}ms</small>
-            </td>
-            <td>
-                <small class="text-muted">${escapeHtml(log.client_ip)}</small>
-            </td>
+            <td><span class="badge bg-${statusColor}-lt">${log.status_code}</span></td>
+            <td class="text-muted" style="font-size: .8125rem;">${log.duration_ms}ms</td>
+            <td class="text-muted" style="font-size: .8125rem;">${escapeHtml(log.client_ip)}</td>
         </tr>
     `;
+}
+
+function truncatePath(path) {
+    if (path.length <= 50) return path;
+    return path.substring(0, 47) + '...';
 }
 
 function renderPagination(currentPage, totalPages, totalItems) {
@@ -287,34 +256,27 @@ function renderPagination(currentPage, totalPages, totalItems) {
 
     if (start > 1) {
         pages += `<li class="page-item"><a class="page-link" href="#" data-audit-page="1">1</a></li>`;
-        if (start > 2) pages += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        if (start > 2) pages += `<li class="page-item disabled"><span class="page-link">…</span></li>`;
     }
-
     for (let i = start; i <= end; i++) {
         pages += `<li class="page-item ${i === currentPage ? 'active' : ''}">
-            <a class="page-link" href="#" data-audit-page="${i}">${i}</a>
-        </li>`;
+            <a class="page-link" href="#" data-audit-page="${i}">${i}</a></li>`;
     }
-
     if (end < totalPages) {
-        if (end < totalPages - 1) pages += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        if (end < totalPages - 1) pages += `<li class="page-item disabled"><span class="page-link">…</span></li>`;
         pages += `<li class="page-item"><a class="page-link" href="#" data-audit-page="${totalPages}">${totalPages}</a></li>`;
     }
 
     return `
         <div class="card-footer d-flex align-items-center justify-content-between">
-            <small class="text-muted">${totalItems} risultati — Pagina ${currentPage} di ${totalPages}</small>
-            <ul class="pagination m-0">
+            <small class="text-muted">Pagina ${currentPage} di ${totalPages} (${totalItems} totali)</small>
+            <ul class="pagination m-0 ms-auto">
                 <li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
-                    <a class="page-link" href="#" data-audit-page="${currentPage - 1}" tabindex="-1">
-                        <i class="ti ti-chevron-left"></i>
-                    </a>
+                    <a class="page-link" href="#" data-audit-page="${currentPage - 1}"><i class="ti ti-chevron-left"></i></a>
                 </li>
                 ${pages}
                 <li class="page-item ${currentPage >= totalPages ? 'disabled' : ''}">
-                    <a class="page-link" href="#" data-audit-page="${currentPage + 1}">
-                        <i class="ti ti-chevron-right"></i>
-                    </a>
+                    <a class="page-link" href="#" data-audit-page="${currentPage + 1}"><i class="ti ti-chevron-right"></i></a>
                 </li>
             </ul>
         </div>
@@ -332,41 +294,32 @@ async function renderSystemTab() {
 
     content.innerHTML = `
         <div class="card-body border-bottom py-3">
-            <div class="row g-2 align-items-end">
-                <div class="col-md-3">
-                    <label class="form-label small mb-1">Righe</label>
-                    <select class="form-select form-select-sm" id="syslog-lines">
-                        <option value="100">100</option>
-                        <option value="200" selected>200</option>
-                        <option value="500">500</option>
-                        <option value="1000">1000</option>
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label small mb-1">Ricerca (grep)</label>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <select class="form-select form-select-sm w-auto" id="syslog-lines">
+                    <option value="100">100 righe</option>
+                    <option value="200" selected>200 righe</option>
+                    <option value="500">500 righe</option>
+                    <option value="1000">1000 righe</option>
+                </select>
+                <div class="input-icon flex-grow-1" style="max-width: 300px;">
+                    <span class="input-icon-addon"><i class="ti ti-search"></i></span>
                     <input type="text" class="form-control form-control-sm" id="syslog-search" 
-                           placeholder="Filtra righe...">
+                           placeholder="Filtra (grep)...">
                 </div>
-                <div class="col-md-5 text-end">
-                    <button class="btn btn-sm btn-primary" id="btn-syslog-load">
-                        <i class="ti ti-search me-1"></i>Carica
-                    </button>
-                    <button class="btn btn-sm btn-ghost-secondary" id="btn-syslog-refresh" title="Aggiorna">
-                        <i class="ti ti-refresh"></i>
-                    </button>
-                </div>
+                <button class="btn btn-sm btn-primary" id="btn-syslog-load">
+                    <i class="ti ti-refresh me-1"></i>Carica
+                </button>
             </div>
         </div>
         <div id="syslog-container">
             <div class="card-body text-center py-4 text-muted">
-                <i class="ti ti-loader ti-spin" style="font-size: 2rem;"></i>
-                <p class="mt-2">Caricamento system log...</p>
+                <div class="spinner-border spinner-border-sm me-2"></div>
+                Caricamento...
             </div>
         </div>
     `;
 
     document.getElementById('btn-syslog-load')?.addEventListener('click', loadSystemLog);
-    document.getElementById('btn-syslog-refresh')?.addEventListener('click', loadSystemLog);
     document.getElementById('syslog-search')?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') loadSystemLog();
     });
@@ -393,18 +346,24 @@ async function loadSystemLog() {
             container.innerHTML = `
                 <div class="card-body text-center py-4 text-muted">
                     <i class="ti ti-file-off" style="font-size: 2rem;"></i>
-                    <p class="mt-2">Nessun log trovato</p>
+                    <p class="mt-2 mb-0">Nessun log trovato</p>
                 </div>
             `;
             return;
         }
 
+        // Use a dark background for the terminal-like viewer regardless of theme
         container.innerHTML = `
             <div class="card-body p-0">
-                <pre class="p-3 mb-0" style="max-height: 600px; overflow-y: auto; font-size: 0.78rem; line-height: 1.5; background: var(--tblr-bg-surface-secondary, #f4f6fa);" id="syslog-output">${logLines.map(formatSystemLogLine).join('\n')}</pre>
+                <pre id="syslog-output" style="
+                    max-height: 600px; overflow-y: auto; margin: 0; padding: 1rem;
+                    font-size: 0.75rem; line-height: 1.6;
+                    background: #1e293b; color: #c8d3e0;
+                    border-radius: 0;
+                ">${logLines.map(formatSystemLogLine).join('\n')}</pre>
             </div>
             <div class="card-footer">
-                <small class="text-muted">${logLines.length} righe — journalctl -u madmin</small>
+                <small class="text-muted">${logLines.length} righe — <code>journalctl -u madmin</code></small>
             </div>
         `;
 
@@ -416,7 +375,7 @@ async function loadSystemLog() {
         container.innerHTML = `
             <div class="card-body text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2">Errore caricamento log: ${escapeHtml(error.message)}</p>
+                <p class="mt-2 mb-0">Errore: ${escapeHtml(error.message)}</p>
             </div>
         `;
     }
@@ -425,16 +384,23 @@ async function loadSystemLog() {
 function formatSystemLogLine(line) {
     const escaped = escapeHtml(line);
 
-    // Highlight based on log level
-    if (/\bERROR\b/i.test(line) || /\bCRITICAL\b/i.test(line)) {
-        return `<span style="color: var(--tblr-red, #d63939);">${escaped}</span>`;
+    // Error / Critical → red
+    if (/\bERROR\b/i.test(line) || /\bCRITICAL\b/i.test(line) || /\bTraceback\b/.test(line)) {
+        return `<span style="color:#f87171">${escaped}</span>`;
     }
+    // Warning → amber
     if (/\bWARNING\b/i.test(line) || /\bWARN\b/i.test(line)) {
-        return `<span style="color: var(--tblr-yellow, #f59f00);">${escaped}</span>`;
+        return `<span style="color:#fbbf24">${escaped}</span>`;
     }
+    // Audit lines → cyan
     if (/\bAUDIT\b/.test(line)) {
-        return `<span style="color: var(--tblr-cyan, #17a2b8);">${escaped}</span>`;
+        return `<span style="color:#67e8f9">${escaped}</span>`;
+    }
+    // Uvicorn access log (INFO: IP - "METHOD /path") → dimmed
+    if (/^INFO:\s+\d/.test(line)) {
+        return `<span style="color:#64748b">${escaped}</span>`;
     }
 
+    // Default → light gray (visible on dark bg)
     return escaped;
 }
