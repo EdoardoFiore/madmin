@@ -162,4 +162,5 @@ CORE_PERMISSIONS = [
     {"slug": "modules.manage", "description": "Install, remove, configure modules"},
     {"slug": "backup.create", "description": "Create system backups"},
     {"slug": "backup.restore", "description": "Restore system from backup"},
+    {"slug": "logs.view", "description": "View audit logs and system logs"},
 ]

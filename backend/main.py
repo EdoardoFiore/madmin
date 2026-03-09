@@ -182,6 +182,26 @@ async def lifespan(app: FastAPI):
     backup_task = asyncio.create_task(scheduled_backup_task())
     logger.info("Scheduled backup task started")
     
+    # Start audit log cleanup task
+    from core.audit.service import cleanup_old_logs
+    
+    audit_cleanup_running = True
+    
+    async def audit_cleanup_task():
+        """Background task to clean up old audit log entries (runs every 24h)."""
+        while audit_cleanup_running:
+            try:
+                await asyncio.sleep(86400)  # Wait 24 hours
+                async with async_session_maker() as session:
+                    await cleanup_old_logs(session)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Audit log cleanup error: {e}")
+    
+    audit_task = asyncio.create_task(audit_cleanup_task())
+    logger.info("Audit log cleanup task started (every 24h)")
+    
     logger.info("MADMIN ready!")
     
     yield
@@ -190,14 +210,20 @@ async def lifespan(app: FastAPI):
     logger.info("MADMIN shutting down...")
     stats_task_running = False
     backup_task_running = False
+    audit_cleanup_running = False
     stats_task.cancel()
     backup_task.cancel()
+    audit_task.cancel()
     try:
         await stats_task
     except asyncio.CancelledError:
         pass
     try:
         await backup_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await audit_task
     except asyncio.CancelledError:
         pass
 
@@ -223,6 +249,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     
+    # Audit log middleware (logs API calls with user identity)
+    from core.audit.middleware import AuditLogMiddleware
+    app.add_middleware(AuditLogMiddleware)
+    
     # Register core routers
     from core.auth.router import router as auth_router
     from core.firewall.router import router as firewall_router
@@ -234,6 +264,7 @@ def create_app() -> FastAPI:
     from core.services.router import router as services_router
     from core.network.router import router as network_router
     from core.cron.router import router as cron_router
+    from core.audit.router import router as audit_router
     
     app.include_router(auth_router)
     app.include_router(firewall_router)
@@ -245,6 +276,7 @@ def create_app() -> FastAPI:
     app.include_router(services_router)
     app.include_router(network_router)
     app.include_router(cron_router)
+    app.include_router(audit_router)
     
     # UI Router for frontend
     @app.get("/api/ui/menu")
@@ -260,6 +292,7 @@ def create_app() -> FastAPI:
             {"label": "Firewall Macchina", "icon": "shield", "route": "#firewall", "permission": "firewall.view"},
             {"label": "Rete", "icon": "network", "route": "#network", "permission": "network.view"},
             {"label": "Crontab", "icon": "clock", "route": "#crontab", "permission": "settings.view"},
+            {"label": "Logs", "icon": "file-text", "route": "#logs", "permission": "logs.view"},
             {"label": "Impostazioni", "icon": "settings", "route": "#settings", "permission": "settings.view"},
             {"label": "Moduli", "icon": "puzzle", "route": "#modules", "permission": "modules.view"},
         ]

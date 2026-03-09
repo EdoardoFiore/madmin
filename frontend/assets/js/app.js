@@ -17,6 +17,7 @@ const views = {
     'crontab': () => import('./views/crontab.js'),
     'settings': () => import('./views/settings.js'),
     'modules': () => import('./views/modules.js'),
+    'logs': () => import('./views/logs.js'),
 };
 
 // Current user data
@@ -598,6 +599,7 @@ function getViewTitle(viewName) {
         'crontab': 'Gestione Crontab',
         'settings': 'Impostazioni',
         'modules': 'Gestione Moduli',
+        'logs': 'Logs',
     };
     return titles[viewName] || viewName.charAt(0).toUpperCase() + viewName.slice(1);
 }
