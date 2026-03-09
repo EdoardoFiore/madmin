@@ -58,49 +58,97 @@ def _get_client_ip(request: Request) -> str:
     )
 class AuditLogMiddleware(BaseHTTPMiddleware):
     """
-    Middleware that logs API calls with user identity.
-
+    Middleware that logs API calls with user identity and payload.
+    
     - Always logs to Python logger (visible in journalctl)
     - Persists non-excluded paths to the audit_log DB table
+    - Captures, sanitizes and logs the JSON request body for write operations
     """
-
+    
     async def dispatch(self, request: Request, call_next) -> Response:
         # Only intercept /api/ routes
         path = request.url.path
         if not path.startswith("/api/"):
             return await call_next(request)
-
-        # Extract info before processing
+        
         method = request.method
         username = _extract_username(request)
         client_ip = _get_client_ip(request)
+        
+        # --- Body Extraction (only for writes) ---
+        body_text = None
+        if method in ["POST", "PUT", "PATCH", "DELETE"]:
+            content_type = request.headers.get("content-type", "")
+            
+            # Skip forms/file uploads to save memory and avoid logging binary data
+            if "multipart/form-data" not in content_type:
+                try:
+                    # Read the body
+                    body_bytes = await request.body()
+                    
+                    # Restore the body so the route handler can read it again!
+                    async def receive():
+                        return {"type": "http.request", "body": body_bytes}
+                    request._receive = receive
+                    
+                    if body_bytes:
+                        # Truncate if too large (> 50KB) to prevent blowing up DB
+                        if len(body_bytes) > 50000:
+                            body_text = "<Payload troppo grande per il log>"
+                        else:
+                            text = body_bytes.decode("utf-8")
+                            # Simple sanitization based on common JSON keys
+                            if "application/json" in content_type:
+                                import json
+                                try:
+                                    data = json.loads(text)
+                                    # Sanitize sensitive fields automatically
+                                    def sanitize_dict(d):
+                                        for k, v in d.items():
+                                            if isinstance(v, dict):
+                                                sanitize_dict(v)
+                                            elif isinstance(k, str) and any(s in k.lower() for s in ["password", "secret", "key", "token"]):
+                                                d[k] = "***"
+                                    
+                                    if isinstance(data, dict):
+                                        sanitize_dict(data)
+                                        body_text = json.dumps(data)
+                                    else:
+                                        body_text = text
+                                except json.JSONDecodeError:
+                                    body_text = text
+                            else:
+                                body_text = text
+                except Exception as e:
+                    logger.warning(f"Failed to read/sanitize request body: {e}")
+                    body_text = "<Errore lettura payload>"
 
         # Time the request
         start_time = time.time()
         response = await call_next(request)
         duration_ms = int((time.time() - start_time) * 1000)
-
+        
         status_code = response.status_code
-
+        
         from .service import is_excluded
-
+        
         excluded = is_excluded(path, method)
-
+        
         # Only log to Python logger and DB if not excluded
         if not excluded:
             logger.info(
                 f"AUDIT | user={username} | {method} {path} | {status_code} | {duration_ms}ms | ip={client_ip}"
             )
-
+            
             try:
                 from core.database import async_session_maker
                 from .models import AuditLog
-
+                
                 category = "read" if method == "GET" else "write"
-
+                
                 # Strip query params from stored path
                 clean_path = path.split("?")[0]
-
+                
                 audit_entry = AuditLog(
                     username=username,
                     method=method,
@@ -109,6 +157,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     duration_ms=duration_ms,
                     client_ip=client_ip,
                     category=category,
+                    request_body=body_text,
                 )
 
                 async with async_session_maker() as session:

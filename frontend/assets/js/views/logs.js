@@ -223,6 +223,19 @@ function renderAuditRow(log) {
         hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
 
+    let payloadHtml = '';
+    if (log.request_body) {
+        // Store payload in a global map or simply pass it escaped. To avoid escaping quotes in HTML, we'll store it on window.
+        window._auditPayloads = window._auditPayloads || {};
+        window._auditPayloads[log.id] = log.request_body;
+
+        payloadHtml = `
+            <button class="btn btn-icon btn-sm btn-ghost-primary ms-1" onclick="showAuditPayload('${log.id}')" title="Vedi payload">
+                <i class="ti ti-eye"></i>
+            </button>
+        `;
+    }
+
     return `
         <tr>
             <td class="text-nowrap text-muted" style="font-size: .8125rem;">${timeStr}</td>
@@ -230,6 +243,7 @@ function renderAuditRow(log) {
             <td>
                 <span class="badge bg-${methodColor}-lt me-1">${log.method}</span>
                 <code title="${escapeHtml(log.path)}">${escapeHtml(truncatePath(log.path))}</code>
+                ${payloadHtml}
             </td>
             <td><span class="badge bg-${statusColor}-lt">${log.status_code}</span></td>
             <td class="text-muted" style="font-size: .8125rem;">${log.duration_ms}ms</td>
@@ -237,6 +251,38 @@ function renderAuditRow(log) {
         </tr>
     `;
 }
+
+window.showAuditPayload = function (logId) {
+    const payload = window._auditPayloads && window._auditPayloads[logId];
+    if (!payload) return;
+
+    let formattedHtml = escapeHtml(payload);
+    try {
+        const parsed = JSON.parse(payload);
+        formattedHtml = escapeHtml(JSON.stringify(parsed, null, 2));
+    } catch (e) { }
+
+    const modalHtml = `
+        <div class="modal fade" id="modal-audit-payload" tabindex="-1">
+            <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="ti ti-code me-2"></i>Payload Richiesta</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body p-0">
+                        <pre style="margin:0; padding:1.5rem; background: #1e293b; color: #c8d3e0; border-radius: 0 0 4px 4px;"><code>${formattedHtml}</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('modal-audit-payload')?.remove();
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modal = new bootstrap.Modal(document.getElementById('modal-audit-payload'));
+    modal.show();
+};
 
 function truncatePath(path) {
     if (path.length <= 50) return path;

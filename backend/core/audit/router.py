@@ -79,6 +79,7 @@ async def list_audit_logs(
                 "duration_ms": log.duration_ms,
                 "client_ip": log.client_ip,
                 "category": log.category,
+                "request_body": log.request_body,
             }
             for log in logs
         ],

@@ -108,7 +108,10 @@ async def query_audit_logs(
     if category:
         conditions.append(AuditLog.category == category)
     if search:
-        conditions.append(AuditLog.path.ilike(f"%{search}%"))
+        conditions.append(or_(
+            AuditLog.path.ilike(f"%{search}%"),
+            AuditLog.request_body.ilike(f"%{search}%")
+        ))
     if from_date:
         conditions.append(AuditLog.timestamp >= from_date)
     if to_date:
