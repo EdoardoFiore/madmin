@@ -6,11 +6,14 @@ Starlette middleware that intercepts API requests and logs:
 - What (method + path)
 - Result (status code + duration)
 - Where from (client IP)
+- Request payload (sanitized, with privacy-sensitive fields masked)
+- Response error detail (for 4xx/5xx)
 
-Logs are always written to Python logger (→ journalctl).
-Non-excluded paths are also persisted to the audit_log database table.
+Non-excluded paths are persisted to the audit_log database table.
+Journal logging is kept to DEBUG level to avoid polluting journalctl.
 """
 import time
+import json
 import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -23,6 +26,46 @@ logger = logging.getLogger("madmin.audit")
 
 # JWT algorithm (same as core.auth.service)
 ALGORITHM = "HS256"
+
+# --- Privacy Sanitization ---
+# Fields whose values should be masked in audit logs.
+# Uses substring matching on key names (case-insensitive).
+SENSITIVE_KEY_PATTERNS = [
+    "password",
+    "secret",
+    "token",
+    "key",           # catches private_key, preshared_key, api_key, etc.
+    "psk",
+    "passphrase",
+    "credential",
+    "ta_key",
+    "tls_auth",
+    "cert_data",
+]
+
+MASK_VALUE = "***"
+
+
+def _sanitize_value(key: str, value) -> object:
+    """
+    Mask the value if the key matches any sensitive pattern.
+    Recurse into dicts and lists.
+    """
+    if isinstance(value, dict):
+        return _sanitize_dict(value)
+    if isinstance(value, list):
+        return [_sanitize_value(key, item) for item in value]
+    if isinstance(key, str):
+        key_lower = key.lower()
+        for pattern in SENSITIVE_KEY_PATTERNS:
+            if pattern in key_lower:
+                return MASK_VALUE
+    return value
+
+
+def _sanitize_dict(d: dict) -> dict:
+    """Recursively sanitize all sensitive fields in a dictionary."""
+    return {k: _sanitize_value(k, v) for k, v in d.items()}
 
 
 def _extract_username(request: Request) -> str:
@@ -56,99 +99,220 @@ def _get_client_ip(request: Request) -> str:
         or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
         or (request.client.host if request.client else "unknown")
     )
+
+
+def _is_empty_body(text: str | None) -> bool:
+    """Check if a body string is empty or contains only an empty JSON object/array."""
+    if not text:
+        return True
+    stripped = text.strip()
+    return stripped in ("", "{}", "[]", "null")
+
+
+def _extract_path_context(path: str, method: str) -> str | None:
+    """
+    For requests without a body (especially DELETE), extract meaningful
+    context from path parameters.
+
+    Example: /api/auth/users/admin → {"_path_context": "admin", "_resource": "users"}
+    """
+    if method not in ("DELETE", "POST", "PUT", "PATCH"):
+        return None
+
+    # Split path into segments, removing empty strings
+    segments = [s for s in path.split("/") if s and s != "api"]
+    if len(segments) < 2:
+        return None
+
+    # The last segment is typically the resource ID/name
+    resource_id = segments[-1]
+    resource_type = segments[-2] if len(segments) >= 2 else None
+
+    # Don't extract if the last segment looks like an action verb
+    action_keywords = {"activate", "deactivate", "restart", "start", "stop",
+                       "enable", "disable", "apply", "test", "export", "import",
+                       "run", "setup", "cleanup", "renew", "download", "status",
+                       "config", "widgets", "traffic"}
+    if resource_id.lower() in action_keywords:
+        return None
+
+    context = {"_path_context": resource_id}
+    if resource_type:
+        context["_resource"] = resource_type
+
+    return json.dumps(context)
+
+
+def _extract_query_params(request: Request) -> str | None:
+    """
+    Extract query parameters as JSON for GET requests.
+    Filters out common pagination params to reduce noise.
+    """
+    params = dict(request.query_params)
+    if not params:
+        return None
+
+    # Remove pagination/noise params
+    noise_keys = {"page", "per_page", "limit", "offset", "_"}
+    filtered = {k: v for k, v in params.items() if k not in noise_keys}
+    if not filtered:
+        return None
+
+    return json.dumps({"_query_params": filtered})
+
+
 class AuditLogMiddleware(BaseHTTPMiddleware):
     """
     Middleware that logs API calls with user identity and payload.
-    
-    - Always logs to Python logger (visible in journalctl)
+
     - Persists non-excluded paths to the audit_log DB table
     - Captures, sanitizes and logs the JSON request body for write operations
+    - Captures query params for GET requests
+    - Extracts path context for DELETE requests without body
+    - Captures response error details for 4xx/5xx
+    - Masks privacy-sensitive fields (passwords, keys, PSKs, etc.)
+    - Journal logging kept to DEBUG to avoid noise
     """
-    
+
     async def dispatch(self, request: Request, call_next) -> Response:
         # Only intercept /api/ routes
         path = request.url.path
         if not path.startswith("/api/"):
             return await call_next(request)
-        
+
         method = request.method
         username = _extract_username(request)
         client_ip = _get_client_ip(request)
-        
+
         # --- Body Extraction (only for writes) ---
         body_text = None
-        if method in ["POST", "PUT", "PATCH", "DELETE"]:
+        if method in ("POST", "PUT", "PATCH", "DELETE"):
             content_type = request.headers.get("content-type", "")
-            
+
             # Skip forms/file uploads to save memory and avoid logging binary data
             if "multipart/form-data" not in content_type:
                 try:
                     # Read the body
                     body_bytes = await request.body()
-                    
+
                     # Restore the body so the route handler can read it again!
                     async def receive():
                         return {"type": "http.request", "body": body_bytes}
                     request._receive = receive
-                    
+
                     if body_bytes:
                         # Truncate if too large (> 50KB) to prevent blowing up DB
                         if len(body_bytes) > 50000:
                             body_text = "<Payload troppo grande per il log>"
                         else:
                             text = body_bytes.decode("utf-8")
-                            # Simple sanitization based on common JSON keys
+                            # Parse and sanitize JSON
                             if "application/json" in content_type:
-                                import json
                                 try:
                                     data = json.loads(text)
-                                    # Sanitize sensitive fields automatically
-                                    def sanitize_dict(d):
-                                        for k, v in d.items():
-                                            if isinstance(v, dict):
-                                                sanitize_dict(v)
-                                            elif isinstance(k, str) and any(s in k.lower() for s in ["password", "secret", "key", "token"]):
-                                                d[k] = "***"
-                                    
                                     if isinstance(data, dict):
-                                        sanitize_dict(data)
+                                        data = _sanitize_dict(data)
                                         body_text = json.dumps(data)
+                                    elif isinstance(data, list):
+                                        body_text = json.dumps([
+                                            _sanitize_dict(item) if isinstance(item, dict) else item
+                                            for item in data
+                                        ])
                                     else:
                                         body_text = text
                                 except json.JSONDecodeError:
                                     body_text = text
+                            elif "application/x-www-form-urlencoded" in content_type:
+                                # Parse form data (e.g. OAuth2 login: username=x&password=y)
+                                from urllib.parse import parse_qs
+                                try:
+                                    form_data = parse_qs(text, keep_blank_values=True)
+                                    # parse_qs returns lists, flatten single values
+                                    flat = {k: v[0] if len(v) == 1 else v for k, v in form_data.items()}
+                                    flat = _sanitize_dict(flat)
+                                    body_text = json.dumps(flat)
+                                except Exception:
+                                    body_text = "<Form data non parsabile>"
                             else:
                                 body_text = text
                 except Exception as e:
                     logger.warning(f"Failed to read/sanitize request body: {e}")
                     body_text = "<Errore lettura payload>"
 
+        # Filter out empty/meaningless bodies
+        if _is_empty_body(body_text):
+            body_text = None
+
+        # For requests without body, try to extract context from path
+        if body_text is None and method in ("DELETE", "POST", "PUT", "PATCH"):
+            body_text = _extract_path_context(path, method)
+
+        # For GET requests, capture meaningful query params
+        if method == "GET":
+            body_text = _extract_query_params(request)
+
         # Time the request
         start_time = time.time()
         response = await call_next(request)
         duration_ms = int((time.time() - start_time) * 1000)
-        
+
         status_code = response.status_code
-        
+
         from .service import is_excluded
-        
+
         excluded = is_excluded(path, method)
-        
-        # Only log to Python logger and DB if not excluded
+
+        # Only persist to DB if not excluded
         if not excluded:
-            logger.info(
+            # Capture response error detail for 4xx/5xx
+            response_summary = None
+            if status_code >= 400:
+                try:
+                    # Read response body to capture error detail
+                    response_body_parts = []
+                    async for chunk in response.body_iterator:
+                        if isinstance(chunk, bytes):
+                            response_body_parts.append(chunk)
+                        else:
+                            response_body_parts.append(chunk.encode("utf-8"))
+                    
+                    response_bytes = b"".join(response_body_parts)
+                    
+                    # Rebuild the response iterator so the client still receives the data
+                    async def response_body_gen():
+                        yield response_bytes
+                    response.body_iterator = response_body_gen()
+                    
+                    # Parse error detail
+                    try:
+                        error_data = json.loads(response_bytes.decode("utf-8"))
+                        detail = error_data.get("detail", "")
+                        if isinstance(detail, str):
+                            response_summary = detail[:500]
+                        elif isinstance(detail, list):
+                            # Validation errors come as list
+                            response_summary = json.dumps(detail)[:500]
+                        else:
+                            response_summary = str(detail)[:500]
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        response_summary = response_bytes.decode("utf-8", errors="replace")[:500]
+                except Exception as e:
+                    logger.debug(f"Failed to capture response error detail: {e}")
+
+            # DEBUG log only — no more AUDIT noise in journal
+            logger.debug(
                 f"AUDIT | user={username} | {method} {path} | {status_code} | {duration_ms}ms | ip={client_ip}"
             )
-            
+
             try:
                 from core.database import async_session_maker
                 from .models import AuditLog
-                
+
                 category = "read" if method == "GET" else "write"
-                
+
                 # Strip query params from stored path
                 clean_path = path.split("?")[0]
-                
+
                 audit_entry = AuditLog(
                     username=username,
                     method=method,
@@ -158,6 +322,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     client_ip=client_ip,
                     category=category,
                     request_body=body_text,
+                    response_summary=response_summary,
                 )
 
                 async with async_session_maker() as session:

@@ -28,3 +28,4 @@ class AuditLog(SQLModel, table=True):
     client_ip: str = Field(max_length=45, default="")  # IPv4 or IPv6
     category: str = Field(max_length=10, index=True, default="read")  # "write" or "read"
     request_body: Optional[str] = Field(default=None)  # JSON stringified payload or truncated text
+    response_summary: Optional[str] = Field(default=None, max_length=500)  # Error detail for 4xx/5xx responses

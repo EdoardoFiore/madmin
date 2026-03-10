@@ -3,10 +3,13 @@ MADMIN Audit Log Router
 
 API endpoints for viewing audit logs and system logs.
 """
+import csv
+import io
 import math
 from typing import Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, Query
+from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_session
@@ -80,6 +83,7 @@ async def list_audit_logs(
                 "client_ip": log.client_ip,
                 "category": log.category,
                 "request_body": log.request_body,
+                "response_summary": log.response_summary,
             }
             for log in logs
         ],
@@ -98,6 +102,87 @@ async def list_audit_users(
     """Get distinct usernames from audit log for filter dropdown."""
     users = await get_distinct_users(session)
     return {"users": users}
+
+
+@router.get("/audit/export")
+async def export_audit_csv(
+    user: Optional[str] = Query(default=None),
+    method: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    from_date: Optional[str] = Query(default=None),
+    to_date: Optional[str] = Query(default=None),
+    current_user: User = Depends(require_permission("logs.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Export audit logs as CSV file.
+    
+    Supports same filters as /audit endpoint.
+    No pagination — returns all matching rows (max 10,000).
+    """
+    parsed_from = None
+    parsed_to = None
+    if from_date:
+        try:
+            parsed_from = datetime.fromisoformat(from_date)
+        except ValueError:
+            pass
+    if to_date:
+        try:
+            parsed_to = datetime.fromisoformat(to_date)
+        except ValueError:
+            pass
+    
+    if category == "":
+        category = None
+    
+    logs, _total = await query_audit_logs(
+        session,
+        page=1,
+        per_page=10000,
+        username=user,
+        method=method,
+        category=category,
+        search=search,
+        from_date=parsed_from,
+        to_date=parsed_to,
+    )
+    
+    # Generate CSV in memory
+    output = io.StringIO()
+    # UTF-8 BOM for Excel compatibility
+    output.write("\ufeff")
+    
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow([
+        "Timestamp", "Utente", "Metodo", "Path", "Status",
+        "Durata (ms)", "IP Client", "Categoria", "Payload", "Dettaglio Errore"
+    ])
+    
+    for log in logs:
+        writer.writerow([
+            log.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            log.username,
+            log.method,
+            log.path,
+            log.status_code,
+            log.duration_ms,
+            log.client_ip,
+            log.category,
+            log.request_body or "",
+            log.response_summary or "",
+        ])
+    
+    output.seek(0)
+    
+    filename = f"audit_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/system")

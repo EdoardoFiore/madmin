@@ -12,7 +12,7 @@ import { showToast, escapeHtml } from '../utils.js';
 // State
 let currentTab = 'audit';
 let auditPage = 1;
-let auditFilters = { category: 'write', user: '', method: '', search: '' };
+let auditFilters = { category: 'write', user: '', method: '', search: '', from_date: '', to_date: '' };
 let auditUsers = [];
 
 /**
@@ -107,6 +107,17 @@ async function renderAuditTab() {
                     <option value="" ${auditFilters.category === '' ? 'selected' : ''}>Tutte le operazioni</option>
                     <option value="read" ${auditFilters.category === 'read' ? 'selected' : ''}>Solo letture</option>
                 </select>
+                <div class="d-flex align-items-center gap-1">
+                    <span class="text-muted" style="font-size: .75rem;">Da</span>
+                    <input type="date" class="form-control form-control-sm" id="audit-from-date" 
+                           value="${auditFilters.from_date}" style="width: 130px;">
+                    <span class="text-muted" style="font-size: .75rem;">A</span>
+                    <input type="date" class="form-control form-control-sm" id="audit-to-date"
+                           value="${auditFilters.to_date}" style="width: 130px;">
+                </div>
+                <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-export" title="Esporta CSV">
+                    <i class="ti ti-download"></i>
+                </button>
                 <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-refresh" title="Aggiorna">
                     <i class="ti ti-refresh"></i>
                 </button>
@@ -127,15 +138,56 @@ async function renderAuditTab() {
     document.getElementById('audit-search')?.addEventListener('change', applyAuditFilters);
     document.getElementById('audit-user-filter')?.addEventListener('change', applyAuditFilters);
     document.getElementById('audit-category-filter')?.addEventListener('change', applyAuditFilters);
+    document.getElementById('audit-from-date')?.addEventListener('change', applyAuditFilters);
+    document.getElementById('audit-to-date')?.addEventListener('change', applyAuditFilters);
     document.getElementById('btn-audit-refresh')?.addEventListener('click', () => loadAuditData());
+    document.getElementById('btn-audit-export')?.addEventListener('click', exportAuditCsv);
 
     await loadAuditData();
+}
+
+/**
+ * Export audit logs as CSV (opens download)
+ */
+function exportAuditCsv() {
+    const params = new URLSearchParams();
+    if (auditFilters.category) params.set('category', auditFilters.category);
+    if (auditFilters.user) params.set('user', auditFilters.user);
+    if (auditFilters.search) params.set('search', auditFilters.search);
+    if (auditFilters.from_date) params.set('from_date', auditFilters.from_date);
+    if (auditFilters.to_date) params.set('to_date', auditFilters.to_date);
+
+    const token = localStorage.getItem('madmin_token');
+    // Use fetch + blob to include auth header
+    fetch(`/api/logs/audit/export?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+    })
+        .then(resp => {
+            if (!resp.ok) throw new Error('Export fallito');
+            const filename = resp.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'audit_log.csv';
+            return resp.blob().then(blob => ({ blob, filename }));
+        })
+        .then(({ blob, filename }) => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        })
+        .catch(err => {
+            import('../utils.js').then(m => m.showToast('Errore export: ' + err.message, 'error'));
+        });
 }
 
 function applyAuditFilters() {
     auditFilters.search = document.getElementById('audit-search')?.value || '';
     auditFilters.user = document.getElementById('audit-user-filter')?.value || '';
     auditFilters.category = document.getElementById('audit-category-filter')?.value ?? 'write';
+    auditFilters.from_date = document.getElementById('audit-from-date')?.value || '';
+    auditFilters.to_date = document.getElementById('audit-to-date')?.value || '';
     auditPage = 1;
     loadAuditData();
 }
@@ -152,6 +204,8 @@ async function loadAuditData() {
         params.set('category', auditFilters.category);
         if (auditFilters.user) params.set('user', auditFilters.user);
         if (auditFilters.search) params.set('search', auditFilters.search);
+        if (auditFilters.from_date) params.set('from_date', auditFilters.from_date);
+        if (auditFilters.to_date) params.set('to_date', auditFilters.to_date);
 
         const data = await apiGet(`/logs/audit?${params.toString()}`);
         const items = data.items || [];
@@ -223,15 +277,28 @@ function renderAuditRow(log) {
         hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
 
+    // Payload button — only show if request_body is meaningful (not null/empty/{})
     let payloadHtml = '';
-    if (log.request_body) {
-        // Store payload in a global map or simply pass it escaped. To avoid escaping quotes in HTML, we'll store it on window.
+    if (log.request_body && log.request_body !== '{}' && log.request_body !== '[]') {
         window._auditPayloads = window._auditPayloads || {};
         window._auditPayloads[log.id] = log.request_body;
 
         payloadHtml = `
             <button class="btn btn-icon btn-sm btn-ghost-primary ms-1" onclick="showAuditPayload('${log.id}')" title="Vedi payload">
                 <i class="ti ti-eye"></i>
+            </button>
+        `;
+    }
+
+    // Response error indicator — show for 4xx/5xx with response_summary
+    let errorHtml = '';
+    if (log.response_summary && log.status_code >= 400) {
+        window._auditErrors = window._auditErrors || {};
+        window._auditErrors[log.id] = log.response_summary;
+
+        errorHtml = `
+            <button class="btn btn-icon btn-sm btn-ghost-danger ms-1" onclick="showAuditError('${log.id}')" title="Dettaglio errore">
+                <i class="ti ti-alert-triangle"></i>
             </button>
         `;
     }
@@ -244,6 +311,7 @@ function renderAuditRow(log) {
                 <span class="badge bg-${methodColor}-lt me-1">${log.method}</span>
                 <code title="${escapeHtml(log.path)}">${escapeHtml(truncatePath(log.path))}</code>
                 ${payloadHtml}
+                ${errorHtml}
             </td>
             <td><span class="badge bg-${statusColor}-lt">${log.status_code}</span></td>
             <td class="text-muted" style="font-size: .8125rem;">${log.duration_ms}ms</td>
@@ -252,23 +320,59 @@ function renderAuditRow(log) {
     `;
 }
 
+// --- Payload Modal (with copy button) ---
+
 window.showAuditPayload = function (logId) {
     const payload = window._auditPayloads && window._auditPayloads[logId];
     if (!payload) return;
 
     let formattedHtml = escapeHtml(payload);
+    let rawPayload = payload;
     try {
         const parsed = JSON.parse(payload);
-        formattedHtml = escapeHtml(JSON.stringify(parsed, null, 2));
+        const formatted = JSON.stringify(parsed, null, 2);
+        formattedHtml = escapeHtml(formatted);
+        rawPayload = formatted;
     } catch (e) { }
 
+    _showCodeModal('Payload Richiesta', 'ti-code', formattedHtml, rawPayload);
+};
+
+// --- Error Detail Modal ---
+
+window.showAuditError = function (logId) {
+    const detail = window._auditErrors && window._auditErrors[logId];
+    if (!detail) return;
+
+    let formattedHtml = escapeHtml(detail);
+    let rawDetail = detail;
+    try {
+        const parsed = JSON.parse(detail);
+        const formatted = JSON.stringify(parsed, null, 2);
+        formattedHtml = escapeHtml(formatted);
+        rawDetail = formatted;
+    } catch (e) { }
+
+    _showCodeModal('Dettaglio Errore', 'ti-alert-triangle', formattedHtml, rawDetail);
+};
+
+// --- Shared Code Modal helper ---
+
+function _showCodeModal(title, icon, formattedHtml, rawText) {
+    const modalId = 'modal-audit-detail';
+
     const modalHtml = `
-        <div class="modal fade" id="modal-audit-payload" tabindex="-1">
+        <div class="modal fade" id="${modalId}" tabindex="-1">
             <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title"><i class="ti ti-code me-2"></i>Payload Richiesta</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        <h5 class="modal-title"><i class="${icon} me-2"></i>${escapeHtml(title)}</h5>
+                        <div class="ms-auto d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-ghost-primary" id="btn-copy-audit-detail" title="Copia">
+                                <i class="ti ti-copy me-1"></i>Copia
+                            </button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
                     </div>
                     <div class="modal-body p-0">
                         <pre style="margin:0; padding:1.5rem; background: #1e293b; color: #c8d3e0; border-radius: 0 0 4px 4px;"><code>${formattedHtml}</code></pre>
@@ -278,11 +382,25 @@ window.showAuditPayload = function (logId) {
         </div>
     `;
 
-    document.getElementById('modal-audit-payload')?.remove();
+    document.getElementById(modalId)?.remove();
     document.body.insertAdjacentHTML('beforeend', modalHtml);
-    const modal = new bootstrap.Modal(document.getElementById('modal-audit-payload'));
+
+    // Copy button
+    document.getElementById('btn-copy-audit-detail')?.addEventListener('click', () => {
+        navigator.clipboard.writeText(rawText).then(() => {
+            const btn = document.getElementById('btn-copy-audit-detail');
+            if (btn) {
+                btn.innerHTML = '<i class="ti ti-check me-1"></i>Copiato!';
+                setTimeout(() => { btn.innerHTML = '<i class="ti ti-copy me-1"></i>Copia'; }, 2000);
+            }
+        }).catch(() => {
+            showToast('Errore nella copia', 'error');
+        });
+    });
+
+    const modal = new bootstrap.Modal(document.getElementById(modalId));
     modal.show();
-};
+}
 
 function truncatePath(path) {
     if (path.length <= 50) return path;
@@ -352,6 +470,12 @@ async function renderSystemTab() {
                     <input type="text" class="form-control form-control-sm" id="syslog-search" 
                            placeholder="Filtra (grep)...">
                 </div>
+                <div class="form-check form-switch ms-2">
+                    <input class="form-check-input" type="checkbox" id="syslog-hide-audit" checked>
+                    <label class="form-check-label" for="syslog-hide-audit" style="font-size: .8125rem;">
+                        Nascondi AUDIT
+                    </label>
+                </div>
                 <button class="btn btn-sm btn-primary" id="btn-syslog-load">
                     <i class="ti ti-refresh me-1"></i>Carica
                 </button>
@@ -369,6 +493,7 @@ async function renderSystemTab() {
     document.getElementById('syslog-search')?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') loadSystemLog();
     });
+    document.getElementById('syslog-hide-audit')?.addEventListener('change', loadSystemLog);
 
     await loadSystemLog();
 }
@@ -379,6 +504,7 @@ async function loadSystemLog() {
 
     const lines = document.getElementById('syslog-lines')?.value || '200';
     const search = document.getElementById('syslog-search')?.value || '';
+    const hideAudit = document.getElementById('syslog-hide-audit')?.checked ?? true;
 
     try {
         const params = new URLSearchParams();
@@ -386,7 +512,12 @@ async function loadSystemLog() {
         if (search) params.set('search', search);
 
         const data = await apiGet(`/logs/system?${params.toString()}`);
-        const logLines = data.lines || [];
+        let logLines = data.lines || [];
+
+        // Filter out AUDIT lines if toggle is on
+        if (hideAudit) {
+            logLines = logLines.filter(line => !/\bAUDIT\b/.test(line));
+        }
 
         if (logLines.length === 0) {
             container.innerHTML = `

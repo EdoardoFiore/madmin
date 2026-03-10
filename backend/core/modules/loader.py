@@ -352,16 +352,25 @@ class ModuleLoader:
         """
         Get all menu items from loaded modules.
         Used by frontend to build dynamic sidebar.
+        Includes the module's '.view' permission for frontend filtering.
         """
         items = []
         for module_id, data in self.loaded_modules.items():
             manifest: ModuleManifest = data["manifest"]
+            # Derive the view permission: first permission with '.view' suffix,
+            # or fallback to '{module_id}.view'
+            view_perm = f"{module_id}.view"
+            for perm in manifest.permissions:
+                if perm.slug.endswith(".view"):
+                    view_perm = perm.slug
+                    break
             for menu_item in manifest.menu:
                 items.append({
                     "module_id": module_id,
                     "label": menu_item.label,
                     "icon": menu_item.icon,
-                    "route": menu_item.route
+                    "route": menu_item.route,
+                    "permission": view_perm,
                 })
         return items
     

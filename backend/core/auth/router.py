@@ -7,7 +7,7 @@ import json
 from typing import List, Optional
 from datetime import timedelta
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,8 @@ from .dependencies import (
     require_superuser,
     oauth2_scheme
 )
+from .rate_limiter import login_rate_limiter
+from .token_blacklist import token_blacklist
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 settings = get_settings()
@@ -59,6 +61,7 @@ class TwoFactorDisableRequest(BaseModel):
 
 @router.post("/token")
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     session: AsyncSession = Depends(get_session)
 ):
@@ -68,9 +71,15 @@ async def login(
     If 2FA is enabled, returns token_type='2fa_required' and a temporary token.
     If 2FA is enforced but not set up, returns token_type='2fa_setup_required'.
     """
+    # Rate limiting — extract client IP and check
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() \
+        or (request.client.host if request.client else "unknown")
+    login_rate_limiter.check_rate_limit(client_ip)
+    
     user = await service.authenticate_user(session, form_data.username, form_data.password)
     
     if not user:
+        login_rate_limiter.record_failure(client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -79,11 +88,15 @@ async def login(
     
     # Check if user is active (return same error to not reveal account status)
     if not user.is_active:
+        login_rate_limiter.record_failure(client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # Authentication successful — reset rate limit for this IP
+    login_rate_limiter.record_success(client_ip)
     
     # If 2FA is enabled, require OTP verification
     if user.totp_enabled:
@@ -320,6 +333,13 @@ async def update_user(
     try:
         updated_user = await service.update_user(session, user.id, user_data)
         await session.commit()
+        
+        # Revoke tokens if user was disabled, unrevoke if re-enabled
+        if user_data.is_active is False:
+            token_blacklist.revoke_user(updated_user.id)
+        elif user_data.is_active is True:
+            token_blacklist.unrevoke_user(updated_user.id)
+        
         return UserResponse(
             id=updated_user.id,
             username=updated_user.username,
@@ -353,6 +373,9 @@ async def delete_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account"
         )
+    
+    # Revoke any active tokens for this user
+    token_blacklist.revoke_user(user.id)
     
     await service.delete_user(session, user.id)
     await session.commit()

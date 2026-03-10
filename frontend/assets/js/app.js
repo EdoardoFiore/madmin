@@ -449,18 +449,24 @@ async function loadMenu() {
             menuHtml += createMenuItem(item);
         }
 
-        // Module menu items (if any)
+        // Module menu items (if any) — filtered by permission
         if (menuData.modules && menuData.modules.length > 0) {
-            menuHtml += `
-                <li class="nav-item pt-3">
-                    <span class="nav-link disabled text-uppercase text-muted" style="font-size: 0.7rem;">
-                        Moduli
-                    </span>
-                </li>
-            `;
+            const visibleModules = menuData.modules.filter(item =>
+                !item.permission || hasPermission(item.permission)
+            );
 
-            for (const item of menuData.modules) {
-                menuHtml += createMenuItem(item);
+            if (visibleModules.length > 0) {
+                menuHtml += `
+                    <li class="nav-item pt-3">
+                        <span class="nav-link disabled text-uppercase text-muted" style="font-size: 0.7rem;">
+                            Moduli
+                        </span>
+                    </li>
+                `;
+
+                for (const item of visibleModules) {
+                    menuHtml += createMenuItem(item);
+                }
             }
         }
 

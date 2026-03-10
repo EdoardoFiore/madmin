@@ -13,6 +13,7 @@ import uuid
 from core.database import get_session
 from .models import User, TokenData
 from . import service
+from .token_blacklist import token_blacklist
 
 # OAuth2 scheme for Bearer token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
@@ -47,6 +48,10 @@ async def get_current_user(
     try:
         user_id = uuid.UUID(user_id_str)
     except ValueError:
+        raise credentials_exception
+    
+    # Fast-path: check if user's tokens have been revoked (disable/delete)
+    if token_blacklist.is_revoked(user_id):
         raise credentials_exception
     
     user = await service.get_user_by_id(session, user_id)
