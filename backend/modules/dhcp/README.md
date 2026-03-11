@@ -24,7 +24,7 @@ dhcp/
 │   └── 001_initial.py   # Creates dhcp_* tables
 ├── hooks/
 │   ├── post_install.py  # System setup
-│   └── pre_uninstall.py # Cleanup & backup
+│   └── on_disable.py    # Cleanup on module disable
 └── static/
     └── views/
         └── main.js      # Management UI
@@ -94,6 +94,12 @@ dhcp/
 2. **Config generation** — `dhcpd.conf` is fully rendered from DB state using Jinja2 templates
 3. **Apply workflow** — Generate → Validate (`dhcpd -t`) → Update interfaces → Restart service
 4. **Lease monitoring** — `/var/lib/dhcp/dhcpd.leases` is parsed on-demand (no DB storage for leases)
+
+## 🔗 Core Integration
+
+- Uses `core.auth.dependencies.require_permission()` for API access control
+- Uses `core.database.get_session` for async database sessions
+- Config generation via Jinja2 templates in `service.py`
 
 ---
 

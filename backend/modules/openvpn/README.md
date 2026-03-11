@@ -184,6 +184,12 @@ openssl x509 -enddate -noout -in /etc/openvpn/server/instance/easy-rsa/pki/ca.cr
 3. Verify NAT masquerade rule exists
 4. Client may need to re-download config after cert renewal
 
+## 🔗 Core Integration
+
+- Uses `core.firewall.iptables` for chain management and rule application
+- Uses `core.auth.dependencies.require_permission()` for API access control
+- Uses `core.database.get_session` for async database sessions
+
 ---
 
 Made with ❤️ for the MADMIN project.

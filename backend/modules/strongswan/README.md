@@ -147,6 +147,19 @@ The module creates firewall chains:
 |----------|--------|-------------|
 | `/api/modules/strongswan/tunnels/{id}/traffic` | GET | Get traffic history |
 
+## 🔐 Permissions
+
+| Permission | Description |
+|------------|-------------|
+| `strongswan.view` | View tunnels and status |
+| `strongswan.manage` | Create/modify/delete tunnels and firewall rules |
+
+## 🔗 Core Integration
+
+- Uses `core.firewall.iptables` for per-Child-SA firewall chains and rules
+- Uses `core.auth.dependencies.require_permission()` for API access control
+- Uses `core.database.get_session` for async database sessions
+
 ## License
 
 MIT License - MADMIN Team

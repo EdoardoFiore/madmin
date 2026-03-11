@@ -219,6 +219,13 @@ iptables -L MOD_WG_FORWARD -n -v
 2. Check client config has correct endpoint
 3. Verify NAT masquerade rule exists
 
+## 🔗 Core Integration
+
+- Uses `core.firewall.iptables` for chain management and per-group firewall rules
+- Uses `core.firewall.orchestrator` for chain registration
+- Uses `core.auth.dependencies.require_permission()` for API access control
+- Uses `core.database.get_session` for async database sessions
+
 ---
 
 Made with ❤️ for the MADMIN project.

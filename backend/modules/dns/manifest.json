@@ -1,0 +1,78 @@
+{
+    "id": "dns",
+    "name": "DNS Server",
+    "version": "1.0.0",
+    "description": "BIND9 DNS server management with zone control, record editing, forwarding and split DNS",
+    "author": "MADMIN Team",
+    "system_dependencies": {
+        "apt": [
+            "bind9",
+            "bind9-utils",
+            "dnsutils"
+        ],
+        "pip": [
+            "jinja2>=3.0"
+        ]
+    },
+    "database_migrations": [
+        "migrations/001_initial.py"
+    ],
+    "install_hooks": {
+        "post_install": "hooks/post_install.py",
+        "on_disable": "hooks/on_disable.py"
+    },
+    "backend_router": "router.py",
+    "static_dir": "static",
+    "frontend_entry": "views/main.js",
+    "permissions": [
+        {
+            "slug": "dns.view",
+            "description": "Visualizza zone, record e impostazioni DNS"
+        },
+        {
+            "slug": "dns.manage",
+            "description": "Gestione impostazioni globali, servizio e forwarder"
+        },
+        {
+            "slug": "dns.zones",
+            "description": "Crea, modifica ed elimina zone DNS"
+        },
+        {
+            "slug": "dns.records",
+            "description": "Crea, modifica ed elimina record DNS nelle zone"
+        }
+    ],
+    "menu": [
+        {
+            "label": "DNS Server",
+            "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/isc-bind9.png",
+            "route": "#dns"
+        }
+    ],
+    "firewall_chains": [
+        {
+            "name": "MOD_DNS_INPUT",
+            "parent": "INPUT",
+            "priority": 45
+        }
+    ],
+    "config_export": {
+        "tables": [
+            "dns_settings",
+            "dns_zone",
+            "dns_record",
+            "dns_forwarder"
+        ],
+        "irrecoverable_files": [],
+        "post_restore": null
+    },
+    "dashboard_widgets": [
+        {
+            "id": "dns_status",
+            "title": "DNS Server",
+            "col": 6,
+            "permission": "dns.view"
+        }
+    ],
+    "dependencies": []
+}
