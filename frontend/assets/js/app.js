@@ -59,6 +59,7 @@ async function init() {
     setupNavigation();
     setupMobileMenu();
     setupThemeToggle();
+    setupUserDropdown();
 
     // Load menu
     await loadMenu();
@@ -416,6 +417,32 @@ function setupMobileMenu() {
 function closeMobileMenu() {
     document.getElementById('sidebar')?.classList.remove('mobile-open');
     document.getElementById('mobile-overlay')?.classList.remove('show');
+}
+
+/**
+ * Setup User Dropdown (Vanilla JS fallback)
+ */
+function setupUserDropdown() {
+    const trigger = document.querySelector('.user-dropdown-trigger');
+    const menu = document.querySelector('.dropdown-menu-user');
+
+    if (!trigger || !menu) return;
+
+    // Toggle on click
+    trigger.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        trigger.classList.toggle('show');
+        menu.classList.toggle('show');
+    });
+
+    // Close on click outside
+    document.addEventListener('click', (e) => {
+        if (!trigger.contains(e.target) && !menu.contains(e.target)) {
+            trigger.classList.remove('show');
+            menu.classList.remove('show');
+        }
+    });
 }
 
 /**
