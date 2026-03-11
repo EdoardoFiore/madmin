@@ -59,7 +59,7 @@ async function init() {
     setupNavigation();
     setupMobileMenu();
     setupThemeToggle();
-    setupUserDropdown();
+    setupDropdowns();
 
     // Load menu
     await loadMenu();
@@ -420,28 +420,67 @@ function closeMobileMenu() {
 }
 
 /**
- * Setup User Dropdown (Vanilla JS fallback)
+ * Global Dropdown Manager (Vanilla JS polyfill for data-bs-toggle="dropdown")
+ * Handles all Bootstrap-style dropdowns without requiring Bootstrap JS.
+ * Supports: data-bs-auto-close="outside" (clicking inside keeps it open).
  */
-function setupUserDropdown() {
-    const trigger = document.querySelector('.user-dropdown-trigger');
-    const menu = document.querySelector('.dropdown-menu-user');
-
-    if (!trigger || !menu) return;
-
-    // Toggle on click
-    trigger.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        trigger.classList.toggle('show');
-        menu.classList.toggle('show');
-    });
-
-    // Close on click outside
+function setupDropdowns() {
+    // Toggle on trigger click
     document.addEventListener('click', (e) => {
-        if (!trigger.contains(e.target) && !menu.contains(e.target)) {
-            trigger.classList.remove('show');
-            menu.classList.remove('show');
+        const trigger = e.target.closest('[data-bs-toggle="dropdown"]');
+
+        if (trigger) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const parent = trigger.closest('.dropdown, .dropup, .dropend, .dropstart, [id$="-dropdown"]');
+            const menu = parent ? parent.querySelector('.dropdown-menu') : null;
+
+            if (!menu) return;
+
+            const isOpen = menu.classList.contains('show');
+
+            // Close all other open dropdowns first
+            closeAllDropdowns();
+
+            if (!isOpen) {
+                trigger.classList.add('show');
+                trigger.setAttribute('aria-expanded', 'true');
+                menu.classList.add('show');
+            }
+        } else {
+            // Clicked outside - close all dropdowns
+            closeAllDropdowns();
         }
+    }, true); // Use capture phase so stopPropagation doesn't block us
+
+    // Also handle click *inside* dropdown-menu: only close if auto-close is not "outside"
+    document.addEventListener('click', (e) => {
+        const menuEl = e.target.closest('.dropdown-menu.show');
+        if (menuEl) {
+            const parent = menuEl.closest('.dropdown, .dropup, .dropend, .dropstart, [id$="-dropdown"]');
+            const trigger = parent?.querySelector('[data-bs-toggle="dropdown"]');
+            const autoClose = trigger?.getAttribute('data-bs-auto-close');
+
+            // "outside" = keep open when clicking inside menu items
+            // default ("true" / missing) = close on any click including inside
+            if (autoClose !== 'outside') {
+                closeAllDropdowns();
+            }
+        }
+    });
+}
+
+/**
+ * Close all currently open dropdowns
+ */
+function closeAllDropdowns() {
+    document.querySelectorAll('.dropdown-menu.show').forEach(menu => {
+        menu.classList.remove('show');
+    });
+    document.querySelectorAll('[data-bs-toggle="dropdown"].show').forEach(trigger => {
+        trigger.classList.remove('show');
+        trigger.setAttribute('aria-expanded', 'false');
     });
 }
 

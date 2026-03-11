@@ -852,18 +852,22 @@ async function loadNetTrafficGraph(iface, hours) {
         }
 
         const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
-        const txData = history.map(h => parseFloat((h.tx_rate / 1024).toFixed(2))); // KB/s
-        const rxData = history.map(h => parseFloat((h.rx_rate / 1024).toFixed(2))); // KB/s
 
-        // Auto-scale: if > 1024 KB/s, show MB/s
+        // Convert bytes/s → Mbit/s  (bytes × 8 ÷ 1,000,000)
+        const toBits = v => parseFloat(((v * 8) / 1_000_000).toFixed(3));
+        let txData = history.map(h => toBits(h.tx_rate));
+        let rxData = history.map(h => toBits(h.rx_rate));
+
+        // Auto-scale: if values are very small, fall back to Kb/s
         const maxVal = Math.max(...txData, ...rxData);
-        let unit = 'KB/s';
+        let unit = 'Mb/s';
         let txDisplay = txData;
         let rxDisplay = rxData;
-        if (maxVal > 1024) {
-            unit = 'MB/s';
-            txDisplay = txData.map(v => parseFloat((v / 1024).toFixed(2)));
-            rxDisplay = rxData.map(v => parseFloat((v / 1024).toFixed(2)));
+        if (maxVal < 0.01) {
+            // Show in Kb/s instead
+            unit = 'Kb/s';
+            txDisplay = txData.map(v => parseFloat((v * 1000).toFixed(2)));
+            rxDisplay = rxData.map(v => parseFloat((v * 1000).toFixed(2)));
         }
 
         if (netTrafficChart) netTrafficChart.destroy();
