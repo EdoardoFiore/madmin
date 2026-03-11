@@ -35,16 +35,20 @@ def run():
     except Exception as e:
         errors.append(f"Failed to create {zones_dir}: {e}")
 
-    # 2. Stop bind9 if running (avoid conflicts during setup)
+    # 2. Stop and disable bind9 (MADMIN manages the lifecycle)
     for svc in ["named", "bind9"]:
         try:
             subprocess.run(
                 ["systemctl", "stop", svc],
                 capture_output=True, text=True, timeout=15
             )
+            subprocess.run(
+                ["systemctl", "disable", svc],
+                capture_output=True, text=True, timeout=15
+            )
         except Exception:
             pass
-    logger.info("Stopped bind9/named (if was running)")
+    logger.info("Stopped and disabled bind9/named (MADMIN will manage the service)")
 
     # 3. Add 'named' to SystemdService whitelist
     try:

@@ -1,7 +1,7 @@
 {
     "id": "dns",
     "name": "DNS Server",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "BIND9 DNS server management with zone control, record editing, forwarding and split DNS",
     "author": "MADMIN Team",
     "system_dependencies": {
@@ -45,7 +45,7 @@
     "menu": [
         {
             "label": "DNS Server",
-            "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/isc-bind9.png",
+            "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/isc-bind9-light.png",
             "route": "#dns"
         }
     ],

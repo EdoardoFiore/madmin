@@ -290,6 +290,48 @@ class DnsService:
         except Exception as e:
             return False, str(e)
 
+    async def validate_zone_temp(self, session: AsyncSession, zone: DnsZone) -> Tuple[bool, str]:
+        """
+        Generate a temporary zone file and validate it with named-checkzone.
+        
+        This does NOT write to any real config files — it uses /tmp for validation.
+        Used for pre-commit validation: check if adding/changing a record would
+        produce a valid zone before actually committing to the database.
+        
+        The session should have the pending changes flushed (but not committed).
+        """
+        import tempfile
+        tmp_file = None
+        try:
+            # Generate zone content from current session state (includes flushed but uncommitted records)
+            zone_content = await self.generate_zone_file(session, zone)
+            
+            # Write to a temp file
+            tmp_file = Path(tempfile.mktemp(prefix=f"dns_zone_{zone.name}_", suffix=".zone"))
+            tmp_file.write_text(zone_content)
+            
+            # Validate with named-checkzone
+            result = subprocess.run(
+                ["named-checkzone", zone.name, str(tmp_file)],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode == 0:
+                return True, "Zona valida"
+            else:
+                # Parse error message to make it user-friendly
+                error = result.stderr.strip() or result.stdout.strip()
+                # Remove temp file path from errors for cleaner display
+                error = error.replace(str(tmp_file), f"db.{zone.name}")
+                return False, error
+        except FileNotFoundError:
+            return False, "named-checkzone non trovato. BIND9 è installato?"
+        except Exception as e:
+            return False, str(e)
+        finally:
+            if tmp_file and tmp_file.exists():
+                tmp_file.unlink()
+
     async def apply_config(self, session: AsyncSession) -> Tuple[bool, str]:
         """
         Full apply workflow:
@@ -314,11 +356,102 @@ class DnsService:
         # 4. Restart service
         success, msg = SystemdService.restart(BIND_SERVICE)
         if not success:
-            # Try to get journal errors for better message
             journal_msg = self._get_journal_errors()
             return False, f"Errore riavvio servizio: {msg}. {journal_msg}"
         
         return True, "Configurazione applicata e servizio riavviato"
+
+    async def apply_single_zone(self, session: AsyncSession, zone: DnsZone) -> Tuple[bool, str]:
+        """
+        Apply config for a single zone:
+        1. Write zone file
+        2. Update named.conf.local (zone declarations)
+        3. Validate zone file with named-checkzone
+        4. Reload bind9 gracefully (rndc reload)
+        
+        This is faster than full apply_config since it doesn't restart the service.
+        """
+        try:
+            ZONES_DIR.mkdir(parents=True, exist_ok=True)
+            
+            if zone.zone_type == "master":
+                # Write zone file
+                zone_content = await self.generate_zone_file(session, zone)
+                zone_file = ZONES_DIR / f"db.{zone.name}"
+                zone_file.write_text(zone_content)
+                logger.info(f"Wrote zone file {zone_file}")
+                
+                # Validate zone file
+                valid, msg = self.validate_zone_file(zone.name)
+                if not valid:
+                    return False, f"Zona non valida: {msg}"
+            
+            # Update named.conf.local (zone declarations)
+            local_content = await self.generate_local_config(session)
+            LOCAL_FILE.write_text(local_content)
+            
+            # Validate full config
+            valid, msg = self.validate_config()
+            if not valid:
+                return False, f"Configurazione non valida: {msg}"
+            
+            # Reload bind9 gracefully
+            ok, msg = self._reload_service()
+            if not ok:
+                # Fallback to restart
+                ok, msg = SystemdService.restart(BIND_SERVICE)
+                if not ok:
+                    return False, f"Errore reload/restart: {msg}"
+            
+            return True, "Zona applicata con successo"
+            
+        except PermissionError as e:
+            return False, f"Permesso negato: {e}"
+        except Exception as e:
+            logger.error(f"Error applying zone {zone.name}: {e}")
+            return False, str(e)
+
+    async def remove_zone_files(self, zone_name: str, session: AsyncSession) -> Tuple[bool, str]:
+        """
+        Remove a zone file and update named.conf.local, then reload.
+        """
+        try:
+            zone_file = ZONES_DIR / f"db.{zone_name}"
+            if zone_file.exists():
+                zone_file.unlink()
+                logger.info(f"Removed zone file {zone_file}")
+            
+            # Update named.conf.local
+            local_content = await self.generate_local_config(session)
+            LOCAL_FILE.write_text(local_content)
+            
+            # Reload
+            self._reload_service()
+            return True, "Zona rimossa"
+        except Exception as e:
+            return False, str(e)
+
+    async def apply_settings_only(self, session: AsyncSession) -> Tuple[bool, str]:
+        """
+        Apply only settings changes (named.conf.options) + reload.
+        """
+        try:
+            options_content = await self.generate_options_config(session)
+            OPTIONS_FILE.write_text(options_content)
+            
+            valid, msg = self.validate_config()
+            if not valid:
+                return False, f"Configurazione non valida: {msg}"
+            
+            ok, msg = self._reload_service()
+            if not ok:
+                ok, msg = SystemdService.restart(BIND_SERVICE)
+                if not ok:
+                    return False, f"Errore reload: {msg}"
+            
+            return True, "Impostazioni applicate"
+        except Exception as e:
+            return False, str(e)
 
     # =========================================================
     #  SERVICE MANAGEMENT (using core SystemdService)
@@ -344,6 +477,23 @@ class DnsService:
     def restart_service(self) -> Tuple[bool, str]:
         """Restart bind9 service."""
         return SystemdService.restart(BIND_SERVICE)
+
+    def _reload_service(self) -> Tuple[bool, str]:
+        """Gracefully reload bind9 using rndc reload (no downtime)."""
+        try:
+            result = subprocess.run(
+                ["rndc", "reload"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                return True, "Reload OK"
+            else:
+                return False, result.stderr.strip() or result.stdout.strip()
+        except FileNotFoundError:
+            # rndc not available, fallback to restart
+            return False, "rndc non disponibile"
+        except Exception as e:
+            return False, str(e)
 
     def _get_journal_errors(self, lines: int = 20) -> str:
         """Get recent journal entries for bind9."""

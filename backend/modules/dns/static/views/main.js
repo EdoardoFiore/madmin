@@ -177,10 +177,6 @@ function renderZonesTab(zones) {
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <h4 class="mb-0">Zone DNS</h4>
                 <div class="d-flex gap-2">
-                    ${canManage ? `
-                    <button class="btn btn-outline-primary" id="btn-apply">
-                        <i class="ti ti-reload me-1"></i>Applica Config
-                    </button>` : ''}
                     ${canZones ? `
                     <button class="btn btn-primary" id="btn-new-zone">
                         <i class="ti ti-plus me-1"></i>Nuova Zona
@@ -249,27 +245,6 @@ function renderZonesTab(zones) {
 }
 
 function setupZonesActions(zones) {
-    // Apply config
-    document.getElementById('btn-apply')?.addEventListener('click', async () => {
-        if (!await confirmDialog(
-            'Applicare la configurazione?',
-            'Verranno rigenerati tutti i file di zona, validata la configurazione e riavviato bind9.'
-        )) return;
-
-        const btn = document.getElementById('btn-apply');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applicando...';
-        try {
-            await apiPost('/modules/dns/apply');
-            showToast('Configurazione applicata con successo', 'success');
-            await renderDashboard(currentContainer);
-        } catch (err) {
-            showToast(err.message, 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<i class="ti ti-reload me-1"></i>Applica Config';
-        }
-    });
-
     // New zone
     document.getElementById('btn-new-zone')?.addEventListener('click', () => {
         new bootstrap.Modal(document.getElementById('modal-new-zone')).show();
@@ -297,14 +272,19 @@ function setupZonesActions(zones) {
         });
     });
 
-    // Zone toggle
+    // Zone toggle (auto-apply)
     document.querySelectorAll('.zone-toggle').forEach(toggle => {
         toggle.addEventListener('change', async () => {
             const id = toggle.dataset.id;
             const enabled = toggle.checked;
             try {
-                await apiPatch(`/modules/dns/zones/${id}`, { enabled });
-                showToast(enabled ? 'Zona abilitata' : 'Zona disabilitata — ricorda di applicare la config', enabled ? 'success' : 'warning');
+                const res = await apiPatch(`/modules/dns/zones/${id}`, { enabled });
+                if (res.applied) {
+                    showToast(enabled ? 'Zona abilitata e configurazione applicata' : 'Zona disabilitata e configurazione applicata', 'success');
+                } else {
+                    showToast(`Zona ${enabled ? 'abilitata' : 'disabilitata'} — errore applicazione: ${res.apply_message}`, 'warning');
+                }
+                await renderDashboard(currentContainer);
             } catch (err) {
                 toggle.checked = !enabled;
                 showToast(err.message, 'error');
@@ -331,8 +311,12 @@ async function createZone() {
     }
 
     try {
-        await apiPost('/modules/dns/zones', data);
-        showToast('Zona creata con successo', 'success');
+        const result = await apiPost('/modules/dns/zones', data);
+        if (result.applied) {
+            showToast('Zona creata e configurazione applicata', 'success');
+        } else {
+            showToast(`Zona creata — attenzione: ${result.apply_message}`, 'warning');
+        }
         bootstrap.Modal.getInstance(document.getElementById('modal-new-zone'))?.hide();
         await renderDashboard(currentContainer);
     } catch (err) { showToast(err.message, 'error'); }
@@ -541,13 +525,17 @@ async function saveSettings() {
     const forwarders = forwardersStr ? forwardersStr.split(',').map(s => s.trim()).filter(Boolean) : [];
 
     try {
-        await apiPut('/modules/dns/settings', {
+        const result = await apiPut('/modules/dns/settings', {
             mode,
             system_forwarders: JSON.stringify(forwarders),
             allow_query: allowQuery,
             dnssec_validation: dnssec,
         });
-        showToast('Impostazioni salvate — ricorda di applicare la configurazione', 'success');
+        if (result.applied) {
+            showToast('Impostazioni salvate e applicate', 'success');
+        } else {
+            showToast(`Impostazioni salvate — errore applicazione: ${result.apply_message}`, 'warning');
+        }
     } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -709,6 +697,8 @@ async function renderZoneDetail(container, zoneId) {
 
             <!-- New Record Modal -->
             ${renderNewRecordModal(zone)}
+            <!-- Edit Record Modal -->
+            ${renderEditRecordModal()}
             ` : `
             <div class="card">
                 <div class="card-body text-center text-muted py-4">
@@ -763,10 +753,14 @@ function renderRecordsTable(records) {
                             <td><strong>${escapeHtml(r.name)}</strong></td>
                             <td><code>${escapeHtml(r.value)}</code></td>
                             <td><small>${r.ttl || 'default'}</small></td>
-                            <td><small>${r.priority !== null ? r.priority : '—'}</small></td>
+                            <td><small>${r.priority !== null && r.priority !== undefined ? r.priority : '—'}</small></td>
                             <td>
                                 ${canRecords ? `
                                 <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-ghost-primary btn-edit-record" 
+                                            data-record='${JSON.stringify(r).replace(/'/g, "&#39;")}' title="Modifica">
+                                        <i class="ti ti-edit"></i>
+                                    </button>
                                     <button class="btn btn-ghost-danger btn-delete-record" data-id="${r.id}" title="Elimina">
                                         <i class="ti ti-trash"></i>
                                     </button>
@@ -783,16 +777,16 @@ function setupZoneDetailActions(zone, zoneId) {
     // New record
     document.getElementById('btn-new-record')?.addEventListener('click', () => {
         new bootstrap.Modal(document.getElementById('modal-new-record')).show();
+        setupRecordTypeSegmented('new');
     });
     document.getElementById('btn-create-record')?.addEventListener('click', () => createRecord(zoneId));
 
-    // Record type change → show/hide priority/weight/port
-    document.getElementById('new-record-type')?.addEventListener('change', (e) => {
-        const type = e.target.value;
-        const priRow = document.getElementById('record-priority-row');
-        const srvRow = document.getElementById('record-srv-row');
-        if (priRow) priRow.style.display = ['MX', 'SRV'].includes(type) ? '' : 'none';
-        if (srvRow) srvRow.style.display = type === 'SRV' ? '' : 'none';
+    // Edit record
+    document.querySelectorAll('.btn-edit-record').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const record = JSON.parse(btn.dataset.record);
+            showEditRecordModal(record, zoneId);
+        });
     });
 
     // Delete record
@@ -801,7 +795,7 @@ function setupZoneDetailActions(zone, zoneId) {
             if (!await confirmDialog('Eliminare questo record?')) return;
             try {
                 await apiDelete(`/modules/dns/records/${btn.dataset.id}`);
-                showToast('Record eliminato', 'success');
+                showToast('Record eliminato e zona aggiornata', 'success');
                 await renderZoneDetail(currentContainer, zoneId);
             } catch (err) { showToast(err.message, 'error'); }
         });
@@ -845,8 +839,12 @@ async function createRecord(zoneId) {
     if (port) data.port = parseInt(port);
 
     try {
-        await apiPost(`/modules/dns/zones/${zoneId}/records`, data);
-        showToast('Record creato', 'success');
+        const result = await apiPost(`/modules/dns/zones/${zoneId}/records`, data);
+        if (result.applied) {
+            showToast('Record creato e zona validata con successo', 'success');
+        } else {
+            showToast(`Record creato — attenzione: ${result.apply_message}`, 'warning');
+        }
         bootstrap.Modal.getInstance(document.getElementById('modal-new-record'))?.hide();
         await renderZoneDetail(currentContainer, zoneId);
     } catch (err) { showToast(err.message, 'error'); }
@@ -863,9 +861,134 @@ async function saveZone(zoneId) {
     data.enabled = enabled;
 
     try {
-        await apiPatch(`/modules/dns/zones/${zoneId}`, data);
-        showToast('Zona aggiornata', 'success');
+        const result = await apiPatch(`/modules/dns/zones/${zoneId}`, data);
+        if (result.applied) {
+            showToast('Zona aggiornata e configurazione applicata', 'success');
+        } else {
+            showToast(`Zona aggiornata — errore applicazione: ${result.apply_message}`, 'warning');
+        }
         bootstrap.Modal.getInstance(document.getElementById('modal-edit-zone'))?.hide();
+        await renderZoneDetail(currentContainer, zoneId);
+    } catch (err) { showToast(err.message, 'error'); }
+}
+
+// ============================================================
+//  RECORD TYPE SEGMENTED CONTROL & HELPERS
+// ============================================================
+
+const VALUE_HINTS = {
+    A: { placeholder: '192.168.1.1', hint: 'Indirizzo IPv4' },
+    AAAA: { placeholder: '2001:db8::1', hint: 'Indirizzo IPv6' },
+    CNAME: { placeholder: 'target.example.com.', hint: 'Hostname canonico (con punto finale)' },
+    MX: { placeholder: 'mail.example.com.', hint: 'Mail server (con punto finale)' },
+    TXT: { placeholder: 'v=spf1 include:...', hint: 'Testo libero (SPF, DKIM, verifica…)' },
+    SRV: { placeholder: 'target.example.com.', hint: 'Host del servizio (con punto finale)' },
+    NS: { placeholder: 'ns1.example.com.', hint: 'Name server (con punto finale)' },
+    PTR: { placeholder: 'host.example.com.', hint: 'Hostname per reverse lookup' },
+};
+
+function setupRecordTypeSegmented(prefix) {
+    const nav = document.getElementById(`${prefix}-record-type-nav`);
+    const hiddenInput = document.getElementById(`${prefix}-record-type`);
+    const valueInput = document.getElementById(`${prefix}-record-value`);
+    const valueHint = document.getElementById(`${prefix}-record-value-hint`);
+    const priorityRow = document.getElementById(`${prefix}-record-priority-row`);
+    const srvRow = document.getElementById(`${prefix}-record-srv-row`);
+
+    if (!nav) return;
+
+    function updateFieldsForType(type) {
+        // Update hidden input
+        hiddenInput.value = type;
+
+        // Update value placeholder and hint
+        const info = VALUE_HINTS[type] || { placeholder: '', hint: '' };
+        if (valueInput) valueInput.placeholder = info.placeholder;
+        if (valueHint) valueHint.textContent = info.hint;
+
+        // Show/hide priority
+        if (priorityRow) priorityRow.style.display = ['MX', 'SRV'].includes(type) ? '' : 'none';
+        // Show/hide SRV fields
+        if (srvRow) srvRow.style.display = type === 'SRV' ? '' : 'none';
+    }
+
+    nav.addEventListener('click', (e) => {
+        e.preventDefault();
+        const link = e.target.closest('.nav-link');
+        if (!link) return;
+
+        nav.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+
+        updateFieldsForType(link.dataset.type);
+    });
+
+    // Apply initial state
+    updateFieldsForType(hiddenInput.value);
+}
+
+function showEditRecordModal(record, zoneId) {
+    // Populate fields
+    document.getElementById('edit-record-id').value = record.id;
+    document.getElementById('edit-record-name').value = record.name;
+    document.getElementById('edit-record-value').value = record.value;
+    document.getElementById('edit-record-type').value = record.record_type;
+    document.getElementById('edit-record-ttl').value = record.ttl || '';
+    document.getElementById('edit-record-priority').value = record.priority ?? 10;
+    document.getElementById('edit-record-weight').value = record.weight ?? 0;
+    document.getElementById('edit-record-port').value = record.port || '';
+
+    // Activate the correct segmented tab
+    const nav = document.getElementById('edit-record-type-nav');
+    nav.querySelectorAll('.nav-link').forEach(l => {
+        l.classList.toggle('active', l.dataset.type === record.record_type);
+    });
+
+    // Setup segmented control
+    setupRecordTypeSegmented('edit');
+
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('modal-edit-record'));
+    modal.show();
+
+    // Wire up save button (remove old listener to avoid duplicates)
+    const saveBtn = document.getElementById('btn-save-record');
+    const newBtn = saveBtn.cloneNode(true);
+    saveBtn.parentNode.replaceChild(newBtn, saveBtn);
+    newBtn.addEventListener('click', () => editRecord(zoneId));
+}
+
+async function editRecord(zoneId) {
+    const id = document.getElementById('edit-record-id')?.value;
+    const recordType = document.getElementById('edit-record-type')?.value;
+    const name = document.getElementById('edit-record-name')?.value.trim();
+    const value = document.getElementById('edit-record-value')?.value.trim();
+    const ttl = document.getElementById('edit-record-ttl')?.value.trim();
+    const priority = document.getElementById('edit-record-priority')?.value.trim();
+    const weight = document.getElementById('edit-record-weight')?.value.trim();
+    const port = document.getElementById('edit-record-port')?.value.trim();
+
+    if (!name || !value) {
+        showToast('Nome e valore sono obbligatori', 'error');
+        return;
+    }
+
+    const data = { record_type: recordType, name, value };
+    if (ttl) data.ttl = parseInt(ttl); else data.ttl = null;
+    if (['MX', 'SRV'].includes(recordType) && priority) data.priority = parseInt(priority);
+    if (recordType === 'SRV') {
+        if (weight) data.weight = parseInt(weight);
+        if (port) data.port = parseInt(port);
+    }
+
+    try {
+        const result = await apiPatch(`/modules/dns/records/${id}`, data);
+        if (result.applied) {
+            showToast('Record aggiornato e zona validata', 'success');
+        } else {
+            showToast(`Record aggiornato — attenzione: ${result.apply_message}`, 'warning');
+        }
+        bootstrap.Modal.getInstance(document.getElementById('modal-edit-record'))?.hide();
         await renderZoneDetail(currentContainer, zoneId);
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -964,46 +1087,63 @@ function renderNewForwarderModal() {
 function renderNewRecordModal(zone) {
     return `
         <div class="modal fade" id="modal-new-record" tabindex="-1">
-            <div class="modal-dialog">
+            <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Nuovo Record — ${escapeHtml(zone.name)}</h5>
+                        <h5 class="modal-title"><i class="ti ti-plus me-2"></i>Nuovo Record — ${escapeHtml(zone.name)}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
+                        <!-- Record Type Segmented Control -->
+                        <div class="mb-4">
+                            <label class="form-label">Tipo Record</label>
+                            <nav class="nav nav-segmented nav-8" role="tablist" id="new-record-type-nav">
+                                ${RECORD_TYPES.map((t, i) => `
+                                    <button class="nav-link ${i === 0 ? 'active' : ''}" role="tab" data-bs-toggle="tab"
+                                            data-type="${t}" aria-selected="${i === 0}" ${i !== 0 ? 'tabindex="-1"' : ''}>${t}</button>
+                                `).join('')}
+                            </nav>
+                            <input type="hidden" id="new-record-type" value="A">
+                        </div>
+                        <!-- Name + Value -->
+                        <div class="row">
+                            <div class="col-md-5 mb-3">
+                                <label class="form-label">Nome</label>
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="new-record-name" placeholder="@">
+                                    <span class="input-group-text">.${escapeHtml(zone.name)}</span>
+                                </div>
+                                <small class="form-hint">Usa <code>@</code> per la zona root, <code>www</code>, <code>mail</code>, ecc.</small>
+                            </div>
+                            <div class="col-md-7 mb-3">
+                                <label class="form-label">Valore</label>
+                                <input type="text" class="form-control" id="new-record-value" placeholder="192.168.1.1">
+                                <small class="form-hint" id="new-record-value-hint">Indirizzo IPv4</small>
+                            </div>
+                        </div>
+                        <!-- TTL -->
                         <div class="row">
                             <div class="col-md-4 mb-3">
-                                <label class="form-label">Tipo</label>
-                                <select class="form-select" id="new-record-type">
-                                    ${RECORD_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
-                                </select>
+                                <label class="form-label">TTL <span class="text-muted">(opzionale)</span></label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="new-record-ttl" placeholder="${zone.ttl_default}">
+                                    <span class="input-group-text">sec</span>
+                                </div>
                             </div>
-                            <div class="col-md-8 mb-3">
-                                <label class="form-label">Nome</label>
-                                <input type="text" class="form-control" id="new-record-name" placeholder="@ per la zona, www, mail...">
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Valore</label>
-                            <input type="text" class="form-control" id="new-record-value" placeholder="Indirizzo IP o hostname">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">TTL (opzionale)</label>
-                            <input type="number" class="form-control" id="new-record-ttl" placeholder="Default dalla zona (${zone.ttl_default})">
-                        </div>
-                        <div class="row" id="record-priority-row" style="display:none;">
-                            <div class="col-12 mb-3">
-                                <label class="form-label">Priorità (MX/SRV)</label>
-                                <input type="number" class="form-control" id="new-record-priority" value="10" placeholder="10">
+                            <!-- Priority (MX/SRV) -->
+                            <div class="col-md-4 mb-3" id="new-record-priority-row" style="display:none;">
+                                <label class="form-label">Priorità</label>
+                                <input type="number" class="form-control" id="new-record-priority" value="10">
                             </div>
                         </div>
-                        <div class="row" id="record-srv-row" style="display:none;">
-                            <div class="col-6 mb-3">
-                                <label class="form-label">Weight (SRV)</label>
+                        <!-- SRV extra fields -->
+                        <div class="row" id="new-record-srv-row" style="display:none;">
+                            <div class="col-md-4 mb-3">
+                                <label class="form-label">Weight</label>
                                 <input type="number" class="form-control" id="new-record-weight" value="0">
                             </div>
-                            <div class="col-6 mb-3">
-                                <label class="form-label">Port (SRV)</label>
+                            <div class="col-md-4 mb-3">
+                                <label class="form-label">Port</label>
                                 <input type="number" class="form-control" id="new-record-port" placeholder="443">
                             </div>
                         </div>
@@ -1012,6 +1152,77 @@ function renderNewRecordModal(zone) {
                         <button class="btn btn-outline-secondary" data-bs-dismiss="modal">Annulla</button>
                         <button class="btn btn-primary" id="btn-create-record">
                             <i class="ti ti-check me-1"></i>Crea Record
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+}
+
+function renderEditRecordModal() {
+    return `
+        <div class="modal fade" id="modal-edit-record" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="ti ti-edit me-2"></i>Modifica Record</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="edit-record-id">
+                        <!-- Record Type Segmented Control -->
+                        <div class="mb-4">
+                            <label class="form-label">Tipo Record</label>
+                            <nav class="nav nav-segmented nav-8" role="tablist" id="edit-record-type-nav">
+                                ${RECORD_TYPES.map(t => `
+                                    <button class="nav-link" role="tab" data-bs-toggle="tab"
+                                            data-type="${t}" aria-selected="false" tabindex="-1">${t}</button>
+                                `).join('')}
+                            </nav>
+                            <input type="hidden" id="edit-record-type" value="A">
+                        </div>
+                        <!-- Name + Value -->
+                        <div class="row">
+                            <div class="col-md-5 mb-3">
+                                <label class="form-label">Nome</label>
+                                <input type="text" class="form-control" id="edit-record-name" placeholder="@">
+                            </div>
+                            <div class="col-md-7 mb-3">
+                                <label class="form-label">Valore</label>
+                                <input type="text" class="form-control" id="edit-record-value">
+                                <small class="form-hint" id="edit-record-value-hint"></small>
+                            </div>
+                        </div>
+                        <!-- TTL -->
+                        <div class="row">
+                            <div class="col-md-4 mb-3">
+                                <label class="form-label">TTL <span class="text-muted">(opzionale)</span></label>
+                                <div class="input-group">
+                                    <input type="number" class="form-control" id="edit-record-ttl">
+                                    <span class="input-group-text">sec</span>
+                                </div>
+                            </div>
+                            <div class="col-md-4 mb-3" id="edit-record-priority-row" style="display:none;">
+                                <label class="form-label">Priorità</label>
+                                <input type="number" class="form-control" id="edit-record-priority" value="10">
+                            </div>
+                        </div>
+                        <!-- SRV extra fields -->
+                        <div class="row" id="edit-record-srv-row" style="display:none;">
+                            <div class="col-md-4 mb-3">
+                                <label class="form-label">Weight</label>
+                                <input type="number" class="form-control" id="edit-record-weight" value="0">
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label class="form-label">Port</label>
+                                <input type="number" class="form-control" id="edit-record-port">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-outline-secondary" data-bs-dismiss="modal">Annulla</button>
+                        <button class="btn btn-primary" id="btn-save-record">
+                            <i class="ti ti-check me-1"></i>Salva Record
                         </button>
                     </div>
                 </div>

@@ -153,6 +153,10 @@ async def update_settings(
         )
 
     settings = await dns_service.update_settings(session, data.dict(exclude_unset=True))
+
+    # Auto-apply: rewrite named.conf.options + reload
+    apply_ok, apply_msg = await dns_service.apply_settings_only(session)
+
     return {
         "id": str(settings.id),
         "mode": settings.mode,
@@ -160,6 +164,8 @@ async def update_settings(
         "system_forwarders": settings.system_forwarders,
         "allow_query": settings.allow_query,
         "dnssec_validation": settings.dnssec_validation,
+        "applied": apply_ok,
+        "apply_message": apply_msg,
     }
 
 
@@ -228,6 +234,9 @@ async def create_zone(
     await session.commit()
     await session.refresh(zone)
 
+    # Auto-apply: write zone file + update named.conf.local + reload
+    apply_ok, apply_msg = await dns_service.apply_single_zone(session, zone)
+
     return {
         "id": str(zone.id),
         "name": zone.name,
@@ -236,6 +245,8 @@ async def create_zone(
         "description": zone.description,
         "created_at": zone.created_at.isoformat(),
         "record_count": 0,
+        "applied": apply_ok,
+        "apply_message": apply_msg,
     }
 
 
@@ -311,7 +322,15 @@ async def update_zone(
     await session.commit()
     await session.refresh(zone)
 
-    return {"message": "Zona aggiornata", "id": str(zone.id)}
+    # Auto-apply: update zone file + reload
+    apply_ok, apply_msg = await dns_service.apply_single_zone(session, zone)
+
+    return {
+        "message": "Zona aggiornata",
+        "id": str(zone.id),
+        "applied": apply_ok,
+        "apply_message": apply_msg,
+    }
 
 
 @router.delete("/zones/{zone_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -326,8 +345,12 @@ async def delete_zone(
     if not zone:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Zona non trovata")
 
+    zone_name = zone.name
     await session.delete(zone)
     await session.commit()
+
+    # Auto-apply: remove zone file + update named.conf.local + reload
+    await dns_service.remove_zone_files(zone_name, session)
 
 
 # ============================================================
@@ -370,7 +393,7 @@ async def create_record(
     session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("dns.records")),
 ):
-    """Create a DNS record in a zone."""
+    """Create a DNS record in a zone (with pre-commit zone validation)."""
     # Verify zone exists
     result = await session.execute(select(DnsZone).where(DnsZone.id == zone_id))
     zone = result.scalar_one_or_none()
@@ -383,15 +406,32 @@ async def create_record(
             detail="I record si possono aggiungere solo a zone di tipo master"
         )
 
-    # Validate record
+    # Basic record validation
     valid, msg = dns_service.validate_record(data.record_type, data.name, data.value)
     if not valid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
 
+    # Add record to session WITHOUT committing
     record = DnsRecord(zone_id=zone_id, **data.dict())
     session.add(record)
+    await session.flush()  # sends to DB but keeps transaction open
+
+    # Validate zone with temp file (includes the new record via flushed session)
+    valid, validation_msg = await dns_service.validate_zone_temp(session, zone)
+    if not valid:
+        # Zone invalid → rollback the record, return error
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Record non valido per la zona: {validation_msg}"
+        )
+
+    # Zone valid → commit and apply
     await session.commit()
     await session.refresh(record)
+
+    # Auto-apply: rewrite zone file, reload
+    apply_ok, apply_msg = await dns_service.apply_single_zone(session, zone)
 
     return {
         "id": str(record.id),
@@ -404,6 +444,8 @@ async def create_record(
         "weight": record.weight,
         "port": record.port,
         "created_at": record.created_at.isoformat(),
+        "applied": apply_ok,
+        "apply_message": apply_msg,
     }
 
 
@@ -414,7 +456,7 @@ async def update_record(
     session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("dns.records")),
 ):
-    """Update a DNS record."""
+    """Update a DNS record (with pre-commit zone validation)."""
     result = await session.execute(select(DnsRecord).where(DnsRecord.id == record_id))
     record = result.scalar_one_or_none()
     if not record:
@@ -422,7 +464,7 @@ async def update_record(
 
     update_data = data.dict(exclude_unset=True)
 
-    # Validate if type or value changed
+    # Basic record validation
     new_type = update_data.get("record_type", record.record_type)
     new_name = update_data.get("name", record.name)
     new_value = update_data.get("value", record.value)
@@ -434,8 +476,33 @@ async def update_record(
         setattr(record, key, value)
 
     session.add(record)
+    await session.flush()  # sends to DB but keeps transaction open
+
+    # Validate zone with temp file (includes updated record)
+    zone_result = await session.execute(select(DnsZone).where(DnsZone.id == record.zone_id))
+    zone = zone_result.scalar_one_or_none()
+    if zone and zone.zone_type == "master":
+        valid, validation_msg = await dns_service.validate_zone_temp(session, zone)
+        if not valid:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Record non valido per la zona: {validation_msg}"
+            )
+
+    # Zone valid → commit and apply
     await session.commit()
-    return {"message": "Record aggiornato", "id": str(record.id)}
+
+    apply_ok, apply_msg = False, "Zona non trovata"
+    if zone:
+        apply_ok, apply_msg = await dns_service.apply_single_zone(session, zone)
+
+    return {
+        "message": "Record aggiornato",
+        "id": str(record.id),
+        "applied": apply_ok,
+        "apply_message": apply_msg,
+    }
 
 
 @router.delete("/records/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -450,8 +517,15 @@ async def delete_record(
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record non trovato")
 
+    zone_id = record.zone_id
     await session.delete(record)
     await session.commit()
+
+    # Auto-apply: rewrite the parent zone + reload
+    zone_result = await session.execute(select(DnsZone).where(DnsZone.id == zone_id))
+    zone = zone_result.scalar_one_or_none()
+    if zone:
+        await dns_service.apply_single_zone(session, zone)
 
 
 # ============================================================
