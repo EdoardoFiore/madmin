@@ -598,16 +598,38 @@ function setupServiceActions() {
 //  ZONE DETAIL VIEW
 // ============================================================
 
+// State variables for search and filter within a zone
+let currentZoneRecords = [];
+let currentSearchTerm = '';
+let currentTypeFilter = '';
+
 async function renderZoneDetail(container, zoneId) {
-    container.innerHTML = `<div class="text-center py-5">${loadingSpinner()}</div>`;
+    // Show spinner only on initial load if we don't have records cached
+    if (currentSearchTerm === '' && currentTypeFilter === '' && !currentZoneRecords.length) {
+        container.innerHTML = `<div class="text-center py-5">${loadingSpinner()}</div>`;
+    }
 
     try {
         const zone = await apiGet(`/modules/dns/zones/${zoneId}`);
+        currentZoneRecords = zone.records || [];
 
+        // Apply Custom Sorting (NS, MX, TXT, A, CNAME, SRV, PTR)
+        const sortOrder = { 'NS': 1, 'MX': 2, 'TXT': 3, 'A': 4, 'CNAME': 5, 'SRV': 6, 'PTR': 7 };
+        currentZoneRecords.sort((a, b) => {
+            const orderA = sortOrder[a.record_type] || 99;
+            const orderB = sortOrder[b.record_type] || 99;
+            if (orderA !== orderB) return orderA - orderB;
+            return a.name.localeCompare(b.name);
+        });
+
+        // Get unique record types for the filter dropdown
+        const availableTypes = [...new Set(currentZoneRecords.map(r => r.record_type))].sort();
+
+        // Template for the layout (render only once to preserve input focus)
         container.innerHTML = `
             <!-- Back Link -->
             <div class="mb-3">
-                <a href="#dns" class="text-muted">
+                <a href="#dns" class="text-muted" onclick="currentSearchTerm=''; currentTypeFilter='';">
                     <i class="ti ti-arrow-left me-1"></i>Torna alle zone
                 </a>
             </div>
@@ -643,15 +665,29 @@ async function renderZoneDetail(container, zoneId) {
             ${zone.zone_type === 'master' ? `
             <!-- Records -->
             <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h3 class="card-title"><i class="ti ti-list me-2"></i>Record DNS (${zone.records.length})</h3>
+                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <h3 class="card-title mb-0">
+                        <i class="ti ti-list me-2"></i>Record DNS 
+                        <span id="records-count-badge"></span>
+                    </h3>
+                    <div class="d-flex flex-wrap gap-2">
+                        <div class="input-icon" style="max-width: 200px;">
+                            <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+                            <input type="text" class="form-control form-control-sm" id="record-search-input" 
+                                   value="${escapeHtml(currentSearchTerm)}" placeholder="Cerca nome o valore...">
+                        </div>
+                        <select class="form-select form-select-sm" id="record-type-filter" style="width: auto;">
+                            <option value="">Tutti i tipi</option>
+                            ${availableTypes.map(t => `<option value="${t}" ${currentTypeFilter === t ? 'selected' : ''}>${t}</option>`).join('')}
+                        </select>
                         ${canRecords ? `
-                    <button class="btn btn-primary" id="btn-new-record">
-                        <i class="ti ti-plus me-1"></i>Nuovo Record
-                    </button>` : ''}
+                        <button class="btn btn-primary btn-sm ms-md-2" id="btn-new-record">
+                            <i class="ti ti-plus me-1"></i>Nuovo Record
+                        </button>` : ''}
+                    </div>
                 </div>
-                <div class="card-body" id="records-list">
-                    ${renderRecordsTable(zone.records)}
+                <div class="card-body p-0" id="records-list-container">
+                    <!-- Table injected here by refreshRecordsUI -->
                 </div>
             </div>
 
@@ -673,14 +709,64 @@ async function renderZoneDetail(container, zoneId) {
             ${renderEditZoneModal(zone)}
         `;
 
+        // Setup actions (modals, delete zone, etc.)
         setupZoneDetailActions(zone, zoneId);
+
+        // Initial records render
+        refreshRecordsUI(zoneId);
+
+        // Bind Search and Filter Events (only updates the table, preserving input focus)
+        const searchInput = document.getElementById('record-search-input');
+        searchInput?.addEventListener('input', (e) => {
+            currentSearchTerm = e.target.value;
+            refreshRecordsUI(zoneId);
+        });
+        document.getElementById('record-type-filter')?.addEventListener('change', (e) => {
+            currentTypeFilter = e.target.value;
+            refreshRecordsUI(zoneId);
+        });
 
     } catch (err) {
         container.innerHTML = `
-            <div class="mb-3"><a href="#dns" class="text-muted"><i class="ti ti-arrow-left me-1"></i>Torna alle zone</a></div>
+            <div class="mb-3"><a href="#dns" class="text-muted" onclick="currentSearchTerm=''; currentTypeFilter='';"><i class="ti ti-arrow-left me-1"></i>Torna alle zone</a></div>
             <div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${err.message}</div>`;
     }
 }
+
+/**
+ * Updates only the records table part of the UI.
+ * This prevents re-rendering the whole page and losing focus on the search input.
+ */
+function refreshRecordsUI(zoneId) {
+    const listContainer = document.getElementById('records-list-container');
+    const countBadge = document.getElementById('records-count-badge');
+    if (!listContainer) return;
+
+    // Apply Filtering and Search
+    let filteredRecords = currentZoneRecords;
+    if (currentTypeFilter) {
+        filteredRecords = filteredRecords.filter(r => r.record_type === currentTypeFilter);
+    }
+    if (currentSearchTerm) {
+        const term = currentSearchTerm.toLowerCase();
+        filteredRecords = filteredRecords.filter(r => 
+            r.name.toLowerCase().includes(term) || 
+            r.value.toLowerCase().includes(term)
+        );
+    }
+
+    // Update count in header
+    if (countBadge) {
+        countBadge.textContent = `(${filteredRecords.length}/${currentZoneRecords.length})`;
+    }
+
+    // Inject the table HTML
+    listContainer.innerHTML = renderRecordsTable(filteredRecords);
+
+    // Re-bind record actions (edit/delete) since the table DOM was just replaced
+    setupRecordItemActions(zoneId);
+}
+
 
 function renderRecordsTable(records) {
     if (records.length === 0) {
@@ -700,20 +786,36 @@ function renderRecordsTable(records) {
                         <th>Nome</th>
                         <th>Valore</th>
                         <th>TTL</th>
-                        <th>Priorità</th>
                         <th class="w-1">Azioni</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${records.map(r => `
+                    ${records.map(r => {
+                        let extraBadges = '';
+                        if (r.record_type === 'MX') {
+                            extraBadges = `<div class="mt-1"><span class="badge bg-purple-lt" title="Priorità">Priorità: ${r.priority ?? 10}</span></div>`;
+                        } else if (r.record_type === 'SRV') {
+                            const p = r.priority ?? 10;
+                            const w = r.weight ?? 0;
+                            const port = r.port || '-';
+                            extraBadges = `<div class="mt-1">
+                                <span class="badge bg-purple-lt" title="Priorità">Pri: ${p}</span>
+                                <span class="badge bg-azure-lt" title="Peso (Weight)">Wt: ${w}</span>
+                                <span class="badge bg-teal-lt" title="Porta">Port: ${port}</span>
+                            </div>`;
+                        }
+
+                        return `
                         <tr>
                             <td>
                                 <span class="badge bg-azure-lt">${escapeHtml(r.record_type)}</span>
                             </td>
                             <td><strong>${escapeHtml(r.name)}</strong></td>
-                            <td><code>${escapeHtml(r.value)}</code></td>
+                            <td>
+                                <code>${escapeHtml(r.value)}</code>
+                                ${extraBadges}
+                            </td>
                             <td><small>${r.ttl || 'default'}</small></td>
-                            <td><small>${r.priority !== null && r.priority !== undefined ? r.priority : '—'}</small></td>
                             <td>
                                 ${canRecords ? `
                                 <div class="btn-group btn-group-sm">
@@ -727,20 +829,53 @@ function renderRecordsTable(records) {
                                 </div>` : ''}
                             </td>
                         </tr>
-                    `).join('')}
+                        `;
+                    }).join('')}
                 </tbody>
             </table>
         </div>`;
 }
 
 function setupZoneDetailActions(zone, zoneId) {
-    // New record
+    // New record modal open
     document.getElementById('btn-new-record')?.addEventListener('click', () => {
         new bootstrap.Modal(document.getElementById('modal-new-record')).show();
         setupRecordTypeSegmented('new');
     });
+    // Record creation
     document.getElementById('btn-create-record')?.addEventListener('click', () => createRecord(zoneId));
 
+    // Zone editing/deletion
+    document.getElementById('btn-edit-zone')?.addEventListener('click', () => {
+        document.getElementById('edit-zone-type').value = zone.zone_type;
+        const fwdGroup = document.getElementById('edit-zone-fwd-group');
+        if (fwdGroup) fwdGroup.style.display = zone.zone_type !== 'master' ? '' : 'none';
+        
+        let fwdServers = '';
+        if (zone.forward_servers) {
+            try { fwdServers = JSON.parse(zone.forward_servers).join(', '); } catch (e) { fwdServers = zone.forward_servers; }
+        }
+        const fwdInput = document.getElementById('edit-zone-fwd-servers');
+        if (fwdInput) fwdInput.value = fwdServers;
+        new bootstrap.Modal(document.getElementById('modal-edit-zone')).show();
+    });
+    document.getElementById('btn-save-zone')?.addEventListener('click', () => saveZone(zoneId));
+
+    document.getElementById('btn-delete-zone')?.addEventListener('click', async () => {
+        if (!await confirmDialog('Eliminare questa zona?', 'Tutti i record saranno eliminati.')) return;
+        try {
+            await apiDelete(`/modules/dns/zones/${zoneId}`);
+            showToast('Zona eliminata', 'success');
+            window.location.hash = '#dns';
+        } catch (err) { showToast(err.message, 'error'); }
+    });
+}
+
+/**
+ * Specifically binds event listeners for edit/delete buttons inside the records table.
+ * Called whenever the table is re-rendered (search/filter/initial load).
+ */
+function setupRecordItemActions(zoneId) {
     // Edit record
     document.querySelectorAll('.btn-edit-record').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -755,46 +890,14 @@ function setupZoneDetailActions(zone, zoneId) {
             if (!await confirmDialog('Eliminare questo record?')) return;
             try {
                 await apiDelete(`/modules/dns/records/${btn.dataset.id}`);
-                showToast('Record eliminato e zona aggiornata', 'success');
+                showToast('Record eliminato', 'success');
+                // Refresh data and UI
                 await renderZoneDetail(currentContainer, zoneId);
             } catch (err) { showToast(err.message, 'error'); }
         });
     });
-
-    // Edit zone
-    document.getElementById('btn-edit-zone')?.addEventListener('click', () => {
-        // Populate edit modal fields
-        document.getElementById('edit-zone-type').value = zone.zone_type;
-        const fwdGroup = document.getElementById('edit-zone-fwd-group');
-        if (fwdGroup) {
-            fwdGroup.style.display = zone.zone_type !== 'master' ? '' : 'none';
-        }
-        
-        let fwdServers = '';
-        if (zone.forward_servers) {
-            try {
-                fwdServers = JSON.parse(zone.forward_servers).join(', ');
-            } catch (e) {
-                fwdServers = zone.forward_servers;
-            }
-        }
-        const fwdInput = document.getElementById('edit-zone-fwd-servers');
-        if (fwdInput) fwdInput.value = fwdServers;
-
-        new bootstrap.Modal(document.getElementById('modal-edit-zone')).show();
-    });
-    document.getElementById('btn-save-zone')?.addEventListener('click', () => saveZone(zoneId));
-
-    // Delete zone
-    document.getElementById('btn-delete-zone')?.addEventListener('click', async () => {
-        if (!await confirmDialog('Eliminare questa zona?', 'Tutti i record saranno eliminati.')) return;
-        try {
-            await apiDelete(`/modules/dns/zones/${zoneId}`);
-            showToast('Zona eliminata', 'success');
-            window.location.hash = '#dns';
-        } catch (err) { showToast(err.message, 'error'); }
-    });
 }
+
 
 async function createRecord(zoneId) {
     const recordType = document.getElementById('new-record-type')?.value;
