@@ -141,7 +141,7 @@ async function renderDashboard(container) {
 // ============================================================
 
 function setupTabListeners(zones, settings) {
-    document.getElementById('dns-tabs')?.addEventListener('click', (e) => {
+    document.getElementById('dns-tabs')?.addEventListener('click', async (e) => {
         e.preventDefault();
         const tab = e.target.closest('[data-tab]');
         if (!tab) return;
@@ -151,7 +151,7 @@ function setupTabListeners(zones, settings) {
 
         const tabName = tab.dataset.tab;
         if (tabName === 'zones') renderZonesTab(zones);
-        else if (tabName === 'settings') renderSettingsTab(settings);
+        else if (tabName === 'settings') await renderSettingsTab(settings);
         else if (tabName === 'test') renderTestTab();
     });
 }
@@ -362,7 +362,7 @@ async function createZone() {
 //  SETTINGS TAB
 // ============================================================
 
-function renderSettingsTab(settings) {
+async function renderSettingsTab(settings) {
     const content = document.getElementById('dns-tab-content');
     if (!content) return;
 
@@ -370,6 +370,19 @@ function renderSettingsTab(settings) {
     try { listenIfaces = JSON.parse(settings.listen_interfaces || '[]'); } catch (e) { }
     let sysForwarders = [];
     try { sysForwarders = JSON.parse(settings.system_forwarders || '[]'); } catch (e) { }
+
+    let interfaces = [];
+    try {
+        const res = await apiGet('/network/interfaces');
+        if (res && res.interfaces) {
+            const excludePrefixes = ['lo', 'wg', 'veth', 'docker', 'br', 'virbr', 'tun', 'tap'];
+            interfaces = res.interfaces
+                .filter(i => !excludePrefixes.some(p => i.name.startsWith(p)) && i.ipv4)
+                .map(i => ({ name: i.name, ip: i.ipv4 }));
+        }
+    } catch (err) {
+        showToast('Errore nel caricamento delle interfacce: ' + err.message, 'error');
+    }
 
     content.innerHTML = `
         <div class="card-body">
@@ -398,13 +411,36 @@ function renderSettingsTab(settings) {
             </div>
             <div class="row">
                 <div class="col-md-6 mb-3">
-                    <label class="form-label">Allow Query</label>
+                    <label class="form-label">Permetti Query <span class="text-muted">(Allow Query)</span></label>
                     <select class="form-select" id="setting-allow-query" ${!canManage ? 'disabled' : ''}>
                         <option value="localnets" ${settings.allow_query === 'localnets' ? 'selected' : ''}>Solo reti locali (localnets)</option>
-                        <option value="any" ${settings.allow_query === 'any' ? 'selected' : ''}>Qualsiasi (any)</option>
+                        <option value="any" ${settings.allow_query === 'any' ? 'selected' : ''}>Tutti (any)</option>
                     </select>
-                    <small class="form-hint">Chi può effettuare query al DNS server</small>
+                    <small class="form-hint">
+                        <strong>Solo reti locali:</strong> limita la risoluzione ai dispositivi della stessa sottorete privata.<br>
+                        <strong>Tutti:</strong> permette a qualsiasi IP di interrogare il server (utile per VPN o reti complesse).
+                    </small>
                 </div>
+                <div class="col-md-6 mb-3" id="setting-listen-wrapper" style="${settings.allow_query === 'any' ? 'display: none;' : ''}">
+                    <label class="form-label">Interfacce in Ascolto (Listen On)</label>
+                    <div class="card card-body p-2" style="max-height: 150px; overflow-y: auto;">
+                        ${interfaces.map(i => {
+                            const isChecked = listenIfaces.length === 0 || listenIfaces.includes(i.name);
+                            return `
+                            <div class="form-check mb-1">
+                                <input class="form-check-input listen-iface-cb" type="checkbox" value="${i.name}" id="iface-${i.name}"
+                                       ${isChecked ? 'checked' : ''} ${!canManage ? 'disabled' : ''}>
+                                <label class="form-check-label" for="iface-${i.name}">
+                                    ${i.name} <span class="text-muted">(${i.ip || 'no IP'})</span>
+                                </label>
+                            </div>
+                            `;
+                        }).join('')}
+                    </div>
+                    <small class="form-hint mt-2">Deseleziona le interfacce su cui non vuoi che il server DNS risponda.</small>
+                </div>
+            </div>
+            <div class="row">
                 <div class="col-md-6 mb-3">
                     <label class="form-label">DNSSEC Validation</label>
                     <div class="form-check form-switch mt-2">
@@ -423,6 +459,13 @@ function renderSettingsTab(settings) {
         </div>
     `;
 
+    document.getElementById('setting-allow-query')?.addEventListener('change', (e) => {
+        const wrapper = document.getElementById('setting-listen-wrapper');
+        if (wrapper) {
+            wrapper.style.display = e.target.value === 'any' ? 'none' : 'block';
+        }
+    });
+
     document.getElementById('btn-save-settings')?.addEventListener('click', saveSettings);
 }
 
@@ -431,6 +474,12 @@ async function saveSettings() {
     const forwardersStr = document.getElementById('setting-forwarders')?.value.trim();
     const allowQuery = document.getElementById('setting-allow-query')?.value;
     const dnssec = document.getElementById('setting-dnssec')?.checked;
+    // Listen Interfaces
+    let listenIfaces = [];
+    if (allowQuery !== 'any') {
+        const checkboxes = document.querySelectorAll('.listen-iface-cb:checked');
+        listenIfaces = Array.from(checkboxes).map(cb => cb.value);
+    }
 
     const forwarders = forwardersStr ? forwardersStr.split(',').map(s => s.trim()).filter(Boolean) : [];
 
@@ -439,6 +488,7 @@ async function saveSettings() {
             mode,
             system_forwarders: JSON.stringify(forwarders),
             allow_query: allowQuery,
+            listen_interfaces: JSON.stringify(listenIfaces),
             dnssec_validation: dnssec,
         });
         if (result.applied) {

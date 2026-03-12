@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from core.firewall import iptables as core_iptables
 from core.services.service import SystemdService
+from core.network.service import network_service
 
 from .models import DnsSettings, DnsZone, DnsRecord
 
@@ -98,18 +99,17 @@ class DnsService:
         addresses = ["127.0.0.1"]
         
         try:
-            import psutil
-            net_if = psutil.net_if_addrs()
-            for iface in interfaces:
-                if iface in net_if:
-                    for addr in net_if[iface]:
-                        if addr.family.name == "AF_INET":
-                            addresses.append(addr.address)
+            core_ifaces = network_service.get_interfaces()
+            for req_iface in interfaces:
+                for iface in core_ifaces:
+                    if iface["name"] == req_iface and iface.get("ipv4"):
+                        addresses.append(iface["ipv4"])
+                        break
         except Exception as e:
             logger.warning(f"Could not resolve interface addresses: {e}")
             return ""
         
-        return "; ".join(addresses)
+        return "; ".join(addresses) + ";"
 
     async def generate_options_config(self, session: AsyncSession) -> str:
         """Generate named.conf.options from settings."""
@@ -638,42 +638,6 @@ class DnsService:
             "total_zones": zones_count,
             "total_records": records_count,
         }
-
-    # =========================================================
-    #  INTERFACE DISCOVERY
-    # =========================================================
-
-    def get_physical_interfaces(self) -> List[Dict]:
-        """
-        List physical network interfaces available for DNS listening.
-        Excludes: lo, wg*, veth*, docker*, br*, virbr*, tun*, tap*
-        """
-        exclude_prefixes = ("lo", "wg", "veth", "docker", "br", "virbr", "tun", "tap")
-        interfaces = []
-
-        try:
-            import psutil
-            net_if = psutil.net_if_addrs()
-            for iface_name, addrs in net_if.items():
-                if any(iface_name.startswith(p) for p in exclude_prefixes):
-                    continue
-
-                ipv4 = None
-                for addr in addrs:
-                    if addr.family.name == "AF_INET":
-                        ipv4 = addr.address
-                        break
-
-                if ipv4:
-                    interfaces.append({
-                        "name": iface_name,
-                        "ip": ipv4,
-                    })
-        except Exception as e:
-            logger.warning(f"Could not list interfaces: {e}")
-
-        return interfaces
-
 
 # Singleton instance
 dns_service = DnsService()
