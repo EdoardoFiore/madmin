@@ -31,7 +31,7 @@
         },
         {
             "slug": "dns.manage",
-            "description": "Gestione impostazioni globali, servizio e forwarder"
+            "description": "Gestione impostazioni globali e servizio"
         },
         {
             "slug": "dns.zones",
@@ -60,8 +60,7 @@
         "tables": [
             "dns_settings",
             "dns_zone",
-            "dns_record",
-            "dns_forwarder"
+            "dns_record"
         ],
         "irrecoverable_files": [],
         "post_restore": null

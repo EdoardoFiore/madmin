@@ -24,7 +24,7 @@ from sqlalchemy.orm import selectinload
 from core.firewall import iptables as core_iptables
 from core.services.service import SystemdService
 
-from .models import DnsSettings, DnsZone, DnsRecord, DnsForwarder
+from .models import DnsSettings, DnsZone, DnsRecord
 
 logger = logging.getLogger(__name__)
 
@@ -135,12 +135,6 @@ class DnsService:
         )
         zones = result.scalars().all()
         
-        # Get enabled forwarders
-        result = await session.execute(
-            select(DnsForwarder).where(DnsForwarder.enabled == True)
-        )
-        forwarders = result.scalars().all()
-        
         # Prepare zone data
         zone_data = []
         for z in zones:
@@ -151,21 +145,8 @@ class DnsService:
             }
             zone_data.append(zd)
         
-        # Prepare forwarder data
-        fwd_data = []
-        for f in forwarders:
-            # Skip forwarders whose domain is already a zone
-            zone_names = {z.name for z in zones}
-            if f.domain not in zone_names:
-                fd = {
-                    "domain": f.domain,
-                    "servers": f.servers,
-                    "servers_list": json.loads(f.servers) if f.servers else [],
-                }
-                fwd_data.append(fd)
-        
         template = self._load_template("named.conf.local.j2")
-        return template.render(zones=zone_data, forwarders=fwd_data)
+        return template.render(zones=zone_data)
 
     async def generate_zone_file(self, session: AsyncSession, zone: DnsZone) -> str:
         """Generate a zone file for a master zone."""
@@ -653,14 +634,9 @@ class DnsService:
             select(func.count()).select_from(DnsRecord)
         )).scalar() or 0
         
-        forwarders_count = (await session.execute(
-            select(func.count()).select_from(DnsForwarder)
-        )).scalar() or 0
-        
         return {
             "total_zones": zones_count,
             "total_records": records_count,
-            "total_forwarders": forwarders_count,
         }
 
     # =========================================================

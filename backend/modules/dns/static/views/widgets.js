@@ -42,22 +42,16 @@ export const widgets = {
                 container.innerHTML = `
                     <div class="p-3">
                         <div class="row g-2">
-                            <div class="col-4">
+                            <div class="col-6">
                                 <div class="text-center">
                                     <div class="fw-bold fs-3">${status.total_zones}</div>
                                     <div class="text-muted small">Zone</div>
                                 </div>
                             </div>
-                            <div class="col-4">
+                            <div class="col-6">
                                 <div class="text-center">
                                     <div class="fw-bold fs-3">${status.total_records}</div>
                                     <div class="text-muted small">Record</div>
-                                </div>
-                            </div>
-                            <div class="col-4">
-                                <div class="text-center">
-                                    <div class="fw-bold fs-3">${status.total_forwarders}</div>
-                                    <div class="text-muted small">Forwarder</div>
                                 </div>
                             </div>
                         </div>

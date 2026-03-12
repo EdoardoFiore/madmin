@@ -47,10 +47,9 @@ async function renderDashboard(container) {
     container.innerHTML = `<div class="text-center py-5">${loadingSpinner()}</div>`;
 
     try {
-        const [status, zones, forwarders, settings] = await Promise.all([
+        const [status, zones, settings] = await Promise.all([
             apiGet('/modules/dns/status'),
             apiGet('/modules/dns/zones'),
-            apiGet('/modules/dns/forwarders'),
             apiGet('/modules/dns/settings'),
         ]);
 
@@ -110,11 +109,6 @@ async function renderDashboard(container) {
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="#" data-tab="forwarders">
-                                <i class="ti ti-arrows-right me-1"></i>Forwarder
-                            </a>
-                        </li>
-                        <li class="nav-item">
                             <a class="nav-link" href="#" data-tab="settings">
                                 <i class="ti ti-settings me-1"></i>Impostazioni
                             </a>
@@ -131,10 +125,9 @@ async function renderDashboard(container) {
 
             <!-- Modals -->
             ${renderNewZoneModal()}
-            ${renderNewForwarderModal()}
         `;
 
-        setupTabListeners(zones, forwarders, settings);
+        setupTabListeners(zones, settings);
         setupServiceActions();
         renderZonesTab(zones);
 
@@ -147,7 +140,7 @@ async function renderDashboard(container) {
 //  TAB SYSTEM
 // ============================================================
 
-function setupTabListeners(zones, forwarders, settings) {
+function setupTabListeners(zones, settings) {
     document.getElementById('dns-tabs')?.addEventListener('click', (e) => {
         e.preventDefault();
         const tab = e.target.closest('[data-tab]');
@@ -158,7 +151,6 @@ function setupTabListeners(zones, forwarders, settings) {
 
         const tabName = tab.dataset.tab;
         if (tabName === 'zones') renderZonesTab(zones);
-        else if (tabName === 'forwarders') renderForwardersTab(forwarders);
         else if (tabName === 'settings') renderSettingsTab(settings);
         else if (tabName === 'test') renderTestTab();
     });
@@ -174,11 +166,15 @@ function renderZonesTab(zones) {
 
     content.innerHTML = `
         <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <h4 class="mb-0">Zone DNS</h4>
-                <div class="d-flex gap-2">
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 gap-2">
+                <h4 class="mb-0">Zone DNS e Forwarder</h4>
+                <div class="d-flex gap-2 align-items-center">
+                    <div class="input-icon">
+                        <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+                        <input type="search" class="form-control d-inline-block w-9" id="input-zone-search" placeholder="Cerca zona..." style="min-width: 200px;">
+                    </div>
                     ${canZones ? `
-                    <button class="btn btn-primary" id="btn-new-zone">
+                    <button class="btn btn-primary text-nowrap" id="btn-new-zone">
                         <i class="ti ti-plus me-1"></i>Nuova Zona
                     </button>` : ''}
                 </div>
@@ -245,11 +241,46 @@ function renderZonesTab(zones) {
 }
 
 function setupZonesActions(zones) {
+    // Zone search
+    const searchInput = document.getElementById('input-zone-search');
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            const term = e.target.value.toLowerCase();
+            document.querySelectorAll('.zone-row').forEach(row => {
+                const name = row.querySelector('strong').textContent.toLowerCase();
+                const desc = row.querySelector('.text-muted').textContent.toLowerCase();
+                if (name.includes(term) || desc.includes(term)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        });
+    }
+
     // New zone
     document.getElementById('btn-new-zone')?.addEventListener('click', () => {
         new bootstrap.Modal(document.getElementById('modal-new-zone')).show();
+        // Reset fields
+        const fwdGroup = document.getElementById('new-zone-fwd-group');
+        if (fwdGroup) fwdGroup.style.display = 'none';
+        const typeSelect = document.getElementById('new-zone-type');
+        if(typeSelect) typeSelect.value = 'master';
     });
     document.getElementById('btn-create-zone')?.addEventListener('click', createZone);
+
+    // Toggle forward servers visibility on new zone
+    document.getElementById('new-zone-type')?.addEventListener('change', (e) => {
+        const fwdGroup = document.getElementById('new-zone-fwd-group');
+        if (fwdGroup) fwdGroup.style.display = e.target.value !== 'master' ? '' : 'none';
+    });
+
+    // Toggle forward servers visibility on edit zone
+    document.getElementById('edit-zone-type')?.addEventListener('change', (e) => {
+        const fwdGroup = document.getElementById('edit-zone-fwd-group');
+        if (fwdGroup) fwdGroup.style.display = e.target.value !== 'master' ? '' : 'none';
+    });
+
 
     // Zone row click
     document.querySelectorAll('.zone-row').forEach(row => {
@@ -304,6 +335,11 @@ async function createZone() {
         return;
     }
 
+    if (zoneType !== 'master' && !forwardServers) {
+        showToast('I server DNS remoti sono obbligatori per le zone forward/stub', 'error');
+        return;
+    }
+
     const data = { name, zone_type: zoneType, description };
     if (zoneType !== 'master' && forwardServers) {
         const servers = forwardServers.split(',').map(s => s.trim()).filter(Boolean);
@@ -318,132 +354,6 @@ async function createZone() {
             showToast(`Zona creata — attenzione: ${result.apply_message}`, 'warning');
         }
         bootstrap.Modal.getInstance(document.getElementById('modal-new-zone'))?.hide();
-        await renderDashboard(currentContainer);
-    } catch (err) { showToast(err.message, 'error'); }
-}
-
-// ============================================================
-//  FORWARDERS TAB
-// ============================================================
-
-function renderForwardersTab(forwarders) {
-    const content = document.getElementById('dns-tab-content');
-    if (!content) return;
-
-    content.innerHTML = `
-        <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <div>
-                    <h4 class="mb-0">Forwarder Condizionali</h4>
-                    <small class="text-muted">Instrada le query DNS per domini specifici verso server dedicati</small>
-                </div>
-                ${canManage ? `
-                <button class="btn btn-primary" id="btn-new-fwd">
-                    <i class="ti ti-plus me-1"></i>Nuovo Forwarder
-                </button>` : ''}
-            </div>
-            ${forwarders.length === 0 ? `
-                <div class="text-center py-5 text-muted">
-                    <i class="ti ti-arrows-right" style="font-size: 3rem;"></i>
-                    <p class="mt-2">Nessun forwarder condizionale configurato</p>
-                    <small>I forwarder permettono di instradare query per domini specifici verso DNS dedicati</small>
-                </div>
-            ` : `
-                <div class="table-responsive">
-                    <table class="table table-vcenter">
-                        <thead>
-                            <tr>
-                                <th style="width: 50px;">Attivo</th>
-                                <th>Dominio</th>
-                                <th>Server DNS</th>
-                                <th>Descrizione</th>
-                                <th class="w-1"></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${forwarders.map(f => {
-        let servers = [];
-        try { servers = JSON.parse(f.servers); } catch (e) { servers = [f.servers]; }
-        return `
-                                <tr class="${!f.enabled ? 'text-muted' : ''}">
-                                    <td>
-                                        ${canManage ? `
-                                        <label class="form-check form-switch mb-0">
-                                            <input class="form-check-input fwd-toggle" type="checkbox"
-                                                   data-id="${f.id}" ${f.enabled ? 'checked' : ''}>
-                                        </label>` : `
-                                        <span class="status-dot ${f.enabled ? 'bg-success' : 'bg-secondary'}"></span>`}
-                                    </td>
-                                    <td><strong>${escapeHtml(f.domain)}</strong></td>
-                                    <td>${servers.map(s => `<code>${escapeHtml(s)}</code>`).join(', ')}</td>
-                                    <td><small class="text-muted">${escapeHtml(f.description || '—')}</small></td>
-                                    <td>
-                                        ${canManage ? `
-                                        <button class="btn btn-sm btn-ghost-danger btn-delete-fwd" data-id="${f.id}" title="Elimina">
-                                            <i class="ti ti-trash"></i>
-                                        </button>` : ''}
-                                    </td>
-                                </tr>`;
-    }).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `}
-        </div>
-    `;
-
-    // New forwarder
-    document.getElementById('btn-new-fwd')?.addEventListener('click', () => {
-        new bootstrap.Modal(document.getElementById('modal-new-fwd')).show();
-    });
-    document.getElementById('btn-create-fwd')?.addEventListener('click', createForwarder);
-
-    // Delete forwarder
-    document.querySelectorAll('.btn-delete-fwd').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            if (!await confirmDialog('Eliminare questo forwarder?')) return;
-            try {
-                await apiDelete(`/modules/dns/forwarders/${btn.dataset.id}`);
-                showToast('Forwarder eliminato', 'success');
-                await renderDashboard(currentContainer);
-            } catch (err) { showToast(err.message, 'error'); }
-        });
-    });
-
-    // Toggle
-    document.querySelectorAll('.fwd-toggle').forEach(toggle => {
-        toggle.addEventListener('change', async () => {
-            try {
-                await apiPatch(`/modules/dns/forwarders/${toggle.dataset.id}`, { enabled: toggle.checked });
-                showToast(toggle.checked ? 'Forwarder abilitato' : 'Forwarder disabilitato', toggle.checked ? 'success' : 'warning');
-            } catch (err) {
-                toggle.checked = !toggle.checked;
-                showToast(err.message, 'error');
-            }
-        });
-    });
-}
-
-async function createForwarder() {
-    const domain = document.getElementById('new-fwd-domain')?.value.trim();
-    const serversStr = document.getElementById('new-fwd-servers')?.value.trim();
-    const description = document.getElementById('new-fwd-desc')?.value.trim();
-
-    if (!domain || !serversStr) {
-        showToast('Dominio e server sono obbligatori', 'error');
-        return;
-    }
-
-    const servers = serversStr.split(',').map(s => s.trim()).filter(Boolean);
-
-    try {
-        await apiPost('/modules/dns/forwarders', {
-            domain,
-            servers: JSON.stringify(servers),
-            description
-        });
-        showToast('Forwarder creato', 'success');
-        bootstrap.Modal.getInstance(document.getElementById('modal-new-fwd'))?.hide();
         await renderDashboard(currentContainer);
     } catch (err) { showToast(err.message, 'error'); }
 }
@@ -803,6 +713,24 @@ function setupZoneDetailActions(zone, zoneId) {
 
     // Edit zone
     document.getElementById('btn-edit-zone')?.addEventListener('click', () => {
+        // Populate edit modal fields
+        document.getElementById('edit-zone-type').value = zone.zone_type;
+        const fwdGroup = document.getElementById('edit-zone-fwd-group');
+        if (fwdGroup) {
+            fwdGroup.style.display = zone.zone_type !== 'master' ? '' : 'none';
+        }
+        
+        let fwdServers = '';
+        if (zone.forward_servers) {
+            try {
+                fwdServers = JSON.parse(zone.forward_servers).join(', ');
+            } catch (e) {
+                fwdServers = zone.forward_servers;
+            }
+        }
+        const fwdInput = document.getElementById('edit-zone-fwd-servers');
+        if (fwdInput) fwdInput.value = fwdServers;
+
         new bootstrap.Modal(document.getElementById('modal-edit-zone')).show();
     });
     document.getElementById('btn-save-zone')?.addEventListener('click', () => saveZone(zoneId));
@@ -855,10 +783,24 @@ async function saveZone(zoneId) {
     const desc = document.getElementById('edit-zone-desc')?.value.trim();
     const ttl = document.getElementById('edit-zone-ttl')?.value;
     const enabled = document.getElementById('edit-zone-enabled')?.checked;
+    const zoneType = document.getElementById('edit-zone-type')?.value;
+    const forwardServers = document.getElementById('edit-zone-fwd-servers')?.value.trim();
 
     data.description = desc;
     if (ttl) data.ttl_default = parseInt(ttl);
     data.enabled = enabled;
+    data.zone_type = zoneType;
+
+    if (zoneType !== 'master') {
+        if (!forwardServers) {
+            showToast('I server DNS remoti sono obbligatori per le zone forward/stub', 'error');
+            return;
+        }
+        const servers = forwardServers.split(',').map(s => s.trim()).filter(Boolean);
+        data.forward_servers = JSON.stringify(servers);
+    } else {
+        data.forward_servers = null; // Clear if changed back to master
+    }
 
     try {
         const result = await apiPatch(`/modules/dns/zones/${zoneId}`, data);
@@ -1037,52 +979,9 @@ function renderNewZoneModal() {
                     </div>
                 </div>
             </div>
-        </div>
-        <script>
-            document.addEventListener('change', (e) => {
-                if (e.target.id === 'new-zone-type') {
-                    const fwdGroup = document.getElementById('new-zone-fwd-group');
-                    if (fwdGroup) fwdGroup.style.display = e.target.value !== 'master' ? '' : 'none';
-                }
-            });
-        </script>`;
-}
-
-function renderNewForwarderModal() {
-    return `
-        <div class="modal fade" id="modal-new-fwd" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Nuovo Forwarder Condizionale</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label class="form-label">Dominio</label>
-                            <input type="text" class="form-control" id="new-fwd-domain" placeholder="es. corp.internal">
-                            <small class="form-hint">Le query per questo dominio saranno instradate ai server specificati</small>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Server DNS</label>
-                            <input type="text" class="form-control" id="new-fwd-servers" placeholder="10.0.0.1, 10.0.0.2">
-                            <small class="form-hint">IP separati da virgola</small>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Descrizione (opzionale)</label>
-                            <input type="text" class="form-control" id="new-fwd-desc" placeholder="es. DNS aziendale">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn btn-outline-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-create-fwd">
-                            <i class="ti ti-check me-1"></i>Crea Forwarder
-                        </button>
-                    </div>
-                </div>
-            </div>
         </div>`;
 }
+
 
 function renderNewRecordModal(zone) {
     return `
@@ -1240,6 +1139,19 @@ function renderEditZoneModal(zone) {
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">Tipo</label>
+                            <select class="form-select" id="edit-zone-type">
+                                <option value="master">Master — gestisci i record manualmente</option>
+                                <option value="forward">Forward — inoltra a un DNS remoto</option>
+                                <option value="stub">Stub — delega a un DNS remoto</option>
+                            </select>
+                        </div>
+                        <div class="mb-3" id="edit-zone-fwd-group" style="display:none;">
+                            <label class="form-label">Server DNS remoti</label>
+                            <input type="text" class="form-control" id="edit-zone-fwd-servers" placeholder="10.0.0.1, 10.0.0.2">
+                            <small class="form-hint">IP separati da virgola</small>
+                        </div>
                         <div class="mb-3">
                             <label class="form-label">Descrizione</label>
                             <input type="text" class="form-control" id="edit-zone-desc" value="${escapeHtml(zone.description || '')}">

@@ -67,18 +67,6 @@ class DnsRecord(SQLModel, table=True):
     zone: "DnsZone" = Relationship(back_populates="records")
 
 
-class DnsForwarder(SQLModel, table=True):
-    """Conditional DNS forwarder (domain → specific DNS servers)."""
-    __tablename__ = "dns_forwarder"
-
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    domain: str = Field(max_length=255, index=True)     # e.g. "corp.internal"
-    servers: str = Field(max_length=500)                 # JSON array of DNS IPs
-    enabled: bool = Field(default=True)
-    description: str = Field(default="", max_length=500)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
 # --- Pydantic Schemas ---
 
 # Settings
@@ -176,30 +164,6 @@ class DnsRecordUpdate(SQLModel):
     port: Optional[int] = None
 
 
-# Forwarders
-class DnsForwarderCreate(SQLModel):
-    domain: str
-    servers: str  # JSON array
-    enabled: bool = True
-    description: str = ""
-
-
-class DnsForwarderRead(SQLModel):
-    id: uuid.UUID
-    domain: str
-    servers: str
-    enabled: bool
-    description: str
-    created_at: datetime
-
-
-class DnsForwarderUpdate(SQLModel):
-    domain: Optional[str] = None
-    servers: Optional[str] = None
-    enabled: Optional[bool] = None
-    description: Optional[str] = None
-
-
 # Service status
 class DnsServiceStatus(SQLModel):
     """Service status response."""
@@ -209,5 +173,4 @@ class DnsServiceStatus(SQLModel):
     mode: str = "recursive"
     total_zones: int = 0
     total_records: int = 0
-    total_forwarders: int = 0
     config_valid: Optional[bool] = None

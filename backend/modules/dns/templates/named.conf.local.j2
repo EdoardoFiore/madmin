@@ -36,16 +36,3 @@ zone "{{ zone.name }}" {
 
 {% endif %}
 {% endfor %}
-{% for fwd in forwarders %}
-// Conditional forwarder: {{ fwd.domain }} → {{ fwd.servers }}
-zone "{{ fwd.domain }}" {
-    type forward;
-    forward only;
-    forwarders {
-{% for srv in fwd.servers_list %}
-        {{ srv }};
-{% endfor %}
-    };
-};
-
-{% endfor %}

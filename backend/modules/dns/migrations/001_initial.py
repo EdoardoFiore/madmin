@@ -11,7 +11,7 @@ async def upgrade(session: AsyncSession) -> None:
     """Create DNS module tables."""
     # Import models to register them in SQLModel metadata
     from modules.dns.models import (
-        DnsSettings, DnsZone, DnsRecord, DnsForwarder
+        DnsSettings, DnsZone, DnsRecord
     )
 
     # Import the engine directly from database module
@@ -29,7 +29,7 @@ async def downgrade(session: AsyncSession) -> None:
     from core.database import engine
     from sqlalchemy import text
 
-    tables = ["dns_record", "dns_forwarder", "dns_zone", "dns_settings"]
+    tables = ["dns_record", "dns_zone", "dns_settings"]
 
     async with engine.begin() as conn:
         for table in tables:

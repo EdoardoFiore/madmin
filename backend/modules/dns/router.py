@@ -21,7 +21,6 @@ from .models import (
     DnsSettings, DnsSettingsUpdate,
     DnsZone, DnsZoneCreate, DnsZoneRead, DnsZoneUpdate,
     DnsRecord, DnsRecordCreate, DnsRecordRead, DnsRecordUpdate,
-    DnsForwarder, DnsForwarderCreate, DnsForwarderRead, DnsForwarderUpdate,
 )
 from .service import dns_service
 
@@ -222,12 +221,28 @@ async def create_zone(
             detail=f"La zona '{data.name}' esiste già"
         )
 
-    # Validate zone type
+    # Validate zone type and forward servers
     if data.zone_type not in ("master", "forward", "stub"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Tipo zona non valido. Validi: master, forward, stub"
         )
+        
+    if data.zone_type in ("forward", "stub"):
+        if not data.forward_servers:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="I server DNS remoti sono obbligatori per le zone forward/stub"
+            )
+        try:
+            servers = json.loads(data.forward_servers)
+            if not isinstance(servers, list) or not servers:
+                raise ValueError()
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="servers deve essere un array JSON valido di indirizzi IP"
+            )
 
     zone = DnsZone(**data.dict())
     session.add(zone)
@@ -314,6 +329,25 @@ async def update_zone(
         valid, msg = dns_service.validate_zone_name(update_data["name"])
         if not valid:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+            
+    # Validate forward servers if changing zone type or servers
+    new_type = update_data.get("zone_type", zone.zone_type)
+    if new_type in ("forward", "stub"):
+        new_servers = update_data.get("forward_servers", zone.forward_servers)
+        if not new_servers:
+             raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="I server DNS remoti sono obbligatori per le zone forward/stub"
+            )
+        try:
+            servers = json.loads(new_servers)
+            if not isinstance(servers, list) or not servers:
+                 raise ValueError()
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="servers deve essere un array JSON valido di indirizzi IP"
+            )
 
     for key, value in update_data.items():
         setattr(zone, key, value)
@@ -526,109 +560,6 @@ async def delete_record(
     zone = zone_result.scalar_one_or_none()
     if zone:
         await dns_service.apply_single_zone(session, zone)
-
-
-# ============================================================
-#  FORWARDERS
-# ============================================================
-
-@router.get("/forwarders")
-async def list_forwarders(
-    session: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("dns.view")),
-):
-    """List conditional forwarders."""
-    result = await session.execute(
-        select(DnsForwarder).order_by(DnsForwarder.domain)
-    )
-    items = result.scalars().all()
-
-    return [
-        {
-            "id": str(f.id),
-            "domain": f.domain,
-            "servers": f.servers,
-            "enabled": f.enabled,
-            "description": f.description,
-            "created_at": f.created_at.isoformat(),
-        }
-        for f in items
-    ]
-
-
-@router.post("/forwarders", status_code=status.HTTP_201_CREATED)
-async def create_forwarder(
-    data: DnsForwarderCreate,
-    session: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("dns.manage")),
-):
-    """Create a conditional forwarder."""
-    valid, msg = dns_service.validate_zone_name(data.domain)
-    if not valid:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
-
-    # Parse/validate servers JSON
-    try:
-        servers = json.loads(data.servers)
-        if not isinstance(servers, list) or not servers:
-            raise ValueError()
-    except (json.JSONDecodeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="servers deve essere un array JSON di indirizzi IP"
-        )
-
-    fwd = DnsForwarder(**data.dict())
-    session.add(fwd)
-    await session.commit()
-    await session.refresh(fwd)
-
-    return {
-        "id": str(fwd.id),
-        "domain": fwd.domain,
-        "servers": fwd.servers,
-        "enabled": fwd.enabled,
-        "description": fwd.description,
-        "created_at": fwd.created_at.isoformat(),
-    }
-
-
-@router.patch("/forwarders/{fwd_id}")
-async def update_forwarder(
-    fwd_id: UUID,
-    data: DnsForwarderUpdate,
-    session: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("dns.manage")),
-):
-    """Update a conditional forwarder."""
-    result = await session.execute(select(DnsForwarder).where(DnsForwarder.id == fwd_id))
-    fwd = result.scalar_one_or_none()
-    if not fwd:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forwarder non trovato")
-
-    update_data = data.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(fwd, key, value)
-
-    session.add(fwd)
-    await session.commit()
-    return {"message": "Forwarder aggiornato", "id": str(fwd.id)}
-
-
-@router.delete("/forwarders/{fwd_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_forwarder(
-    fwd_id: UUID,
-    session: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("dns.manage")),
-):
-    """Delete a conditional forwarder."""
-    result = await session.execute(select(DnsForwarder).where(DnsForwarder.id == fwd_id))
-    fwd = result.scalar_one_or_none()
-    if not fwd:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Forwarder non trovato")
-
-    await session.delete(fwd)
-    await session.commit()
 
 
 # ============================================================
