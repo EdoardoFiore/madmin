@@ -14,6 +14,9 @@ from .service import network_service, netplan_service
 
 router = APIRouter(prefix="/api/network", tags=["network"])
 
+# Interfaces managed externally (e.g. cloud-init) — read-only via API
+PROTECTED_INTERFACES = {"eth0"}
+
 
 class NetplanConfig(BaseModel):
     """Schema for netplan interface configuration."""
@@ -112,6 +115,11 @@ async def set_interface_config(
     Creates a new config file: /etc/netplan/99-madmin-{interface}.yaml
     Does NOT apply automatically - use /apply endpoint.
     """
+    if interface in PROTECTED_INTERFACES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"L'interfaccia {interface} (WAN) non è modificabile."
+        )
     success, message = netplan_service.set_interface_config(
         interface=interface,
         dhcp4=config.dhcp4,
@@ -138,6 +146,11 @@ async def delete_interface_config(
     Only deletes 99-madmin-{interface}.yaml files.
     Does NOT apply automatically - use /apply endpoint.
     """
+    if interface in PROTECTED_INTERFACES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"L'interfaccia {interface} (WAN) non è modificabile."
+        )
     success, message = netplan_service.delete_interface_config(interface)
     
     if not success:

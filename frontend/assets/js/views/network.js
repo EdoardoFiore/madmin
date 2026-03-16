@@ -184,6 +184,7 @@ function renderInterfaceCard(iface) {
     const statusClass = isUp ? 'bg-green-lt' : 'bg-secondary-lt';
     const statusText = isUp ? 'Attiva' : 'Inattiva';
     const canManage = checkPermission('settings.manage');
+    const isWAN = iface.name === 'eth0';
 
     // Determine interface type icon
     let icon = 'ti-network';
@@ -206,6 +207,7 @@ function renderInterfaceCard(iface) {
             netplanBadge = '<span class="badge bg-purple-lt ms-1">Statico</span>';
         }
     }
+    const wanBadge = isWAN ? '<span class="badge bg-orange-lt ms-1">WAN</span>' : '';
 
     return `
         <div class="col-md-6 col-lg-4">
@@ -220,11 +222,16 @@ function renderInterfaceCard(iface) {
                             <span class="badge ${statusClass}">${statusText}</span>
                             ${iface.speed > 0 ? `<span class="badge bg-azure-lt ms-1">${iface.speed} Mbps</span>` : ''}
                             ${netplanBadge}
+                            ${wanBadge}
                         </div>
-                        ${canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') ? `
+                        ${canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isWAN ? `
                         <button class="btn btn-sm btn-ghost-primary" data-configure-iface="${iface.name}" title="Configura">
                             <i class="ti ti-settings"></i>
                         </button>
+                        ` : isWAN ? `
+                        <span class="text-muted" title="Interfaccia non modificabile" style="padding: 0.25rem 0.5rem;">
+                            <i class="ti ti-lock"></i>
+                        </span>
                         ` : ''}
                     </div>
                     
@@ -270,6 +277,11 @@ function renderInterfaceCard(iface) {
                         <div class="mt-2 text-center small text-danger">
                             <i class="ti ti-alert-triangle"></i>
                             Errori: ${iface.errors_in} in / ${iface.errors_out} out
+                        </div>
+                    ` : ''}
+                    ${isWAN ? `
+                        <div class="mt-2 text-center small text-muted">
+                            <i class="ti ti-lock"></i> Interfaccia in sola lettura
                         </div>
                     ` : ''}
                 </div>
