@@ -5,7 +5,7 @@
  */
 
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
+import { showToast, confirmDialog, loadingSpinner, isValidCIDR } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 
 let currentInstanceId = null;
@@ -474,10 +474,15 @@ function setupEventHandlers(container) {
         const modal = document.getElementById('modal-add-rule');
         const editRuleId = modal?.dataset.editRuleId;
         const protocol = document.getElementById('rule-protocol').value;
+        const destRaw = document.getElementById('rule-destination').value.trim();
+        if (destRaw && !isValidCIDR(destRaw)) {
+            showToast('Destinazione non valida. Usa il formato CIDR (es. 10.0.0.0/24 o 192.168.1.1/32)', 'error');
+            return;
+        }
         const data = {
             action: document.getElementById('rule-action').value,
             protocol: protocol,
-            destination: document.getElementById('rule-destination').value.trim() || '0.0.0.0/0',
+            destination: destRaw || '0.0.0.0/0',
             port: (protocol === 'tcp' || protocol === 'udp') ? (document.getElementById('rule-port').value.trim() || null) : null,
             description: document.getElementById('rule-description').value.trim()
         };

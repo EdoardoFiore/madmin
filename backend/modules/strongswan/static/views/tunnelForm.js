@@ -6,7 +6,7 @@
  */
 
 import {
-    apiPost, apiPatch, showToast, escapeHtml,
+    apiPost, apiPatch, showToast, escapeHtml, isValidIP,
     CRYPTO_OPTIONS, getEncryptionOptions, getDhGroups,
     buildProposal, parseProposal, selectOptions
 } from '/static/modules/strongswan/views/utils.js';
@@ -418,6 +418,14 @@ async function saveTunnel() {
     }
     if (!remoteAddress) {
         showToast('Inserisci l\'indirizzo del remote gateway', 'error');
+        return;
+    }
+    if (/^\d/.test(remoteAddress) && !isValidIP(remoteAddress)) {
+        showToast('Remote gateway non valido. Inserisci un indirizzo IPv4 o un hostname', 'error');
+        return;
+    }
+    if (!localAuto && localAddress && !isValidIP(localAddress)) {
+        showToast('Local gateway non valido. Inserisci un indirizzo IPv4', 'error');
         return;
     }
     if (!isEdit && !psk) {

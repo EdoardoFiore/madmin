@@ -3,9 +3,10 @@ MADMIN Network Router
 
 API endpoints for network interface information and netplan configuration.
 """
+import ipaddress
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from core.auth.dependencies import get_current_user, require_permission
 from core.auth.models import User
 
@@ -22,6 +23,50 @@ class NetplanConfig(BaseModel):
     gateway: Optional[str] = None
     dns_servers: Optional[List[str]] = None
     mtu: Optional[int] = None
+
+    @field_validator('addresses', mode='before')
+    @classmethod
+    def validate_addresses(cls, v):
+        if not v:
+            return v
+        for addr in v:
+            try:
+                ipaddress.IPv4Interface(addr)
+            except ValueError:
+                raise ValueError(f"Indirizzo IP non valido: '{addr}'. Usa il formato CIDR (es. 192.168.1.100/24)")
+        return v
+
+    @field_validator('gateway', mode='before')
+    @classmethod
+    def validate_gateway(cls, v):
+        if not v:
+            return v
+        try:
+            ipaddress.IPv4Address(v)
+        except ValueError:
+            raise ValueError(f"Gateway non valido: '{v}'. Inserisci un indirizzo IPv4")
+        return v
+
+    @field_validator('dns_servers', mode='before')
+    @classmethod
+    def validate_dns_servers(cls, v):
+        if not v:
+            return v
+        for dns in v:
+            try:
+                ipaddress.IPv4Address(dns)
+            except ValueError:
+                raise ValueError(f"DNS server non valido: '{dns}'. Inserisci un indirizzo IPv4")
+        return v
+
+    @field_validator('mtu', mode='before')
+    @classmethod
+    def validate_mtu(cls, v):
+        if v is None:
+            return v
+        if not (576 <= int(v) <= 9000):
+            raise ValueError("MTU deve essere compreso tra 576 e 9000")
+        return v
 
 
 @router.get("/interfaces")

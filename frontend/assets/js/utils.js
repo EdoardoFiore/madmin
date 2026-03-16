@@ -326,6 +326,24 @@ export function inputDialog(title, label, placeholder = '', type = 'text') {
 }
 
 /**
+ * Validate IPv4 CIDR notation (e.g. 192.168.1.1/24)
+ * @param {string} val
+ * @returns {boolean}
+ */
+export function isValidCIDR(val) {
+    return /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(val);
+}
+
+/**
+ * Validate IPv4 address (e.g. 192.168.1.1)
+ * @param {string} val
+ * @returns {boolean}
+ */
+export function isValidIP(val) {
+    return /^(\d{1,3}\.){3}\d{1,3}$/.test(val);
+}
+
+/**
  * Copy text to clipboard with fallback
  * @param {string} text 
  * @returns {Promise<boolean>}

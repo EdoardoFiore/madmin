@@ -5,10 +5,10 @@
  */
 
 import { apiGet, apiPost, apiDelete, apiPatch, apiPut } from '/static/js/api.js';
-import { showToast, confirmDialog, escapeHtml } from '/static/js/utils.js';
+import { showToast, confirmDialog, escapeHtml, isValidCIDR, isValidIP } from '/static/js/utils.js';
 
 // Re-export for convenience
-export { apiGet, apiPost, apiDelete, apiPatch, apiPut, showToast, confirmDialog, escapeHtml };
+export { apiGet, apiPost, apiDelete, apiPatch, apiPut, showToast, confirmDialog, escapeHtml, isValidCIDR, isValidIP };
 
 // Status badge helper
 export function statusBadge(status) {

@@ -6,7 +6,7 @@
  */
 
 import { apiGet, apiPost, apiDelete } from '../api.js';
-import { showToast, confirmDialog } from '../utils.js';
+import { showToast, confirmDialog, isValidCIDR, isValidIP } from '../utils.js';
 import { checkPermission } from '../app.js';
 
 /**
@@ -343,11 +343,27 @@ async function saveNetplanConfig() {
             return;
         }
 
+        if (!isValidCIDR(address)) {
+            showToast('Indirizzo IP non valido. Usa il formato CIDR (es. 192.168.1.100/24)', 'error');
+            return;
+        }
+
+        if (gateway && !isValidIP(gateway)) {
+            showToast('Gateway non valido. Inserisci un indirizzo IPv4 (es. 192.168.1.1)', 'error');
+            return;
+        }
+
+        const dnsArr = dns ? dns.split(',').map(s => s.trim()).filter(Boolean) : [];
+        for (const d of dnsArr) {
+            if (!isValidIP(d)) {
+                showToast(`DNS non valido: "${d}". Inserisci indirizzi IPv4 separati da virgola`, 'error');
+                return;
+            }
+        }
+
         data.addresses = [address];
         if (gateway) data.gateway = gateway;
-        if (dns) {
-            data.dns_servers = dns.split(',').map(s => s.trim()).filter(s => s);
-        }
+        if (dnsArr.length > 0) data.dns_servers = dnsArr;
     }
 
     const mtu = document.getElementById('netplan-mtu').value;
