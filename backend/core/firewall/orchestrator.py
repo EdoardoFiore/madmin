@@ -156,8 +156,8 @@ class FirewallOrchestrator:
     ) -> None:
         """
         Rebuild jump rules for a parent chain based on priorities.
-        
-        Order: Core MADMIN chain first (highest priority) -> Module chains (by priority)
+
+        Order: Module chains first (by priority) → Core MADMIN chain last (default policy)
         """
         # Get all module chains for this parent, ordered by priority
         result = await session.execute(
@@ -167,29 +167,27 @@ class FirewallOrchestrator:
             .order_by(ModuleChain.priority)
         )
         module_chains = result.scalars().all()
-        
+
         # Get the core MADMIN chain for this parent and table
         core_chain = iptables.get_madmin_chain(table_name, parent_chain)
-        
+
         # Remove all existing jumps to module chains and core chain
         for mc in module_chains:
             iptables.remove_jump_rule(parent_chain, mc.chain_name, table_name)
         if core_chain:
             iptables.remove_jump_rule(parent_chain, core_chain, table_name)
-        
-        # Re-add jumps in correct priority order
-        # MADMIN core chain FIRST (highest priority), then modules by priority
+
+        # Re-add jumps: module chains first (by priority), MADMIN core chain last
         position = 1
-        
-        # Core chain comes first (machine firewall rules have priority)
-        if core_chain:
-            iptables.ensure_jump_rule(parent_chain, core_chain, table_name, position)
-            position += 1
-        
-        # Module chains follow in priority order (lower priority number = higher priority)
+
+        # Module chains come first (lower priority number = processed first)
         for mc in module_chains:
             iptables.ensure_jump_rule(parent_chain, mc.chain_name, table_name, position)
             position += 1
+
+        # Core MADMIN chain last (acts as default policy after all modules)
+        if core_chain:
+            iptables.ensure_jump_rule(parent_chain, core_chain, table_name, position)
     
     # --- Rule Management ---
     

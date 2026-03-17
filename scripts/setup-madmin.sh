@@ -405,6 +405,29 @@ else
 fi
 rm -f /tmp/madmin_init.json
 
+# Import regole firewall di default
+log_info "Import regole firewall di default..."
+LOGIN_BODY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.urlencode({'username':sys.argv[1],'password':sys.argv[2],'grant_type':'password'}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
+TOKEN_RESPONSE=$(curl -s -X POST http://localhost:8000/api/auth/token \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "$LOGIN_BODY")
+JWT_TOKEN=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('access_token',''))" "$TOKEN_RESPONSE")
+
+if [ -n "$JWT_TOKEN" ] && [ -f "$INSTALL_DIR/backend/default_rules.json" ]; then
+    IMPORT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "http://localhost:8000/api/firewall/import?mode=replace" \
+        -H "Authorization: Bearer $JWT_TOKEN" \
+        -F "file=@$INSTALL_DIR/backend/default_rules.json")
+    if [ "$IMPORT_HTTP" = "200" ]; then
+        log_success "Regole firewall di default importate."
+    else
+        log_warning "Import regole firewall fallito (HTTP $IMPORT_HTTP). Applicare manualmente dalla UI."
+    fi
+    rm -f "$INSTALL_DIR/backend/default_rules.json"
+else
+    log_warning "JWT non disponibile o file regole mancante. Import firewall saltato."
+fi
+
 # --- Completato ---
 echo ""
 log_success "=========================================="
