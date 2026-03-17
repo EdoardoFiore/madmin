@@ -182,6 +182,9 @@ class FirewallOrchestrator:
 
         # Module chains come first (lower priority number = processed first)
         for mc in module_chains:
+            if not iptables.chain_exists(mc.chain_name, table_name):
+                logger.debug(f"Skipping jump to {mc.chain_name}: chain not yet created in iptables")
+                continue
             iptables.ensure_jump_rule(parent_chain, mc.chain_name, table_name, position)
             position += 1
 
