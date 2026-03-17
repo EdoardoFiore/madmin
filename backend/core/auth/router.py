@@ -59,6 +59,46 @@ class TwoFactorDisableRequest(BaseModel):
     password: str
 
 
+class InitAdminRequest(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/init", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def init_first_user(
+    data: InitAdminRequest,
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Crea il primo utente superuser. Funziona solo se non esistono ancora utenti.
+    Chiamato dallo script di installazione — non richiede autenticazione.
+    """
+    if len(data.password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La password deve essere di almeno 6 caratteri"
+        )
+    try:
+        user = await service.create_first_user(session, data.username, data.password)
+        return UserResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser,
+            totp_enabled=user.totp_enabled,
+            totp_enforced=user.totp_enforced,
+            created_at=user.created_at,
+            last_login=user.last_login,
+            permissions=["*"]
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Setup già completato: utenti già presenti"
+        )
+
+
 @router.post("/token")
 async def login(
     request: Request,
@@ -316,11 +356,12 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     
-    # ADMIN PROTECTION: Only admin can modify the admin account
-    if user.username == "admin" and current_user.username != "admin":
+    # Root user protection: the first created user can only be modified by themselves
+    root_id = await service.get_root_user_id(session)
+    if user.id == root_id and current_user.id != root_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="L'account admin può essere modificato solo da admin stesso"
+            detail="Il primo utente può essere modificato solo da se stesso"
         )
     
     # Prevent non-superusers from creating superusers
@@ -670,8 +711,9 @@ async def can_edit_user(
         can_change_password = True
         can_delete = False
     
-    # Admin can only be modified by admin
-    if user.username == "admin" and current_user.username != "admin":
+    # Root user can only be modified by themselves
+    root_id = await service.get_root_user_id(session)
+    if user.id == root_id and current_user.id != root_id:
         can_edit = False
         can_change_password = False
         can_delete = False

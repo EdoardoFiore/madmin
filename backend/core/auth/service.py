@@ -11,7 +11,7 @@ from typing import Optional, List
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 import uuid
 import logging
@@ -299,21 +299,29 @@ async def init_core_permissions(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def init_default_admin(session: AsyncSession) -> None:
+async def get_root_user_id(session: AsyncSession) -> Optional[int]:
+    """Return the ID of the first created user (minimum ID), used as the root/protected account."""
+    result = await session.execute(select(func.min(User.id)))
+    return result.scalar_one_or_none()
+
+
+async def create_first_user(session: AsyncSession, username: str, password: str) -> User:
     """
-    Create default admin user if no users exist.
-    Called during application startup.
+    Create the first superuser. Fails if any users already exist.
+    Called by POST /api/auth/init during initial setup.
     """
     result = await session.execute(select(User).limit(1))
     if result.scalar_one_or_none() is not None:
-        return  # Users exist, skip
-    
-    admin = User(
-        username="admin",
-        email="admin@localhost",
-        hashed_password=get_password_hash("admin"),
+        raise ValueError("Setup already completed: users already exist")
+
+    user = User(
+        username=username,
+        email=f"{username}@localhost",
+        hashed_password=get_password_hash(password),
         is_superuser=True
     )
-    session.add(admin)
+    session.add(user)
     await session.commit()
-    logger.info("Created default admin user (username: admin, password: admin)")
+    await session.refresh(user)
+    logger.info(f"Created first superuser: {username}")
+    return user

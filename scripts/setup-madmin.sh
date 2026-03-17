@@ -53,6 +53,18 @@ EOF
     echo -e "\033[0m"
 }
 
+# --- Argomenti ---
+ADMIN_USERNAME="admin"
+ADMIN_PASSWORD="admin"
+
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -u|--username) ADMIN_USERNAME="$2"; shift ;;
+        -p|--password) ADMIN_PASSWORD="$2"; shift ;;
+    esac
+    shift
+done
+
 # --- Check Root ---
 if [[ $EUID -ne 0 ]]; then
     log_error "Questo script deve essere eseguito come root. Usa 'sudo bash setup-madmin.sh'"
@@ -380,6 +392,19 @@ else
     log_error "Servizio MADMIN non attivo. Controlla: journalctl -u madmin -f"
 fi
 
+# Crea utente amministratore iniziale
+log_info "Creazione utente amministratore..."
+INIT_BODY=$(python3 -c "import json,sys; print(json.dumps({'username':sys.argv[1],'password':sys.argv[2]}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
+INIT_HTTP=$(curl -s -o /tmp/madmin_init.json -w "%{http_code}" -X POST http://localhost:8000/api/auth/init \
+    -H "Content-Type: application/json" \
+    -d "$INIT_BODY")
+if [ "$INIT_HTTP" = "201" ]; then
+    log_success "Utente amministratore creato: $ADMIN_USERNAME"
+else
+    log_error "Errore nella creazione dell'utente amministratore (HTTP $INIT_HTTP): $(cat /tmp/madmin_init.json)"
+fi
+rm -f /tmp/madmin_init.json
+
 # --- Completato ---
 echo ""
 log_success "=========================================="
@@ -388,9 +413,9 @@ log_success "=========================================="
 echo ""
 echo "Dashboard: https://$PUBLIC_IP:7443"
 echo ""
-echo "Credenziali Default:"
-echo "  Username: admin"
-echo "  Password: admin"
+echo "Credenziali Amministratore:"
+echo "  Username: $ADMIN_USERNAME"
+echo "  Password: (quella specificata al momento dell'installazione)"
 echo ""
 echo "Database:"
 echo "  Nome: $DB_NAME"

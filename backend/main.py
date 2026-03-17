@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     
     # Import here to avoid circular imports
     from core.database import init_db, async_session_maker
-    from core.auth.service import init_core_permissions, init_default_admin
+    from core.auth.service import init_core_permissions
     from core.firewall.orchestrator import firewall_orchestrator
     from core.modules.loader import module_loader
     
@@ -48,11 +48,9 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     
-    # Initialize core permissions and default admin
+    # Initialize core permissions
     async with async_session_maker() as session:
         await init_core_permissions(session)
-        await init_default_admin(session)
-        await session.commit()
     
     # Initialize firewall chains
     logger.info("Initializing firewall chains...")
