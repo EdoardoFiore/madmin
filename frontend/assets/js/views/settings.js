@@ -484,7 +484,7 @@ async function loadSettings() {
 
             const badge = document.getElementById('ssl-status-badge');
             if (network.certificate.is_self_signed) {
-                badge.className = 'badge bg-yellow me-2';
+                badge.className = 'badge bg-yellow-lt me-2';
                 badge.textContent = 'Self-Signed';
             } else {
                 badge.className = 'badge bg-green-lt me-2';
