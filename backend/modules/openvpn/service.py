@@ -1189,7 +1189,13 @@ class OpenVPNService:
         if not instance:
             logger.error(f"Instance {instance_id} not found")
             return False
-        
+
+        # Skip iptables operations if the instance is not running.
+        # Chains won't exist until the instance is started; rules will be applied then.
+        if not OpenVPNService.get_instance_status(instance_id):
+            logger.info(f"Instance {instance_id} is not running, skipping iptables")
+            return True
+
         # Instance forward chain name
         chain_id = instance_id.replace('tun', '') if instance_id.startswith('tun') else instance_id
         instance_fwd_chain = f"OVPN_{chain_id}_FWD"

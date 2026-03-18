@@ -876,7 +876,13 @@ PersistentKeepalive = 25
         if not instance:
             logger.error(f"Instance {instance_id} not found")
             return False
-        
+
+        # Skip iptables operations if the instance interface is not running.
+        # Chains won't exist until the instance is started; rules will be applied then.
+        if not WireGuardService.get_interface_status(instance.interface):
+            logger.info(f"Instance {instance_id} interface {instance.interface} is not running, skipping iptables")
+            return True
+
         # Instance forward chain name - strip wg_ prefix if present
         chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
         instance_fwd_chain = f"WG_{chain_id}_FWD"
