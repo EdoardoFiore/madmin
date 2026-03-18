@@ -662,8 +662,9 @@ async function renderInstanceDetail(container) {
                         <div class="accordion" id="accordionOverrides">
                             <div class="accordion-item">
                                 <h2 class="accordion-header">
-                                    <button class="accordion-button collapsed" type="button" 
-                                            data-bs-toggle="collapse" data-bs-target="#collapseOverrides">
+                                    <button class="accordion-button collapsed" type="button"
+                                            data-bs-toggle="collapse" data-bs-target="#collapseOverrides"
+                                            style="font-size: 0.9375rem;">
                                         <i class="ti ti-settings me-2"></i>Configurazione Personalizzata
                                     </button>
                                 </h2>
