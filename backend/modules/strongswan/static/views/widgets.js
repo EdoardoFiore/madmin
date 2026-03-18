@@ -109,7 +109,7 @@ export const widgets = {
                                         <div class="ms-3">
                                             ${t.children.map(c => `
                                                 <div class="d-flex align-items-center py-1" style="font-size: 0.7rem;">
-                                                    <span class="badge ${c.is_up ? 'bg-green' : 'bg-secondary'} me-2" 
+                                                    <span class="badge ${c.is_up ? 'bg-green-lt' : 'bg-secondary-lt'} me-2" 
                                                           style="width: 8px; height: 8px; padding: 0; border-radius: 50%;"></span>
                                                     <span class="text-muted">${c.name}</span>
                                                     <span class="ms-auto text-muted">

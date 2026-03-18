@@ -56,7 +56,7 @@ export const widgets = {
                             </div>
                         </div>
                         <div class="mt-2 text-center">
-                            <span class="badge ${status.running ? 'bg-green' : 'bg-red'}">
+                            <span class="badge ${status.running ? 'bg-green-lt' : 'bg-red-lt'}">
                                 ${status.running ? 'Servizio attivo' : 'Servizio fermo'}
                             </span>
                             <span class="badge bg-azure-lt ms-1">${status.mode || 'recursive'}</span>

@@ -68,10 +68,10 @@ export const widgets = {
                             </div>
                         </div>
                         <div class="mt-2 text-center">
-                            <span class="badge ${status.running ? 'bg-green' : 'bg-red'}">
+                            <span class="badge ${status.running ? 'bg-green-lt' : 'bg-red-lt'}">
                                 ${status.running ? 'Servizio attivo' : 'Servizio fermo'}
                             </span>
-                            ${status.config_valid === false ? '<span class="badge bg-yellow ms-1">Config non valida</span>' : ''}
+                            ${status.config_valid === false ? '<span class="badge bg-yellow-lt ms-1">Config non valida</span>' : ''}
                         </div>
                     </div>
 

@@ -375,9 +375,8 @@ async function renderSettingsTab(settings) {
     try {
         const res = await apiGet('/network/interfaces');
         if (res && res.interfaces) {
-            const excludePrefixes = ['lo', 'wg', 'veth', 'docker', 'br', 'virbr', 'tun', 'tap'];
             interfaces = res.interfaces
-                .filter(i => !excludePrefixes.some(p => i.name.startsWith(p)) && i.ipv4)
+                .filter(i => i.ipv4)
                 .map(i => ({ name: i.name, ip: i.ipv4 }));
         }
     } catch (err) {

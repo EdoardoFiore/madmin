@@ -442,7 +442,7 @@ async function renderInstanceDetail(container) {
                     <div class="row">
                         <div class="col-md-2">
                             <span class="text-muted">Stato</span><br>
-                            <span class="badge ${instance.status === 'running' ? 'bg-success' : 'bg-secondary-lt'} fs-6">
+                            <span class="badge ${instance.status === 'running' ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6">
                                 ${instance.status === 'running' ? 'Attivo' : 'Fermo'}
                             </span>
                         </div>
@@ -557,7 +557,7 @@ async function renderInstanceDetail(container) {
                                                 </td>
                                                 <td>
                                                     <strong>${escapeHtml(c.name)}</strong>
-                                                    ${c.revoked ? '<span class="badge bg-danger ms-1">Revocato</span>' : ''}
+                                                    ${c.revoked ? '<span class="badge bg-danger-lt ms-1">Revocato</span>' : ''}
                                                 </td>
                                                 <td><code>${c.allocated_ip}</code></td>
                                                 <td>${renderCertStatus(c.cert_days_remaining, c.revoked)}</td>
@@ -960,21 +960,21 @@ async function renderInstanceDetail(container) {
 // Render certificate status badge
 function renderCertStatus(daysRemaining, revoked) {
     if (revoked) {
-        return '<span class="badge bg-danger">Revocato</span>';
+        return '<span class="badge bg-danger-lt">Revocato</span>';
     }
     if (daysRemaining === null || daysRemaining === undefined) {
-        return '<span class="badge bg-secondary">N/A</span>';
+        return '<span class="badge bg-secondary-lt">N/A</span>';
     }
     if (daysRemaining < 0) {
-        return '<span class="badge bg-danger">Scaduto</span>';
+        return '<span class="badge bg-danger-lt">Scaduto</span>';
     }
     if (daysRemaining < 30) {
-        return `<span class="badge bg-warning">${daysRemaining} giorni</span>`;
+        return `<span class="badge bg-warning-lt">${daysRemaining} giorni</span>`;
     }
     if (daysRemaining < 90) {
-        return `<span class="badge bg-info">${daysRemaining} giorni</span>`;
+        return `<span class="badge bg-info-lt">${daysRemaining} giorni</span>`;
     }
-    return `<span class="badge bg-success">${daysRemaining} giorni</span>`;
+    return `<span class="badge bg-success-lt">${daysRemaining} giorni</span>`;
 }
 
 // Load PKI status

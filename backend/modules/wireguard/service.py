@@ -220,48 +220,6 @@ AllowedIPs = {allowed_ips}
         return peers
     
     @staticmethod
-    def get_physical_interfaces() -> List[dict]:
-        """
-        List physical network interfaces.
-        Returns interfaces suitable for routing (eth*, ens*, enp*, etc.)
-        Excludes: lo, wg*, veth*, docker*, br*, virbr*
-        """
-        interfaces = []
-        excluded_prefixes = ('lo', 'wg', 'veth', 'docker', 'br-', 'virbr', 'tun', 'tap')
-        
-        try:
-            # Use /sys/class/net to list interfaces
-            import os
-            net_dir = Path('/sys/class/net')
-            if net_dir.exists():
-                for iface in net_dir.iterdir():
-                    name = iface.name
-                    # Skip excluded interfaces
-                    if name.startswith(excluded_prefixes):
-                        continue
-                    
-                    # Get interface info
-                    operstate_path = iface / 'operstate'
-                    state = 'unknown'
-                    if operstate_path.exists():
-                        state = operstate_path.read_text().strip()
-                    
-                    interfaces.append({
-                        'name': name,
-                        'state': state
-                    })
-            
-            # Sort: up interfaces first, then by name
-            interfaces.sort(key=lambda x: (x['state'] != 'up', x['name']))
-            
-        except Exception as e:
-            logger.warning(f"Could not list interfaces: {e}")
-            # Fallback to default
-            interfaces = [{'name': 'eth0', 'state': 'unknown'}]
-        
-        return interfaces
-    
-    @staticmethod
     async def allocate_client_ip(session: AsyncSession, instance: WgInstance) -> str:
         """Allocate next available IP for client."""
         network = ip_network(instance.subnet, strict=False)

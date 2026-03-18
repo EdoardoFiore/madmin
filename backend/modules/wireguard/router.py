@@ -27,6 +27,7 @@ from .models import (
     WgInstanceDefaultsUpdate, WgClientUpdate
 )
 from .service import wireguard_service, WIREGUARD_CONFIG_DIR
+from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -42,7 +43,7 @@ async def get_network_interfaces(
     Return list of physical network interfaces.
     Used for route interface selection in split tunnel mode.
     """
-    interfaces = wireguard_service.get_physical_interfaces()
+    interfaces = NetworkService.get_interfaces()
     return {"interfaces": interfaces}
 
 
