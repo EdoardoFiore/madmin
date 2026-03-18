@@ -6,12 +6,13 @@
  */
 
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
+import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 
 const MODULE_API = '/modules/openvpn';
 
 let currentInstanceId = null;
+let currentContainer = null;
 let networkInterfaces = [];  // Cache for system network interfaces
 let canManage = false;  // Permission cache
 let canClients = false;
@@ -40,14 +41,8 @@ function formatTimeAgo(isoString) {
     return date.toLocaleDateString('it-IT');
 }
 
-// Helper function to escape HTML
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 export async function render(container, params) {
+    currentContainer = container;
     // Cache permissions
     canManage = checkPermission('openvpn.manage');
     canClients = checkPermission('openvpn.clients');
@@ -583,23 +578,23 @@ async function renderInstanceDetail(container) {
                                                 <td>
                                                     <div class="btn-group">
                                                         ${!c.revoked && canClients ? `
-                                                        <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${c.name}')" title="Scarica Config">
+                                                        <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="Scarica Config">
                                                             <i class="ti ti-download"></i>
                                                         </button>
-                                                        <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${c.name}')" title="Invia via Email">
+                                                        <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="Invia via Email">
                                                             <i class="ti ti-mail"></i>
                                                         </button>
-                                                        <button class="btn btn-sm btn-outline-warning" onclick="renewClientCert('${c.name}')" title="Rinnova Certificato">
+                                                        <button class="btn btn-sm btn-outline-warning" onclick="renewClientCert('${escapeHtml(c.name)}')" title="Rinnova Certificato">
                                                             <i class="ti ti-refresh"></i>
                                                         </button>
-                                                        <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${c.name}')" title="Revoca">
+                                                        <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="Revoca">
                                                             <i class="ti ti-ban"></i>
                                                         </button>` : ''}
                                                         ${c.revoked && canClients ? `
-                                                        <button class="btn btn-sm btn-outline-success" onclick="restoreClient('${c.name}')" title="Ripristina">
+                                                        <button class="btn btn-sm btn-outline-success" onclick="restoreClient('${escapeHtml(c.name)}')" title="Ripristina">
                                                             <i class="ti ti-restore"></i>
                                                         </button>
-                                                        <button class="btn btn-sm btn-outline-danger" onclick="deleteClientPermanent('${c.name}')" title="Elimina Definitivamente">
+                                                        <button class="btn btn-sm btn-outline-danger" onclick="deleteClientPermanent('${escapeHtml(c.name)}')" title="Elimina Definitivamente">
                                                             <i class="ti ti-trash"></i>
                                                         </button>` : ''}
                                                     </div>
@@ -1054,7 +1049,7 @@ window.startInstance = async (id) => {
     try {
         await apiPost(`${MODULE_API}/instances/${id}/start`);
         showToast('Istanza avviata', 'success');
-        location.reload();
+        if (currentContainer) renderInstanceDetail(currentContainer);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1064,7 +1059,7 @@ window.stopInstance = async (id) => {
     try {
         await apiPost(`${MODULE_API}/instances/${id}/stop`);
         showToast('Istanza fermata', 'success');
-        location.reload();
+        if (currentContainer) renderInstanceDetail(currentContainer);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1151,7 +1146,7 @@ window.revokeClient = async (name) => {
         try {
             await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`);
             showToast('Client revocato', 'success');
-            location.reload();
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -1163,7 +1158,7 @@ window.renewClientCert = async (name) => {
         try {
             await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/renew`);
             showToast('Certificato rinnovato', 'success');
-            location.reload();
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -1175,7 +1170,7 @@ window.restoreClient = async (name) => {
         try {
             await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/restore`);
             showToast('Client ripristinato con nuovo certificato', 'success');
-            location.reload();
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -1187,7 +1182,7 @@ window.deleteClientPermanent = async (name) => {
         try {
             await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/permanent`);
             showToast('Client eliminato definitivamente', 'success');
-            location.reload();
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -1199,7 +1194,7 @@ window.renewServerCert = async () => {
         try {
             await apiPost(`${MODULE_API}/instances/${currentInstanceId}/pki/renew-server`);
             showToast('Certificato server rinnovato', 'success');
-            location.reload();
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }

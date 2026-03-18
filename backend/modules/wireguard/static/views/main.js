@@ -5,7 +5,7 @@
  */
 
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
+import { showToast, confirmDialog, loadingSpinner, escapeHtml, isValidCIDR } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 
 let currentInstanceId = null;
@@ -571,10 +571,10 @@ async function renderInstanceDetail(container) {
                                                 <td>
                                                     <strong>${c.name}</strong>
                                                     ${(c.allowed_ips || c.dns) ? `
-                                                        <span class="ms-2" data-bs-toggle="tooltip" data-bs-html="true" 
+                                                        <span class="ms-2" data-bs-toggle="tooltip" data-bs-html="true"
                                                               title="<strong>Configurazione personalizzata:</strong><br>
-                                                                     ${c.allowed_ips ? 'Rotte: ' + c.allowed_ips + '<br>' : ''}
-                                                                     ${c.dns ? 'DNS: ' + c.dns : ''}">
+                                                                     ${c.allowed_ips ? 'Rotte: ' + escapeHtml(c.allowed_ips) + '<br>' : ''}
+                                                                     ${c.dns ? 'DNS: ' + escapeHtml(c.dns) : ''}">
                                                             <i class="ti ti-adjustments text-blue"></i>
                                                         </span>
                                                     ` : ''}
@@ -597,21 +597,21 @@ async function renderInstanceDetail(container) {
                                                 <td>
                                                     <div class="btn-group">
                                                         ${canClients ? `
-                                                        <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${c.name}')" title="Scarica Config">
+                                                        <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="Scarica Config">
                                                             <i class="ti ti-download"></i>
                                                         </button>
-                                                        <button class="btn btn-sm btn-outline-secondary" onclick="showQR('${c.name}')" title="QR Code">
+                                                        <button class="btn btn-sm btn-outline-secondary" onclick="showQR('${escapeHtml(c.name)}')" title="QR Code">
                                                             <i class="ti ti-qrcode"></i>
                                                         </button>
                                                         ${(c.allowed_ips || c.dns) ? `
-                                                            <button class="btn btn-sm btn-outline-warning" onclick="resetClientDefaults('${c.name}')" title="Ripristina ai valori Default" data-bs-toggle="tooltip">
+                                                            <button class="btn btn-sm btn-outline-warning" onclick="resetClientDefaults('${escapeHtml(c.name)}')" title="Ripristina ai valori Default" data-bs-toggle="tooltip">
                                                                 <i class="ti ti-restore"></i>
                                                             </button>
                                                         ` : ''}
-                                                        <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${c.name}')" title="Invia via Email">
+                                                        <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="Invia via Email">
                                                             <i class="ti ti-mail"></i>
                                                         </button>
-                                                        <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${c.name}')" title="Revoca">
+                                                        <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="Revoca">
                                                             <i class="ti ti-trash"></i>
                                                         </button>` : ''}
                                                     </div>
@@ -801,29 +801,6 @@ async function renderInstanceDetail(container) {
             </div>
         </div>
         
-        <!-- Edit Endpoint Modal (legacy, kept for backwards compat) -->
-        <div class="modal" id="modal-edit-endpoint" tabindex="-1">
-            <div class="modal-dialog modal-sm">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Modifica Endpoint</h5>
-                        <button class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label class="form-label" for="edit-endpoint-value">Endpoint Pubblico (IP o dominio)</label>
-                            <input type="text" class="form-control" id="edit-endpoint-value" placeholder="es. vpn.example.com o 1.2.3.4">
-                            <small class="form-hint">Lascia vuoto per usare auto-detect dell'IP pubblico</small>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-save-endpoint">Salva</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
         <!-- Send Email Modal -->
         <div class="modal" id="modal-send-email" tabindex="-1">
             <div class="modal-dialog modal-sm">
@@ -850,77 +827,7 @@ async function renderInstanceDetail(container) {
             </div>
         </div>
         
-        <!-- Edit Routing Modal -->
-        <div class="modal" id="modal-edit-routing" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Modifica Instradamento</h5>
-                        <button class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="alert alert-warning">
-                            <i class="ti ti-alert-triangle me-2"></i>
-                            <strong>Attenzione:</strong> Dopo la modifica, i client esistenti dovranno riscaricare la configurazione per applicare le nuove rotte.
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Modalità Tunnel</label>
-                            <div class="row g-2">
-                                <div class="col-6">
-                                    <input type="radio" class="btn-check" name="routing-mode" id="routing-full" value="full" ${instance.tunnel_mode === 'full' ? 'checked' : ''}>
-                                    <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="routing-full">
-                                        <i class="ti ti-world me-2"></i><strong>Full Tunnel</strong><br>
-                                        <small class="opacity-75">Tutto il traffico passa dalla VPN</small>
-                                    </label>
-                                </div>
-                                <div class="col-6">
-                                    <input type="radio" class="btn-check" name="routing-mode" id="routing-split" value="split" ${instance.tunnel_mode === 'split' ? 'checked' : ''}>
-                                    <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="routing-split">
-                                        <i class="ti ti-route me-2"></i><strong>Split Tunnel</strong><br>
-                                        <small class="opacity-75">Solo reti specifiche via VPN</small>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                        <div id="routing-routes-section" class="${instance.tunnel_mode === 'full' ? 'd-none' : ''}">
-                            <label class="form-label">Reti da instradare</label>
-                            <div id="routing-routes-list">
-                                ${(instance.routes || []).map((r, i) => `
-                                    <div class="routing-route-row mb-2 d-flex gap-2 align-items-center">
-                                        <input type="text" class="form-control routing-route-input" value="${r.network || r}" placeholder="es. 192.168.1.0/24" style="flex: 2">
-                                        <select class="form-select routing-route-interface" style="flex: 1">
-                                            <option value="">Auto</option>
-                                            ${networkInterfaces.map(iface => `
-                                                <option value="${iface.name}" ${(r.interface === iface.name) ? 'selected' : ''}>${iface.name}</option>
-                                            `).join('')}
-                                        </select>
-                                        <button class="btn btn-outline-danger routing-remove-route" type="button"><i class="ti ti-trash"></i></button>
-                                    </div>
-                                `).join('')}
-                            </div>
-                            <button class="btn btn-sm btn-outline-primary" id="btn-add-routing-route" type="button">
-                                <i class="ti ti-plus me-1"></i>Aggiungi rete
-                            </button>
-                            <small class="form-hint d-block mt-2">Subnet → interfaccia di uscita. Lascia "Auto" per usare l'interfaccia di default.</small>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-save-routing">
-                            <i class="ti ti-device-floppy me-1"></i>Salva e Applica
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
         `;
-
-        // CIDR validation regex
-        const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^([0-9a-fA-F:]+)\/\d{1,3}$/;
-
-        function isValidCidr(value) {
-            return cidrRegex.test(value.trim());
-        }
 
         // Initialize Bootstrap tooltips for custom values indicators
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
@@ -1001,7 +908,7 @@ async function renderInstanceDetail(container) {
             document.querySelectorAll('.client-route-row .client-route-input').forEach(input => {
                 const value = input.value.trim();
                 if (value) {
-                    if (!isValidCidr(value)) {
+                    if (!isValidCIDR(value)) {
                         hasInvalidCidr = true;
                         input.classList.add('is-invalid');
                     } else {
@@ -1097,7 +1004,7 @@ async function renderInstanceDetail(container) {
                     const network = input.value.trim();
                     const iface = row.querySelector('.defaults-route-interface').value;
                     if (network) {
-                        if (!isValidCidr(network)) {
+                        if (!isValidCIDR(network)) {
                             hasInvalidCidr = true;
                             input.classList.add('is-invalid');
                         } else {
@@ -1149,129 +1056,6 @@ async function renderInstanceDetail(container) {
             }
         });
 
-        // Edit endpoint button (legacy)
-        document.getElementById('btn-edit-endpoint')?.addEventListener('click', () => {
-            document.getElementById('edit-endpoint-value').value = instance.endpoint || '';
-            new bootstrap.Modal(document.getElementById('modal-edit-endpoint')).show();
-        });
-
-        // Save endpoint
-        document.getElementById('btn-save-endpoint')?.addEventListener('click', async () => {
-            const endpoint = document.getElementById('edit-endpoint-value').value.trim() || null;
-            try {
-                await apiPatch(`/modules/wireguard/instances/${currentInstanceId}`, { endpoint });
-                showToast('Endpoint aggiornato', 'success');
-                bootstrap.Modal.getInstance(document.getElementById('modal-edit-endpoint'))?.hide();
-                // Update display without full reload
-                document.getElementById('display-endpoint').textContent = endpoint || '(auto-detect)';
-                instance.endpoint = endpoint;
-            } catch (err) {
-                showToast(err.message, 'error');
-            }
-        });
-
-        // Edit routing button
-        document.getElementById('btn-edit-routing')?.addEventListener('click', async () => {
-            await loadNetworkInterfaces();
-            // Repopulate interface selects with current interfaces
-            document.querySelectorAll('.routing-route-interface').forEach(select => {
-                const currentValue = select.value;
-                select.innerHTML = '<option value="">Auto</option>' +
-                    networkInterfaces.map(iface =>
-                        `<option value="${iface.name}" ${iface.name === currentValue ? 'selected' : ''}>${iface.name}</option>`
-                    ).join('');
-            });
-            new bootstrap.Modal(document.getElementById('modal-edit-routing')).show();
-        });
-
-        // Toggle routes section visibility based on mode selection
-        document.querySelectorAll('input[name="routing-mode"]').forEach(radio => {
-            radio.addEventListener('change', () => {
-                const routesSection = document.getElementById('routing-routes-section');
-                if (document.getElementById('routing-split').checked) {
-                    routesSection.classList.remove('d-none');
-                } else {
-                    routesSection.classList.add('d-none');
-                }
-            });
-        });
-
-        // Add route button
-        document.getElementById('btn-add-routing-route')?.addEventListener('click', () => {
-            const list = document.getElementById('routing-routes-list');
-            const row = document.createElement('div');
-            row.className = 'routing-route-row mb-2 d-flex gap-2 align-items-center';
-            row.innerHTML = `
-                <input type="text" class="form-control routing-route-input" placeholder="es. 192.168.1.0/24" style="flex: 2">
-                <select class="form-select routing-route-interface" style="flex: 1">
-                    <option value="">Auto</option>
-                    ${networkInterfaces.map(iface => `<option value="${iface.name}">${iface.name}</option>`).join('')}
-                </select>
-                <button class="btn btn-outline-danger routing-remove-route" type="button"><i class="ti ti-trash"></i></button>
-            `;
-            list.appendChild(row);
-        });
-
-        // Remove route buttons (event delegation)
-        document.getElementById('routing-routes-list')?.addEventListener('click', (e) => {
-            if (e.target.closest('.routing-remove-route')) {
-                e.target.closest('.routing-route-row')?.remove();
-            }
-        });
-
-        // Save routing
-        document.getElementById('btn-save-routing')?.addEventListener('click', async () => {
-            const btn = document.getElementById('btn-save-routing');
-            const originalHtml = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvataggio...';
-
-            try {
-                const tunnelMode = document.querySelector('input[name="routing-mode"]:checked').value;
-                let routes = [];
-
-                if (tunnelMode === 'split') {
-                    document.querySelectorAll('.routing-route-row').forEach(row => {
-                        const networkInput = row.querySelector('.routing-route-input');
-                        const interfaceSelect = row.querySelector('.routing-route-interface');
-                        const network = networkInput?.value.trim();
-                        if (network) {
-                            routes.push({
-                                network: network,
-                                interface: interfaceSelect?.value || null
-                            });
-                        }
-                    });
-                    if (routes.length === 0) {
-                        showToast('Split tunnel richiede almeno una rete', 'error');
-                        btn.disabled = false;
-                        btn.innerHTML = originalHtml;
-                        return;
-                    }
-                }
-
-                const result = await apiPatch(`/modules/wireguard/instances/${currentInstanceId}/routing`, {
-                    tunnel_mode: tunnelMode,
-                    routes: routes
-                });
-
-                bootstrap.Modal.getInstance(document.getElementById('modal-edit-routing'))?.hide();
-                showToast(result.message, 'success');
-
-                if (result.warning) {
-                    setTimeout(() => showToast(result.warning, 'warning'), 1500);
-                }
-
-                // Reload to show updated data
-                renderInstanceDetail(container);
-            } catch (err) {
-                showToast(err.message, 'error');
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = originalHtml;
-            }
-        });
-
         // Load firewall tab when clicked
         document.getElementById('tab-firewall')?.addEventListener('shown.bs.tab', async () => {
             try {
@@ -1296,7 +1080,7 @@ window.startInstance = async (id) => {
     try {
         await apiPost(`/modules/wireguard/instances/${id}/start`);
         showToast('Istanza avviata', 'success');
-        location.reload();
+        if (currentContainer) renderInstanceDetail(currentContainer);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1306,7 +1090,7 @@ window.stopInstance = async (id) => {
     try {
         await apiPost(`/modules/wireguard/instances/${id}/stop`);
         showToast('Istanza fermata', 'success');
-        location.reload();
+        if (currentContainer) renderInstanceDetail(currentContainer);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1355,12 +1139,7 @@ window.resetClientDefaults = async (name) => {
                 dns: ""          // Empty string to remove override
             });
             showToast('Client ripristinato ai valori di default', 'success');
-            if (currentContainer) {
-                renderInstanceDetail(currentContainer);
-            } else {
-                // Fallback if container lost (should not happen)
-                location.reload();
-            }
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -1385,7 +1164,7 @@ window.showQR = async (name) => {
                 <div class="modal-dialog modal-sm">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title">QR Code - ${name}</h5>
+                            <h5 class="modal-title">QR Code - ${escapeHtml(name)}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body text-center p-4">
@@ -1413,7 +1192,7 @@ window.revokeClient = async (name) => {
         try {
             await apiDelete(`/modules/wireguard/instances/${currentInstanceId}/clients/${name}`);
             showToast('Client revocato', 'success');
-            location.reload();
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }

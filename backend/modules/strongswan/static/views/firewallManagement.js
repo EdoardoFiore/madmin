@@ -194,11 +194,11 @@ async function loadChildFirewall(tunnelId, child) {
                                 <input type="radio" class="btn-check" name="policy-out-${child.id}" 
                                        id="policy-out-drop-${child.id}" value="DROP"
                                        ${child.firewall_policy_out === 'DROP' ? 'checked' : ''}
-                                       onchange="togglePolicy('${tunnelId}', '${child.id}', false, 'out')">
+                                       onchange="togglePolicy('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', false, 'out')">
                                 <label class="btn btn-outline-danger btn-sm" for="policy-out-drop-${child.id}">DROP</label>
                             </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="showRuleModal('${tunnelId}', '${child.id}', 'out')">
+                        <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'out')">
                             <i class="ti ti-plus me-1"></i>Aggiungi
                         </button>
                     </div>
@@ -227,11 +227,11 @@ async function loadChildFirewall(tunnelId, child) {
                                 <input type="radio" class="btn-check" name="policy-in-${child.id}" 
                                        id="policy-in-drop-${child.id}" value="DROP"
                                        ${child.firewall_policy_in === 'DROP' ? 'checked' : ''}
-                                       onchange="togglePolicy('${tunnelId}', '${child.id}', false, 'in')">
+                                       onchange="togglePolicy('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', false, 'in')">
                                 <label class="btn btn-outline-danger btn-sm" for="policy-in-drop-${child.id}">DROP</label>
                             </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="showRuleModal('${tunnelId}', '${child.id}', 'in')">
+                        <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'in')">
                             <i class="ti ti-plus me-1"></i>Aggiungi
                         </button>
                     </div>
@@ -349,12 +349,12 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
                         <td class="rule-actions">
                             <div class="btn-group btn-group-sm">
                                 <button class="btn btn-ghost-primary btn-edit" 
-                                        onclick="editRule('${tunnelId}', '${childId}', '${rule.id}')" 
+                                        onclick="editRule('${escapeHtml(tunnelId)}', '${escapeHtml(childId)}', '${escapeHtml(rule.id)}')"
                                         title="Modifica">
                                     <i class="ti ti-edit"></i>
                                 </button>
                                 <button class="btn btn-ghost-danger btn-delete" 
-                                        onclick="deleteRule('${tunnelId}', '${childId}', '${rule.id}')" 
+                                        onclick="deleteRule('${escapeHtml(tunnelId)}', '${escapeHtml(childId)}', '${escapeHtml(rule.id)}')"
                                         title="Elimina">
                                     <i class="ti ti-trash"></i>
                                 </button>
