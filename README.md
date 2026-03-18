@@ -95,7 +95,7 @@ git clone https://github.com/EdoardoFiore/madmin.git
 cd madmin
 
 # Run the installer (as root)
-sudo bash scripts/setup-madmin.sh
+sudo bash scripts/setup-madmin.sh -u youruser -p yourpassword
 ```
 
 **The installer handles:**
