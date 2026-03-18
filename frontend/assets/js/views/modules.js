@@ -138,9 +138,9 @@ function renderModuleCards() {
 
 function getStatusInfo(mod) {
     if (mod.enabled) {
-        return { label: 'Attivo', class: 'bg-green text-green-fg' };
+        return { label: 'Attivo', class: 'bg-green-lt' };
     } else {
-        return { label: 'Disponibile', class: 'bg-secondary text-secondary-fg' };
+        return { label: 'Disponibile', class: 'bg-secondary-lt' };
     }
 }
 

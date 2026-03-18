@@ -976,13 +976,13 @@ async function loadBackupStatus() {
 
             let badge, avatarColor, avatarIcon;
             if (status === 'failed') {
-                badge = '<span class="badge bg-danger">Fallito</span>';
+                badge = '<span class="badge bg-danger-lt">Fallito</span>';
                 avatarColor = 'danger'; avatarIcon = 'x';
             } else if (status === 'upload_failed') {
-                badge = '<span class="badge bg-warning">Upload remoto fallito</span>';
+                badge = '<span class="badge bg-warning-lt">Upload remoto fallito</span>';
                 avatarColor = 'warning'; avatarIcon = 'cloud-off';
             } else {
-                badge = '<span class="badge bg-success">Successo</span>';
+                badge = '<span class="badge bg-success-lt">Successo</span>';
                 avatarColor = 'blue'; avatarIcon = 'check';
             }
 

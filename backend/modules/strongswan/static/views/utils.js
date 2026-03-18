@@ -13,16 +13,16 @@ export { apiGet, apiPost, apiDelete, apiPatch, apiPut, showToast, confirmDialog,
 // Status badge helper
 export function statusBadge(status) {
     const classes = {
-        'established': 'bg-success',
-        'connecting': 'bg-warning',
-        'disconnected': 'bg-secondary'
+        'established': 'bg-success-lt',
+        'connecting': 'bg-warning-lt',
+        'disconnected': 'bg-secondary-lt'
     };
     const labels = {
         'established': 'Connesso',
         'connecting': 'Connessione...',
         'disconnected': 'Disconnesso'
     };
-    return `<span class="badge ${classes[status] || 'bg-secondary'}">${labels[status] || status}</span>`;
+    return `<span class="badge ${classes[status] || 'bg-secondary-lt'}">${labels[status] || status}</span>`;
 }
 
 // Crypto options organized by IKE version

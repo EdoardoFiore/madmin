@@ -137,7 +137,7 @@ export async function render(container) {
                                  <div class="card card-sm">
                                     <div class="card-body">
                                         <div class="d-flex align-items-center mb-2">
-                                            <span class="badge bg-green me-2" id="ssl-status-badge">Attivo</span>
+                                            <span class="badge bg-green-lt me-2" id="ssl-status-badge">Attivo</span>
                                             <div class="text-muted small" id="ssl-issuer">Issuer: -</div>
                                         </div>
                                         <div class="text-muted small mb-2" id="ssl-validity">Scadenza: -</div>
@@ -487,11 +487,11 @@ async function loadSettings() {
                 badge.className = 'badge bg-yellow me-2';
                 badge.textContent = 'Self-Signed';
             } else {
-                badge.className = 'badge bg-green me-2';
+                badge.className = 'badge bg-green-lt me-2';
                 badge.textContent = 'Valid';
             }
         } else {
-            document.getElementById('ssl-status-badge').className = 'badge bg-secondary me-2';
+            document.getElementById('ssl-status-badge').className = 'badge bg-secondary-lt me-2';
             document.getElementById('ssl-status-badge').textContent = 'Nessuno';
         }
 

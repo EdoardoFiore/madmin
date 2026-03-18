@@ -9,6 +9,7 @@ import shutil
 import os
 from typing import Optional, List
 from datetime import datetime, timedelta
+from core.network.service import VIRTUAL_IFACE_PREFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -134,15 +135,6 @@ class SystemService:
         return services
     
     @staticmethod
-    def format_bytes(bytes_value: int) -> str:
-        """Format bytes to human readable string."""
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if bytes_value < 1024:
-                return f"{bytes_value:.1f} {unit}"
-            bytes_value /= 1024
-        return f"{bytes_value:.1f} PB"
-
-    @staticmethod
     def get_network_traffic() -> dict:
         """
         Get current network traffic counters per interface.
@@ -155,7 +147,7 @@ class SystemService:
             counters = psutil.net_io_counters(pernic=True)
             result = {}
             for iface, stats in counters.items():
-                if iface == 'lo':
+                if iface.startswith(VIRTUAL_IFACE_PREFIXES):
                     continue
                 result[iface] = {
                     "bytes_sent": stats.bytes_sent,
@@ -297,7 +289,7 @@ async def save_network_traffic(session):
         now = datetime.utcnow()
         
         for iface, stats in counters.items():
-            if iface == 'lo':
+            if iface.startswith(VIRTUAL_IFACE_PREFIXES):
                 continue
             record = NetworkTrafficHistory(
                 timestamp=now,

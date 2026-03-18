@@ -257,7 +257,7 @@ async function loadCrontab() {
 function renderCronRow(entry, index, canManage) {
     const isEnabled = entry.enabled;
     // Use proper contrast colors for badges
-    const statusClass = isEnabled ? 'bg-success text-white' : 'bg-secondary text-white';
+    const statusClass = isEnabled ? 'bg-success-lt' : 'bg-secondary-lt';
     const statusText = isEnabled ? 'Attivo' : 'Disabilitato';
 
     if (entry.comment && !entry.schedule) {

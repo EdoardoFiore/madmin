@@ -87,9 +87,9 @@ class DnsService:
         return Template(path.read_text())
 
     def _generate_serial(self) -> str:
-        """Generate SOA serial in YYYYMMDDNN format."""
-        now = datetime.utcnow()
-        return now.strftime("%Y%m%d") + "01"
+        """Generate SOA serial as Unix timestamp (always increasing, fits 32-bit unsigned int)."""
+        import time
+        return str(int(time.time()))
 
     def _get_listen_addresses(self, interfaces: List[str]) -> str:
         """Convert interface names to IP addresses for bind9 listen-on."""
@@ -332,15 +332,18 @@ class DnsService:
             return False, f"Configurazione non valida: {msg}"
         
         # 3. Apply firewall rules
-        self.apply_firewall_rules()
-        
+        fw_ok, fw_msg = self.apply_firewall_rules()
+
         # 4. Restart service
         success, msg = SystemdService.restart(BIND_SERVICE)
         if not success:
             journal_msg = self._get_journal_errors()
             return False, f"Errore riavvio servizio: {msg}. {journal_msg}"
-        
-        return True, "Configurazione applicata e servizio riavviato"
+
+        result_msg = "Configurazione applicata e servizio riavviato"
+        if not fw_ok:
+            result_msg += f" (attenzione: regole firewall non applicate: {fw_msg})"
+        return True, result_msg
 
     async def apply_single_zone(self, session: AsyncSession, zone: DnsZone) -> Tuple[bool, str]:
         """
@@ -491,15 +494,16 @@ class DnsService:
     #  FIREWALL (using core.firewall.iptables)
     # =========================================================
 
-    def apply_firewall_rules(self):
+    def apply_firewall_rules(self) -> tuple[bool, str]:
         """
         Apply firewall rules for DNS (port 53 UDP/TCP).
         Uses core.firewall.iptables for rule management.
+        Returns (success, message).
         """
         try:
             # Create or flush the module chain
             core_iptables.create_or_flush_chain(DNS_FW_CHAIN, "filter")
-            
+
             # Allow DNS on UDP port 53
             core_iptables.add_rule(
                 table="filter",
@@ -509,7 +513,7 @@ class DnsService:
                 port="53",
                 comment="DNS UDP"
             )
-            
+
             # Allow DNS on TCP port 53 (zone transfers, large responses)
             core_iptables.add_rule(
                 table="filter",
@@ -519,13 +523,15 @@ class DnsService:
                 port="53",
                 comment="DNS TCP"
             )
-            
+
             # Ensure jump rule from INPUT → MOD_DNS_INPUT
             core_iptables.ensure_jump_rule("INPUT", DNS_FW_CHAIN, "filter")
-            
+
             logger.info("DNS firewall rules applied")
+            return True, "OK"
         except Exception as e:
             logger.error(f"Failed to apply DNS firewall rules: {e}")
+            return False, str(e)
 
     def remove_firewall_rules(self):
         """Remove DNS firewall rules (called on disable)."""

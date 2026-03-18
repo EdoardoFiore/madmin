@@ -22,6 +22,7 @@ from .models import (
     DhcpLeaseInfo, DhcpServiceStatus
 )
 from .service import dhcp_service
+from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -75,7 +76,7 @@ async def get_interfaces(
     _user: User = Depends(require_permission("dhcp.view"))
 ):
     """List available network interfaces."""
-    interfaces = dhcp_service.get_physical_interfaces()
+    interfaces = NetworkService.get_interfaces()
     return {"interfaces": interfaces}
 
 

@@ -458,7 +458,7 @@ async function renderInstanceDetail(container) {
                     <div class="row mb-3">
                         <div class="col-md-3">
                             <span class="text-muted">Stato</span><br>
-                            <span class="badge ${instance.status === 'running' ? 'bg-success' : 'bg-secondary'} fs-6">
+                            <span class="badge ${instance.status === 'running' ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6">
                                 ${instance.status === 'running' ? 'Attivo' : 'Fermo'}
                             </span>
                         </div>

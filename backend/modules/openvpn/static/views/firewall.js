@@ -66,7 +66,7 @@ function render(container) {
                            ${instance?.firewall_default_policy === 'DROP' ? 'checked' : ''}>
                     <label class="btn btn-outline-danger btn-sm" for="policy-drop">DROP</label>
                 </div>` : `
-                <span class="badge ${instance?.firewall_default_policy === 'DROP' ? 'bg-danger' : 'bg-success'} fs-6">
+                <span class="badge ${instance?.firewall_default_policy === 'DROP' ? 'bg-danger-lt' : 'bg-success-lt'} fs-6">
                     ${instance?.firewall_default_policy || 'ACCEPT'}
                 </span>`}
             </div>
@@ -350,7 +350,7 @@ function renderRules(rules) {
                     <tr data-rule-id="${r.id}" data-order="${r.order}">
                         ${canManageGroups ? '<td class="cursor-move text-muted" style="cursor: grab;"><i class="ti ti-grip-vertical"></i></td>' : ''}
                         <td class="text-muted">${i + 1}</td>
-                        <td><span class="badge ${r.action === 'ACCEPT' ? 'bg-success' : 'bg-danger'}">${r.action}</span></td>
+                        <td><span class="badge ${r.action === 'ACCEPT' ? 'bg-success-lt' : 'bg-danger-lt'}">${r.action}</span></td>
                         <td><code>${r.protocol}</code></td>
                         <td><code>${r.destination}</code></td>
                         <td>${r.port || '*'}</td>

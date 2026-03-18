@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from .models import DhcpSubnet, DhcpHost, DhcpOption, DhcpLeaseInfo
+from core.network.service import NetworkService
+from core.services.service import SystemdService
 
 logger = logging.getLogger(__name__)
 
@@ -81,64 +83,6 @@ subnet {{ subnet.network_address }} netmask {{ subnet.netmask }} {
 
 class DhcpService:
     """Service class for DHCP operations."""
-
-    # --- Network Interface Discovery ---
-
-    def get_physical_interfaces(self) -> List[Dict]:
-        """
-        List physical network interfaces.
-        Returns interfaces suitable for DHCP binding.
-        Excludes: lo, wg*, veth*, docker*, br*, virbr*, tun*, tap*
-        """
-        interfaces = []
-        net_dir = Path("/sys/class/net")
-
-        if not net_dir.exists():
-            return interfaces
-
-        exclude_prefixes = (
-            'lo', 'wg', 'veth', 'docker', 'br-', 'virbr', 'tun', 'tap'
-        )
-
-        for iface_dir in sorted(net_dir.iterdir()):
-            name = iface_dir.name
-            if name.startswith(exclude_prefixes):
-                continue
-
-            # Read interface state
-            try:
-                state = (iface_dir / "operstate").read_text().strip()
-            except:
-                state = "unknown"
-
-            # Read MAC address
-            try:
-                mac = (iface_dir / "address").read_text().strip()
-            except:
-                mac = "unknown"
-
-            # Read IP addresses
-            ip_addrs = []
-            try:
-                result = subprocess.run(
-                    ["ip", "-4", "addr", "show", name],
-                    capture_output=True, text=True
-                )
-                for line in result.stdout.split('\n'):
-                    match = re.search(r'inet\s+(\S+)', line)
-                    if match:
-                        ip_addrs.append(match.group(1))
-            except:
-                pass
-
-            interfaces.append({
-                "name": name,
-                "state": state,
-                "mac": mac,
-                "addresses": ip_addrs
-            })
-
-        return interfaces
 
     # --- Config Generation ---
 
@@ -329,100 +273,55 @@ class DhcpService:
 
     def get_service_status(self) -> Dict:
         """Get isc-dhcp-server service status."""
+        status_info = SystemdService.get_status(SERVICE_NAME)
         status = {
-            "running": False,
-            "enabled": False,
-            "uptime": None
+            "running": status_info.get("active", False),
+            "enabled": status_info.get("enabled", False),
+            "uptime": None,
         }
-
-        try:
-            # Check if running
-            result = subprocess.run(
-                ["systemctl", "is-active", SERVICE_NAME],
-                capture_output=True, text=True
-            )
-            status["running"] = result.stdout.strip() == "active"
-
-            # Check if enabled
-            result = subprocess.run(
-                ["systemctl", "is-enabled", SERVICE_NAME],
-                capture_output=True, text=True
-            )
-            status["enabled"] = result.stdout.strip() == "enabled"
-
-            # Get uptime if running
-            if status["running"]:
+        if status["running"]:
+            try:
                 result = subprocess.run(
                     ["systemctl", "show", SERVICE_NAME,
                      "--property=ActiveEnterTimestamp"],
                     capture_output=True, text=True
                 )
-                timestamp_str = result.stdout.strip().split("=", 1)
-                if len(timestamp_str) > 1 and timestamp_str[1]:
-                    status["uptime"] = timestamp_str[1]
-
-        except Exception as e:
-            logger.error(f"Error checking service status: {e}")
-
+                parts = result.stdout.strip().split("=", 1)
+                if len(parts) > 1 and parts[1]:
+                    status["uptime"] = parts[1]
+            except Exception:
+                pass
         return status
 
     def start_service(self) -> tuple:
         """Start isc-dhcp-server with post-start health check."""
-        try:
-            result = subprocess.run(
-                ["systemctl", "start", SERVICE_NAME],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode != 0:
-                journal = self._get_journal_errors()
-                error = self._parse_dhcpd_error(journal)
-                return False, f"Avvio fallito: {error}"
-
-            # Post-start health check
-            if not self._check_service_alive():
-                journal = self._get_journal_errors()
-                error = self._parse_dhcpd_error(journal)
-                return False, f"Il servizio è crashato subito dopo l'avvio: {error}"
-
-            return True, "Service started"
-        except Exception as e:
-            return False, str(e)
+        success, msg = SystemdService.start(SERVICE_NAME)
+        if not success:
+            journal = self._get_journal_errors()
+            error = self._parse_dhcpd_error(journal)
+            return False, f"Avvio fallito: {error}"
+        if not self._check_service_alive():
+            journal = self._get_journal_errors()
+            error = self._parse_dhcpd_error(journal)
+            return False, f"Il servizio è crashato subito dopo l'avvio: {error}"
+        return True, "Service started"
 
     def stop_service(self) -> tuple:
-        """Stop isc-dhcp-server. Returns (success, message)."""
-        try:
-            result = subprocess.run(
-                ["systemctl", "stop", SERVICE_NAME],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode == 0:
-                return True, "Service stopped"
-            else:
-                return False, result.stderr.strip() or "Failed to stop"
-        except Exception as e:
-            return False, str(e)
+        """Stop isc-dhcp-server."""
+        return SystemdService.stop(SERVICE_NAME)
 
     def restart_service(self) -> tuple:
         """Restart isc-dhcp-server with post-start health check."""
-        try:
-            result = subprocess.run(
-                ["systemctl", "restart", SERVICE_NAME],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode != 0:
-                journal = self._get_journal_errors()
-                error = self._parse_dhcpd_error(journal)
-                return False, f"Riavvio fallito: {error}"
-
-            # Post-start health check
-            if not self._check_service_alive():
-                journal = self._get_journal_errors()
-                error = self._parse_dhcpd_error(journal)
-                return False, f"Il servizio è crashato subito dopo il riavvio: {error}"
-
-            return True, "Service restarted"
-        except Exception as e:
-            return False, str(e)
+        success, msg = SystemdService.restart(SERVICE_NAME)
+        if not success:
+            journal = self._get_journal_errors()
+            error = self._parse_dhcpd_error(journal)
+            return False, f"Riavvio fallito: {error}"
+        if not self._check_service_alive():
+            journal = self._get_journal_errors()
+            error = self._parse_dhcpd_error(journal)
+            return False, f"Il servizio è crashato subito dopo il riavvio: {error}"
+        return True, "Service restarted"
 
     def _validate_subnet_interface_match(
         self, subnets: list, interfaces: List[Dict]
@@ -493,7 +392,7 @@ class DhcpService:
             enabled_subnets = result.scalars().all()
 
             # 1. Pre-flight: validate subnet-interface match
-            interfaces = self.get_physical_interfaces()
+            interfaces = NetworkService.get_interfaces()
             valid, msg = self._validate_subnet_interface_match(
                 enabled_subnets, interfaces
             )

@@ -29,6 +29,8 @@ except ImportError:
 
 NETPLAN_DIR = "/etc/netplan"
 
+VIRTUAL_IFACE_PREFIXES = ('lo', 'wg', 'veth', 'docker', 'br-', 'virbr', 'tun', 'tap')
+
 
 class NetworkService:
     """Service class for network interface information."""
@@ -60,10 +62,10 @@ class NetworkService:
             netplan_configs = NetplanService.get_all_interface_configs()
             
             for iface_name, addrs in if_addrs.items():
-                # Skip loopback interface
-                if iface_name == 'lo':
+                # Skip virtual/tunnel interfaces
+                if iface_name.startswith(VIRTUAL_IFACE_PREFIXES):
                     continue
-                    
+
                 iface_info = {
                     "name": iface_name,
                     "ipv4": None,
@@ -110,6 +112,10 @@ class NetworkService:
                     iface_info["errors_in"] = io.errin
                     iface_info["errors_out"] = io.errout
                 
+                # Compatibility fields for module frontends
+                iface_info["state"] = "up" if iface_info["is_up"] else "down"
+                iface_info["addresses"] = [iface_info["ipv4"]] if iface_info.get("ipv4") else []
+
                 interfaces.append(iface_info)
             
             # Sort: up interfaces first, then by name
@@ -120,14 +126,6 @@ class NetworkService:
         
         return interfaces
     
-    @staticmethod
-    def format_bytes(bytes_value: int) -> str:
-        """Format bytes to human readable string."""
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if bytes_value < 1024:
-                return f"{bytes_value:.1f} {unit}"
-            bytes_value /= 1024
-        return f"{bytes_value:.1f} PB"
 
 
 class NetplanService:

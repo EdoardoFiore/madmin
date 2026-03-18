@@ -23,6 +23,7 @@ from .models import (
     DnsRecord, DnsRecordCreate, DnsRecordRead, DnsRecordUpdate,
 )
 from .service import dns_service
+from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -112,7 +113,7 @@ async def get_interfaces(
     _user: User = Depends(require_permission("dns.view")),
 ):
     """List available network interfaces for listening."""
-    return dns_service.get_physical_interfaces()
+    return NetworkService.get_interfaces()
 
 
 # ============================================================
@@ -559,7 +560,9 @@ async def delete_record(
     zone_result = await session.execute(select(DnsZone).where(DnsZone.id == zone_id))
     zone = zone_result.scalar_one_or_none()
     if zone:
-        await dns_service.apply_single_zone(session, zone)
+        apply_ok, apply_msg = await dns_service.apply_single_zone(session, zone)
+        if not apply_ok:
+            logger.warning(f"apply_single_zone after record delete failed: {apply_msg}")
 
 
 # ============================================================
