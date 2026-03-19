@@ -240,6 +240,10 @@ function renderInterfaceCard(iface) {
                             <dt class="col-4 text-muted">IPv4:</dt>
                             <dd class="col-8"><code>${iface.ipv4}</code></dd>
                         ` : ''}
+                        ${iface.secondary_ips?.length > 0 ? iface.secondary_ips.map((ip, i) => `
+                            <dt class="col-4 text-muted">${i === 0 ? 'IP sec.:' : ''}</dt>
+                            <dd class="col-8"><code>${ip}</code></dd>
+                        `).join('') : ''}
                         ${iface.ipv6 ? `
                             <dt class="col-4 text-muted">IPv6:</dt>
                             <dd class="col-8"><code class="small">${iface.ipv6.substring(0, 20)}...</code></dd>

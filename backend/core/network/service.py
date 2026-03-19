@@ -84,10 +84,13 @@ class NetworkService:
                 }
                 
                 # Parse addresses
+                ipv4_list = []
                 for addr in addrs:
                     if addr.family.name == 'AF_INET':
-                        iface_info["ipv4"] = addr.address
-                        iface_info["netmask"] = addr.netmask
+                        ipv4_list.append(addr.address)
+                        if not iface_info["ipv4"]:
+                            iface_info["ipv4"] = addr.address
+                            iface_info["netmask"] = addr.netmask
                     elif addr.family.name == 'AF_INET6':
                         # Skip link-local IPv6
                         if not addr.address.startswith('fe80::'):
@@ -114,7 +117,8 @@ class NetworkService:
                 
                 # Compatibility fields for module frontends
                 iface_info["state"] = "up" if iface_info["is_up"] else "down"
-                iface_info["addresses"] = [iface_info["ipv4"]] if iface_info.get("ipv4") else []
+                iface_info["addresses"] = ipv4_list
+                iface_info["secondary_ips"] = ipv4_list[1:]
 
                 interfaces.append(iface_info)
             
