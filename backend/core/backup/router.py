@@ -254,7 +254,13 @@ async def trigger_backup(
     """Trigger a manual backup (export + remote upload)."""
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
     bk_settings = result.scalar_one_or_none()
-    
+
+    if not bk_settings or not bk_settings.remote_host or not bk_settings.remote_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Storage remoto non configurato. Imposta host e utente nelle impostazioni backup."
+        )
+
     backup_result = await run_backup(
         session=session,
         remote_protocol=bk_settings.remote_protocol if bk_settings else None,

@@ -54,18 +54,18 @@
         {
             "name": "MOD_WG_INPUT",
             "parent": "INPUT",
-            "priority": 50
+            "priority": 55
         },
         {
             "name": "MOD_WG_FORWARD",
             "parent": "FORWARD",
-            "priority": 50
+            "priority": 55
         },
         {
             "name": "MOD_WG_NAT",
             "parent": "POSTROUTING",
             "table": "nat",
-            "priority": 50
+            "priority": 55
         }
     ],
     "config_export": {

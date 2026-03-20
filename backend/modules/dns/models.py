@@ -17,6 +17,7 @@ class DnsSettings(SQLModel, table=True):
     __tablename__ = "dns_settings"
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    singleton_key: str = Field(default="default", max_length=10, unique=True)
     mode: str = Field(default="recursive", max_length=20)  # recursive, forward_only, non_recursive
     listen_interfaces: str = Field(default="[]", max_length=1000)  # JSON array of interface names
     system_forwarders: str = Field(default='["8.8.8.8", "1.1.1.1"]', max_length=500)  # JSON array of IPs

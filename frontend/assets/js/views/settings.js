@@ -229,7 +229,7 @@ export async function render(container) {
                                 <button class="btn btn-primary btn-sm" id="backup-local-btn">
                                     <i class="ti ti-device-floppy me-1"></i>Backup Locale
                                 </button>
-                                <button class="btn btn-cyan btn-sm" id="backup-remote-btn">
+                                <button class="btn btn-cyan btn-sm" id="backup-remote-btn" style="display:none">
                                     <i class="ti ti-cloud-upload me-1"></i>Backup Remoto
                                 </button>
                             </div>
@@ -559,6 +559,12 @@ async function loadSettings() {
             alertEl.className = backup.last_run_status === 'success' ? 'alert alert-success mb-3' : 'alert alert-warning mb-3';
         } else {
             statusEl.textContent = 'Nessun backup eseguito';
+        }
+
+        // Show remote backup button only if remote is configured
+        const remoteBtn = document.getElementById('backup-remote-btn');
+        if (remoteBtn) {
+            remoteBtn.style.display = (backup.remote_host && backup.remote_user) ? '' : 'none';
         }
 
         // Load backup history

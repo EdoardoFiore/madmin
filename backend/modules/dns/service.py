@@ -18,6 +18,7 @@ from typing import Optional, Dict, List, Tuple
 
 from jinja2 import Template
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, func
 from sqlalchemy.orm import selectinload
 
@@ -57,13 +58,18 @@ class DnsService:
 
     async def get_or_create_settings(self, session: AsyncSession) -> DnsSettings:
         """Get global settings (create default row if none exists)."""
-        result = await session.execute(select(DnsSettings))
-        settings = result.scalar_one_or_none()
+        result = await session.execute(select(DnsSettings).limit(1))
+        settings = result.scalars().first()
         if not settings:
-            settings = DnsSettings()
-            session.add(settings)
-            await session.commit()
-            await session.refresh(settings)
+            try:
+                settings = DnsSettings()
+                session.add(settings)
+                await session.commit()
+                await session.refresh(settings)
+            except IntegrityError:
+                await session.rollback()
+                result = await session.execute(select(DnsSettings).limit(1))
+                settings = result.scalars().first()
         return settings
 
     async def update_settings(self, session: AsyncSession, data: dict) -> DnsSettings:
