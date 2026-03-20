@@ -383,12 +383,16 @@ class FirewallOrchestrator:
         """
         success = True
         
-        # Flush all core MADMIN chains across all tables
+        # Flush all core MADMIN chains across all tables, then immediately
+        # restore ESTABLISHED/RELATED protection on INPUT and FORWARD to
+        # avoid dropping ongoing connections during the flush → re-apply window.
         for table, chains in iptables.CHAIN_MAP.items():
-            for chain_name in chains.values():
+            for parent_chain, chain_name in chains.items():
                 if not iptables.flush_chain(chain_name, table):
                     logger.warning(f"Failed to flush chain {chain_name} in table {table}")
                     success = False
+                if table == "filter" and parent_chain in ("INPUT", "FORWARD"):
+                    iptables.add_established_related_rule(chain_name, table)
         
         # Get all enabled rules ordered by chain and order
         result = await session.execute(

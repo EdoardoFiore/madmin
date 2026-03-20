@@ -203,6 +203,26 @@ def create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:
         return create_chain(chain_name, table)
 
 
+def add_established_related_rule(chain_name: str, table: str = "filter") -> bool:
+    """
+    Insert ESTABLISHED,RELATED ACCEPT as the first rule in a chain.
+
+    This built-in rule is added immediately after every flush of INPUT/FORWARD
+    chains so that ongoing connections are never dropped during the
+    flush → re-apply window on service restart or rule changes.
+    """
+    args = [
+        "-I", chain_name, "1",
+        "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+        "-j", "ACCEPT",
+        "-m", "comment", "--comment", "MADMIN_BUILTIN_ESTABLISHED"
+    ]
+    success, _ = _run_iptables(table, args, suppress_errors=True)
+    if success:
+        logger.debug(f"Added built-in ESTABLISHED/RELATED rule to {chain_name}")
+    return success
+
+
 def get_chain_rules(chain_name: str, table: str = "filter") -> List[str]:
     """Get all rules in a chain."""
     success, output = _run_iptables(table, ["-L", chain_name, "-n", "--line-numbers"])
@@ -519,7 +539,12 @@ def initialize_core_chains() -> bool:
                 logger.error(f"Failed to create chain {madmin_chain} in table {table}")
                 success = False
                 continue
-            
+
+            # Immediately protect ongoing connections after flush:
+            # add ESTABLISHED/RELATED ACCEPT as first rule in INPUT and FORWARD
+            if table == "filter" and parent_chain in ("INPUT", "FORWARD"):
+                add_established_related_rule(madmin_chain, table)
+
             # Ensure jump rule exists from parent to MADMIN chain
             # Try position 1 first (highest priority), fallback to append
             if not ensure_jump_rule(parent_chain, madmin_chain, table, position=1):
