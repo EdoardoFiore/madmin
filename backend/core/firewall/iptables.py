@@ -203,24 +203,114 @@ def create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:
         return create_chain(chain_name, table)
 
 
-def add_established_related_rule(chain_name: str, table: str = "filter") -> bool:
-    """
-    Insert ESTABLISHED,RELATED ACCEPT as the first rule in a chain.
+def rule_to_restore_line(madmin_chain: str, rule) -> str:
+    """Convert a MachineFirewallRule to an iptables-restore format line (-A ...)."""
+    args = build_rule_args(
+        chain=madmin_chain,
+        action=rule.action,
+        protocol=rule.protocol,
+        source=rule.source,
+        destination=rule.destination,
+        port=rule.port,
+        in_interface=rule.in_interface,
+        out_interface=rule.out_interface,
+        state=rule.state,
+        comment=f"ID_{rule.id}",
+        limit_rate=rule.limit_rate,
+        limit_burst=rule.limit_burst,
+        to_destination=rule.to_destination,
+        to_source=rule.to_source,
+        to_ports=rule.to_ports,
+        log_prefix=rule.log_prefix,
+        log_level=rule.log_level,
+        reject_with=rule.reject_with,
+        operation="-A"
+    )
+    return " ".join(args)
 
-    This built-in rule is added immediately after every flush of INPUT/FORWARD
-    chains so that ongoing connections are never dropped during the
-    flush → re-apply window on service restart or rule changes.
+
+def restore_chains(table: str, chain_rules: Dict[str, List[str]]) -> bool:
     """
-    args = [
-        "-I", chain_name, "1",
-        "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
-        "-j", "ACCEPT",
-        "-m", "comment", "--comment", "MADMIN_BUILTIN_ESTABLISHED"
-    ]
-    success, _ = _run_iptables(table, args, suppress_errors=True)
-    if success:
-        logger.debug(f"Added built-in ESTABLISHED/RELATED rule to {chain_name}")
-    return success
+    Atomically flush and repopulate specific chains using iptables-restore --noflush.
+
+    chain_rules: {chain_name: [list of restore-format rule lines ("-A chain ...")]}
+
+    The -F and -A directives are committed as a single atomic kernel transaction,
+    eliminating any window where chains are empty and traffic is unprotected.
+    Does not touch built-in chains (INPUT, FORWARD, OUTPUT) or module chains.
+    """
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK] Would restore {len(chain_rules)} chains in table {table}")
+        return True
+
+    lines = [f"*{table}"]
+    for chain in chain_rules:
+        lines.append(f":{chain} - [0:0]")
+    for chain, rules in chain_rules.items():
+        lines.append(f"-F {chain}")
+        lines.extend(rules)
+    lines.append("COMMIT")
+    restore_input = "\n".join(lines) + "\n"
+
+    try:
+        subprocess.run(
+            ["iptables-restore", "--noflush"],
+            input=restore_input,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        logger.debug(f"Atomically restored chains in table {table}: {list(chain_rules.keys())}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"iptables-restore failed for table {table}: {e.stderr}")
+        raise IptablesError(parse_iptables_error(e.stderr))
+    except FileNotFoundError:
+        logger.error("iptables-restore not found")
+        raise IptablesError("Comando iptables-restore non trovato sul sistema")
+
+
+def restore_parent_chain_jumps(
+    table: str,
+    parent_chain: str,
+    target_chains: List[str]
+) -> bool:
+    """
+    Atomically rebuild jump rules in a built-in chain (INPUT, FORWARD, etc.)
+    using iptables-restore --noflush.
+
+    Flushes parent_chain and re-adds jump rules to target_chains in order.
+    All target_chains must already exist in iptables before calling this.
+    Old jump rules are replaced atomically — no window where the chain is empty.
+    """
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK] Would restore jumps in {parent_chain} ({table}): {target_chains}")
+        return True
+
+    lines = [f"*{table}"]
+    lines.append(f":{parent_chain} ACCEPT [0:0]")
+    lines.append(f"-F {parent_chain}")
+    for target in target_chains:
+        lines.append(f"-A {parent_chain} -j {target}")
+    lines.append("COMMIT")
+    restore_input = "\n".join(lines) + "\n"
+
+    try:
+        subprocess.run(
+            ["iptables-restore", "--noflush"],
+            input=restore_input,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        logger.debug(f"Atomically rebuilt jumps in {parent_chain} ({table}): {target_chains}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"iptables-restore failed for {parent_chain} ({table}): {e.stderr}")
+        return False
+    except FileNotFoundError:
+        logger.error("iptables-restore not found")
+        return False
 
 
 def get_chain_rules(chain_name: str, table: str = "filter") -> List[str]:
@@ -534,16 +624,13 @@ def initialize_core_chains() -> bool:
     
     for table, chains in CHAIN_MAP.items():
         for parent_chain, madmin_chain in chains.items():
-            # Create or flush the MADMIN chain
-            if not create_or_flush_chain(madmin_chain, table):
+            # Create the MADMIN chain only if it doesn't exist — do NOT flush.
+            # On restart, existing rules stay in place until apply_rules() replaces
+            # them atomically via restore_chains(), which eliminates the flush window.
+            if not create_chain(madmin_chain, table):
                 logger.error(f"Failed to create chain {madmin_chain} in table {table}")
                 success = False
                 continue
-
-            # Immediately protect ongoing connections after flush:
-            # add ESTABLISHED/RELATED ACCEPT as first rule in INPUT and FORWARD
-            if table == "filter" and parent_chain in ("INPUT", "FORWARD"):
-                add_established_related_rule(madmin_chain, table)
 
             # Ensure jump rule exists from parent to MADMIN chain
             # Try position 1 first (highest priority), fallback to append

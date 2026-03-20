@@ -799,8 +799,10 @@ function renderRuleRow(rule, orderedColumns) {
     return `
         <tr class="${disabledClass} draggable-row" data-id="${rule.id}" draggable="${canManage}">
             <td class="rule-order">
-                ${canManage ? '<i class="ti ti-grip-vertical drag-handle" style="cursor: grab;"></i>' : ''}
-                <span class="ms-1">${rule.order + 1}</span>
+                <div style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
+                    ${canManage ? '<i class="ti ti-grip-vertical drag-handle" style="cursor: grab;"></i>' : ''}
+                    <span>${rule.order + 1}</span>
+                </div>
             </td>
             <td>${actionBadge(rule.action)}</td>
             ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}

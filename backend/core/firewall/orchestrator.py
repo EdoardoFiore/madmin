@@ -155,9 +155,12 @@ class FirewallOrchestrator:
         table_name: str = "filter"
     ) -> None:
         """
-        Rebuild jump rules for a parent chain based on priorities.
+        Atomically rebuild jump rules for a parent chain based on priorities.
 
         Order: Module chains first (by priority) → Core MADMIN chain last (default policy)
+
+        Uses iptables-restore --noflush to flush and re-add all jumps as a single
+        kernel transaction — no window where the parent chain has no jump to MADMIN.
         """
         # Get all module chains for this parent, ordered by priority
         result = await session.execute(
@@ -168,29 +171,26 @@ class FirewallOrchestrator:
         )
         module_chains = result.scalars().all()
 
-        # Get the core MADMIN chain for this parent and table
         core_chain = iptables.get_madmin_chain(table_name, parent_chain)
 
-        # Remove all existing jumps to module chains and core chain
-        for mc in module_chains:
-            iptables.remove_jump_rule(parent_chain, mc.chain_name, table_name)
-        if core_chain:
-            iptables.remove_jump_rule(parent_chain, core_chain, table_name)
-
-        # Re-add jumps: module chains first (by priority), MADMIN core chain last
-        position = 1
-
-        # Module chains come first (lower priority number = processed first)
+        # Build ordered target list: verify chains exist before building restore block
+        # (all checks happen before touching iptables — old jumps remain active)
+        target_chains = []
         for mc in module_chains:
             if not iptables.chain_exists(mc.chain_name, table_name):
                 logger.debug(f"Skipping jump to {mc.chain_name}: chain not yet created in iptables")
                 continue
-            iptables.ensure_jump_rule(parent_chain, mc.chain_name, table_name, position)
-            position += 1
+            target_chains.append(mc.chain_name)
+        if core_chain and iptables.chain_exists(core_chain, table_name):
+            target_chains.append(core_chain)
 
-        # Core MADMIN chain last (acts as default policy after all modules)
-        if core_chain:
-            iptables.ensure_jump_rule(parent_chain, core_chain, table_name, position)
+        if not target_chains:
+            logger.warning(f"No target chains to rebuild for {parent_chain} ({table_name})")
+            return
+
+        # Atomically flush parent_chain and re-add all jumps in one kernel transaction
+        if not iptables.restore_parent_chain_jumps(table_name, parent_chain, target_chains):
+            logger.error(f"Failed to atomically rebuild jumps for {parent_chain} ({table_name})")
     
     # --- Rule Management ---
     
@@ -376,24 +376,14 @@ class FirewallOrchestrator:
     
     async def apply_rules(self, session: AsyncSession) -> bool:
         """
-        Apply all rules from database to iptables.
-        
-        1. Flush core MADMIN chains
-        2. Add enabled rules in order
+        Apply all rules from database to iptables atomically.
+
+        Uses iptables-restore --noflush to flush and repopulate each MADMIN
+        core chain as a single kernel transaction — no window where chains are
+        empty and traffic is unprotected.
         """
         success = True
-        
-        # Flush all core MADMIN chains across all tables, then immediately
-        # restore ESTABLISHED/RELATED protection on INPUT and FORWARD to
-        # avoid dropping ongoing connections during the flush → re-apply window.
-        for table, chains in iptables.CHAIN_MAP.items():
-            for parent_chain, chain_name in chains.items():
-                if not iptables.flush_chain(chain_name, table):
-                    logger.warning(f"Failed to flush chain {chain_name} in table {table}")
-                    success = False
-                if table == "filter" and parent_chain in ("INPUT", "FORWARD"):
-                    iptables.add_established_related_rule(chain_name, table)
-        
+
         # Get all enabled rules ordered by chain and order
         result = await session.execute(
             select(MachineFirewallRule)
@@ -401,42 +391,40 @@ class FirewallOrchestrator:
             .order_by(MachineFirewallRule.chain, MachineFirewallRule.order)
         )
         rules = result.scalars().all()
-        
-        # Apply each rule
+
+        # Build per-table chain rules: {table: {madmin_chain: [restore-format lines]}}
+        chain_rules: Dict[str, Dict[str, List[str]]] = {}
+        for table, chains in iptables.CHAIN_MAP.items():
+            chain_rules[table] = {}
+            for parent_chain, madmin_chain in chains.items():
+                lines: List[str] = []
+                # Built-in ESTABLISHED/RELATED as first rule for INPUT and FORWARD
+                if table == "filter" and parent_chain in ("INPUT", "FORWARD"):
+                    lines.append(
+                        f"-A {madmin_chain} -m conntrack --ctstate ESTABLISHED,RELATED"
+                        f" -j ACCEPT -m comment --comment MADMIN_BUILTIN_ESTABLISHED"
+                    )
+                chain_rules[table][madmin_chain] = lines
+
+        # Assign DB rules to their respective MADMIN chains
         for rule in rules:
-            # Get the MADMIN chain for this rule's table and chain
-            target_chain = iptables.get_madmin_chain(rule.table_name, rule.chain)
-            if not target_chain:
+            madmin_chain = iptables.get_madmin_chain(rule.table_name, rule.chain)
+            if not madmin_chain:
                 logger.warning(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id}")
                 continue
-            
-            if not iptables.add_rule(
-                table=rule.table_name,
-                chain=target_chain,
-                action=rule.action,
-                protocol=rule.protocol,
-                source=rule.source,
-                destination=rule.destination,
-                port=rule.port,
-                in_interface=rule.in_interface,
-                out_interface=rule.out_interface,
-                state=rule.state,
-                comment=f"ID_{rule.id}",
-                limit_rate=rule.limit_rate,
-                limit_burst=rule.limit_burst,
-                to_destination=rule.to_destination,
-                to_source=rule.to_source,
-                to_ports=rule.to_ports,
-                log_prefix=rule.log_prefix,
-                log_level=rule.log_level,
-                reject_with=rule.reject_with
-            ):
-                logger.error(f"Failed to apply rule {rule.id}")
+            chain_rules[rule.table_name][madmin_chain].append(
+                iptables.rule_to_restore_line(madmin_chain, rule)
+            )
+
+        # Apply atomically per table
+        for table, chains in chain_rules.items():
+            if not iptables.restore_chains(table, chains):
+                logger.error(f"Failed to atomically restore table {table}")
                 success = False
-        
+
         if success:
-            logger.info(f"Applied {len(rules)} firewall rules")
-        
+            logger.info(f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables")
+
         return success
 
 

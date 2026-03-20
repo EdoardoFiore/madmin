@@ -526,11 +526,27 @@ class ModuleLoader:
                 if not hook_ok:
                     errors.append("Hook on_disable ha riportato errori (pulizia di sistema potenzialmente incompleta)")
             
-            # 2. Remove firewall chain records
+            # 2. Remove firewall chain records and rebuild jumps for remaining chains
             try:
+                from core.firewall.orchestrator import firewall_orchestrator
+
+                # Save affected parent chains BEFORE deleting from DB
+                chain_result = await session.execute(
+                    select(ModuleChain).where(ModuleChain.module_id == module_id)
+                )
+                mod_chains = chain_result.scalars().all()
+                affected_parents = list({(mc.parent_chain, mc.table_name) for mc in mod_chains})
+
                 await session.execute(
                     delete(ModuleChain).where(ModuleChain.module_id == module_id)
                 )
+                await session.flush()
+
+                # Rebuild jump rules for each affected parent chain so remaining
+                # module chains and MADMIN core chains stay properly connected
+                for parent_chain, table_name in affected_parents:
+                    await firewall_orchestrator.rebuild_chain_jumps(session, parent_chain, table_name)
+
                 logger.info(f"Removed firewall chain records for {module_id}")
             except Exception as e:
                 logger.error(f"Failed to remove chain records for {module_id}: {e}")
