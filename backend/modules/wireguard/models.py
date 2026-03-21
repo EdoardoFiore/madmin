@@ -3,9 +3,11 @@ WireGuard Module - Database Models
 
 SQLModel tables for WireGuard instances, clients, groups, and rules.
 """
+import re
 from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
+from pydantic import field_validator
 import uuid
 
 
@@ -168,6 +170,15 @@ class WgClientCreate(SQLModel):
     allowed_ips: Optional[str] = None  # Override for routes (NULL = use instance default)
     dns: Optional[str] = None  # Override for DNS (NULL = use instance default)
     group_id: Optional[str] = None  # Optional: assign client to a group during creation
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if not re.match(r'^[a-zA-Z0-9._-]+$', v):
+            raise ValueError('Il nome può contenere solo lettere, numeri, punto, trattino e underscore')
+        if len(v) > 64:
+            raise ValueError('Il nome non può superare 64 caratteri')
+        return v
 
 
 class WgClientRead(SQLModel):

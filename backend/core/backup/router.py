@@ -91,8 +91,10 @@ async def preview_import(
         
         return result
     finally:
-        if os.path.exists(temp_path):
+        try:
             os.remove(temp_path)
+        except FileNotFoundError:
+            pass
 
 
 @router.post("/import")
@@ -128,8 +130,10 @@ async def import_configuration(
         logger.error(f"Import failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Importazione fallita")
     finally:
-        if os.path.exists(temp_path):
+        try:
             os.remove(temp_path)
+        except FileNotFoundError:
+            pass
 
 
 @router.post("/import/from-file")

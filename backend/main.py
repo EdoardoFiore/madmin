@@ -11,7 +11,7 @@ Handles:
 """
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from config import MADMIN_VERSION
 from fastapi.staticfiles import StaticFiles
@@ -277,11 +277,13 @@ def create_app() -> FastAPI:
     app.include_router(audit_router)
     
     # UI Router for frontend
+    from core.auth.dependencies import get_current_user
+    from core.auth.models import User
+
     @app.get("/api/ui/menu")
-    async def get_full_menu():
+    async def get_full_menu(current_user: User = Depends(get_current_user)):
         """Get complete menu structure for frontend sidebar."""
         from core.modules.loader import module_loader
-        from core.auth.dependencies import get_current_user
         
         # Core menu items
         core_menu = [

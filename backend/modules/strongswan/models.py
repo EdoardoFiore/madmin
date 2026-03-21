@@ -4,6 +4,7 @@ IPsec VPN Module - Database Models
 SQLModel tables for IPsec tunnels (IKE SA) and Child SAs (Phase 2).
 Supports multiple tunnels and multiple Child SAs per tunnel.
 """
+import re
 from typing import Optional, List
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship
@@ -207,6 +208,15 @@ class IpsecTunnelCreate(SQLModel):
     dpd_action: str = "restart"
     dpd_delay: int = 30
     nat_traversal: bool = True
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if not re.match(r'^[a-zA-Z0-9._-]+$', v):
+            raise ValueError('Il nome può contenere solo lettere, numeri, punto, trattino e underscore')
+        if len(v) > 64:
+            raise ValueError('Il nome non può superare 64 caratteri')
+        return v
 
 
 class IpsecTunnelUpdate(SQLModel):

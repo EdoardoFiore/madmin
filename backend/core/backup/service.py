@@ -1188,6 +1188,7 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
     # Delete in reverse order (children first, parents last)
     for table_name in reversed(sorted_tables):
         try:
+            _validate_sql_identifier(table_name, "table name")
             await session.execute(text(f'DELETE FROM "{table_name}"'))
             logger.info(f"Cleared table: {table_name}")
         except Exception as e:
@@ -1200,10 +1201,13 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
         if not rows:
             continue
         
+        _validate_sql_identifier(table_name, "table name")
         for row in rows:
             processed_row = {k: _convert_value(v) for k, v in row.items()}
-            
+
             columns = list(processed_row.keys())
+            for col in columns:
+                _validate_sql_identifier(col, "column name")
             placeholders = [f":{col}" for col in columns]
             col_list = ", ".join(f'"{c}"' for c in columns)
             sql = f'INSERT INTO "{table_name}" ({col_list}) VALUES ({", ".join(placeholders)})'
@@ -1223,6 +1227,14 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
 # Regex for datetime strings: "2026-03-01 14:52:36.077484" or "2026-03-01T14:52:36.077484"
 import re
 _DATETIME_RE = re.compile(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}')
+_SAFE_IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+
+def _validate_sql_identifier(name: str, kind: str = "identifier") -> str:
+    """Raise ValueError if name is not a safe SQL identifier (letters, digits, underscore only)."""
+    if not _SAFE_IDENTIFIER_RE.match(name):
+        raise ValueError(f"Invalid SQL {kind}: {name!r}")
+    return name
 
 
 def _convert_value(v):
