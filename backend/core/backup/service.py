@@ -973,7 +973,7 @@ async def _export_settings(session: AsyncSession) -> dict:
             "smtp_password": smtp_row.smtp_password,
             "sender_email": smtp_row.sender_email,
             "sender_name": smtp_row.sender_name,
-            "public_url": smtp_row.public_url
+            "public_download_url": smtp_row.public_download_url
         }
     
     # BackupSettings
@@ -1148,15 +1148,35 @@ async def _import_settings(session: AsyncSession, settings_file: str):
             session.add(SystemSettings(id=1, **data["system"]))
     
     if "smtp" in data:
+        smtp_data = dict(data["smtp"])
+        # Migrate renamed field from older backups
+        if "public_url" in smtp_data:
+            smtp_data.setdefault("public_download_url", smtp_data.pop("public_url"))
+
         smtp_result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
         smtp_row = smtp_result.scalar_one_or_none()
         if smtp_row:
-            for k, v in data["smtp"].items():
+            for k, v in smtp_data.items():
                 if hasattr(smtp_row, k) and v is not None:
                     setattr(smtp_row, k, v)
         else:
-            session.add(SMTPSettings(id=1, **data["smtp"]))
-    
+            clean = {k: v for k, v in smtp_data.items() if hasattr(SMTPSettings, k)}
+            session.add(SMTPSettings(id=1, **clean))
+
+        # Rigenera il blocco nginx per il download pubblico se presente
+        public_download_url = smtp_data.get("public_download_url")
+        if public_download_url:
+            try:
+                from core.settings.service import network_service
+                from core.settings.router import _get_vpn_ports_in_use
+                vpn_ports = await _get_vpn_ports_in_use(session)
+                await network_service.update_public_download_block(
+                    public_download_url, extra_reserved_ports=vpn_ports
+                )
+                logger.info(f"Nginx public download block restored for {public_download_url}")
+            except Exception as e:
+                logger.warning(f"Could not restore nginx public download block: {e}")
+
     if "backup" in data:
         bk_result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
         bk_row = bk_result.scalar_one_or_none()

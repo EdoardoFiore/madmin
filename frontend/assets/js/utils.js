@@ -163,12 +163,13 @@ export function debounce(func, wait) {
  * @param {boolean} htmlContent - If true, message is rendered as HTML (use with caution)
  * @returns {Promise<boolean>}
  */
-export function confirmDialog(title, message, confirmText = 'Conferma', confirmClass = 'btn-danger', htmlContent = false) {
+export function confirmDialog(title, message, confirmText = 'Conferma', confirmClass = 'btn-danger', htmlContent = false, size = 'sm') {
     return new Promise((resolve) => {
         const modalId = `confirm-modal-${Date.now()}`;
+        const sizeClass = size ? ` modal-${size}` : '';
         const modalHtml = `
             <div class="modal modal-blur fade" id="${modalId}" tabindex="-1">
-                <div class="modal-dialog modal-sm">
+                <div class="modal-dialog${sizeClass}">
                     <div class="modal-content">
                         <div class="modal-header">
                             <h5 class="modal-title">${escapeHtml(title)}</h5>

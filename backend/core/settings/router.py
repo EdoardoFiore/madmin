@@ -24,6 +24,23 @@ from .service import network_service
 
 logger = logging.getLogger(__name__)
 
+
+async def _get_vpn_ports_in_use(session: AsyncSession) -> set:
+    """Raccoglie le porte usate dalle istanze VPN attive (OpenVPN, WireGuard)."""
+    from sqlalchemy import text
+    ports = set()
+    try:
+        res = await session.execute(text("SELECT port FROM ovpn_instance WHERE port IS NOT NULL"))
+        ports.update(r[0] for r in res.fetchall())
+    except Exception:
+        pass
+    try:
+        res = await session.execute(text("SELECT port FROM wg_instance WHERE port IS NOT NULL"))
+        ports.update(r[0] for r in res.fetchall())
+    except Exception:
+        pass
+    return ports
+
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
 
@@ -118,7 +135,7 @@ async def get_smtp_settings(
         smtp_username=settings.smtp_username,
         sender_email=settings.sender_email,
         sender_name=settings.sender_name,
-        public_url=settings.public_url,
+        public_download_url=settings.public_download_url,
         updated_at=settings.updated_at
     )
 
@@ -132,20 +149,40 @@ async def update_smtp_settings(
     """Update SMTP settings."""
     result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
     settings = result.scalar_one_or_none()
-    
+
     if not settings:
         settings = SMTPSettings(id=1)
         session.add(settings)
-    
-    for key, value in data.model_dump(exclude_unset=True).items():
-        if value is not None:
+
+    old_download_url = settings.public_download_url
+
+    update_data = data.model_dump(exclude_unset=True)
+    nullable_fields = {'public_download_url', 'smtp_username', 'smtp_password'}
+    for key, value in update_data.items():
+        if key in nullable_fields:
+            setattr(settings, key, value if value != '' else None)
+        elif value is not None:
             setattr(settings, key, value)
-    
+
     settings.updated_at = datetime.utcnow()
     session.add(settings)
     await session.commit()
     await session.refresh(settings)
-    
+
+    # Applica blocco nginx se public_download_url è cambiato
+    if 'public_download_url' in update_data and settings.public_download_url != old_download_url:
+        vpn_ports = await _get_vpn_ports_in_use(session)
+        try:
+            await network_service.update_public_download_block(
+                settings.public_download_url,
+                extra_reserved_ports=vpn_ports
+            )
+        except (ValueError, RuntimeError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error updating public download nginx block: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Errore aggiornamento blocco nginx pubblico")
+
     return SMTPSettingsResponse(
         smtp_host=settings.smtp_host,
         smtp_port=settings.smtp_port,
@@ -153,7 +190,7 @@ async def update_smtp_settings(
         smtp_username=settings.smtp_username,
         sender_email=settings.sender_email,
         sender_name=settings.sender_name,
-        public_url=settings.public_url,
+        public_download_url=settings.public_download_url,
         updated_at=settings.updated_at
     )
 
@@ -290,17 +327,26 @@ async def get_network_settings(
 @router.post("/network/port")
 async def update_management_port(
     data: PortChangeRequest,
-    current_user: User = Depends(require_permission("settings.manage"))
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
 ):
     """
     Update management port (restarts Nginx).
     WARNING: This will disconnect the current session.
     """
     try:
-        if await network_service.update_port(data.port):
+        # Raccogli porte in uso da VPN e dal blocco download pubblico
+        extra_reserved = await _get_vpn_ports_in_use(session)
+
+        smtp_result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
+        smtp = smtp_result.scalar_one_or_none()
+        if smtp and smtp.public_download_url:
+            extra_reserved.add(network_service.get_public_download_port(smtp.public_download_url))
+
+        if await network_service.update_port(data.port, extra_reserved_ports=extra_reserved):
             return {"status": "success", "message": f"Port changed to {data.port}. Service reloaded."}
         else:
-             raise HTTPException(status_code=500, detail="Failed to reload Nginx")
+            raise HTTPException(status_code=500, detail="Failed to reload Nginx")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -76,8 +76,8 @@ class SMTPSettings(SQLModel, table=True):
     smtp_password: Optional[str] = Field(default=None, max_length=255)
     sender_email: str = Field(default="noreply@localhost", max_length=255)
     sender_name: str = Field(default="MADMIN", max_length=100)
-    public_url: Optional[str] = Field(default=None, max_length=255)
-    
+    public_download_url: Optional[str] = Field(default=None, max_length=255)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -140,7 +140,7 @@ class SMTPSettingsUpdate(SQLModel):
     smtp_password: Optional[str] = None
     sender_email: Optional[str] = None
     sender_name: Optional[str] = None
-    public_url: Optional[str] = None
+    public_download_url: Optional[str] = None
 
 
 class SMTPSettingsResponse(SQLModel):
@@ -151,7 +151,7 @@ class SMTPSettingsResponse(SQLModel):
     smtp_username: Optional[str]
     sender_email: str
     sender_name: str
-    public_url: Optional[str]
+    public_download_url: Optional[str]
     updated_at: datetime
 
 

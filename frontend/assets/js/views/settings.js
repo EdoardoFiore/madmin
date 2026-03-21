@@ -184,10 +184,20 @@ export async function render(container) {
                                     <option value="ssl">SSL/TLS</option>
                                 </select>
                             </div>
-                            <div class="col-md-3">
-                                <label class="form-label">URL Pubblico App</label>
-                                <input type="url" class="form-control" id="public-url" placeholder="https://app.example.com" ${canManage ? '' : 'disabled'}>
-                                <small class="form-hint">Per link nelle email</small>
+                            <div class="col-md-5">
+                                <label class="form-label">URL Pubblico Download VPN</label>
+                                <div class="input-group">
+                                    <span class="input-group-text text-muted">https://</span>
+                                    <input type="text" class="form-control" id="public-download-host" placeholder="192.168.1.1 o dominio.it" ${canManage ? '' : 'disabled'}>
+                                    <span class="input-group-text text-muted">:</span>
+                                    <input type="number" class="form-control" id="public-download-port" placeholder="6443" min="1" max="65535" style="max-width:90px" ${canManage ? '' : 'disabled'}>
+                                </div>
+                                <small class="form-hint">
+                                    Lasciare vuoto per disabilitare. Porta vuota = 443 (HTTPS standard).
+                                    <span class="text-warning ms-1" title="Ricorda di creare una regola ACCEPT nel firewall per la porta specificata (es. iptables -A INPUT -p tcp --dport PORTA -j ACCEPT)">
+                                        <i class="ti ti-info-circle"></i> Apri la porta nel firewall.
+                                    </span>
+                                </small>
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label">Username SMTP</label>
@@ -533,7 +543,20 @@ async function loadSettings() {
         document.getElementById('smtp-host').value = smtp.smtp_host || '';
         document.getElementById('smtp-port').value = smtp.smtp_port || 587;
         document.getElementById('smtp-encryption').value = smtp.smtp_encryption || 'tls';
-        document.getElementById('public-url').value = smtp.public_url || '';
+        const existingDownloadUrl = smtp.public_download_url || '';
+        if (existingDownloadUrl) {
+            try {
+                const parsed = new URL(existingDownloadUrl);
+                document.getElementById('public-download-host').value = parsed.hostname;
+                document.getElementById('public-download-port').value = parsed.port && parsed.port !== '443' ? parsed.port : '';
+            } catch {
+                document.getElementById('public-download-host').value = existingDownloadUrl;
+                document.getElementById('public-download-port').value = '';
+            }
+        } else {
+            document.getElementById('public-download-host').value = '';
+            document.getElementById('public-download-port').value = '';
+        }
         document.getElementById('smtp-username').value = smtp.smtp_username || '';
         document.getElementById('sender-email').value = smtp.sender_email || '';
         document.getElementById('sender-name').value = smtp.sender_name || '';
@@ -798,7 +821,11 @@ function setupEventListeners() {
                 smtp_host: document.getElementById('smtp-host').value,
                 smtp_port: parseInt(document.getElementById('smtp-port').value),
                 smtp_encryption: document.getElementById('smtp-encryption').value,
-                public_url: document.getElementById('public-url').value || null,
+                public_download_url: (() => {
+                    const host = document.getElementById('public-download-host').value.trim();
+                    const port = document.getElementById('public-download-port').value.trim();
+                    return host ? `https://${host}:${port || 443}` : null;
+                })(),
                 smtp_username: document.getElementById('smtp-username').value || null,
                 sender_email: document.getElementById('sender-email').value,
                 sender_name: document.getElementById('sender-name').value
@@ -952,9 +979,22 @@ function setupEventListeners() {
 
         const confirmed = await confirmDialog(
             'Cambia Porta di Gestione',
-            `Sei sicuro di voler cambiare la porta a ${port}? La connessione attuale verrà interrotta e dovrai ricollegarti manualmente alla nuova porta (es. https://${location.hostname}:${port}).`,
+            `<p>Stai per spostare il pannello alla porta <strong>${port}</strong>.</p>
+            <div class="alert alert-warning mb-2">
+                <div class="fw-bold mb-1"><i class="ti ti-shield-lock me-1"></i>Firewall — azione richiesta</div>
+                <p class="mb-1">Prima di continuare, assicurati di aver aperto la porta nel firewall:</p>
+                <code class="d-block p-1 bg-dark text-white rounded small">iptables -A INPUT -p tcp --dport ${port} -j ACCEPT</code>
+                <p class="mt-1 mb-0 small text-muted">Senza questa regola il pannello non sarà più raggiungibile.</p>
+            </div>
+            <div class="alert alert-danger mb-0">
+                <i class="ti ti-plug-connected-x me-1"></i>
+                La connessione attuale verrà interrotta. Ricollegati a:<br>
+                <strong>https://${location.hostname}:${port}</strong>
+            </div>`,
             'Cambia e Riavvia',
-            'btn-warning'
+            'btn-warning',
+            true,
+            ''
         );
         if (!confirmed) return;
 

@@ -809,13 +809,13 @@ async def send_client_config_email(
     if not smtp_settings or not smtp_settings.smtp_host:
         raise HTTPException(400, "SMTP non configurato. Configura prima le impostazioni email.")
     
-    if not smtp_settings.public_url:
+    if not smtp_settings.public_download_url:
         raise HTTPException(400, "URL pubblico non configurato nelle impostazioni SMTP.")
-    
+
     # Generate magic token
     token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(hours=48)
-    
+
     magic_token = WgMagicToken(
         token=token,
         client_id=client.id,
@@ -823,9 +823,9 @@ async def send_client_config_email(
     )
     db.add(magic_token)
     await db.commit()
-    
+
     # Build download URL
-    base_url = smtp_settings.public_url.rstrip('/')
+    base_url = smtp_settings.public_download_url.rstrip('/')
     download_url = f"{base_url}/api/modules/wireguard/download/{token}"
     
     # Send email

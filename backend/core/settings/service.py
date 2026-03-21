@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
+from urllib.parse import urlparse
 
 from config import get_settings
 from .models import CertificateInfo, NetworkSettingsResponse
@@ -19,6 +20,13 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 NGINX_CONF_PATH = "/etc/nginx/sites-available/madmin.conf"
+NGINX_PUBLIC_CONF_PATH = "/etc/nginx/sites-available/madmin-public.conf"
+NGINX_PUBLIC_CONF_ENABLED = "/etc/nginx/sites-enabled/madmin-public.conf"
+
+# Porte staticamente riservate (non usabili come porta admin o download pubblico)
+# 443 è escluso deliberatamente: è un'alternativa valida per il download pubblico
+RESERVED_PORTS = {22, 53, 80, 500, 4500, 5432, 8000}
+
 SSL_DIR = Path(settings.data_dir) / "ssl"
 
 # Ensure SSL directory exists
@@ -40,13 +48,17 @@ class NetworkService:
             certificate=cert_info
         )
 
-    async def update_port(self, new_port: int) -> bool:
+    async def update_port(self, new_port: int, extra_reserved_ports: set = None) -> bool:
         """
         Update management port in Nginx config.
         Returns True if successful and Nginx reloaded.
         """
         if not 1 <= new_port <= 65535:
             raise ValueError("Porta non valida (1-65535)")
+
+        all_reserved = RESERVED_PORTS | (extra_reserved_ports or set())
+        if new_port in all_reserved:
+            raise ValueError(f"La porta {new_port} è già in uso da un altro servizio")
             
         try:
             # Read config
@@ -79,6 +91,97 @@ class NetworkService:
         except Exception as e:
             logger.error(f"Error updating port: {e}")
             raise
+
+    def get_public_download_port(self, url: str) -> int:
+        """
+        Estrae la porta da un URL. Se non esplicita, restituisce 443 per https.
+        """
+        parsed = urlparse(url)
+        if parsed.port:
+            return parsed.port
+        return 443 if parsed.scheme == 'https' else 80
+
+    async def update_public_download_block(
+        self,
+        url: Optional[str],
+        extra_reserved_ports: set = None
+    ) -> None:
+        """
+        Crea, aggiorna o rimuove il blocco nginx per il download pubblico dei moduli.
+        extra_reserved_ports: porte aggiuntive in uso (istanze VPN, etc.) passate dal router.
+        """
+        if settings.mock_iptables:
+            logger.debug(f"[MOCK] public download nginx block: {url}")
+            return
+
+        # --- Disabilita/rimuovi ---
+        if not url or not url.strip():
+            removed = False
+            if os.path.islink(NGINX_PUBLIC_CONF_ENABLED):
+                os.remove(NGINX_PUBLIC_CONF_ENABLED)
+                removed = True
+            if os.path.exists(NGINX_PUBLIC_CONF_PATH):
+                os.remove(NGINX_PUBLIC_CONF_PATH)
+                removed = True
+            if removed:
+                await self._reload_nginx()
+            return
+
+        # --- Valida porta ---
+        port = self.get_public_download_port(url)
+
+        if not (1 <= port <= 65535):
+            raise ValueError("Porta non valida (1-65535)")
+
+        all_reserved = RESERVED_PORTS | (extra_reserved_ports or set())
+        if port in all_reserved:
+            raise ValueError(f"La porta {port} è già in uso da un altro servizio")
+
+        admin_port = await self._get_current_port()
+        if port == admin_port:
+            raise ValueError(f"La porta {port} è già usata dal pannello di amministrazione")
+
+        # --- Genera blocco nginx ---
+        ssl_crt = str(SSL_DIR / "server.crt")
+        ssl_key = str(SSL_DIR / "server.key")
+
+        nginx_block = f"""server {{
+    listen {port} ssl;
+    server_name _;
+
+    ssl_certificate {ssl_crt};
+    ssl_certificate_key {ssl_key};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location / {{ return 403; }}
+
+    # Download configurazioni moduli (magic token, qualsiasi modulo)
+    location ~* ^/api/modules/[^/]+/download {{
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+}}
+"""
+
+        with open(NGINX_PUBLIC_CONF_PATH, "w") as f:
+            f.write(nginx_block)
+
+        # Symlink in sites-enabled (sovrascrive se esiste)
+        if os.path.islink(NGINX_PUBLIC_CONF_ENABLED):
+            os.remove(NGINX_PUBLIC_CONF_ENABLED)
+        os.symlink(NGINX_PUBLIC_CONF_PATH, NGINX_PUBLIC_CONF_ENABLED)
+
+        # Test e reload — rollback su errore
+        if not await self._reload_nginx():
+            if os.path.islink(NGINX_PUBLIC_CONF_ENABLED):
+                os.remove(NGINX_PUBLIC_CONF_ENABLED)
+            if os.path.exists(NGINX_PUBLIC_CONF_PATH):
+                os.remove(NGINX_PUBLIC_CONF_PATH)
+            raise RuntimeError("Configurazione nginx non valida. Verifica la porta e riprova.")
 
     async def renew_self_signed_cert(self) -> CertificateInfo:
         """
