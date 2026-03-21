@@ -30,9 +30,26 @@ from .models import (
     OvpnMagicToken, SendConfigRequest, PKIStatusRead, CertRenewRequest
 )
 from .service import openvpn_service, OPENVPN_BASE_DIR
+from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# =========================================================================
+# SYSTEM
+# =========================================================================
+
+@router.get("/system/interfaces")
+async def get_network_interfaces(
+    _user: User = Depends(require_permission("openvpn.view"))
+):
+    """
+    Return list of physical network interfaces.
+    Used for route interface selection in split tunnel mode.
+    """
+    interfaces = NetworkService.get_interfaces()
+    return {"interfaces": interfaces}
 
 
 # =========================================================================

@@ -6,7 +6,7 @@
  */
 
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
+import { showToast, confirmDialog, loadingSpinner, escapeHtml, isValidCIDR } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 
 const MODULE_API = '/modules/openvpn';
@@ -16,6 +16,29 @@ let currentContainer = null;
 let networkInterfaces = [];  // Cache for system network interfaces
 let canManage = false;  // Permission cache
 let canClients = false;
+
+async function loadNetworkInterfaces() {
+    try {
+        const data = await apiGet(`${MODULE_API}/system/interfaces`);
+        networkInterfaces = data.interfaces || [];
+    } catch (err) {
+        console.warn('Could not load interfaces:', err);
+        networkInterfaces = [{ name: 'eth0', state: 'unknown' }];
+    }
+}
+
+function populateInterfaceSelects() {
+    document.querySelectorAll('.route-interface').forEach(select => {
+        const currentVal = select.value;
+        select.innerHTML = '<option value="">Auto (default)</option>' +
+            networkInterfaces.map(iface =>
+                `<option value="${iface.name}" ${iface.state === 'up' ? 'class="fw-bold"' : ''}>
+                    ${iface.name} ${iface.state === 'up' ? '●' : ''}
+                </option>`
+            ).join('');
+        if (currentVal) select.value = currentVal;
+    });
+}
 
 // Helper function to format bytes to human readable string
 function formatBytes(bytes) {
@@ -439,59 +462,63 @@ async function renderInstanceDetail(container) {
                     </div>
                 </div>
                 <div class="card-body">
-                    <div class="row">
-                        <div class="col-md-2">
+                    <!-- Instance Info Section -->
+                    <div class="row mb-3">
+                        <div class="col-md-3">
                             <span class="text-muted">Stato</span><br>
                             <span class="badge ${instance.status === 'running' ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6">
                                 ${instance.status === 'running' ? 'Attivo' : 'Fermo'}
                             </span>
                         </div>
-                        <div class="col-md-2">
+                        <div class="col-md-3">
                             <span class="text-muted">Porta</span><br>
                             <strong>${instance.port}/${instance.protocol.toUpperCase()}</strong>
                         </div>
-                        <div class="col-md-2">
-                            <span class="text-muted">Subnet</span><br>
+                        <div class="col-md-3">
+                            <span class="text-muted">Subnet VPN</span><br>
                             <code>${instance.subnet}</code>
                         </div>
-                        <div class="col-md-2">
-                            <span class="text-muted">Modalità</span><br>
-                            <span id="display-tunnel-mode" class="badge ${instance.tunnel_mode === 'full' ? 'bg-blue' : 'bg-purple'}-lt">
-                                ${instance.tunnel_mode === 'full' ? 'Full Tunnel' : 'Split Tunnel'}
-                            </span>
-                            ${canManage ? `<button class="btn btn-sm btn-ghost-primary p-0 ms-1" id="btn-edit-routing" title="Modifica instradamento">
-                                <i class="ti ti-edit fs-5"></i>
-                            </button>` : ''}
-                        </div>
-                        <div class="col-md-2">
-                            <span class="text-muted">DNS</span><br>
-                            <small>${instance.dns_servers?.join(', ') || 'N/A'}</small>
-                        </div>
-                        <div class="col-md-2">
-                            <span class="text-muted">Client</span><br>
+                        <div class="col-md-3">
+                            <span class="text-muted">Client Attivi</span><br>
                             <strong>${instance.client_count}</strong>
                         </div>
                     </div>
+
                     <hr>
-                    <div class="row align-items-center">
-                        <div class="col-md-10">
-                            <span class="text-muted">Endpoint Pubblico:</span>
+
+                    <!-- Default Settings Section -->
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4 class="mb-0"><i class="ti ti-settings me-2"></i>Impostazioni Default</h4>
+                        ${canManage ? `<button class="btn btn-sm btn-outline-primary" id="btn-edit-defaults">
+                            <i class="ti ti-edit me-1"></i>Modifica
+                        </button>` : ''}
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="mb-2">
+                                <span class="text-muted">Modalità Routing</span><br>
+                                <span id="display-tunnel-mode" class="badge ${instance.tunnel_mode === 'full' ? 'bg-blue' : 'bg-purple'}-lt fs-6">
+                                    ${instance.tunnel_mode === 'full' ? 'Full Tunnel' : 'Split Tunnel'}
+                                </span>
+                            </div>
+                            ${instance.tunnel_mode === 'split' && instance.routes?.length ? `
+                            <div class="mt-2">
+                                <small class="text-muted">Rotte:</small><br>
+                                <div class="d-flex flex-wrap gap-1 mt-1">
+                                    ${instance.routes.map(r => `<code class="badge bg-light text-dark">${r.network || r}</code>`).join('')}
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+                        <div class="col-md-4">
+                            <span class="text-muted">DNS Default</span><br>
+                            <code id="display-dns">${instance.dns_servers?.join(', ') || 'N/A'}</code>
+                        </div>
+                        <div class="col-md-4">
+                            <span class="text-muted">Endpoint Pubblico</span><br>
                             <code id="display-endpoint">${instance.endpoint || '(auto-detect)'}</code>
                         </div>
-                        <div class="col-md-2 text-end">
-                            <button class="btn btn-sm btn-outline-primary" id="btn-edit-endpoint">
-                                <i class="ti ti-edit me-1"></i>Modifica
-                            </button>
-                        </div>
-                    </div>
-                    <div id="display-routes-section">
-                    ${instance.tunnel_mode === 'split' && instance.routes?.length ? `
-                        <hr>
-                        <h4>Rotte Split Tunnel</h4>
-                        <div class="d-flex flex-wrap gap-2">
-                            ${instance.routes.map(r => `<code class="badge bg-light text-dark">${r.network || r}</code>`).join('')}
-                        </div>
-                    ` : ''}
                     </div>
                 </div>
             </div>
@@ -664,29 +691,98 @@ async function renderInstanceDetail(container) {
             </div>
         </div>
         
-        <!-- Edit Endpoint Modal -->
-        <div class="modal" id="modal-edit-endpoint" tabindex="-1">
-            <div class="modal-dialog modal-sm">
+        <!-- Edit Defaults Modal -->
+        <div class="modal" id="modal-edit-defaults" tabindex="-1">
+            <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Modifica Endpoint</h5>
+                        <h5 class="modal-title"><i class="ti ti-settings me-2"></i>Modifica Impostazioni Default</h5>
                         <button class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
+
                         <div class="mb-3">
-                            <label class="form-label" for="edit-endpoint-value">Endpoint Pubblico (IP o dominio)</label>
-                            <input type="text" class="form-control" id="edit-endpoint-value" placeholder="es. vpn.example.com o 1.2.3.4">
-                            <small class="form-hint">Lascia vuoto per usare auto-detect dell'IP pubblico</small>
+                            <label class="form-label">Modalità Tunnel</label>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <input type="radio" class="btn-check" name="defaults-tunnel-mode" id="defaults-tunnel-full" value="full" ${instance.tunnel_mode === 'full' ? 'checked' : ''}>
+                                    <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="defaults-tunnel-full">
+                                        <i class="ti ti-world me-2"></i><strong>Full Tunnel</strong><br>
+                                        <small class="opacity-75">Tutto il traffico passa dalla VPN</small>
+                                    </label>
+                                </div>
+                                <div class="col-6">
+                                    <input type="radio" class="btn-check" name="defaults-tunnel-mode" id="defaults-tunnel-split" value="split" ${instance.tunnel_mode === 'split' ? 'checked' : ''}>
+                                    <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="defaults-tunnel-split">
+                                        <i class="ti ti-route me-2"></i><strong>Split Tunnel</strong><br>
+                                        <small class="opacity-75">Solo reti specifiche via VPN</small>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Split Tunnel Routes (shown when split is selected) -->
+                        <div id="defaults-routes-section" class="${instance.tunnel_mode === 'full' ? 'd-none' : ''}">
+                            <div class="mb-3">
+                                <label class="form-label">Reti da inoltrare</label>
+                                <div id="defaults-routes-list">
+                                    ${(instance.routes || []).length > 0
+                ? (instance.routes || []).map(r => `
+                                            <div class="defaults-route-row mb-2 d-flex gap-2 align-items-center">
+                                                <input type="text" class="form-control defaults-route-input" value="${r.network || r}" placeholder="es. 192.168.1.0/24" style="flex: 2">
+                                                <select class="form-select defaults-route-interface route-interface" style="flex: 1">
+                                                    <option value="">Auto</option>
+                                                    ${networkInterfaces.map(iface => `
+                                                        <option value="${iface.name}" ${r.interface === iface.name ? 'selected' : ''}>${iface.name}</option>
+                                                    `).join('')}
+                                                </select>
+                                                <button class="btn btn-outline-danger defaults-remove-route" type="button"><i class="ti ti-minus"></i></button>
+                                            </div>
+                                        `).join('')
+                : ''
+            }
+                                    <!-- Add row with + button -->
+                                    <div class="defaults-route-row mb-2 d-flex gap-2 align-items-center defaults-add-row">
+                                        <input type="text" class="form-control defaults-route-input" placeholder="es. 192.168.1.0/24" style="flex: 2">
+                                        <select class="form-select defaults-route-interface route-interface" style="flex: 1">
+                                            <option value="">Auto</option>
+                                            ${networkInterfaces.map(iface => `<option value="${iface.name}">${iface.name}</option>`).join('')}
+                                        </select>
+                                        <button class="btn btn-outline-success btn-add-defaults-route" type="button"><i class="ti ti-plus"></i></button>
+                                    </div>
+                                </div>
+                                <small class="form-hint d-block mt-2">Reti da instradare attraverso la VPN.</small>
+                            </div>
+                        </div>
+
+                        <hr>
+
+                        <div class="mb-3">
+                            <label class="form-label">Server DNS</label>
+                            <input type="text" class="form-control" id="edit-default-dns"
+                                   value="${(instance.dns_servers || []).join(', ')}"
+                                   placeholder="1.1.1.1, 8.8.8.8">
+                            <small class="form-hint">Separati da virgola. Lascia vuoto per non pushare DNS ai client.</small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Endpoint Pubblico</label>
+                            <input type="text" class="form-control" id="edit-default-endpoint"
+                                   value="${instance.endpoint || ''}"
+                                   placeholder="vpn.example.com o IP pubblico">
+                            <small class="form-hint">Lascia vuoto per auto-detect dell'IP pubblico.</small>
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-save-endpoint">Salva</button>
+                        <button class="btn btn-outline-secondary" data-bs-dismiss="modal">Annulla</button>
+                        <button class="btn btn-primary" id="btn-save-defaults">
+                            <i class="ti ti-device-floppy me-1"></i>Salva Modifiche
+                        </button>
                     </div>
                 </div>
             </div>
         </div>
-        
+
         <!-- Send Email Modal -->
         <div class="modal" id="modal-send-email" tabindex="-1">
             <div class="modal-dialog modal-sm">
@@ -713,69 +809,6 @@ async function renderInstanceDetail(container) {
             </div>
         </div>
         
-        <!-- Edit Routing Modal -->
-        <div class="modal" id="modal-edit-routing" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Modifica Instradamento</h5>
-                        <button class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="alert alert-info">
-                            <i class="ti ti-info-circle me-2"></i>
-                            Le nuove rotte saranno applicate automaticamente alla prossima connessione dei client.
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Modalità Tunnel</label>
-                            <div class="row g-2">
-                                <div class="col-6">
-                                    <input type="radio" class="btn-check" name="routing-mode" id="routing-full" value="full" ${instance.tunnel_mode === 'full' ? 'checked' : ''}>
-                                    <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="routing-full">
-                                        <i class="ti ti-world me-2"></i><strong>Full Tunnel</strong><br>
-                                        <small class="opacity-75">Tutto il traffico passa dalla VPN</small>
-                                    </label>
-                                </div>
-                                <div class="col-6">
-                                    <input type="radio" class="btn-check" name="routing-mode" id="routing-split" value="split" ${instance.tunnel_mode === 'split' ? 'checked' : ''}>
-                                    <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="routing-split">
-                                        <i class="ti ti-route me-2"></i><strong>Split Tunnel</strong><br>
-                                        <small class="opacity-75">Solo reti specifiche via VPN</small>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="mb-3" id="routing-dns-section">
-                            <label class="form-label">Server DNS</label>
-                            <input type="text" class="form-control" id="routing-dns" value="${(instance.dns_servers || []).join(', ')}" placeholder="es. 1.1.1.1, 8.8.8.8">
-                            <small class="form-hint">Separati da virgola. Lascia vuoto per non pushare DNS ai client.</small>
-                        </div>
-                        <div id="routing-routes-section" class="${instance.tunnel_mode === 'full' ? 'd-none' : ''}">
-                            <label class="form-label">Reti da instradare</label>
-                            <div id="routing-routes-list">
-                                ${(instance.routes || []).map((r, i) => `
-                                    <div class="routing-route-row mb-2 d-flex gap-2 align-items-center">
-                                        <input type="text" class="form-control routing-route-input" value="${r.network || r}" placeholder="es. 192.168.1.0/24" style="flex: 2">
-                                        <input type="text" class="form-control routing-iface-input" value="${r.interface || ''}" placeholder="eth0" style="flex: 1" title="Interfaccia uscita (opzionale)">
-                                        <button class="btn btn-outline-danger routing-remove-route" type="button"><i class="ti ti-trash"></i></button>
-                                    </div>
-                                `).join('')}
-                            </div>
-                            <button class="btn btn-sm btn-outline-primary" id="btn-add-routing-route" type="button">
-                                <i class="ti ti-plus me-1"></i>Aggiungi rete
-                            </button>
-                            <small class="form-hint d-block mt-2">Subnet da instradare via VPN. Interfaccia opzionale per NAT (default: WAN).</small>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-save-routing">
-                            <i class="ti ti-device-floppy me-1"></i>Salva e Applica
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
         `;
 
         // New client button - open modal and load groups
@@ -821,36 +854,18 @@ async function renderInstanceDetail(container) {
             }
         });
 
-        // Edit endpoint button
-        document.getElementById('btn-edit-endpoint')?.addEventListener('click', () => {
-            document.getElementById('edit-endpoint-value').value = instance.endpoint || '';
-            new bootstrap.Modal(document.getElementById('modal-edit-endpoint')).show();
+        // Edit defaults button - open combined modal
+        document.getElementById('btn-edit-defaults')?.addEventListener('click', async () => {
+            await loadNetworkInterfaces();
+            populateInterfaceSelects();
+            new bootstrap.Modal(document.getElementById('modal-edit-defaults')).show();
         });
 
-        // Save endpoint
-        document.getElementById('btn-save-endpoint')?.addEventListener('click', async () => {
-            const endpoint = document.getElementById('edit-endpoint-value').value.trim() || null;
-            try {
-                await apiPatch(`${MODULE_API}/instances/${currentInstanceId}`, { endpoint });
-                showToast('Endpoint aggiornato', 'success');
-                bootstrap.Modal.getInstance(document.getElementById('modal-edit-endpoint'))?.hide();
-                document.getElementById('display-endpoint').textContent = endpoint || '(auto-detect)';
-                instance.endpoint = endpoint;
-            } catch (err) {
-                showToast(err.message, 'error');
-            }
-        });
-
-        // Edit routing button
-        document.getElementById('btn-edit-routing')?.addEventListener('click', async () => {
-            new bootstrap.Modal(document.getElementById('modal-edit-routing')).show();
-        });
-
-        // Toggle routes section visibility based on mode selection
-        document.querySelectorAll('input[name="routing-mode"]').forEach(radio => {
+        // Toggle routes section visibility based on tunnel mode selection
+        document.querySelectorAll('input[name="defaults-tunnel-mode"]').forEach(radio => {
             radio.addEventListener('change', () => {
-                const routesSection = document.getElementById('routing-routes-section');
-                if (document.getElementById('routing-split').checked) {
+                const routesSection = document.getElementById('defaults-routes-section');
+                if (document.getElementById('defaults-tunnel-split').checked) {
                     routesSection.classList.remove('d-none');
                 } else {
                     routesSection.classList.add('d-none');
@@ -858,51 +873,97 @@ async function renderInstanceDetail(container) {
             });
         });
 
-        // Add route button
-        document.getElementById('btn-add-routing-route')?.addEventListener('click', () => {
-            const list = document.getElementById('routing-routes-list');
-            const row = document.createElement('div');
-            row.className = 'routing-route-row mb-2 d-flex gap-2 align-items-center';
-            row.innerHTML = `
-                <input type="text" class="form-control routing-route-input" placeholder="es. 192.168.1.0/24" style="flex: 2">
-                <input type="text" class="form-control routing-iface-input" placeholder="eth0" style="flex: 1" title="Interfaccia uscita (opzionale)">
-                <button class="btn btn-outline-danger routing-remove-route" type="button"><i class="ti ti-trash"></i></button>
-            `;
-            list.appendChild(row);
-        });
+        // Route add/remove event delegation
+        document.getElementById('defaults-routes-list')?.addEventListener('click', (e) => {
+            const addBtn = e.target.closest('.btn-add-defaults-route');
+            const removeBtn = e.target.closest('.defaults-remove-route');
 
-        // Remove route buttons (event delegation)
-        document.getElementById('routing-routes-list')?.addEventListener('click', (e) => {
-            if (e.target.closest('.routing-remove-route')) {
-                e.target.closest('.routing-route-row')?.remove();
+            if (addBtn) {
+                const addRow = addBtn.closest('.defaults-add-row');
+                const input = addRow.querySelector('.defaults-route-input');
+                const select = addRow.querySelector('.defaults-route-interface');
+                const network = input.value.trim();
+
+                if (!network) return;
+                if (!isValidCIDR(network)) {
+                    input.classList.add('is-invalid');
+                    return;
+                }
+                input.classList.remove('is-invalid');
+
+                const row = document.createElement('div');
+                row.className = 'defaults-route-row mb-2 d-flex gap-2 align-items-center';
+                row.innerHTML = `
+                    <input type="text" class="form-control defaults-route-input" value="${escapeHtml(network)}" placeholder="es. 192.168.1.0/24" style="flex: 2">
+                    <select class="form-select defaults-route-interface route-interface" style="flex: 1">
+                        <option value="">Auto</option>
+                        ${networkInterfaces.map(iface => `<option value="${iface.name}" ${select.value === iface.name ? 'selected' : ''}>${iface.name}</option>`).join('')}
+                    </select>
+                    <button class="btn btn-outline-danger defaults-remove-route" type="button"><i class="ti ti-minus"></i></button>
+                `;
+                addRow.parentNode.insertBefore(row, addRow);
+                input.value = '';
+                select.value = '';
+            }
+
+            if (removeBtn && !removeBtn.closest('.defaults-add-row')) {
+                removeBtn.closest('.defaults-route-row').remove();
             }
         });
 
-        // Save routing
-        document.getElementById('btn-save-routing')?.addEventListener('click', async () => {
-            const btn = document.getElementById('btn-save-routing');
+        // Save defaults (combined: routing + dns + endpoint)
+        document.getElementById('btn-save-defaults')?.addEventListener('click', async () => {
+            const btn = document.getElementById('btn-save-defaults');
             const originalHtml = btn.innerHTML;
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvataggio...';
 
             try {
-                const tunnelMode = document.querySelector('input[name="routing-mode"]:checked').value;
-                let routes = [];
-
-                // Parse DNS servers
-                const dnsInput = document.getElementById('routing-dns').value.trim();
+                const tunnelMode = document.querySelector('input[name="defaults-tunnel-mode"]:checked')?.value || 'full';
+                const dnsInput = document.getElementById('edit-default-dns').value.trim();
                 const dnsServers = dnsInput ? dnsInput.split(',').map(s => s.trim()).filter(s => s) : [];
+                const endpoint = document.getElementById('edit-default-endpoint').value.trim() || null;
 
+                // Collect routes with CIDR validation
+                let routes = [];
+                let hasInvalidCidr = false;
                 if (tunnelMode === 'split') {
-                    document.querySelectorAll('.routing-route-row').forEach(row => {
-                        const networkInput = row.querySelector('.routing-route-input');
-                        const ifaceInput = row.querySelector('.routing-iface-input');
-                        const network = networkInput?.value.trim();
-                        const iface = ifaceInput?.value.trim();
+                    document.querySelectorAll('.defaults-route-row:not(.defaults-add-row)').forEach(row => {
+                        const input = row.querySelector('.defaults-route-input');
+                        const network = input?.value.trim();
+                        const iface = row.querySelector('.defaults-route-interface')?.value;
                         if (network) {
-                            routes.push({ network: network, interface: iface || null });
+                            if (!isValidCIDR(network)) {
+                                hasInvalidCidr = true;
+                                input.classList.add('is-invalid');
+                            } else {
+                                input.classList.remove('is-invalid');
+                                routes.push({ network, interface: iface || null });
+                            }
                         }
                     });
+
+                    // Also check the add-row input if it has a value
+                    const addRowInput = document.querySelector('.defaults-add-row .defaults-route-input');
+                    const addRowNetwork = addRowInput?.value.trim();
+                    if (addRowNetwork) {
+                        if (!isValidCIDR(addRowNetwork)) {
+                            hasInvalidCidr = true;
+                            addRowInput.classList.add('is-invalid');
+                        } else {
+                            addRowInput.classList.remove('is-invalid');
+                            const addRowIface = document.querySelector('.defaults-add-row .defaults-route-interface')?.value;
+                            routes.push({ network: addRowNetwork, interface: addRowIface || null });
+                        }
+                    }
+
+                    if (hasInvalidCidr) {
+                        showToast('Una o più rotte hanno formato CIDR non valido (es. 192.168.1.0/24)', 'error');
+                        btn.disabled = false;
+                        btn.innerHTML = originalHtml;
+                        return;
+                    }
+
                     if (routes.length === 0) {
                         showToast('Split tunnel richiede almeno una rete', 'error');
                         btn.disabled = false;
@@ -911,20 +972,25 @@ async function renderInstanceDetail(container) {
                     }
                 }
 
+                // 1. Update routing (includes dns_servers for OpenVPN)
                 const result = await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/routing`, {
                     tunnel_mode: tunnelMode,
                     routes: routes,
                     dns_servers: dnsServers
                 });
 
-                bootstrap.Modal.getInstance(document.getElementById('modal-edit-routing'))?.hide();
-                showToast(result.message, 'success');
+                // 2. Update endpoint if changed
+                if (endpoint !== instance.endpoint) {
+                    await apiPatch(`${MODULE_API}/instances/${currentInstanceId}`, { endpoint });
+                }
+
+                bootstrap.Modal.getInstance(document.getElementById('modal-edit-defaults'))?.hide();
+                showToast(result.message || 'Impostazioni default aggiornate', 'success');
 
                 if (result.warning) {
                     setTimeout(() => showToast(result.warning, 'warning'), 1500);
                 }
 
-                // Reload to show updated data
                 renderInstanceDetail(container);
             } catch (err) {
                 showToast(err.message, 'error');
@@ -933,6 +999,11 @@ async function renderInstanceDetail(container) {
                 btn.innerHTML = originalHtml;
             }
         });
+
+        // Register global functions (must be inside renderInstanceDetail so they
+        // re-bind to this module's scope each time the view is shown, preventing
+        // cross-module collision when navigating between WireGuard and OpenVPN)
+        registerGlobalFunctions();
 
         // Load PKI tab when clicked
         document.getElementById('tab-pki')?.addEventListener('shown.bs.tab', async () => {
@@ -1044,170 +1115,174 @@ async function loadPKIStatus() {
 }
 
 // ============== GLOBAL FUNCTIONS ==============
+// Wrapped in a function so they re-register each time renderInstanceDetail runs,
+// preventing cross-module collision when navigating between VPN modules.
 
-window.startInstance = async (id) => {
-    try {
-        await apiPost(`${MODULE_API}/instances/${id}/start`);
-        showToast('Istanza avviata', 'success');
-        if (currentContainer) renderInstanceDetail(currentContainer);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
-
-window.stopInstance = async (id) => {
-    try {
-        await apiPost(`${MODULE_API}/instances/${id}/stop`);
-        showToast('Istanza fermata', 'success');
-        if (currentContainer) renderInstanceDetail(currentContainer);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
-
-window.deleteInstance = async (id) => {
-    if (await confirmDialog('Eliminare questa istanza e tutti i suoi client?', 'Elimina')) {
+function registerGlobalFunctions() {
+    window.startInstance = async (id) => {
         try {
-            await apiDelete(`${MODULE_API}/instances/${id}`);
-            showToast('Istanza eliminata', 'success');
-            location.href = '#openvpn';
+            await apiPost(`${MODULE_API}/instances/${id}/start`);
+            showToast('Istanza avviata', 'success');
+            if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }
-    }
-};
+    };
 
-window.downloadConfig = async (name) => {
-    try {
-        const token = localStorage.getItem('madmin_token');
-        const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/config`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
+    window.stopInstance = async (id) => {
+        try {
+            await apiPost(`${MODULE_API}/instances/${id}/stop`);
+            showToast('Istanza fermata', 'success');
+            if (currentContainer) renderInstanceDetail(currentContainer);
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    };
 
-        if (!res.ok) throw new Error('Download fallito: ' + res.statusText);
+    window.deleteInstance = async (id) => {
+        if (await confirmDialog('Eliminare questa istanza e tutti i suoi client?', 'Elimina')) {
+            try {
+                await apiDelete(`${MODULE_API}/instances/${id}`);
+                showToast('Istanza eliminata', 'success');
+                location.href = '#openvpn';
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
+    };
 
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${name}.ovpn`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
+    window.downloadConfig = async (name) => {
+        try {
+            const token = localStorage.getItem('madmin_token');
+            const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/config`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
 
-window.showQR = async (name) => {
-    try {
-        const token = localStorage.getItem('madmin_token');
-        const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/qr`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
+            if (!res.ok) throw new Error('Download fallito: ' + res.statusText);
 
-        if (!res.ok) throw new Error('Caricamento QR fallito: ' + res.statusText);
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${name}.ovpn`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    };
 
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
+    window.showQR = async (name) => {
+        try {
+            const token = localStorage.getItem('madmin_token');
+            const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/qr`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
 
-        const modal = document.createElement('div');
-        modal.innerHTML = `
-            <div class="modal fade" tabindex="-1">
-                <div class="modal-dialog modal-sm">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title">QR Code - ${escapeHtml(name)}</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body text-center p-4">
-                            <img src="${url}" class="img-fluid" alt="QR Code">
-                            <p class="mt-3 mb-0 text-muted small">Il QR contiene un link per scaricare la configurazione (valido 48 ore)</p>
+            if (!res.ok) throw new Error('Caricamento QR fallito: ' + res.statusText);
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+
+            const modal = document.createElement('div');
+            modal.innerHTML = `
+                <div class="modal fade" tabindex="-1">
+                    <div class="modal-dialog modal-sm">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">QR Code - ${escapeHtml(name)}</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body text-center p-4">
+                                <img src="${url}" class="img-fluid" alt="QR Code">
+                                <p class="mt-3 mb-0 text-muted small">Il QR contiene un link per scaricare la configurazione (valido 48 ore)</p>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-        const bsModal = new bootstrap.Modal(modal.querySelector('.modal'));
-        bsModal.show();
-        modal.querySelector('.modal').addEventListener('hidden.bs.modal', () => {
-            modal.remove();
-            window.URL.revokeObjectURL(url);
-        });
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
-
-window.revokeClient = async (name) => {
-    if (await confirmDialog('Revoca Client', `Revocare il client "${name}"? Il client perderà l'accesso alla VPN.`, 'Revoca')) {
-        try {
-            await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`);
-            showToast('Client revocato', 'success');
-            if (currentContainer) renderInstanceDetail(currentContainer);
+            `;
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal.querySelector('.modal'));
+            bsModal.show();
+            modal.querySelector('.modal').addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                window.URL.revokeObjectURL(url);
+            });
         } catch (err) {
             showToast(err.message, 'error');
         }
-    }
-};
+    };
 
-window.renewClientCert = async (name) => {
-    if (await confirmDialog('Rinnova Certificato', `Rinnovare il certificato per "${name}"? Il client dovrà riscaricare la configurazione.`, 'Rinnova')) {
-        try {
-            await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/renew`);
-            showToast('Certificato rinnovato', 'success');
-            if (currentContainer) renderInstanceDetail(currentContainer);
-        } catch (err) {
-            showToast(err.message, 'error');
+    window.revokeClient = async (name) => {
+        if (await confirmDialog('Revoca Client', `Revocare il client "${name}"? Il client perderà l'accesso alla VPN.`, 'Revoca')) {
+            try {
+                await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`);
+                showToast('Client revocato', 'success');
+                if (currentContainer) renderInstanceDetail(currentContainer);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
         }
-    }
-};
+    };
 
-window.restoreClient = async (name) => {
-    if (await confirmDialog('Ripristina Client', `Ripristinare il client "${name}"? Verrà generato un nuovo certificato e il client dovrà scaricare la nuova configurazione.`, 'Ripristina', 'btn-success')) {
-        try {
-            await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/restore`);
-            showToast('Client ripristinato con nuovo certificato', 'success');
-            if (currentContainer) renderInstanceDetail(currentContainer);
-        } catch (err) {
-            showToast(err.message, 'error');
+    window.renewClientCert = async (name) => {
+        if (await confirmDialog('Rinnova Certificato', `Rinnovare il certificato per "${name}"? Il client dovrà riscaricare la configurazione.`, 'Rinnova')) {
+            try {
+                await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/renew`);
+                showToast('Certificato rinnovato', 'success');
+                if (currentContainer) renderInstanceDetail(currentContainer);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
         }
-    }
-};
+    };
 
-window.deleteClientPermanent = async (name) => {
-    if (await confirmDialog('Elimina Client', `Eliminare definitivamente il client "${name}"? Questa azione è irreversibile.`, 'Elimina')) {
-        try {
-            await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/permanent`);
-            showToast('Client eliminato definitivamente', 'success');
-            if (currentContainer) renderInstanceDetail(currentContainer);
-        } catch (err) {
-            showToast(err.message, 'error');
+    window.restoreClient = async (name) => {
+        if (await confirmDialog('Ripristina Client', `Ripristinare il client "${name}"? Verrà generato un nuovo certificato e il client dovrà scaricare la nuova configurazione.`, 'Ripristina', 'btn-success')) {
+            try {
+                await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/restore`);
+                showToast('Client ripristinato con nuovo certificato', 'success');
+                if (currentContainer) renderInstanceDetail(currentContainer);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
         }
-    }
-};
+    };
 
-window.renewServerCert = async () => {
-    if (await confirmDialog('Rinnova Certificato Server', 'Rinnovare il certificato server? L\'istanza verrà riavviata.', 'Rinnova')) {
-        try {
-            await apiPost(`${MODULE_API}/instances/${currentInstanceId}/pki/renew-server`);
-            showToast('Certificato server rinnovato', 'success');
-            if (currentContainer) renderInstanceDetail(currentContainer);
-        } catch (err) {
-            showToast(err.message, 'error');
+    window.deleteClientPermanent = async (name) => {
+        if (await confirmDialog('Elimina Client', `Eliminare definitivamente il client "${name}"? Questa azione è irreversibile.`, 'Elimina')) {
+            try {
+                await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}/permanent`);
+                showToast('Client eliminato definitivamente', 'success');
+                if (currentContainer) renderInstanceDetail(currentContainer);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
         }
-    }
-};
+    };
 
-window.openSendEmailModal = (clientName) => {
-    document.getElementById('send-email-client-name').value = clientName;
-    document.getElementById('send-email-address').value = '';
-    new bootstrap.Modal(document.getElementById('modal-send-email')).show();
-};
+    window.renewServerCert = async () => {
+        if (await confirmDialog('Rinnova Certificato Server', 'Rinnovare il certificato server? L\'istanza verrà riavviata.', 'Rinnova')) {
+            try {
+                await apiPost(`${MODULE_API}/instances/${currentInstanceId}/pki/renew-server`);
+                showToast('Certificato server rinnovato', 'success');
+                if (currentContainer) renderInstanceDetail(currentContainer);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
+    };
 
-// Setup send email button handler
+    window.openSendEmailModal = (clientName) => {
+        document.getElementById('send-email-client-name').value = clientName;
+        document.getElementById('send-email-address').value = '';
+        new bootstrap.Modal(document.getElementById('modal-send-email')).show();
+    };
+}
+
+// Setup send email button handler (event delegation, safe to run once at module load)
 document.addEventListener('click', async (e) => {
     if (e.target.id === 'btn-send-email' || e.target.closest('#btn-send-email')) {
         const clientName = document.getElementById('send-email-client-name').value;

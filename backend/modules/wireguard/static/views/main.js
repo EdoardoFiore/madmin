@@ -1069,6 +1069,11 @@ async function renderInstanceDetail(container) {
                 `;
             }
         });
+
+        // Register global functions (must be inside renderInstanceDetail so they
+        // re-bind to this module's scope each time the view is shown, preventing
+        // cross-module collision when navigating between WireGuard and OpenVPN)
+        registerGlobalFunctions();
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">
             <i class="ti ti-alert-circle me-2"></i>${err.message}
@@ -1078,134 +1083,136 @@ async function renderInstanceDetail(container) {
 
 // ============== GLOBAL FUNCTIONS ==============
 
-window.startInstance = async (id) => {
-    try {
-        await apiPost(`${MODULE_API}/instances/${id}/start`);
-        showToast('Istanza avviata', 'success');
-        if (currentContainer) renderInstanceDetail(currentContainer);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
-
-window.stopInstance = async (id) => {
-    try {
-        await apiPost(`${MODULE_API}/instances/${id}/stop`);
-        showToast('Istanza fermata', 'success');
-        if (currentContainer) renderInstanceDetail(currentContainer);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
-
-window.deleteInstance = async (id) => {
-    if (await confirmDialog('Elimina Istanza', 'Eliminare questa istanza e tutti i suoi client?', 'Elimina')) {
+function registerGlobalFunctions() {
+    window.startInstance = async (id) => {
         try {
-            await apiDelete(`${MODULE_API}/instances/${id}`);
-            showToast('Istanza eliminata', 'success');
-            location.href = '#wireguard';
-        } catch (err) {
-            showToast(err.message, 'error');
-        }
-    }
-};
-
-window.downloadConfig = async (name) => {
-    try {
-        const token = localStorage.getItem('madmin_token');
-        const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/config`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-
-        if (!res.ok) throw new Error('Download fallito: ' + res.statusText);
-
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${name}.conf`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
-
-window.resetClientDefaults = async (name) => {
-    if (await confirmDialog('Ripristina Default', `Vuoi ripristinare le impostazioni di default per il client "${name}"?<br><br><small class="text-muted">Le rotte e i DNS personalizzati verranno rimossi e saranno usati quelli dell'istanza.</small>`, 'Ripristina', 'btn-warning', true)) {
-        try {
-            await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`, {
-                allowed_ips: "",  // Empty string to remove override
-                dns: ""          // Empty string to remove override
-            });
-            showToast('Client ripristinato ai valori di default', 'success');
+            await apiPost(`${MODULE_API}/instances/${id}/start`);
+            showToast('Istanza avviata', 'success');
             if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
             showToast(err.message, 'error');
         }
-    }
-};
+    };
 
-window.showQR = async (name) => {
-    try {
-        const token = localStorage.getItem('madmin_token');
-        const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/qr`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
+    window.stopInstance = async (id) => {
+        try {
+            await apiPost(`${MODULE_API}/instances/${id}/stop`);
+            showToast('Istanza fermata', 'success');
+            if (currentContainer) renderInstanceDetail(currentContainer);
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    };
 
-        if (!res.ok) throw new Error('Caricamento QR fallito: ' + res.statusText);
+    window.deleteInstance = async (id) => {
+        if (await confirmDialog('Elimina Istanza', 'Eliminare questa istanza e tutti i suoi client?', 'Elimina')) {
+            try {
+                await apiDelete(`${MODULE_API}/instances/${id}`);
+                showToast('Istanza eliminata', 'success');
+                location.href = '#wireguard';
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
+    };
 
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
+    window.downloadConfig = async (name) => {
+        try {
+            const token = localStorage.getItem('madmin_token');
+            const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/config`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
 
-        const modal = document.createElement('div');
-        modal.innerHTML = `
-            <div class="modal fade" tabindex="-1">
-                <div class="modal-dialog modal-sm">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title">QR Code - ${escapeHtml(name)}</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body text-center p-4">
-                            <img src="${url}" class="img-fluid" alt="QR Code">
-                            <p class="mt-3 mb-0 text-muted small">Scansiona con l'app WireGuard</p>
+            if (!res.ok) throw new Error('Download fallito: ' + res.statusText);
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${name}.conf`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    };
+
+    window.resetClientDefaults = async (name) => {
+        if (await confirmDialog('Ripristina Default', `Vuoi ripristinare le impostazioni di default per il client "${name}"?<br><br><small class="text-muted">Le rotte e i DNS personalizzati verranno rimossi e saranno usati quelli dell'istanza.</small>`, 'Ripristina', 'btn-warning', true)) {
+            try {
+                await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`, {
+                    allowed_ips: "",  // Empty string to remove override
+                    dns: ""          // Empty string to remove override
+                });
+                showToast('Client ripristinato ai valori di default', 'success');
+                if (currentContainer) renderInstanceDetail(currentContainer);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
+    };
+
+    window.showQR = async (name) => {
+        try {
+            const token = localStorage.getItem('madmin_token');
+            const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/qr`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (!res.ok) throw new Error('Caricamento QR fallito: ' + res.statusText);
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+
+            const modal = document.createElement('div');
+            modal.innerHTML = `
+                <div class="modal fade" tabindex="-1">
+                    <div class="modal-dialog modal-sm">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">QR Code - ${escapeHtml(name)}</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body text-center p-4">
+                                <img src="${url}" class="img-fluid" alt="QR Code">
+                                <p class="mt-3 mb-0 text-muted small">Scansiona con l'app WireGuard</p>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-        const bsModal = new bootstrap.Modal(modal.querySelector('.modal'));
-        bsModal.show();
-        modal.querySelector('.modal').addEventListener('hidden.bs.modal', () => {
-            modal.remove();
-            window.URL.revokeObjectURL(url);
-        });
-    } catch (err) {
-        showToast(err.message, 'error');
-    }
-};
-
-window.revokeClient = async (name) => {
-    if (await confirmDialog('Revoca Client', `Revocare il client "${name}"? Il client perderà l'accesso alla VPN.`, 'Revoca')) {
-        try {
-            await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`);
-            showToast('Client revocato', 'success');
-            if (currentContainer) renderInstanceDetail(currentContainer);
+            `;
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal.querySelector('.modal'));
+            bsModal.show();
+            modal.querySelector('.modal').addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+                window.URL.revokeObjectURL(url);
+            });
         } catch (err) {
             showToast(err.message, 'error');
         }
-    }
-};
+    };
 
-window.openSendEmailModal = (clientName) => {
-    document.getElementById('send-email-client-name').value = clientName;
-    document.getElementById('send-email-address').value = '';
-    new bootstrap.Modal(document.getElementById('modal-send-email')).show();
-};
+    window.revokeClient = async (name) => {
+        if (await confirmDialog('Revoca Client', `Revocare il client "${name}"? Il client perderà l'accesso alla VPN.`, 'Revoca')) {
+            try {
+                await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`);
+                showToast('Client revocato', 'success');
+                if (currentContainer) renderInstanceDetail(currentContainer);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
+    };
+
+    window.openSendEmailModal = (clientName) => {
+        document.getElementById('send-email-client-name').value = clientName;
+        document.getElementById('send-email-address').value = '';
+        new bootstrap.Modal(document.getElementById('modal-send-email')).show();
+    };
+}
 
 // Setup send email button handler (called during renderInstanceDetail)
 document.addEventListener('click', async (e) => {
