@@ -195,32 +195,48 @@ class NetworkService:
         """Verify that certificate public key matches private key modulus."""
         try:
             # Get modulus of certificate
-            proc_crt = await asyncio.create_subprocess_shell(
-                f"openssl x509 -noout -modulus -in {crt_path} | openssl md5",
+            proc_crt = await asyncio.create_subprocess_exec(
+                'openssl', 'x509', '-noout', '-modulus', '-in', str(crt_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout_crt, _ = await proc_crt.communicate()
-            
+            stdout_crt_raw, _ = await proc_crt.communicate()
+
+            proc_crt_md5 = await asyncio.create_subprocess_exec(
+                'openssl', 'md5',
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout_crt, _ = await proc_crt_md5.communicate(input=stdout_crt_raw)
+
             # Get modulus of private key
-            proc_key = await asyncio.create_subprocess_shell(
-                f"openssl rsa -noout -modulus -in {key_path} | openssl md5",
+            proc_key = await asyncio.create_subprocess_exec(
+                'openssl', 'rsa', '-noout', '-modulus', '-in', str(key_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout_key, _ = await proc_key.communicate()
-            
+            stdout_key_raw, _ = await proc_key.communicate()
+
+            proc_key_md5 = await asyncio.create_subprocess_exec(
+                'openssl', 'md5',
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout_key, _ = await proc_key_md5.communicate(input=stdout_key_raw)
+
             if proc_crt.returncode != 0 or proc_key.returncode != 0:
                 logger.error("OpenSSL verification failed")
                 return False
-                
+
             match = stdout_crt.strip() == stdout_key.strip()
             if not match:
-                logger.warning(f"Certificate mismatch: {stdout_crt.strip()} != {stdout_key.strip()}")
+                logger.warning("Certificate/key modulus mismatch")
             return match
-            
+
         except Exception as e:
-            logger.error(f"Error verifies cert match: {e}")
+            logger.error(f"Error verifying cert match: {e}")
             return False
 
     async def _read_nginx_conf(self) -> str:

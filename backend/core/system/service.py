@@ -37,8 +37,12 @@ class SystemService:
             delay_seconds: Seconds to wait before restarting, to allow API responses
         """
         logger.info(f"Scheduling MADMIN restart in {delay_seconds}s...")
-        # Note: os.system("... &") forks a shell in the background detached from the API
-        os.system(f"sleep {delay_seconds} && systemctl restart madmin &")
+        subprocess.Popen(
+            ['bash', '-c', f'sleep {int(delay_seconds)} && systemctl restart madmin'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
     
     @staticmethod
     def get_stats() -> dict:

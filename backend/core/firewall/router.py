@@ -3,6 +3,7 @@ MADMIN Firewall Router
 
 API endpoints for machine firewall management.
 """
+import logging
 from typing import List, Optional
 import json
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Query
@@ -24,6 +25,8 @@ from .models import (
 )
 from .orchestrator import firewall_orchestrator
 from .iptables import IptablesError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
 
@@ -136,7 +139,8 @@ async def create_rule(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         await session.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error creating firewall rule: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.patch("/rules/{rule_id}", response_model=MachineFirewallRuleResponse)
@@ -162,15 +166,19 @@ async def update_rule(
         rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)
         if not rule:
             raise HTTPException(status_code=404, detail="Rule not found")
-        
+
         await session.commit()
         return _rule_to_response(rule)
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        await session.rollback()
+        raise
     except Exception as e:
         await session.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error updating firewall rule {rule_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -189,7 +197,7 @@ async def delete_rule(
         success = await firewall_orchestrator.delete_rule(session, rule_uuid)
         if not success:
             raise HTTPException(status_code=404, detail="Rule not found")
-        
+
         await session.commit()
     except IptablesError as e:
         await session.rollback()
@@ -199,7 +207,8 @@ async def delete_rule(
         raise
     except Exception as e:
         await session.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error deleting firewall rule {rule_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.put("/rules/order")
@@ -220,7 +229,8 @@ async def update_rule_order(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         await session.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error reordering firewall rules: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 class SingleRuleReorder(SQLModel):
@@ -286,9 +296,13 @@ async def reorder_single_rule(
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        await session.rollback()
+        raise
     except Exception as e:
         await session.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error reordering firewall rule {rule_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.post("/apply")
@@ -394,7 +408,8 @@ async def import_rules(
         
     except Exception as e:
         await session.rollback()
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        logger.error(f"Error importing firewall rules: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 # --- Module Chain Endpoints (for admin/debug) ---

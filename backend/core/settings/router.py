@@ -3,6 +3,7 @@ MADMIN Settings Router
 
 API endpoints for system settings management.
 """
+import logging
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -20,6 +21,8 @@ from .models import (
     NetworkSettingsResponse, PortChangeRequest, CertificateInfo
 )
 from .service import network_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
@@ -301,7 +304,8 @@ async def update_management_port(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error updating management port: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.post("/network/ssl/renew", response_model=CertificateInfo)
@@ -315,7 +319,8 @@ async def renew_ssl_certificate(
     try:
         return await network_service.renew_self_signed_cert()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error renewing SSL certificate: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.post("/network/ssl/upload", response_model=CertificateInfo)
@@ -333,13 +338,14 @@ async def upload_ssl_certificate(
     try:
         cert_content = await cert_file.read()
         key_content = await key_file.read()
-        
+
         ca_content = None
         if ca_file:
             ca_content = await ca_file.read()
-        
+
         info = await network_service.upload_custom_cert(cert_content, key_content, ca_content)
         return info
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error uploading SSL certificate: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 

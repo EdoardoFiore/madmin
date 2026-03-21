@@ -105,7 +105,7 @@ async def activate_module(
         raise
     except Exception as e:
         logger.error(f"Unexpected error activating module {module_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Errore imprevisto durante l'attivazione: {str(e)}")
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.post("/{module_id}/deactivate")
@@ -129,7 +129,7 @@ async def deactivate_module(
         raise
     except Exception as e:
         logger.error(f"Unexpected error deactivating module {module_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Errore imprevisto durante la disattivazione: {str(e)}")
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 @router.get("/{module_id}/readme")
@@ -147,7 +147,8 @@ async def get_module_readme(
         content = module_path.read_text(encoding="utf-8")
         return {"content": content}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error reading README for module {module_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
 # ============== FIREWALL CHAIN PRIORITY ==============

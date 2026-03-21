@@ -5,7 +5,7 @@ Loads settings from environment variables with type validation.
 Uses Pydantic Settings for robust configuration management.
 """
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 from typing import List
 from functools import lru_cache
 
@@ -24,9 +24,19 @@ class Settings(BaseSettings):
     
     # Security
     secret_key: str = Field(
-        default="CHANGE_THIS_IN_PRODUCTION",
-        description="Secret key for JWT token signing"
+        description='Secret key for JWT token signing. Generate with: python -c "import secrets; print(secrets.token_hex(32))"'
     )
+
+    @field_validator('secret_key')
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        weak = {'CHANGE_THIS_IN_PRODUCTION', '', 'secret', 'changeme', 'password'}
+        if v in weak or len(v) < 32:
+            raise ValueError(
+                'SECRET_KEY non sicuro o troppo corto. '
+                'Genera un valore con: python -c "import secrets; print(secrets.token_hex(32))"'
+            )
+        return v
     access_token_expire_minutes: int = Field(
         default=720,  # 12 hours
         description="JWT token expiration in minutes"

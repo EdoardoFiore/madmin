@@ -189,24 +189,18 @@ async def get_system_logs(lines: int = 200, search: Optional[str] = None) -> Lis
     
     cmd = ["journalctl", "-u", "madmin", "--no-pager", "-n", str(lines), "--output=cat"]
     
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+
+    if not stdout:
+        return []
+
+    log_lines = stdout.decode("utf-8", errors="replace").strip().split("\n")
     if search:
-        # Use grep to filter
-        cmd_str = f"journalctl -u madmin --no-pager -n {lines} --output=cat | grep -i '{search}'"
-        proc = await asyncio.create_subprocess_shell(
-            cmd_str,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-    else:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-    
-    stdout, stderr = await proc.communicate()
-    
-    if stdout:
-        return stdout.decode("utf-8", errors="replace").strip().split("\n")
-    
-    return []
+        search_lower = search.lower()
+        log_lines = [line for line in log_lines if search_lower in line.lower()]
+    return log_lines

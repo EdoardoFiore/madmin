@@ -310,7 +310,14 @@ class DnsService:
                 error = result.stderr.strip() or result.stdout.strip()
                 # Remove temp file path from errors for cleaner display
                 error = error.replace(str(tmp_file), f"db.{zone.name}")
-                return False, error
+                # Deduplicate repeated lines (named-checkzone repeats the same error multiple times)
+                seen = set()
+                unique_lines = []
+                for line in error.splitlines():
+                    if line not in seen:
+                        seen.add(line)
+                        unique_lines.append(line)
+                return False, " ".join(unique_lines)
         except FileNotFoundError:
             return False, "named-checkzone non trovato. BIND9 è installato?"
         except Exception as e:

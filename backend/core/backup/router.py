@@ -61,7 +61,7 @@ async def export_configuration(
         }
     except Exception as e:
         logger.error(f"Export failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Esportazione fallita: {str(e)}")
+        raise HTTPException(status_code=500, detail="Esportazione fallita")
 
 
 # ============== CONFIG IMPORT ==============
@@ -126,7 +126,7 @@ async def import_configuration(
         raise
     except Exception as e:
         logger.error(f"Import failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Importazione fallita: {str(e)}")
+        raise HTTPException(status_code=500, detail="Importazione fallita")
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
