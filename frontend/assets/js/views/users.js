@@ -131,7 +131,12 @@ export async function render(container) {
                             </div>
                         </div>
                         <hr>
-                        <h5><i class="ti ti-key me-2"></i>Codici di Backup (salva in luogo sicuro!)</h5>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="ti ti-key me-2"></i>Codici di Backup (salva in luogo sicuro!)</h5>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="btn-download-setup-codes">
+                                <i class="ti ti-download me-1"></i>Scarica
+                            </button>
+                        </div>
                         <div id="backup-codes-list" class="row g-2 mt-2"></div>
                     </div>
                 </div>
@@ -239,9 +244,9 @@ export async function render(container) {
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                        <p class="text-muted">Inserisci il codice dalla tua app authenticator:</p>
-                        <input type="text" class="form-control form-control-lg text-center font-monospace" 
-                               id="modal-otp-input" maxlength="6" pattern="[0-9]{6}" 
+                        <p class="text-muted">Inserisci il codice dall'app authenticator o un codice di backup:</p>
+                        <input type="text" class="form-control form-control-lg text-center font-monospace"
+                               id="modal-otp-input" maxlength="8" pattern="[0-9A-Za-z]{6,8}"
                                placeholder="000000" inputmode="numeric" autofocus>
                     </div>
                     <div class="modal-footer">
@@ -268,8 +273,8 @@ export async function render(container) {
                         <div id="backup-codes-display" class="row g-2"></div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-outline-secondary" id="copy-displayed-codes">
-                            <i class="ti ti-copy me-1"></i>Copia tutti
+                        <button type="button" class="btn btn-outline-primary" id="download-displayed-codes">
+                            <i class="ti ti-download me-1"></i>Scarica
                         </button>
                         <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Ho salvato i codici</button>
                     </div>
@@ -280,6 +285,28 @@ export async function render(container) {
 
     setupEventListeners();
     await loadData();
+}
+
+function downloadBackupCodes(codes) {
+    const content = [
+        'MADMIN - Codici di Backup 2FA',
+        '==============================',
+        `Generati il: ${new Date().toLocaleString('it-IT')}`,
+        '',
+        'Conserva questo file in un luogo sicuro.',
+        'Ogni codice può essere usato una sola volta.',
+        '',
+        ...codes
+    ].join('\n');
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `madmin-backup-codes-${new Date().toISOString().slice(0,10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
 }
 
 function setupEventListeners() {
@@ -765,6 +792,11 @@ function setupEnable2FA() {
                 </div>
             `).join('');
 
+            // Download button for setup backup codes
+            document.getElementById('btn-download-setup-codes').onclick = () => {
+                downloadBackupCodes(twoFaSetupData.backup_codes);
+            };
+
             // Setup modal event listeners
             setup2FAModalListeners();
 
@@ -917,8 +949,8 @@ function setupRegenerateCodes() {
         // Handle confirm button click
         const handleConfirm = async () => {
             const code = otpInput.value.trim();
-            if (!code || code.length !== 6) {
-                showToast('Inserisci un codice valido a 6 cifre', 'error');
+            if (!code || (code.length !== 6 && code.length !== 8)) {
+                showToast('Inserisci un codice valido (6 cifre TOTP o 8 caratteri backup)', 'error');
                 return;
             }
 
@@ -935,10 +967,9 @@ function setupRegenerateCodes() {
                     `<div class="col-6"><code class="fs-4">${c}</code></div>`
                 ).join('');
 
-                // Setup copy button
-                document.getElementById('copy-displayed-codes').onclick = () => {
-                    navigator.clipboard.writeText(result.backup_codes.join('\n'));
-                    showToast('Codici copiati negli appunti', 'success');
+                // Download button
+                document.getElementById('download-displayed-codes').onclick = () => {
+                    downloadBackupCodes(result.backup_codes);
                 };
 
                 new bootstrap.Modal(document.getElementById('backup-codes-display-modal')).show();
