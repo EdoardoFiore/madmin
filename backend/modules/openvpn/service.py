@@ -784,228 +784,37 @@ class OpenVPNService:
     # =========================================================================
     
     @staticmethod
-    def _run_iptables(table: str, args: List[str], suppress_errors: bool = False) -> bool:
-        """Execute an iptables command using core wrapper."""
-        try:
-            # Core returns (success, output), and raises IptablesError on failure if not suppressed
-            success, _ = core_iptables._run_iptables(table, args, suppress_errors=suppress_errors)
-            return success
-        except core_iptables.IptablesError:
-            # Error already logged by core
-            return False
-        except Exception as e:
-            if not suppress_errors:
-                logger.error(f"Unexpected iptables error: {e}")
-            return False
-    
-    @staticmethod
     def _get_default_interface() -> str:
         """Detect the default network interface."""
         return get_default_interface() or "eth0"
-    
+
     @staticmethod
     def _get_group_chain_name(chain_id: str, group_name: str) -> str:
         """Generate a group chain name that fits within iptables 29-char limit.
-        
+
         Format: OVPN_GRP_{instance_8chars}_{group_8chars}
         Total: 9 + 8 + 1 + 8 = 26 chars max
-        
-        Args:
-            chain_id: Instance chain ID (e.g., "ristorante")
-            group_name: Group name (e.g., "camerieri")
-            
-        Returns:
-            Chain name like "OVPN_GRP_ristorant_camerier"
         """
-        # Truncate to 8 chars each to ensure we stay under 29 char limit
         inst_part = chain_id[:8]
         grp_part = group_name[:8]
         return f"OVPN_GRP_{inst_part}_{grp_part}"
     
-    IPTABLES_MAX_CHAIN_LEN = 29  # iptables chain name limit
-    
-    @staticmethod
-    def _create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:
-        """Create chain if doesn't exist, or flush it.
-        
-        Raises ValueError if chain name exceeds iptables limit.
-        """
-        if len(chain_name) > OpenVPNService.IPTABLES_MAX_CHAIN_LEN:
-            raise ValueError(
-                f"Nome chain iptables troppo lungo: '{chain_name}' ({len(chain_name)} chars). "
-                f"Massimo consentito: {OpenVPNService.IPTABLES_MAX_CHAIN_LEN} caratteri."
-            )
-        OpenVPNService._run_iptables(table, ["-N", chain_name], suppress_errors=True)
-        return OpenVPNService._run_iptables(table, ["-F", chain_name])
-    
-    @staticmethod
-    def _ensure_jump_rule(source_chain: str, target_chain: str, table: str = "filter") -> bool:
-        """Ensure a jump rule exists from source to target chain.
-        
-        Inserts the jump BEFORE any RETURN rule to ensure proper ordering.
-        """
-        # Check if rule already exists
-        result = subprocess.run(
-            ["iptables", "-t", table, "-C", source_chain, "-j", target_chain],
-            capture_output=True
-        )
-        if result.returncode == 0:
-            return True  # Already exists
-        
-        # Find position of RETURN rule (if any) to insert before it
-        result = subprocess.run(
-            ["iptables", "-t", table, "-S", source_chain],
-            capture_output=True,
-            text=True
-        )
-        
-        # Parse rules to find RETURN position
-        lines = result.stdout.strip().split('\n') if result.returncode == 0 else []
-        return_pos = None
-        for i, line in enumerate(lines):
-            if '-j RETURN' in line:
-                return_pos = i
-                break
-        
-        if return_pos is not None:
-            # Insert before RETURN
-            return OpenVPNService._run_iptables(table, ["-I", source_chain, str(return_pos), "-j", target_chain])
-        else:
-            # No RETURN, just append
-            return OpenVPNService._run_iptables(table, ["-A", source_chain, "-j", target_chain])
-    
-    @staticmethod
-    def _ensure_interface_jump_rule(
-        source_chain: str, 
-        target_chain: str, 
-        table: str = "filter",
-        input_interface: str = None,
-        output_interface: str = None
-    ) -> bool:
-        """Ensure an interface-filtered jump rule exists from source to target chain.
-        
-        Creates a jump rule filtered by input or output interface.
-        Inserts the jump BEFORE any RETURN rule to ensure proper ordering.
-        """
-        # Build the rule args
-        rule_args = []
-        if input_interface:
-            rule_args.extend(["-i", input_interface])
-        if output_interface:
-            rule_args.extend(["-o", output_interface])
-        rule_args.extend(["-j", target_chain])
-        
-        # Check if rule already exists using -C (check)
-        check_cmd = ["iptables", "-t", table, "-C", source_chain] + rule_args
-        result = subprocess.run(check_cmd, capture_output=True)
-        if result.returncode == 0:
-            return True  # Already exists
-        
-        # Find position of RETURN rule (if any) to insert before it
-        result = subprocess.run(
-            ["iptables", "-t", table, "-S", source_chain],
-            capture_output=True,
-            text=True
-        )
-        
-        # Parse rules to find RETURN position
-        lines = result.stdout.strip().split('\n') if result.returncode == 0 else []
-        return_pos = None
-        for i, line in enumerate(lines):
-            if '-j RETURN' in line:
-                return_pos = i
-                break
-        
-        if return_pos is not None:
-            # Insert before RETURN
-            return OpenVPNService._run_iptables(table, ["-I", source_chain, str(return_pos)] + rule_args)
-        else:
-            # No RETURN, just append
-            return OpenVPNService._run_iptables(table, ["-A", source_chain] + rule_args)
-    
-    @staticmethod
-    def _remove_interface_jump_rule(
-        source_chain: str, 
-        target_chain: str, 
-        table: str = "filter",
-        input_interface: str = None,
-        output_interface: str = None
-    ) -> bool:
-        """Remove an interface-filtered jump rule."""
-        rule_args = ["-D", source_chain]
-        if input_interface:
-            rule_args.extend(["-i", input_interface])
-        if output_interface:
-            rule_args.extend(["-o", output_interface])
-        rule_args.extend(["-j", target_chain])
-        return OpenVPNService._run_iptables(table, rule_args, suppress_errors=True)
-
-    
-    @staticmethod
-    def _delete_chain(chain_name: str, table: str = "filter") -> bool:
-        """Flush and delete a chain."""
-        OpenVPNService._run_iptables(table, ["-F", chain_name], suppress_errors=True)
-        return OpenVPNService._run_iptables(table, ["-X", chain_name], suppress_errors=True)
-    
-    @staticmethod
-    def _ensure_direct_accept_rule(
-        chain: str, 
-        table: str = "filter",
-        input_interface: str = None,
-        output_interface: str = None
-    ) -> bool:
-        """
-        Ensure a direct ACCEPT rule exists in the specified chain.
-        Used for response traffic that should bypass instance chain processing.
-        """
-        # Build rule args
-        rule_args = []
-        if input_interface:
-            rule_args.extend(["-i", input_interface])
-        if output_interface:
-            rule_args.extend(["-o", output_interface])
-        rule_args.extend(["-j", "ACCEPT"])
-        
-        # Check if rule already exists
-        check_cmd = ["iptables", "-t", table, "-C", chain] + rule_args
-        result = subprocess.run(check_cmd, capture_output=True)
-        if result.returncode == 0:
-            return True  # Already exists
-        
-        # Find RETURN position to insert before it
-        result = subprocess.run(
-            ["iptables", "-t", table, "-S", chain],
-            capture_output=True,
-            text=True
-        )
-        lines = result.stdout.strip().split('\n') if result.returncode == 0 else []
-        return_pos = None
-        for i, line in enumerate(lines):
-            if '-j RETURN' in line:
-                return_pos = i
-                break
-        
-        if return_pos is not None:
-            return OpenVPNService._run_iptables(table, ["-I", chain, str(return_pos)] + rule_args)
-        else:
-            return OpenVPNService._run_iptables(table, ["-A", chain] + rule_args)
-    
     @staticmethod
     def initialize_module_firewall_chains() -> bool:
         """Initialize module-level firewall chains."""
-        OpenVPNService._create_or_flush_chain(OpenVPNService.OVPN_INPUT_CHAIN, "filter")
-        OpenVPNService._create_or_flush_chain(OpenVPNService.OVPN_FORWARD_CHAIN, "filter")
-        OpenVPNService._create_or_flush_chain(OpenVPNService.OVPN_NAT_CHAIN, "nat")
+        core_iptables.create_or_flush_chain(OpenVPNService.OVPN_INPUT_CHAIN, "filter")
+        core_iptables.create_or_flush_chain(OpenVPNService.OVPN_FORWARD_CHAIN, "filter")
+        core_iptables.create_or_flush_chain(OpenVPNService.OVPN_NAT_CHAIN, "nat")
         
         # Add RETURN at end of chains
         # Remove any existing RETURN first to avoid duplicates
-        OpenVPNService._run_iptables("filter", ["-D", OpenVPNService.OVPN_INPUT_CHAIN, "-j", "RETURN"], suppress_errors=True)
-        OpenVPNService._run_iptables("filter", ["-D", OpenVPNService.OVPN_FORWARD_CHAIN, "-j", "RETURN"], suppress_errors=True)
-        OpenVPNService._run_iptables("nat", ["-D", OpenVPNService.OVPN_NAT_CHAIN, "-j", "RETURN"], suppress_errors=True)
+        core_iptables.run_safe("filter", ["-D", OpenVPNService.OVPN_INPUT_CHAIN, "-j", "RETURN"], suppress_errors=True)
+        core_iptables.run_safe("filter", ["-D", OpenVPNService.OVPN_FORWARD_CHAIN, "-j", "RETURN"], suppress_errors=True)
+        core_iptables.run_safe("nat", ["-D", OpenVPNService.OVPN_NAT_CHAIN, "-j", "RETURN"], suppress_errors=True)
 
-        OpenVPNService._run_iptables("filter", ["-A", OpenVPNService.OVPN_INPUT_CHAIN, "-j", "RETURN"])
-        OpenVPNService._run_iptables("filter", ["-A", OpenVPNService.OVPN_FORWARD_CHAIN, "-j", "RETURN"])
-        OpenVPNService._run_iptables("nat", ["-A", OpenVPNService.OVPN_NAT_CHAIN, "-j", "RETURN"])
+        core_iptables.run_safe("filter", ["-A", OpenVPNService.OVPN_INPUT_CHAIN, "-j", "RETURN"])
+        core_iptables.run_safe("filter", ["-A", OpenVPNService.OVPN_FORWARD_CHAIN, "-j", "RETURN"])
+        core_iptables.run_safe("nat", ["-A", OpenVPNService.OVPN_NAT_CHAIN, "-j", "RETURN"])
         
         logger.info("OpenVPN module firewall chains initialized")
         return True
@@ -1035,35 +844,46 @@ class OpenVPNService:
         logger.info(f"Applying firewall rules for OpenVPN instance {instance_id} (mode: {tunnel_mode})")
         
         # Create/flush instance chains
-        OpenVPNService._create_or_flush_chain(input_chain, "filter")
-        OpenVPNService._create_or_flush_chain(forward_chain, "filter")
-        OpenVPNService._create_or_flush_chain(nat_chain, "nat")
+        core_iptables.create_or_flush_chain(input_chain, "filter")
+        core_iptables.create_or_flush_chain(forward_chain, "filter")
+        core_iptables.create_or_flush_chain(nat_chain, "nat")
         
         # INPUT rules
-        OpenVPNService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-A", input_chain, "-p", protocol, "--dport", str(port), "-j", "ACCEPT"
         ])
-        OpenVPNService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-A", input_chain, "-i", interface, "-j", "ACCEPT"
         ])
-        OpenVPNService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-A", input_chain, "-j", "RETURN"
         ])
         
         # FORWARD rules for response traffic - DIRECT accept in module chain
         # This ensures traffic TO the VPN interface is accepted without going through instance chain
-        OpenVPNService._ensure_direct_accept_rule(
-            OpenVPNService.OVPN_FORWARD_CHAIN, "filter",
+        core_iptables.ensure_interface_rule(
+            OpenVPNService.OVPN_FORWARD_CHAIN, "ACCEPT", "filter",
             output_interface=interface
         )
         
-        # FORWARD: Apply default policy for all traffic from VPN
-        # Groups handle fine-grained control, default policy handles everything else
-        # (no per-route ACCEPT rules - keep it simple, groups are for special cases)
-        OpenVPNService._run_iptables("filter", [
-            "-A", forward_chain, "-i", interface, "-j", firewall_default_policy
-        ])
-        logger.info(f"  Traffic from VPN policy: {firewall_default_policy}")
+        # FORWARD: Apply default policy / route enforcement
+        if tunnel_mode == "split" and routes and firewall_default_policy == "ACCEPT":
+            # Split tunnel + ACCEPT: restrict traffic to defined routes only
+            for route in routes:
+                network = route.get('network') if isinstance(route, dict) else route
+                if network:
+                    core_iptables.run_safe("filter", [
+                        "-A", forward_chain, "-d", network, "-j", "ACCEPT"
+                    ])
+            # Drop everything else (route enforcement)
+            core_iptables.run_safe("filter", ["-A", forward_chain, "-j", "DROP"])
+            logger.info(f"  Split tunnel enforcement: ACCEPT only to defined routes, DROP rest")
+        else:
+            # Full tunnel OR split+DROP: apply default policy directly
+            core_iptables.run_safe("filter", [
+                "-A", forward_chain, "-i", interface, "-j", firewall_default_policy
+            ])
+            logger.info(f"  Traffic from VPN policy: {firewall_default_policy}")
         
         # NAT rules (still use routes for MASQUERADE targeting)
         if tunnel_mode == "split" and routes:
@@ -1071,27 +891,27 @@ class OpenVPNService:
                 network = route.get('network') if isinstance(route, dict) else route
                 out_iface = route.get('interface') if isinstance(route, dict) and route.get('interface') else wan_interface
                 if network:
-                    OpenVPNService._run_iptables("nat", [
+                    core_iptables.run_safe("nat", [
                         "-A", nat_chain, "-s", subnet, "-d", network, "-o", out_iface, "-j", "MASQUERADE"
                     ])
         else:
-            OpenVPNService._run_iptables("nat", [
+            core_iptables.run_safe("nat", [
                 "-A", nat_chain, "-s", subnet, "-o", wan_interface, "-j", "MASQUERADE"
             ])
         
         # Ensure only one RETURN at end of NAT chain
-        OpenVPNService._run_iptables("nat", ["-D", nat_chain, "-j", "RETURN"], suppress_errors=True)
-        OpenVPNService._run_iptables("nat", ["-A", nat_chain, "-j", "RETURN"])
+        core_iptables.run_safe("nat", ["-D", nat_chain, "-j", "RETURN"], suppress_errors=True)
+        core_iptables.run_safe("nat", ["-A", nat_chain, "-j", "RETURN"])
         
         # Link to module chains
-        OpenVPNService._ensure_jump_rule(OpenVPNService.OVPN_INPUT_CHAIN, input_chain, "filter")
+        core_iptables.ensure_jump_rule(OpenVPNService.OVPN_INPUT_CHAIN, input_chain, "filter")
         # FORWARD chain: Only need jump for traffic FROM VPN (input interface)
         # Traffic TO VPN is already handled by direct ACCEPT rule above
-        OpenVPNService._ensure_interface_jump_rule(
+        core_iptables.ensure_interface_jump_rule(
             OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
             input_interface=interface
         )
-        OpenVPNService._ensure_jump_rule(OpenVPNService.OVPN_NAT_CHAIN, nat_chain, "nat")
+        core_iptables.ensure_jump_rule(OpenVPNService.OVPN_NAT_CHAIN, nat_chain, "nat")
         
         return True
     
@@ -1110,34 +930,34 @@ class OpenVPNService:
         nat_chain = f"OVPN_{chain_id}_NAT"
         
         # Remove INPUT jump
-        OpenVPNService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-D", OpenVPNService.OVPN_INPUT_CHAIN, "-j", input_chain
         ], suppress_errors=True)
         
         # Remove FORWARD jumps - try both interface-filtered and non-filtered for compatibility
         if interface:
-            OpenVPNService._remove_interface_jump_rule(
+            core_iptables.remove_interface_jump_rule(
                 OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
                 input_interface=interface
             )
-            OpenVPNService._remove_interface_jump_rule(
+            core_iptables.remove_interface_jump_rule(
                 OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
                 output_interface=interface
             )
         # Also try removing non-filtered jump (for legacy cleanup)
-        OpenVPNService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-D", OpenVPNService.OVPN_FORWARD_CHAIN, "-j", forward_chain
         ], suppress_errors=True)
         
         # Remove NAT jump
-        OpenVPNService._run_iptables("nat", [
+        core_iptables.run_safe("nat", [
             "-D", OpenVPNService.OVPN_NAT_CHAIN, "-j", nat_chain
         ], suppress_errors=True)
         
         # Delete chains
-        OpenVPNService._delete_chain(input_chain, "filter")
-        OpenVPNService._delete_chain(forward_chain, "filter")
-        OpenVPNService._delete_chain(nat_chain, "nat")
+        core_iptables.delete_chain(input_chain, "filter")
+        core_iptables.delete_chain(forward_chain, "filter")
+        core_iptables.delete_chain(nat_chain, "nat")
         
         logger.info(f"Firewall rules removed for instance {instance_id}")
         return True
@@ -1163,7 +983,7 @@ class OpenVPNService:
             # Group chain name with truncation to fit iptables limit
             group_name = group.id.replace(instance_id + '_', '')
             group_chain = OpenVPNService._get_group_chain_name(chain_id, group_name)
-            OpenVPNService._delete_chain(group_chain, "filter")
+            core_iptables.delete_chain(group_chain, "filter")
             logger.info(f"  Deleted chain: {group_chain}")
         
         return True
@@ -1209,12 +1029,11 @@ class OpenVPNService:
         
         # 1. Cleanup all existing group jump rules from the instance forward chain
         # Get current rules
-        proc = subprocess.run(
-            ["iptables", "-t", "filter", "-S", instance_fwd_chain],
-            capture_output=True, text=True
+        success, output = core_iptables.run_safe_with_output(
+            "filter", ["-S", instance_fwd_chain], suppress_errors=True
         )
-        if proc.returncode == 0:
-            for line in proc.stdout.splitlines():
+        if success and output:
+            for line in output.splitlines():
                 # Line format: -A OVPN_tun0_FWD -s 10.8.0.2/32 -j OVPN_GRP_foo
                 if "-j OVPN_GRP_" in line:
                     parts = line.split()
@@ -1222,7 +1041,7 @@ class OpenVPNService:
                     # remove '-A'
                     if parts[0] == '-A':
                         parts[0] = '-D'
-                        OpenVPNService._run_iptables("filter", parts)
+                        core_iptables.run_safe("filter", parts)
 
         for group in groups:
             # Group chain name with truncation to fit iptables limit
@@ -1230,7 +1049,7 @@ class OpenVPNService:
             group_chain = OpenVPNService._get_group_chain_name(chain_id, group_name)
             
             # Create group chain
-            OpenVPNService._create_or_flush_chain(group_chain, "filter")
+            core_iptables.create_or_flush_chain(group_chain, "filter")
             
             # Get rules for this group (ordered)
             result = await db.execute(
@@ -1259,10 +1078,10 @@ class OpenVPNService:
                 # Action
                 args.extend(["-j", rule.action])
                 
-                OpenVPNService._run_iptables("filter", args)
+                core_iptables.run_safe("filter", args)
             
             # Group chain ends with RETURN - default policy is at instance level
-            OpenVPNService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-A", group_chain, "-j", "RETURN"
             ])
             
@@ -1280,12 +1099,12 @@ class OpenVPNService:
                 
                 # Add jump rule matching source IP at beginning of instance chain
                 # First remove any existing rule for this IP
-                OpenVPNService._run_iptables("filter", [
+                core_iptables.run_safe("filter", [
                     "-D", instance_fwd_chain, "-s", client_ip, "-j", group_chain
                 ], suppress_errors=True)
                 
                 # Insert at position 1 (before the default ACCEPT rules)
-                OpenVPNService._run_iptables("filter", [
+                core_iptables.run_safe("filter", [
                     "-I", instance_fwd_chain, "1", "-s", client_ip, "-j", group_chain
                 ])
                 
@@ -1314,32 +1133,43 @@ class OpenVPNService:
             # and remove ALL jumps to OVPN_GRP_*.
             pass
         
-        # After processing all groups, update the instance forward chain to use the default policy
-        
+        # After processing all groups, update the instance forward chain policy/enforcement
+
         # Remove old policy rules (ACCEPT, DROP, RETURN) from the end
-        # We try to delete them multiple times to be safe
-        # Also remove variants with/without interface check
         for target in ["ACCEPT", "DROP", "RETURN"]:
-            # Generic
-            OpenVPNService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-D", instance_fwd_chain, "-j", target
             ], suppress_errors=True)
-            # With interface check
-            OpenVPNService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-D", instance_fwd_chain, "-i", instance.interface, "-j", target
             ], suppress_errors=True)
-            
-            # Try generic again just in case multiple were added
-            OpenVPNService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-D", instance_fwd_chain, "-j", target
             ], suppress_errors=True)
-        
-        # Add the instance default policy at the end (for non-grouped clients)
-        # Use interface check to avoid open relay if chain is jumped to generically
-        OpenVPNService._run_iptables("filter", [
-            "-A", instance_fwd_chain, "-i", instance.interface, "-j", instance.firewall_default_policy
-        ])
-        
+
+        # Remove route enforcement rules (split tunnel)
+        if instance.routes:
+            for route in instance.routes:
+                network = route.get('network') if isinstance(route, dict) else route
+                if network:
+                    core_iptables.run_safe("filter", [
+                        "-D", instance_fwd_chain, "-d", network, "-j", "ACCEPT"
+                    ], suppress_errors=True)
+
+        # Re-add policy/enforcement rules at end
+        if instance.tunnel_mode == "split" and instance.routes and instance.firewall_default_policy == "ACCEPT":
+            for route in instance.routes:
+                network = route.get('network') if isinstance(route, dict) else route
+                if network:
+                    core_iptables.run_safe("filter", [
+                        "-A", instance_fwd_chain, "-d", network, "-j", "ACCEPT"
+                    ])
+            core_iptables.run_safe("filter", ["-A", instance_fwd_chain, "-j", "DROP"])
+        else:
+            core_iptables.run_safe("filter", [
+                "-A", instance_fwd_chain, "-i", instance.interface, "-j", instance.firewall_default_policy
+            ])
+
         logger.info(f"Group firewall rules applied for instance {instance_id}")
         logger.info(f"  Default policy for non-grouped clients: {instance.firewall_default_policy}")
         return True
@@ -1368,13 +1198,13 @@ class OpenVPNService:
         for member, client in members:
             client_ip = client.allocated_ip.split('/')[0] + "/32"
             logger.info(f"  Removing jump rule: {client_ip} -> {group_chain}")
-            OpenVPNService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-D", instance_fwd_chain, "-s", client_ip, "-j", group_chain
             ], suppress_errors=True)
         
         # Delete group chain
         logger.info(f"  Deleting chain: {group_chain}")
-        OpenVPNService._delete_chain(group_chain, "filter")
+        core_iptables.delete_chain(group_chain, "filter")
         
         return True
 

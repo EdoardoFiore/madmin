@@ -65,20 +65,6 @@ class StrongSwanService:
             logger.error("swanctl not found")
             raise
     
-    def _run_iptables(self, table: str, args: List[str], suppress_errors: bool = False) -> bool:
-        """Execute an iptables command using core wrapper."""
-        try:
-            # Core returns (success, output), and raises IptablesError on failure if not suppressed
-            success, _ = core_iptables._run_iptables(table, args, suppress_errors=suppress_errors)
-            return success
-        except core_iptables.IptablesError:
-            # Error already logged by core
-            return False
-        except Exception as e:
-            if not suppress_errors:
-                logger.error(f"Unexpected iptables error: {e}")
-            return False
-    
     # --- Config File Generation ---
     
     def generate_tunnel_config(
@@ -603,26 +589,26 @@ connections {{
         success = True
         
         # Allow IKE (UDP 500)
-        if not self._run_iptables('filter', [
+        if not core_iptables.run_safe('filter', [
             '-C', self.IPSEC_INPUT_CHAIN, '-p', 'udp', '--dport', '500', '-j', 'ACCEPT'
         ], suppress_errors=True):
-            success &= self._run_iptables('filter', [
+            success &= core_iptables.run_safe('filter', [
                 '-A', self.IPSEC_INPUT_CHAIN, '-p', 'udp', '--dport', '500', '-j', 'ACCEPT'
             ])
         
         # Allow NAT-T (UDP 4500)
-        if not self._run_iptables('filter', [
+        if not core_iptables.run_safe('filter', [
             '-C', self.IPSEC_INPUT_CHAIN, '-p', 'udp', '--dport', '4500', '-j', 'ACCEPT'
         ], suppress_errors=True):
-            success &= self._run_iptables('filter', [
+            success &= core_iptables.run_safe('filter', [
                 '-A', self.IPSEC_INPUT_CHAIN, '-p', 'udp', '--dport', '4500', '-j', 'ACCEPT'
             ])
         
         # Allow ESP
-        if not self._run_iptables('filter', [
+        if not core_iptables.run_safe('filter', [
             '-C', self.IPSEC_INPUT_CHAIN, '-p', 'esp', '-j', 'ACCEPT'
         ], suppress_errors=True):
-            success &= self._run_iptables('filter', [
+            success &= core_iptables.run_safe('filter', [
                 '-A', self.IPSEC_INPUT_CHAIN, '-p', 'esp', '-j', 'ACCEPT'
             ])
         
@@ -641,12 +627,14 @@ connections {{
         success = True
         
         # Check if rules already exist by looking at current rules
-        existing_rules = self._get_chain_rules(self.IPSEC_FORWARD_CHAIN)
+        _, existing_rules = core_iptables.run_safe_with_output(
+            'filter', ['-S', self.IPSEC_FORWARD_CHAIN], suppress_errors=True
+        )
         
         # Forward: local -> remote
         rule_signature_1 = f"-s {local_ts} -d {remote_ts}"
         if rule_signature_1 not in existing_rules:
-            success &= self._run_iptables('filter', [
+            success &= core_iptables.run_safe('filter', [
                 '-A', self.IPSEC_FORWARD_CHAIN, '-s', local_ts, '-d', remote_ts,
                 '-m', 'comment', '--comment', comment, '-j', 'ACCEPT'
             ])
@@ -656,7 +644,7 @@ connections {{
         # Forward: remote -> local
         rule_signature_2 = f"-s {remote_ts} -d {local_ts}"
         if rule_signature_2 not in existing_rules:
-            success &= self._run_iptables('filter', [
+            success &= core_iptables.run_safe('filter', [
                 '-A', self.IPSEC_FORWARD_CHAIN, '-s', remote_ts, '-d', local_ts,
                 '-m', 'comment', '--comment', comment, '-j', 'ACCEPT'
             ])
@@ -667,17 +655,6 @@ connections {{
             logger.info(f"FORWARD rules for {local_ts} <-> {remote_ts} configured")
         return success
     
-    def _get_chain_rules(self, chain: str) -> str:
-        """Get all rules in a chain as a string for searching."""
-        try:
-            result = subprocess.run(
-                ['iptables', '-t', 'filter', '-S', chain],
-                capture_output=True,
-                text=True
-            )
-            return result.stdout if result.returncode == 0 else ""
-        except Exception:
-            return ""
     
     def remove_forward_rules(self, local_ts: str, remote_ts: str) -> bool:
         """
@@ -705,13 +682,13 @@ connections {{
                     # Convert -A to -D for deletion
                     delete_cmd = rule.replace('-A ', '-D ', 1).split()
                     if delete_cmd:
-                        self._run_iptables('filter', delete_cmd, suppress_errors=True)
+                        core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
                         logger.debug(f"Deleted rule: {rule}")
                 
                 if f'-s {remote_ts}' in rule and f'-d {local_ts}' in rule:
                     delete_cmd = rule.replace('-A ', '-D ', 1).split()
                     if delete_cmd:
-                        self._run_iptables('filter', delete_cmd, suppress_errors=True)
+                        core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
                         logger.debug(f"Deleted rule: {rule}")
             
             logger.info(f"Removed FORWARD rules for {local_ts} <-> {remote_ts}")
@@ -749,7 +726,7 @@ connections {{
             
             # Delete in reverse order to maintain correct indices
             for rule_num in sorted(rules_to_delete, reverse=True):
-                self._run_iptables('filter', [
+                core_iptables.run_safe('filter', [
                     '-D', self.IPSEC_FORWARD_CHAIN, str(rule_num)
                 ])
             
@@ -981,10 +958,10 @@ connections {{
             
             logger.info(f"Setting up firewall chains: {chain_out}, {chain_in}")
             
-            self._run_iptables('filter', ['-N', chain_out], suppress_errors=True)
-            self._run_iptables('filter', ['-N', chain_in], suppress_errors=True)
-            self._run_iptables('filter', ['-F', chain_out])
-            self._run_iptables('filter', ['-F', chain_in])
+            core_iptables.run_safe('filter', ['-N', chain_out], suppress_errors=True)
+            core_iptables.run_safe('filter', ['-N', chain_in], suppress_errors=True)
+            core_iptables.run_safe('filter', ['-F', chain_out])
+            core_iptables.run_safe('filter', ['-F', chain_in])
             
             comment = f"IPSEC_{tunnel.name}_{idx}"
             
@@ -994,8 +971,8 @@ connections {{
                 '-m', 'comment', '--comment', comment + "_OUT",
                 '-j', chain_out
             ]
-            if not self._run_iptables('filter', ['-C', self.IPSEC_FORWARD_CHAIN] + rule_out_args, suppress_errors=True):
-                self._run_iptables('filter', ['-A', self.IPSEC_FORWARD_CHAIN] + rule_out_args)
+            if not core_iptables.run_safe('filter', ['-C', self.IPSEC_FORWARD_CHAIN] + rule_out_args, suppress_errors=True):
+                core_iptables.run_safe('filter', ['-A', self.IPSEC_FORWARD_CHAIN] + rule_out_args)
             
             # Check and add IN jump rule
             rule_in_args = [
@@ -1003,8 +980,8 @@ connections {{
                 '-m', 'comment', '--comment', comment + "_IN",
                 '-j', chain_in
             ]
-            if not self._run_iptables('filter', ['-C', self.IPSEC_FORWARD_CHAIN] + rule_in_args, suppress_errors=True):
-                self._run_iptables('filter', ['-A', self.IPSEC_FORWARD_CHAIN] + rule_in_args)
+            if not core_iptables.run_safe('filter', ['-C', self.IPSEC_FORWARD_CHAIN] + rule_in_args, suppress_errors=True):
+                core_iptables.run_safe('filter', ['-A', self.IPSEC_FORWARD_CHAIN] + rule_in_args)
             
             result = await db.execute(
                 select(IpsecChildSa)
@@ -1027,17 +1004,17 @@ connections {{
         for rule in sorted(rules_out, key=lambda x: x.order):
             iptables_cmd = self._build_iptables_rule(rule, chain_out)
             if iptables_cmd:
-                success &= self._run_iptables('filter', iptables_cmd)
+                success &= core_iptables.run_safe('filter', iptables_cmd)
         
-        self._run_iptables('filter', ['-A', chain_out, '-j', child_sa.firewall_policy_out])
+        core_iptables.run_safe('filter', ['-A', chain_out, '-j', child_sa.firewall_policy_out])
         
         rules_in = [r for r in child_sa.firewall_rules if r.enabled and r.direction in ["in", "both"]]
         for rule in sorted(rules_in, key=lambda x: x.order):
             iptables_cmd = self._build_iptables_rule(rule, chain_in)
             if iptables_cmd:
-                success &= self._run_iptables('filter', iptables_cmd)
+                success &= core_iptables.run_safe('filter', iptables_cmd)
         
-        self._run_iptables('filter', ['-A', chain_in, '-j', child_sa.firewall_policy_in])
+        core_iptables.run_safe('filter', ['-A', chain_in, '-j', child_sa.firewall_policy_in])
         
         return success
     
@@ -1080,16 +1057,16 @@ connections {{
                     for rule in rules:
                         if f'-j {chain_out}' in rule or f'-j {chain_in}' in rule:
                             delete_cmd = rule.replace('-A ', '-D ', 1).split()
-                            self._run_iptables('filter', delete_cmd, suppress_errors=True)
+                            core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
             
             except Exception as e:
                 logger.error(f"Failed to remove jump rules: {e}")
                 success = False
             
-            self._run_iptables('filter', ['-F', chain_out], suppress_errors=True)
-            self._run_iptables('filter', ['-X', chain_out], suppress_errors=True)
-            self._run_iptables('filter', ['-F', chain_in], suppress_errors=True)
-            self._run_iptables('filter', ['-X', chain_in], suppress_errors=True)
+            core_iptables.run_safe('filter', ['-F', chain_out], suppress_errors=True)
+            core_iptables.run_safe('filter', ['-X', chain_out], suppress_errors=True)
+            core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
+            core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
         
         return success
 
@@ -1113,15 +1090,15 @@ connections {{
                 for rule in rules:
                     if f'-j {chain_out}' in rule or f'-j {chain_in}' in rule:
                         delete_cmd = rule.replace('-A ', '-D ', 1).split()
-                        self._run_iptables('filter', delete_cmd, suppress_errors=True)
+                        core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
         except Exception as e:
             logger.error(f"Failed to remove jump rules: {e}")
             
         # Flush and delete chains
-        self._run_iptables('filter', ['-F', chain_out], suppress_errors=True)
-        self._run_iptables('filter', ['-X', chain_out], suppress_errors=True)
-        self._run_iptables('filter', ['-F', chain_in], suppress_errors=True)
-        self._run_iptables('filter', ['-X', chain_in], suppress_errors=True)
+        core_iptables.run_safe('filter', ['-F', chain_out], suppress_errors=True)
+        core_iptables.run_safe('filter', ['-X', chain_out], suppress_errors=True)
+        core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
+        core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
 
 
 # Singleton instance

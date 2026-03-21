@@ -302,244 +302,16 @@ PersistentKeepalive = 25
     WG_NAT_CHAIN = "MOD_WG_NAT"
     
     @staticmethod
-    def _run_iptables(table: str, args: List[str], suppress_errors: bool = False) -> bool:
-        """Execute an iptables command using core wrapper."""
-        # Use core iptables wrapper which handles error parsing and logging
-        # We catch IptablesError here to maintain the boolean return signature expected by WG module
-        try:
-            success, _ = core_iptables._run_iptables(table, args, suppress_errors=suppress_errors)
-            return success
-        except core_iptables.IptablesError:
-            # If core raises exception (suppress_errors=False), it means it failed and logged/parsed it.
-            # We return False to the caller.
-            return False
-        except Exception as e:
-            if not suppress_errors:
-                logger.error(f"Unexpected iptables error: {e}")
-            return False
-    
-    @staticmethod
     def _get_group_chain_name(chain_id: str, group_name: str) -> str:
         """Generate a group chain name that fits within iptables 29-char limit.
-        
+
         Format: WG_GRP_{instance_8chars}_{group_8chars}
         Total: 7 + 8 + 1 + 8 = 24 chars max
-        
-        Args:
-            chain_id: Instance chain ID (e.g., "palestra")
-            group_name: Group name (e.g., "allenatori")
-            
-        Returns:
-            Chain name like "WG_GRP_palestra_allenato"
         """
-        # Truncate to 8 chars each to ensure we stay under 29 char limit
         inst_part = chain_id[:8]
         grp_part = group_name[:8]
         return f"WG_GRP_{inst_part}_{grp_part}"
-    
-    IPTABLES_MAX_CHAIN_LEN = 29  # iptables chain name limit
-    
-    @staticmethod
-    def _create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:
-        """Create chain if doesn't exist, or flush it.
-        
-        Raises ValueError if chain name exceeds iptables limit.
-        """
-        if len(chain_name) > WireGuardService.IPTABLES_MAX_CHAIN_LEN:
-            raise ValueError(
-                f"Nome chain iptables troppo lungo: '{chain_name}' ({len(chain_name)} chars). "
-                f"Massimo consentito: {WireGuardService.IPTABLES_MAX_CHAIN_LEN} caratteri."
-            )
-        # Try to create
-        if not WireGuardService._run_iptables(table, ["-N", chain_name], suppress_errors=True):
-            # Creation failed (likely exists), flush it
-            return WireGuardService._run_iptables(table, ["-F", chain_name])
-        return True
-    
-    @staticmethod
-    def _create_chain_if_not_exists(chain_name: str, table: str = "filter") -> bool:
-        """Create chain only if it doesn't exist (don't flush)."""
-        return WireGuardService._run_iptables(table, ["-N", chain_name], suppress_errors=True) or \
-               WireGuardService._run_iptables(table, ["-L", chain_name, "-n"], suppress_errors=True)
-    
-    @staticmethod
-    def _ensure_jump_rule(source_chain: str, target_chain: str, table: str = "filter") -> bool:
-        """Ensure a jump rule exists from source to target chain.
-        
-        Inserts the jump BEFORE any RETURN rule to ensure proper ordering.
-        """
-        # Check if rule already exists using -C (check)
-        result = subprocess.run(
-            ["iptables", "-t", table, "-C", source_chain, "-j", target_chain],
-            capture_output=True
-        )
-        if result.returncode == 0:
-            return True  # Already exists
-        
-        # Find position of RETURN rule (if any) to insert before it
-        result = subprocess.run(
-            ["iptables", "-t", table, "-S", source_chain],
-            capture_output=True,
-            text=True
-        )
-        
-        # Parse rules to find RETURN position
-        # -S output: first line is -N/-P, then -A lines are rules numbered 1, 2, ...
-        lines = result.stdout.strip().split('\n') if result.returncode == 0 else []
-        return_pos = None
-        for i, line in enumerate(lines):
-            if '-j RETURN' in line:
-                return_pos = i  # This is the iptables rule position (1-indexed, accounting for -N line at 0)
-                break
-        
-        if return_pos is not None:
-            # Insert before RETURN (position = line index since -N is at 0)
-            return WireGuardService._run_iptables(table, ["-I", source_chain, str(return_pos), "-j", target_chain])
-        else:
-            # No RETURN, just append
-            return WireGuardService._run_iptables(table, ["-A", source_chain, "-j", target_chain])
-    
-    @staticmethod
-    def _ensure_interface_jump_rule(
-        source_chain: str, 
-        target_chain: str, 
-        table: str = "filter",
-        input_interface: str = None,
-        output_interface: str = None
-    ) -> bool:
-        """Ensure an interface-filtered jump rule exists from source to target chain.
-        
-        Creates a jump rule filtered by input or output interface.
-        Inserts the jump BEFORE any RETURN rule to ensure proper ordering.
-        """
-        # Build the rule args
-        rule_args = []
-        if input_interface:
-            rule_args.extend(["-i", input_interface])
-        if output_interface:
-            rule_args.extend(["-o", output_interface])
-        rule_args.extend(["-j", target_chain])
-        
-        # Check if rule already exists using -C (check)
-        check_cmd = ["iptables", "-t", table, "-C", source_chain] + rule_args
-        result = subprocess.run(check_cmd, capture_output=True)
-        if result.returncode == 0:
-            return True  # Already exists
-        
-        # Find position of RETURN rule (if any) to insert before it
-        result = subprocess.run(
-            ["iptables", "-t", table, "-S", source_chain],
-            capture_output=True,
-            text=True
-        )
-        
-        # Parse rules to find RETURN position
-        lines = result.stdout.strip().split('\n') if result.returncode == 0 else []
-        return_pos = None
-        for i, line in enumerate(lines):
-            if '-j RETURN' in line:
-                return_pos = i
-                break
-        
-        if return_pos is not None:
-            # Insert before RETURN
-            return WireGuardService._run_iptables(table, ["-I", source_chain, str(return_pos)] + rule_args)
-        else:
-            # No RETURN, just append
-            return WireGuardService._run_iptables(table, ["-A", source_chain] + rule_args)
-    
-    @staticmethod
-    def _ensure_direct_accept_rule(
-        chain: str, 
-        table: str = "filter",
-        input_interface: str = None,
-        output_interface: str = None
-    ) -> bool:
-        """Ensure a direct ACCEPT rule exists for interface traffic.
-        
-        Creates an ACCEPT rule filtered by input or output interface.
-        Inserts the rule BEFORE any RETURN rule to ensure proper ordering.
-        Used for response traffic to VPN clients.
-        """
-        # Build the rule args
-        rule_args = []
-        if input_interface:
-            rule_args.extend(["-i", input_interface])
-        if output_interface:
-            rule_args.extend(["-o", output_interface])
-        rule_args.extend(["-j", "ACCEPT"])
-        
-        # Check if rule already exists using -C (check)
-        check_cmd = ["iptables", "-t", table, "-C", chain] + rule_args
-        result = subprocess.run(check_cmd, capture_output=True)
-        if result.returncode == 0:
-            return True  # Already exists
-        
-        # Find position of RETURN rule (if any) to insert before it
-        result = subprocess.run(
-            ["iptables", "-t", table, "-S", chain],
-            capture_output=True,
-            text=True
-        )
-        
-        # Parse rules to find RETURN position
-        lines = result.stdout.strip().split('\n') if result.returncode == 0 else []
-        return_pos = None
-        for i, line in enumerate(lines):
-            if '-j RETURN' in line:
-                return_pos = i
-                break
-        
-        if return_pos is not None:
-            # Insert before RETURN
-            return WireGuardService._run_iptables(table, ["-I", chain, str(return_pos)] + rule_args)
-        else:
-            # No RETURN, just append
-            return WireGuardService._run_iptables(table, ["-A", chain] + rule_args)
-    
-    @staticmethod
-    def _run_iptables_with_output(table: str, args: List[str], suppress_errors: bool = False) -> tuple:
-        """Execute an iptables command and return (success, output)."""
-        cmd = ["iptables", "-t", table] + args
-        try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            return True, result.stdout
-        except subprocess.CalledProcessError as e:
-            if not suppress_errors:
-                logger.error(f"iptables error: {e.stderr.strip()} cmd: {' '.join(cmd)}")
-            return False, e.stderr
-        except FileNotFoundError:
-            logger.error("iptables command not found")
-            return False, ""
-    
-    @staticmethod
-    def _remove_jump_rule(source_chain: str, target_chain: str, table: str = "filter") -> bool:
-        """Remove a jump rule."""
-        return WireGuardService._run_iptables(table, ["-D", source_chain, "-j", target_chain], suppress_errors=True)
-    
-    @staticmethod
-    def _remove_interface_jump_rule(
-        source_chain: str, 
-        target_chain: str, 
-        table: str = "filter",
-        input_interface: str = None,
-        output_interface: str = None
-    ) -> bool:
-        """Remove an interface-filtered jump rule."""
-        rule_args = ["-D", source_chain]
-        if input_interface:
-            rule_args.extend(["-i", input_interface])
-        if output_interface:
-            rule_args.extend(["-o", output_interface])
-        rule_args.extend(["-j", target_chain])
-        return WireGuardService._run_iptables(table, rule_args, suppress_errors=True)
-    
-    @staticmethod
-    def _delete_chain(chain_name: str, table: str = "filter") -> bool:
-        """Flush and delete a chain."""
-        WireGuardService._run_iptables(table, ["-F", chain_name], suppress_errors=True)
-        return WireGuardService._run_iptables(table, ["-X", chain_name], suppress_errors=True)
-    
+
     @staticmethod
     def initialize_module_firewall_chains() -> bool:
         """
@@ -557,21 +329,21 @@ PersistentKeepalive = 25
         logger.info("Initializing WireGuard module firewall chains...")
         
         # 1. Create module main chains (don't flush - preserve existing instance rules)
-        WireGuardService._create_chain_if_not_exists(WireGuardService.WG_INPUT_CHAIN, "filter")
-        WireGuardService._create_chain_if_not_exists(WireGuardService.WG_FORWARD_CHAIN, "filter")
-        WireGuardService._create_chain_if_not_exists(WireGuardService.WG_NAT_CHAIN, "nat")
+        core_iptables.create_chain(WireGuardService.WG_INPUT_CHAIN, "filter")
+        core_iptables.create_chain(WireGuardService.WG_FORWARD_CHAIN, "filter")
+        core_iptables.create_chain(WireGuardService.WG_NAT_CHAIN, "nat")
         
         # Ensure RETURN rule at end of chains to allow proceeding to next chains if no match
         # (This is important if we have multiple modules chained)
         # First remove any existing RETURN rule to avoid duplicates
-        WireGuardService._run_iptables("filter", ["-D", WireGuardService.WG_INPUT_CHAIN, "-j", "RETURN"], suppress_errors=True)
-        WireGuardService._run_iptables("filter", ["-D", WireGuardService.WG_FORWARD_CHAIN, "-j", "RETURN"], suppress_errors=True)
-        WireGuardService._run_iptables("nat", ["-D", WireGuardService.WG_NAT_CHAIN, "-j", "RETURN"], suppress_errors=True)
+        core_iptables.run_safe("filter", ["-D", WireGuardService.WG_INPUT_CHAIN, "-j", "RETURN"], suppress_errors=True)
+        core_iptables.run_safe("filter", ["-D", WireGuardService.WG_FORWARD_CHAIN, "-j", "RETURN"], suppress_errors=True)
+        core_iptables.run_safe("nat", ["-D", WireGuardService.WG_NAT_CHAIN, "-j", "RETURN"], suppress_errors=True)
         
         # Then append it to be at the end
-        WireGuardService._run_iptables("filter", ["-A", WireGuardService.WG_INPUT_CHAIN, "-j", "RETURN"])
-        WireGuardService._run_iptables("filter", ["-A", WireGuardService.WG_FORWARD_CHAIN, "-j", "RETURN"])
-        WireGuardService._run_iptables("nat", ["-A", WireGuardService.WG_NAT_CHAIN, "-j", "RETURN"])
+        core_iptables.run_safe("filter", ["-A", WireGuardService.WG_INPUT_CHAIN, "-j", "RETURN"])
+        core_iptables.run_safe("filter", ["-A", WireGuardService.WG_FORWARD_CHAIN, "-j", "RETURN"])
+        core_iptables.run_safe("nat", ["-A", WireGuardService.WG_NAT_CHAIN, "-j", "RETURN"])
         
         logger.info("WireGuard iptables chains created")
         return True
@@ -661,34 +433,44 @@ PersistentKeepalive = 25
         logger.info(f"Applying firewall rules for WireGuard instance {instance_id} (mode: {tunnel_mode})")
         
         # 1. Create/flush instance chains
-        WireGuardService._create_or_flush_chain(input_chain, "filter")
-        WireGuardService._create_or_flush_chain(forward_chain, "filter")
-        WireGuardService._create_or_flush_chain(nat_chain, "nat")
+        core_iptables.create_or_flush_chain(input_chain, "filter")
+        core_iptables.create_or_flush_chain(forward_chain, "filter")
+        core_iptables.create_or_flush_chain(nat_chain, "nat")
         
         # 2. Add rules to INPUT chain
         # Allow UDP traffic on WireGuard port
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-A", input_chain, "-p", "udp", "--dport", str(port), "-j", "ACCEPT"
         ])
         # Allow all traffic from WireGuard interface (to Server services)
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-A", input_chain, "-i", interface, "-j", "ACCEPT"
         ])
         # Return to continue processing
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-A", input_chain, "-j", "RETURN"
         ])
         
         # 3. Add rules to FORWARD chain
         # Note: Traffic TO VPN clients (responses) is handled at module level, not here
-        
-        # Apply default policy for all traffic from VPN
-        # Groups handle fine-grained control, default policy handles everything else
-        # (no per-route ACCEPT rules - keep it simple, groups are for special cases)
-        WireGuardService._run_iptables("filter", [
-            "-A", forward_chain, "-i", interface, "-j", firewall_default_policy
-        ])
-        logger.info(f"  Traffic from VPN policy: {firewall_default_policy}")
+
+        if tunnel_mode == "split" and routes and firewall_default_policy == "ACCEPT":
+            # Split tunnel + ACCEPT: restrict traffic to defined routes only
+            for route in routes:
+                network = route.get('network') if isinstance(route, dict) else route
+                if network:
+                    core_iptables.run_safe("filter", [
+                        "-A", forward_chain, "-d", network, "-j", "ACCEPT"
+                    ])
+            # Drop everything else (route enforcement)
+            core_iptables.run_safe("filter", ["-A", forward_chain, "-j", "DROP"])
+            logger.info(f"  Split tunnel enforcement: ACCEPT only to defined routes, DROP rest")
+        else:
+            # Full tunnel OR split+DROP: apply default policy directly
+            core_iptables.run_safe("filter", [
+                "-A", forward_chain, "-i", interface, "-j", firewall_default_policy
+            ])
+            logger.info(f"  Traffic from VPN policy: {firewall_default_policy}")
         
         # 4. Add rules to NAT chain
         if tunnel_mode == "split" and routes:
@@ -698,35 +480,35 @@ PersistentKeepalive = 25
                 # Use route-specific interface if specified, otherwise use default WAN
                 out_interface = route.get('interface') if isinstance(route, dict) and route.get('interface') else wan_interface
                 if network:
-                    WireGuardService._run_iptables("nat", [
+                    core_iptables.run_safe("nat", [
                         "-A", nat_chain, "-s", subnet, "-d", network, "-o", out_interface, "-j", "MASQUERADE"
                     ])
                     logger.info(f"    Added NAT rule: {subnet} -> {network} via {out_interface}")
         else:
             # Full tunnel: Masquerade all traffic from VPN subnet
-            WireGuardService._run_iptables("nat", [
+            core_iptables.run_safe("nat", [
                 "-A", nat_chain, "-s", subnet, "-o", wan_interface, "-j", "MASQUERADE"
             ])
         
-        WireGuardService._run_iptables("nat", [
+        core_iptables.run_safe("nat", [
             "-A", nat_chain, "-j", "RETURN"
         ])
         
         # 5. Link instance chains to module main chains
-        WireGuardService._ensure_jump_rule(WireGuardService.WG_INPUT_CHAIN, input_chain, "filter")
+        core_iptables.ensure_jump_rule(WireGuardService.WG_INPUT_CHAIN, input_chain, "filter")
         # FORWARD chain: Use interface filtering to isolate instance traffic
         # Jump for traffic FROM VPN (input interface)
-        WireGuardService._ensure_interface_jump_rule(
+        core_iptables.ensure_interface_jump_rule(
             WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter",
             input_interface=interface
         )
         # ACCEPT responses TO VPN clients (output interface) - directly in module chain
         # This is simpler and more efficient than going through instance chain
-        WireGuardService._ensure_direct_accept_rule(
-            WireGuardService.WG_FORWARD_CHAIN, "filter",
+        core_iptables.ensure_interface_rule(
+            WireGuardService.WG_FORWARD_CHAIN, "ACCEPT", "filter",
             output_interface=interface
         )
-        WireGuardService._ensure_jump_rule(WireGuardService.WG_NAT_CHAIN, nat_chain, "nat")
+        core_iptables.ensure_jump_rule(WireGuardService.WG_NAT_CHAIN, nat_chain, "nat")
         
         logger.info(f"Firewall rules applied for WireGuard instance {instance_id}")
         logger.info(f"  Chains created: {input_chain}, {forward_chain}, {nat_chain}")
@@ -752,35 +534,35 @@ PersistentKeepalive = 25
         logger.info(f"Removing firewall rules for WireGuard instance {instance_id}")
         
         # Remove jumps from module main chains
-        WireGuardService._remove_jump_rule(WireGuardService.WG_INPUT_CHAIN, input_chain, "filter")
+        core_iptables.remove_jump_rule(WireGuardService.WG_INPUT_CHAIN, input_chain, "filter")
         
         # Remove FORWARD jumps - try both interface-filtered and non-filtered for compatibility
         if interface:
-            WireGuardService._remove_interface_jump_rule(
+            core_iptables.remove_interface_jump_rule(
                 WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter",
                 input_interface=interface
             )
-            WireGuardService._remove_interface_jump_rule(
+            core_iptables.remove_interface_jump_rule(
                 WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter",
                 output_interface=interface
             )
             
             # Remove direct ACCEPT rule for output interface (response traffic)
             # This corresponds to _ensure_direct_accept_rule usage in apply_instance_firewall_rules
-            WireGuardService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-D", WireGuardService.WG_FORWARD_CHAIN, 
                 "-o", interface, 
                 "-j", "ACCEPT"
             ], suppress_errors=True)
         # Also try removing non-filtered jump (for legacy cleanup)
-        WireGuardService._remove_jump_rule(WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter")
+        core_iptables.remove_jump_rule(WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter")
         
-        WireGuardService._remove_jump_rule(WireGuardService.WG_NAT_CHAIN, nat_chain, "nat")
+        core_iptables.remove_jump_rule(WireGuardService.WG_NAT_CHAIN, nat_chain, "nat")
         
         # Delete instance chains
-        WireGuardService._delete_chain(input_chain, "filter")
-        WireGuardService._delete_chain(forward_chain, "filter")
-        WireGuardService._delete_chain(nat_chain, "nat")
+        core_iptables.delete_chain(input_chain, "filter")
+        core_iptables.delete_chain(forward_chain, "filter")
+        core_iptables.delete_chain(nat_chain, "nat")
         
         logger.info(f"Firewall rules removed for WireGuard instance {instance_id}")
         return True
@@ -807,7 +589,7 @@ PersistentKeepalive = 25
             # Group chain name with truncation to fit iptables limit
             group_name = group.id.replace(instance_id + '_', '')
             group_chain = WireGuardService._get_group_chain_name(chain_id, group_name)
-            WireGuardService._delete_chain(group_chain, "filter")
+            core_iptables.delete_chain(group_chain, "filter")
             logger.info(f"  Deleted chain: {group_chain}")
         
         return True
@@ -847,7 +629,7 @@ PersistentKeepalive = 25
         
         # IMPORTANT: Remove ALL existing group jump rules from instance chain first
         # This ensures orphan rules (from deleted clients) are cleaned up
-        success, output = WireGuardService._run_iptables_with_output(
+        success, output = core_iptables.run_safe_with_output(
             "filter", ["-S", instance_fwd_chain], suppress_errors=True
         )
         if success and output:
@@ -860,7 +642,7 @@ PersistentKeepalive = 25
                     if len(parts) >= 6 and parts[0] == '-A':
                         source_ip = parts[3]  # -s value
                         target_chain = parts[5]  # -j value
-                        WireGuardService._run_iptables("filter", [
+                        core_iptables.run_safe("filter", [
                             "-D", instance_fwd_chain, "-s", source_ip, "-j", target_chain
                         ], suppress_errors=True)
         
@@ -877,7 +659,7 @@ PersistentKeepalive = 25
             group_chain = WireGuardService._get_group_chain_name(chain_id, group_name)
             
             # Create group chain
-            WireGuardService._create_or_flush_chain(group_chain, "filter")
+            core_iptables.create_or_flush_chain(group_chain, "filter")
             
             # Get rules for this group (ordered)
             result = await db.execute(
@@ -906,10 +688,10 @@ PersistentKeepalive = 25
                 # Action
                 args.extend(["-j", rule.action])
                 
-                WireGuardService._run_iptables("filter", args)
+                core_iptables.run_safe("filter", args)
             
             # Group chain ends with RETURN - default policy is at instance level
-            WireGuardService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-A", group_chain, "-j", "RETURN"
             ])
             
@@ -926,35 +708,53 @@ PersistentKeepalive = 25
                 client_ip = client.allocated_ip.split('/')[0]  # Remove /32
                 
                 # Insert at position 1 (before the default ACCEPT rules)
-                WireGuardService._run_iptables("filter", [
+                core_iptables.run_safe("filter", [
                     "-I", instance_fwd_chain, "1", "-s", client_ip, "-j", group_chain
                 ])
                 
                 logger.info(f"  Added rule: {client_ip} -> {group_chain}")
         
-        # After processing all groups, update the instance forward chain to use the default policy
+        # After processing all groups, update the instance forward chain policy/enforcement
         # Remove old generic rules (both specific interface allow/drop and generic allow/drop)
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-D", instance_fwd_chain, "-i", instance.interface, "-j", "ACCEPT"
         ], suppress_errors=True)
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-D", instance_fwd_chain, "-i", instance.interface, "-j", "DROP"
         ], suppress_errors=True)
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-D", instance_fwd_chain, "-j", "ACCEPT"
         ], suppress_errors=True)
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-D", instance_fwd_chain, "-j", "RETURN"
         ], suppress_errors=True)
-        WireGuardService._run_iptables("filter", [
+        core_iptables.run_safe("filter", [
             "-D", instance_fwd_chain, "-j", "DROP"
         ], suppress_errors=True)
-        
-        # Add the instance default policy at the end (for non-grouped clients)
-        WireGuardService._run_iptables("filter", [
-            "-A", instance_fwd_chain, "-j", instance.firewall_default_policy
-        ])
-        
+
+        # Remove route enforcement rules (split tunnel)
+        if instance.routes:
+            for route in instance.routes:
+                network = route.get('network') if isinstance(route, dict) else route
+                if network:
+                    core_iptables.run_safe("filter", [
+                        "-D", instance_fwd_chain, "-d", network, "-j", "ACCEPT"
+                    ], suppress_errors=True)
+
+        # Re-add policy/enforcement rules at end
+        if instance.tunnel_mode == "split" and instance.routes and instance.firewall_default_policy == "ACCEPT":
+            for route in instance.routes:
+                network = route.get('network') if isinstance(route, dict) else route
+                if network:
+                    core_iptables.run_safe("filter", [
+                        "-A", instance_fwd_chain, "-d", network, "-j", "ACCEPT"
+                    ])
+            core_iptables.run_safe("filter", ["-A", instance_fwd_chain, "-j", "DROP"])
+        else:
+            core_iptables.run_safe("filter", [
+                "-A", instance_fwd_chain, "-j", instance.firewall_default_policy
+            ])
+
         logger.info(f"Group firewall rules applied for instance {instance_id}")
         logger.info(f"  Default policy for non-grouped clients: {instance.firewall_default_policy}")
         return True
@@ -984,13 +784,13 @@ PersistentKeepalive = 25
         for member, client in members:
             client_ip = client.allocated_ip.split('/')[0] + "/32"
             logger.info(f"  Removing jump rule: {client_ip} -> {group_chain}")
-            WireGuardService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-D", instance_fwd_chain, "-s", client_ip, "-j", group_chain
             ], suppress_errors=True)
         
         # Delete group chain
         logger.info(f"  Deleting chain: {group_chain}")
-        WireGuardService._delete_chain(group_chain, "filter")
+        core_iptables.delete_chain(group_chain, "filter")
         
         return True
     
@@ -1054,12 +854,11 @@ PersistentKeepalive = 25
         if not has_overrides:
             logger.info(f"Client {client_name} has no overrides, removing chain if exists")
             # Remove jump rule
-            subprocess.run([
-                "iptables", "-t", "filter", "-D", instance_fwd,
-                "-s", client_ip_clean, "-j", client_chain
-            ], capture_output=True, check=False)
+            core_iptables.run_safe("filter", [
+                "-D", instance_fwd, "-s", client_ip_clean, "-j", client_chain
+            ], suppress_errors=True)
             # Delete chain
-            WireGuardService._delete_chain(client_chain, "filter")
+            core_iptables.delete_chain(client_chain, "filter")
             return True
         
         # Parse allowed_ips (comma-separated CIDRs)
@@ -1075,11 +874,11 @@ PersistentKeepalive = 25
         logger.info(f"  AllowedIPs: {allowed_ips}, Full tunnel: {is_full_tunnel}")
         
         # Create/flush client chain
-        WireGuardService._create_or_flush_chain(client_chain, "filter")
+        core_iptables.create_or_flush_chain(client_chain, "filter")
         
         if is_full_tunnel:
             # Full tunnel = simple ACCEPT all (no restrictions beyond groups)
-            WireGuardService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-A", client_chain, "-j", "ACCEPT"
             ])
             logger.info(f"  Full tunnel: ACCEPT all traffic")
@@ -1087,23 +886,22 @@ PersistentKeepalive = 25
             # Add ACCEPT for each allowed network
             for network in networks:
                 if network and network not in ["::/0"]:  # Skip IPv6 for now
-                    WireGuardService._run_iptables("filter", [
+                    core_iptables.run_safe("filter", [
                         "-A", client_chain, "-d", network, "-j", "ACCEPT"
                     ])
                     logger.info(f"  Added rule: -d {network} -j ACCEPT")
             
             # DROP everything else (enforce allowed_ips)
-            WireGuardService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-A", client_chain, "-j", "DROP"
             ])
             logger.info(f"  Final rule: -j DROP (enforce allowed routes)")
         
         # Remove any existing jump rule for this client
         client_ip_clean = client_ip.split('/')[0]
-        subprocess.run([
-            "iptables", "-t", "filter", "-D", instance_fwd,
-            "-s", client_ip_clean, "-j", client_chain
-        ], capture_output=True, check=False)
+        core_iptables.run_safe("filter", [
+            "-D", instance_fwd, "-s", client_ip_clean, "-j", client_chain
+        ], suppress_errors=True)
         
         # Insert jump rule in instance FORWARD chain.
         # Order in chain should be:
@@ -1114,7 +912,7 @@ PersistentKeepalive = 25
         #
         # We find the position of the first -d (destination) rule and insert before it.
         # If no -d rules, we find the default policy rule and insert before it.
-        success, output = WireGuardService._run_iptables_with_output(
+        success, output = core_iptables.run_safe_with_output(
             "filter", ["-S", instance_fwd], suppress_errors=True
         )
         
@@ -1132,13 +930,13 @@ PersistentKeepalive = 25
                     break
         
         if insert_pos:
-            WireGuardService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-I", instance_fwd, str(insert_pos), "-s", client_ip_clean, "-j", client_chain
             ])
             logger.info(f"  Jump rule inserted at position {insert_pos}: -s {client_ip_clean} -j {client_chain}")
         else:
             # Fallback to append
-            WireGuardService._run_iptables("filter", [
+            core_iptables.run_safe("filter", [
                 "-A", instance_fwd, "-s", client_ip_clean, "-j", client_chain
             ])
             logger.info(f"  Jump rule appended: -s {client_ip_clean} -j {client_chain}")
@@ -1201,13 +999,12 @@ PersistentKeepalive = 25
         
         # Remove jump rule
         client_ip_clean = client_ip.split('/')[0]
-        subprocess.run([
-            "iptables", "-t", "filter", "-D", instance_fwd,
-            "-s", client_ip_clean, "-j", client_chain
-        ], capture_output=True, check=False)
-        
+        core_iptables.run_safe("filter", [
+            "-D", instance_fwd, "-s", client_ip_clean, "-j", client_chain
+        ], suppress_errors=True)
+
         # Delete chain
-        WireGuardService._delete_chain(client_chain, "filter")
+        core_iptables.delete_chain(client_chain, "filter")
         
         return True
     
@@ -1280,13 +1077,12 @@ PersistentKeepalive = 25
             client_ip_clean = client.allocated_ip.split('/')[0]
             
             # Remove jump rule
-            subprocess.run([
-                "iptables", "-t", "filter", "-D", instance_fwd,
-                "-s", client_ip_clean, "-j", client_chain
-            ], capture_output=True, check=False)
-            
+            core_iptables.run_safe("filter", [
+                "-D", instance_fwd, "-s", client_ip_clean, "-j", client_chain
+            ], suppress_errors=True)
+
             # Delete chain
-            WireGuardService._delete_chain(client_chain, "filter")
+            core_iptables.delete_chain(client_chain, "filter")
         
         logger.info(f"Removed firewall chains for {len(clients)} clients")
         return True

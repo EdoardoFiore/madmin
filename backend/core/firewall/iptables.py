@@ -187,16 +187,23 @@ def flush_chain(chain_name: str, table: str = "filter") -> bool:
 
 
 def delete_chain(chain_name: str, table: str = "filter") -> bool:
-    """Delete an empty chain."""
-    # First flush the chain
-    flush_chain(chain_name, table)
-    # Then delete it
+    """Delete a chain (flush first, tolerant of non-existent chains)."""
+    # Flush and delete — both suppress errors for cleanup tolerance
+    _run_iptables(table, ["-F", chain_name], suppress_errors=True)
     success, _ = _run_iptables(table, ["-X", chain_name], suppress_errors=True)
     return success
 
 
+IPTABLES_MAX_CHAIN_LEN = 29
+
+
 def create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:
     """Create a chain if it doesn't exist, or flush it if it does."""
+    if len(chain_name) > IPTABLES_MAX_CHAIN_LEN:
+        raise ValueError(
+            f"Chain name too long: '{chain_name}' ({len(chain_name)} chars, "
+            f"max {IPTABLES_MAX_CHAIN_LEN})"
+        )
     if chain_exists(chain_name, table):
         return flush_chain(chain_name, table)
     else:
@@ -322,29 +329,40 @@ def get_chain_rules(chain_name: str, table: str = "filter") -> List[str]:
 
 
 def ensure_jump_rule(
-    source_chain: str, 
-    target_chain: str, 
-    table: str = "filter", 
+    source_chain: str,
+    target_chain: str,
+    table: str = "filter",
     position: Optional[int] = None
 ) -> bool:
     """
     Ensure a jump rule exists from source_chain to target_chain.
     If position is specified, insert at that position (1-indexed).
-    Otherwise, append to the chain.
+    Otherwise, insert before RETURN rule if present, or append.
     """
-    # Check if jump already exists
-    success, output = _run_iptables(table, ["-L", source_chain, "-n"])
-    if success and target_chain in output:
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK] ensure jump {source_chain} -> {target_chain}")
+        return True
+
+    # Check if already exists using -C (exact match)
+    result = subprocess.run(
+        ["iptables", "-t", table, "-C", source_chain, "-j", target_chain],
+        capture_output=True
+    )
+    if result.returncode == 0:
         logger.debug(f"Jump to {target_chain} already exists in {source_chain}")
         return True
-    
+
     # Add the jump rule
     if position is not None:
-        args = ["-I", source_chain, str(position), "-j", target_chain]
+        success = run_safe(table, ["-I", source_chain, str(position), "-j", target_chain])
     else:
-        args = ["-A", source_chain, "-j", target_chain]
-    
-    success, _ = _run_iptables(table, args)
+        # Insert before RETURN if present
+        return_pos = _find_return_position(table, source_chain)
+        if return_pos is not None:
+            success = run_safe(table, ["-I", source_chain, str(return_pos), "-j", target_chain])
+        else:
+            success = run_safe(table, ["-A", source_chain, "-j", target_chain])
+
     if success:
         logger.info(f"Added jump from {source_chain} to {target_chain} in table {table}")
     return success
@@ -354,6 +372,143 @@ def remove_jump_rule(source_chain: str, target_chain: str, table: str = "filter"
     """Remove a jump rule from source_chain to target_chain."""
     success, _ = _run_iptables(table, ["-D", source_chain, "-j", target_chain], suppress_errors=True)
     return success
+
+
+# =============================================================================
+# SAFE WRAPPERS (bool return, never raise — for module use)
+# =============================================================================
+
+def run_safe(table: str, args: List[str], suppress_errors: bool = False) -> bool:
+    """Execute iptables command, return bool. Never raises."""
+    try:
+        success, _ = _run_iptables(table, args, suppress_errors=suppress_errors)
+        return success
+    except IptablesError:
+        return False
+    except Exception as e:
+        if not suppress_errors:
+            logger.error(f"Unexpected iptables error: {e}")
+        return False
+
+
+def run_safe_with_output(
+    table: str, args: List[str], suppress_errors: bool = False
+) -> Tuple[bool, str]:
+    """Execute iptables command, return (success, output). Never raises."""
+    try:
+        return _run_iptables(table, args, suppress_errors=suppress_errors)
+    except IptablesError:
+        return False, ""
+    except Exception:
+        return False, ""
+
+
+# =============================================================================
+# INTERFACE-FILTERED RULES (used by VPN modules)
+# =============================================================================
+
+def _find_return_position(table: str, chain: str) -> Optional[int]:
+    """Find position of RETURN rule in chain (for inserting before it).
+
+    Returns the iptables rule position (1-indexed offset from -S output,
+    where line 0 is the -N/-P declaration).
+    """
+    if settings.mock_iptables:
+        return None
+    result = subprocess.run(
+        ["iptables", "-t", table, "-S", chain],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.strip().split('\n')
+    for i, line in enumerate(lines):
+        if '-j RETURN' in line:
+            return i
+    return None
+
+
+def ensure_interface_jump_rule(
+    source_chain: str,
+    target_chain: str,
+    table: str = "filter",
+    input_interface: Optional[str] = None,
+    output_interface: Optional[str] = None
+) -> bool:
+    """Ensure interface-filtered jump rule exists. Inserts before RETURN."""
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK] ensure interface jump {source_chain} -> {target_chain}")
+        return True
+
+    rule_args = []
+    if input_interface:
+        rule_args.extend(["-i", input_interface])
+    if output_interface:
+        rule_args.extend(["-o", output_interface])
+    rule_args.extend(["-j", target_chain])
+
+    # Check if already exists
+    result = subprocess.run(
+        ["iptables", "-t", table, "-C", source_chain] + rule_args,
+        capture_output=True
+    )
+    if result.returncode == 0:
+        return True
+
+    # Insert before RETURN
+    return_pos = _find_return_position(table, source_chain)
+    if return_pos is not None:
+        return run_safe(table, ["-I", source_chain, str(return_pos)] + rule_args)
+    return run_safe(table, ["-A", source_chain] + rule_args)
+
+
+def ensure_interface_rule(
+    chain: str,
+    action: str,
+    table: str = "filter",
+    input_interface: Optional[str] = None,
+    output_interface: Optional[str] = None
+) -> bool:
+    """Ensure interface-filtered rule exists (e.g. -o wg0 -j ACCEPT). Inserts before RETURN."""
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK] ensure interface rule {chain} -> {action}")
+        return True
+
+    rule_args = []
+    if input_interface:
+        rule_args.extend(["-i", input_interface])
+    if output_interface:
+        rule_args.extend(["-o", output_interface])
+    rule_args.extend(["-j", action])
+
+    result = subprocess.run(
+        ["iptables", "-t", table, "-C", chain] + rule_args,
+        capture_output=True
+    )
+    if result.returncode == 0:
+        return True
+
+    return_pos = _find_return_position(table, chain)
+    if return_pos is not None:
+        return run_safe(table, ["-I", chain, str(return_pos)] + rule_args)
+    return run_safe(table, ["-A", chain] + rule_args)
+
+
+def remove_interface_jump_rule(
+    source_chain: str,
+    target_chain: str,
+    table: str = "filter",
+    input_interface: Optional[str] = None,
+    output_interface: Optional[str] = None
+) -> bool:
+    """Remove an interface-filtered jump rule."""
+    rule_args = ["-D", source_chain]
+    if input_interface:
+        rule_args.extend(["-i", input_interface])
+    if output_interface:
+        rule_args.extend(["-o", output_interface])
+    rule_args.extend(["-j", target_chain])
+    return run_safe(table, rule_args, suppress_errors=True)
 
 
 # =============================================================================

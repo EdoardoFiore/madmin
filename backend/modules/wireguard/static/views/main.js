@@ -8,6 +8,8 @@ import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
 import { showToast, confirmDialog, loadingSpinner, escapeHtml, isValidCIDR } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 
+const MODULE_API = '/modules/wireguard';
+
 let currentInstanceId = null;
 let networkInterfaces = [];  // Cache for system network interfaces
 let canManage = false;  // Permission cache
@@ -189,7 +191,7 @@ async function setupCreateForm() {
 
 async function loadNetworkInterfaces() {
     try {
-        const data = await apiGet('/modules/wireguard/system/interfaces');
+        const data = await apiGet(`${MODULE_API}/system/interfaces`);
         networkInterfaces = data.interfaces || [];
     } catch (err) {
         console.warn('Could not load interfaces:', err);
@@ -238,7 +240,7 @@ function addRouteInput() {
 async function loadInstances() {
     const listEl = document.getElementById('instances-list');
     try {
-        const instances = await apiGet('/modules/wireguard/instances');
+        const instances = await apiGet(`${MODULE_API}/instances`);
 
         if (instances.length === 0) {
             listEl.innerHTML = `<div class="text-center py-5 text-muted">
@@ -311,7 +313,7 @@ function setupInstanceRowActions() {
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
             try {
-                await apiPost(`/modules/wireguard/instances/${id}/start`);
+                await apiPost(`${MODULE_API}/instances/${id}/start`);
                 showToast('Istanza avviata', 'success');
                 await loadInstances();
             } catch (err) {
@@ -330,7 +332,7 @@ function setupInstanceRowActions() {
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
             try {
-                await apiPost(`/modules/wireguard/instances/${id}/stop`);
+                await apiPost(`${MODULE_API}/instances/${id}/stop`);
                 showToast('Istanza fermata', 'success');
                 await loadInstances();
             } catch (err) {
@@ -348,7 +350,7 @@ function setupInstanceRowActions() {
             const id = btn.dataset.id;
             if (!await confirmDialog('Eliminare questa istanza WireGuard?')) return;
             try {
-                await apiDelete(`/modules/wireguard/instances/${id}`);
+                await apiDelete(`${MODULE_API}/instances/${id}`);
                 showToast('Istanza eliminata', 'success');
                 await loadInstances();
             } catch (err) {
@@ -403,7 +405,7 @@ async function createInstance() {
             defaultAllowedIps = routeNetworks.join(', ');
         }
 
-        await apiPost('/modules/wireguard/instances', {
+        await apiPost(`${MODULE_API}/instances`, {
             name, port, subnet,
             tunnel_mode: tunnelMode,
             dns_servers: dnsServers,
@@ -422,8 +424,8 @@ async function createInstance() {
 
 async function renderInstanceDetail(container) {
     try {
-        const instance = await apiGet(`/modules/wireguard/instances/${currentInstanceId}`);
-        const clients = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/clients`);
+        const instance = await apiGet(`${MODULE_API}/instances/${currentInstanceId}`);
+        const clients = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/clients`);
 
         container.innerHTML = `
             <div class="mb-3">
@@ -869,7 +871,7 @@ async function renderInstanceDetail(container) {
 
             // Load groups into dropdown
             try {
-                const groups = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/groups`);
+                const groups = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/groups`);
                 const groupSelect = document.getElementById('new-client-group');
                 const groupContainer = document.getElementById('new-client-group-container');
                 groupSelect.innerHTML = '<option value="">Nessun gruppo</option>';
@@ -929,7 +931,7 @@ async function renderInstanceDetail(container) {
             const group_id = document.getElementById('new-client-group')?.value || null;
 
             try {
-                await apiPost(`/modules/wireguard/instances/${currentInstanceId}/clients`, {
+                await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients`, {
                     name,
                     allowed_ips,
                     dns,
@@ -1032,20 +1034,20 @@ async function renderInstanceDetail(container) {
 
             try {
                 // Update routing via existing endpoint
-                await apiPatch(`/modules/wireguard/instances/${currentInstanceId}/routing`, {
+                await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/routing`, {
                     tunnel_mode: tunnelMode,
                     routes: routes
                 });
 
                 // Update defaults (DNS, default_allowed_ips)
-                await apiPatch(`/modules/wireguard/instances/${currentInstanceId}/defaults`, {
+                await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/defaults`, {
                     dns_servers,
                     default_allowed_ips: defaultAllowedIps
                 });
 
                 // Update endpoint if changed
                 if (endpoint !== instance.endpoint) {
-                    await apiPatch(`/modules/wireguard/instances/${currentInstanceId}`, { endpoint });
+                    await apiPatch(`${MODULE_API}/instances/${currentInstanceId}`, { endpoint });
                 }
 
                 showToast('Impostazioni default aggiornate', 'success');
@@ -1078,7 +1080,7 @@ async function renderInstanceDetail(container) {
 
 window.startInstance = async (id) => {
     try {
-        await apiPost(`/modules/wireguard/instances/${id}/start`);
+        await apiPost(`${MODULE_API}/instances/${id}/start`);
         showToast('Istanza avviata', 'success');
         if (currentContainer) renderInstanceDetail(currentContainer);
     } catch (err) {
@@ -1088,7 +1090,7 @@ window.startInstance = async (id) => {
 
 window.stopInstance = async (id) => {
     try {
-        await apiPost(`/modules/wireguard/instances/${id}/stop`);
+        await apiPost(`${MODULE_API}/instances/${id}/stop`);
         showToast('Istanza fermata', 'success');
         if (currentContainer) renderInstanceDetail(currentContainer);
     } catch (err) {
@@ -1099,7 +1101,7 @@ window.stopInstance = async (id) => {
 window.deleteInstance = async (id) => {
     if (await confirmDialog('Elimina Istanza', 'Eliminare questa istanza e tutti i suoi client?', 'Elimina')) {
         try {
-            await apiDelete(`/modules/wireguard/instances/${id}`);
+            await apiDelete(`${MODULE_API}/instances/${id}`);
             showToast('Istanza eliminata', 'success');
             location.href = '#wireguard';
         } catch (err) {
@@ -1111,7 +1113,7 @@ window.deleteInstance = async (id) => {
 window.downloadConfig = async (name) => {
     try {
         const token = localStorage.getItem('madmin_token');
-        const res = await fetch(`/api/modules/wireguard/instances/${currentInstanceId}/clients/${name}/config`, {
+        const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/config`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
@@ -1134,7 +1136,7 @@ window.downloadConfig = async (name) => {
 window.resetClientDefaults = async (name) => {
     if (await confirmDialog('Ripristina Default', `Vuoi ripristinare le impostazioni di default per il client "${name}"?<br><br><small class="text-muted">Le rotte e i DNS personalizzati verranno rimossi e saranno usati quelli dell'istanza.</small>`, 'Ripristina', 'btn-warning', true)) {
         try {
-            await apiPatch(`/modules/wireguard/instances/${currentInstanceId}/clients/${name}`, {
+            await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`, {
                 allowed_ips: "",  // Empty string to remove override
                 dns: ""          // Empty string to remove override
             });
@@ -1149,7 +1151,7 @@ window.resetClientDefaults = async (name) => {
 window.showQR = async (name) => {
     try {
         const token = localStorage.getItem('madmin_token');
-        const res = await fetch(`/api/modules/wireguard/instances/${currentInstanceId}/clients/${name}/qr`, {
+        const res = await fetch(`/api${MODULE_API}/instances/${currentInstanceId}/clients/${name}/qr`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
@@ -1190,7 +1192,7 @@ window.showQR = async (name) => {
 window.revokeClient = async (name) => {
     if (await confirmDialog('Revoca Client', `Revocare il client "${name}"? Il client perderà l'accesso alla VPN.`, 'Revoca')) {
         try {
-            await apiDelete(`/modules/wireguard/instances/${currentInstanceId}/clients/${name}`);
+            await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`);
             showToast('Client revocato', 'success');
             if (currentContainer) renderInstanceDetail(currentContainer);
         } catch (err) {
@@ -1222,7 +1224,7 @@ document.addEventListener('click', async (e) => {
         btn.disabled = true;
 
         try {
-            await apiPost(`/modules/wireguard/instances/${currentInstanceId}/clients/${clientName}/send-config`, { email });
+            await apiPost(`${MODULE_API}/instances/${currentInstanceId}/clients/${clientName}/send-config`, { email });
             showToast(`Email inviata a ${email}`, 'success');
             bootstrap.Modal.getInstance(document.getElementById('modal-send-email'))?.hide();
         } catch (err) {
