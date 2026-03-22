@@ -40,8 +40,8 @@ export async function render(container) {
                                            placeholder="Password attuale" required>
                                 </div>
                                 <div class="col-md-6">
-                                    <input type="password" class="form-control" id="new-password" 
-                                           placeholder="Nuova password" required minlength="6">
+                                    <input type="password" class="form-control" id="new-password"
+                                           placeholder="Nuova password" required minlength="8">
                                 </div>
                                 <div class="col-md-6">
                                     <input type="password" class="form-control" id="confirm-password" 
@@ -166,12 +166,12 @@ export async function render(container) {
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label" id="password-label">Password</label>
-                                    <input type="password" class="form-control" id="user-password" minlength="6">
-                                    <small class="form-hint" id="password-hint">Minimo 6 caratteri</small>
+                                    <input type="password" class="form-control" id="user-password" minlength="8">
+                                    <small class="form-hint" id="password-hint">Minimo 8 caratteri, con maiuscola, numero e simbolo</small>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label" id="password-confirm-label">Conferma Password</label>
-                                    <input type="password" class="form-control" id="user-password-confirm" minlength="6">
+                                    <input type="password" class="form-control" id="user-password-confirm" minlength="8">
                                     <small class="form-hint text-danger d-none" id="password-mismatch">Le password non corrispondono</small>
                                 </div>
                                 <div class="col-12">
@@ -393,9 +393,11 @@ function renderUsers() {
         const showActions = canManage && !isSelf && !(isTargetAdmin && !isCurrentAdmin);
 
         // 2FA status icon
-        const twoFaIcon = user.totp_enabled
-            ? '<span class="badge bg-green-lt" title="2FA Attiva"><i class="ti ti-shield-check"></i></span>'
-            : '<span class="badge bg-secondary-lt" title="2FA Non Attiva"><i class="ti ti-shield-off"></i></span>';
+        const twoFaIcon = user.totp_locked
+            ? '<span class="badge bg-orange-lt" title="2FA Bloccata — Reset necessario"><i class="ti ti-shield-x"></i></span>'
+            : user.totp_enabled
+                ? '<span class="badge bg-green-lt" title="2FA Attiva"><i class="ti ti-shield-check"></i></span>'
+                : '<span class="badge bg-secondary-lt" title="2FA Non Attiva"><i class="ti ti-shield-off"></i></span>';
 
         return `
             <tr>
@@ -547,7 +549,7 @@ function openUserModal(user = null) {
     document.getElementById('user-password-confirm').required = !user;
     document.getElementById('password-label').classList.toggle('required', !user);
     document.getElementById('password-confirm-label').classList.toggle('required', !user);
-    document.getElementById('password-hint').textContent = user ? 'Lascia vuoto per non modificare' : 'Minimo 6 caratteri';
+    document.getElementById('password-hint').textContent = user ? 'Lascia vuoto per non modificare' : 'Min 8 caratteri, maiuscola, numero, simbolo';
     document.getElementById('password-mismatch').classList.add('d-none');
     document.getElementById('user-superuser').checked = user?.is_superuser || false;
     document.getElementById('user-active').checked = user?.is_active ?? true;
@@ -561,9 +563,9 @@ function openUserModal(user = null) {
         force2faContainer.classList.add('d-none');
     }
 
-    // Show "Reset 2FA" button only for superusers editing other users with 2FA enabled
+    // Show "Reset 2FA" button for superusers editing users with 2FA enabled or locked
     const reset2faBtn = document.getElementById('btn-reset-user-2fa');
-    if (isSuperuser && user && user.totp_enabled && user.username !== currentUser?.username) {
+    if (isSuperuser && user && (user.totp_enabled || user.totp_locked) && user.username !== currentUser?.username) {
         reset2faBtn.classList.remove('d-none');
         // Remove old listeners by cloning
         const newBtn = reset2faBtn.cloneNode(true);
@@ -666,8 +668,8 @@ function setupPasswordChangeForm() {
             return;
         }
 
-        if (newPassword.length < 6) {
-            showToast('La password deve essere di almeno 6 caratteri', 'error');
+        if (newPassword.length < 8) {
+            showToast('La password deve essere di almeno 8 caratteri', 'error');
             return;
         }
 

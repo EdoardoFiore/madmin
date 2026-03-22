@@ -898,6 +898,7 @@ async def _export_users(session: AsyncSession) -> List[dict]:
             "totp_secret": user.totp_secret,
             "totp_enabled": user.totp_enabled,
             "totp_enforced": user.totp_enforced,
+            "totp_locked": user.totp_locked,
             "backup_codes": user.backup_codes,
             "preferences": user.preferences,
             "permissions": permission_slugs
@@ -1042,31 +1043,69 @@ def _copy_irrecoverable_files(patterns: List[str], dest_dir: str):
 # --- Import helpers ---
 
 
+def _resolve_totp_fields(u_data: dict) -> tuple:
+    """
+    Resolve TOTP fields from backup data.
+
+    Attempts to decrypt the stored totp_secret with the current SECRET_KEY.
+    If decryption fails (backup from a different instance with a different key),
+    2FA is cleared so the user is not locked out — they will need to reconfigure it.
+
+    Returns (totp_secret, totp_enabled, totp_locked, backup_codes).
+    """
+    from core.auth.service import decrypt_totp_secret
+
+    totp_secret = u_data.get("totp_secret")
+    totp_enabled = u_data.get("totp_enabled", False)
+    totp_locked = u_data.get("totp_locked", False)
+    backup_codes = u_data.get("backup_codes")
+
+    if totp_secret and totp_enabled:
+        try:
+            decrypt_totp_secret(totp_secret)
+        except Exception:
+            # SECRET_KEY mismatch — clear 2FA so the user can log in and reconfigure
+            logger.warning(
+                "TOTP secret for user '%s' cannot be decrypted with the current SECRET_KEY "
+                "(backup from a different instance). 2FA has been disabled for this user.",
+                u_data.get("username", "?"),
+            )
+            totp_secret = None
+            totp_enabled = False
+            totp_locked = False
+            backup_codes = None
+
+    return totp_secret, totp_enabled, totp_locked, backup_codes
+
+
 async def _import_users(session: AsyncSession, users_file: str) -> int:
     """Import users from JSON. Creates if new, updates if existing (by username)."""
     from core.auth.models import User, UserPermission, Permission
-    
+
     with open(users_file) as f:
         users_data = json.load(f)
-    
+
     count = 0
     for u_data in users_data:
+        totp_secret, totp_enabled, totp_locked, backup_codes = _resolve_totp_fields(u_data)
+
         # Check if user exists
         result = await session.execute(
             select(User).where(User.username == u_data["username"])
         )
         existing = result.scalar_one_or_none()
-        
+
         if existing:
             # Update existing user (preserve ID)
             existing.email = u_data.get("email") or existing.email
             existing.hashed_password = u_data.get("hashed_password", existing.hashed_password)
             existing.is_active = u_data.get("is_active", existing.is_active)
             existing.is_superuser = u_data.get("is_superuser", existing.is_superuser)
-            existing.totp_secret = u_data.get("totp_secret") or existing.totp_secret
-            existing.totp_enabled = u_data.get("totp_enabled", existing.totp_enabled)
+            existing.totp_secret = totp_secret or existing.totp_secret
+            existing.totp_enabled = totp_enabled
             existing.totp_enforced = u_data.get("totp_enforced", existing.totp_enforced)
-            existing.backup_codes = u_data.get("backup_codes") or existing.backup_codes
+            existing.totp_locked = totp_locked
+            existing.backup_codes = backup_codes or existing.backup_codes
             existing.preferences = u_data.get("preferences", existing.preferences)
             user_id = existing.id
         else:
@@ -1077,10 +1116,11 @@ async def _import_users(session: AsyncSession, users_file: str) -> int:
                 hashed_password=u_data.get("hashed_password", ""),
                 is_active=u_data.get("is_active", True),
                 is_superuser=u_data.get("is_superuser", False),
-                totp_secret=u_data.get("totp_secret"),
-                totp_enabled=u_data.get("totp_enabled", False),
+                totp_secret=totp_secret,
+                totp_enabled=totp_enabled,
                 totp_enforced=u_data.get("totp_enforced", False),
-                backup_codes=u_data.get("backup_codes"),
+                totp_locked=totp_locked,
+                backup_codes=backup_codes,
                 preferences=u_data.get("preferences", "{}")
             )
             session.add(new_user)

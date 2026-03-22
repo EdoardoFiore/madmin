@@ -4,8 +4,9 @@ MADMIN Authentication Router
 API endpoints for authentication and user management.
 """
 import json
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import timedelta
+import uuid
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.security import OAuth2PasswordRequestForm
@@ -14,22 +15,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_session
 from config import get_settings
 from .models import (
-    Token, 
-    UserCreate, 
-    UserUpdate, 
+    Token,
+    UserCreate,
+    UserUpdate,
     UserPreferencesUpdate,
-    UserResponse, 
+    UserResponse,
     PermissionResponse,
     User
 )
 from . import service
 from .totp import (
-    generate_totp_secret, generate_backup_codes,
+    generate_totp_secret, generate_backup_codes, hash_backup_codes,
     get_provisioning_uri, generate_qr_base64,
     verify_totp, verify_backup_code
 )
 from .dependencies import (
-    get_current_user, 
+    get_current_user,
     require_permission,
     require_superuser,
     oauth2_scheme
@@ -39,6 +40,10 @@ from .token_blacklist import token_blacklist
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 settings = get_settings()
+
+# Per-user 2FA failure tracking (in-memory; temporary tokens expire in 5 min anyway)
+_2fa_attempts: Dict[str, int] = {}  # str(user_id) → attempt count
+_2FA_MAX_ATTEMPTS = 5
 
 
 # --- Pydantic models for 2FA ---
@@ -64,6 +69,24 @@ class InitAdminRequest(BaseModel):
     password: str
 
 
+def _user_response(user: User) -> UserResponse:
+    """Helper to build a UserResponse from a User ORM object."""
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        is_active=user.is_active,
+        is_superuser=user.is_superuser,
+        totp_enabled=user.totp_enabled,
+        totp_enforced=user.totp_enforced,
+        totp_locked=user.totp_locked,
+        created_at=user.created_at,
+        last_login=user.last_login,
+        permissions=[p.slug for p in user.permissions] if not user.is_superuser else ["*"],
+        preferences=getattr(user, "preferences", "{}")
+    )
+
+
 @router.post("/init", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def init_first_user(
     data: InitAdminRequest,
@@ -73,11 +96,9 @@ async def init_first_user(
     Crea il primo utente superuser. Funziona solo se non esistono ancora utenti.
     Chiamato dallo script di installazione — non richiede autenticazione.
     """
-    if len(data.password) < 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La password deve essere di almeno 6 caratteri"
-        )
+    ok, msg = service.validate_password_strength(data.password)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     try:
         user = await service.create_first_user(session, data.username, data.password)
         return UserResponse(
@@ -88,6 +109,7 @@ async def init_first_user(
             is_superuser=user.is_superuser,
             totp_enabled=user.totp_enabled,
             totp_enforced=user.totp_enforced,
+            totp_locked=user.totp_locked,
             created_at=user.created_at,
             last_login=user.last_login,
             permissions=["*"]
@@ -111,33 +133,32 @@ async def login(
     If 2FA is enabled, returns token_type='2fa_required' and a temporary token.
     If 2FA is enforced but not set up, returns token_type='2fa_setup_required'.
     """
-    # Rate limiting — extract client IP and check
-    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() \
-        or (request.client.host if request.client else "unknown")
+    # Rate limiting — use direct client IP (Nginx sets request.client.host)
+    client_ip = request.client.host if request.client else "unknown"
     login_rate_limiter.check_rate_limit(client_ip)
-    
+
     user = await service.authenticate_user(session, form_data.username, form_data.password)
-    
+
     if not user:
-        login_rate_limiter.record_failure(client_ip)
+        await login_rate_limiter.record_failure(session, client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Check if user is active (return same error to not reveal account status)
     if not user.is_active:
-        login_rate_limiter.record_failure(client_ip)
+        await login_rate_limiter.record_failure(session, client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Authentication successful — reset rate limit for this IP
-    login_rate_limiter.record_success(client_ip)
-    
+    await login_rate_limiter.record_success(session, client_ip)
+
     # If 2FA is enabled, require OTP verification
     if user.totp_enabled:
         temp_token = service.create_access_token(
@@ -145,7 +166,7 @@ async def login(
             expires_delta=timedelta(minutes=5)
         )
         return {"access_token": temp_token, "token_type": "2fa_required"}
-    
+
     # If 2FA is enforced but not yet set up, require setup
     if user.totp_enforced and not user.totp_enabled:
         temp_token = service.create_access_token(
@@ -153,22 +174,23 @@ async def login(
             expires_delta=timedelta(minutes=15)  # More time to set up
         )
         return {"access_token": temp_token, "token_type": "2fa_setup_required"}
-    
+
     # Update last login
     await service.update_last_login(session, user)
     await session.commit()
-    
+
     # Create token
     access_token = service.create_access_token(
         data={"sub": user.username, "user_id": str(user.id)},
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
     )
-    
+
     return Token(access_token=access_token)
 
 
 @router.post("/token/2fa", response_model=Token)
 async def verify_2fa_login(
+    request: Request,
     code: str = Query(..., description="6-digit OTP code or backup code"),
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session)
@@ -176,44 +198,83 @@ async def verify_2fa_login(
     """
     Complete login with 2FA verification.
     Requires the temporary token from /token endpoint.
+    After 5 failed attempts, the user's 2FA is locked and must be reset by a superuser.
     """
+    # Rate limiting by IP
+    client_ip = request.client.host if request.client else "unknown"
+    login_rate_limiter.check_rate_limit(client_ip)
+
     payload = service.decode_access_token(token)
     if not payload or not payload.get("2fa_pending"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired 2FA token"
+            detail="Token 2FA non valido o scaduto"
         )
-    
+
     user = await service.get_user_by_username(session, payload.get("sub"))
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
+            detail="Utente non trovato"
         )
-    
+
+    # Refuse locked accounts immediately
+    if user.totp_locked:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="L'accesso 2FA è bloccato. Contatta un amministratore per sbloccare l'account."
+        )
+
+    user_id_str = str(user.id)
+
     # Verify TOTP code first
-    if not verify_totp(user.totp_secret, code):
+    plain_secret = service.decrypt_totp_secret(user.totp_secret)
+    if not verify_totp(plain_secret, code):
         # Try backup code
         valid, new_codes = verify_backup_code(user.backup_codes or "[]", code)
         if not valid:
+            # Record failures
+            await login_rate_limiter.record_failure(session, client_ip)
+            attempts = _2fa_attempts.get(user_id_str, 0) + 1
+            _2fa_attempts[user_id_str] = attempts
+
+            if attempts >= _2FA_MAX_ATTEMPTS:
+                # Lock the user's 2FA — superuser must reset it
+                user.totp_locked = True
+                session.add(user)
+                # Also revoke the temporary token by revoking the user
+                await token_blacklist.revoke_user(session, user.id)
+                await session.commit()
+                _2fa_attempts.pop(user_id_str, None)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=(
+                        f"Troppi tentativi falliti ({_2FA_MAX_ATTEMPTS}/{_2FA_MAX_ATTEMPTS}). "
+                        "La 2FA è stata bloccata. Contatta un amministratore."
+                    )
+                )
+
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid 2FA code"
+                detail=f"Codice 2FA non valido ({attempts}/{_2FA_MAX_ATTEMPTS} tentativi)"
             )
-        # Update backup codes (one was used)
+        # Backup code used — save updated codes list
         user.backup_codes = new_codes
         session.add(user)
-    
+
+    # Success — clear per-user attempt counter
+    _2fa_attempts.pop(user_id_str, None)
+
     # Update last login
     await service.update_last_login(session, user)
     await session.commit()
-    
+
     # Create final access token
     access_token = service.create_access_token(
         data={"sub": user.username, "user_id": str(user.id)},
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
     )
-    
+
     return Token(access_token=access_token)
 
 
@@ -222,19 +283,7 @@ async def get_current_user_info(
     current_user: User = Depends(get_current_user)
 ):
     """Get current authenticated user information."""
-    return UserResponse(
-        id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        is_active=current_user.is_active,
-        is_superuser=current_user.is_superuser,
-        totp_enabled=current_user.totp_enabled,
-        totp_enforced=current_user.totp_enforced,
-        created_at=current_user.created_at,
-        last_login=current_user.last_login,
-        permissions=[p.slug for p in current_user.permissions] if not current_user.is_superuser else ["*"],
-        preferences=current_user.preferences
-    )
+    return _user_response(current_user)
 
 
 @router.patch("/me/preferences", response_model=UserResponse)
@@ -243,28 +292,12 @@ async def update_user_preferences(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """
-    Update current user preferences.
-    Preferences are stored as a JSON string.
-    """
+    """Update current user preferences."""
     current_user.preferences = preferences_data.preferences
     session.add(current_user)
     await session.commit()
     await session.refresh(current_user)
-    
-    return UserResponse(
-        id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        is_active=current_user.is_active,
-        is_superuser=current_user.is_superuser,
-        totp_enabled=current_user.totp_enabled,
-        totp_enforced=current_user.totp_enforced,
-        created_at=current_user.created_at,
-        last_login=current_user.last_login,
-        permissions=[p.slug for p in current_user.permissions] if not current_user.is_superuser else ["*"],
-        preferences=current_user.preferences
-    )
+    return _user_response(current_user)
 
 
 # --- User Management ---
@@ -285,6 +318,7 @@ async def list_users(
             is_superuser=u.is_superuser,
             totp_enabled=u.totp_enabled,
             totp_enforced=u.totp_enforced,
+            totp_locked=u.totp_locked,
             created_at=u.created_at,
             last_login=u.last_login,
             permissions=[p.slug for p in u.permissions]
@@ -311,6 +345,7 @@ async def create_user(
             is_superuser=user.is_superuser,
             totp_enabled=user.totp_enabled,
             totp_enforced=user.totp_enforced,
+            totp_locked=user.totp_locked,
             created_at=user.created_at,
             last_login=user.last_login,
             permissions=[]
@@ -329,7 +364,7 @@ async def get_user(
     user = await service.get_user_by_username(session, username)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -338,6 +373,7 @@ async def get_user(
         is_superuser=user.is_superuser,
         totp_enabled=user.totp_enabled,
         totp_enforced=user.totp_enforced,
+        totp_locked=user.totp_locked,
         created_at=user.created_at,
         last_login=user.last_login,
         permissions=[p.slug for p in user.permissions]
@@ -355,7 +391,7 @@ async def update_user(
     user = await service.get_user_by_username(session, username)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
     # Root user protection: the first created user can only be modified by themselves
     root_id = await service.get_root_user_id(session)
     if user.id == root_id and current_user.id != root_id:
@@ -363,24 +399,24 @@ async def update_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Il primo utente può essere modificato solo da se stesso"
         )
-    
+
     # Prevent non-superusers from creating superusers
     if user_data.is_superuser and not current_user.is_superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only superusers can grant superuser status"
         )
-    
+
     try:
         updated_user = await service.update_user(session, user.id, user_data)
         await session.commit()
-        
+
         # Revoke tokens if user was disabled, unrevoke if re-enabled
         if user_data.is_active is False:
-            token_blacklist.revoke_user(updated_user.id)
+            await token_blacklist.revoke_user(session, updated_user.id)
         elif user_data.is_active is True:
-            token_blacklist.unrevoke_user(updated_user.id)
-        
+            await token_blacklist.unrevoke_user(session, updated_user.id)
+
         return UserResponse(
             id=updated_user.id,
             username=updated_user.username,
@@ -389,6 +425,7 @@ async def update_user(
             is_superuser=updated_user.is_superuser,
             totp_enabled=updated_user.totp_enabled,
             totp_enforced=updated_user.totp_enforced,
+            totp_locked=updated_user.totp_locked,
             created_at=updated_user.created_at,
             last_login=updated_user.last_login,
             permissions=[p.slug for p in updated_user.permissions]
@@ -407,17 +444,17 @@ async def delete_user(
     user = await service.get_user_by_username(session, username)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
     # Prevent self-deletion
     if user.id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account"
         )
-    
+
     # Revoke any active tokens for this user
-    token_blacklist.revoke_user(user.id)
-    
+    await token_blacklist.revoke_user(session, user.id)
+
     await service.delete_user(session, user.id)
     await session.commit()
 
@@ -444,8 +481,8 @@ async def disable_user_2fa(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Administrator endpoint to disable 2FA for a specific user.
-    Useful for resetting 2FA if a user lost their device.
+    Administrator endpoint to disable and reset 2FA for a specific user.
+    Useful for resetting 2FA if a user lost their device or was locked out.
     """
     user = await service.get_user_by_username(session, username)
     if not user:
@@ -453,17 +490,19 @@ async def disable_user_2fa(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Utente non trovato"
         )
-    
-    # Disable 2FA
+
+    # Disable 2FA and clear lock
     user.totp_enabled = False
-    
-    # Reset secret and backup codes so they are regenerated on next setup
+    user.totp_locked = False
     user.totp_secret = None
     user.backup_codes = None
-    
-    session.add(user)
-    await session.commit()
 
+    session.add(user)
+
+    # Revoke active tokens so user must re-login
+    await token_blacklist.revoke_user(session, user.id)
+
+    await session.commit()
 
 
 @router.put("/users/{username}/permissions", response_model=UserResponse)
@@ -477,14 +516,14 @@ async def set_user_permissions(
     user = await service.get_user_by_username(session, username)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
     # Cannot modify superuser permissions (they have all permissions implicitly)
     if user.is_superuser:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot modify permissions for superuser accounts"
         )
-    
+
     try:
         updated_user = await service.set_user_permissions(session, user.id, permission_slugs)
         await session.commit()
@@ -496,6 +535,7 @@ async def set_user_permissions(
             is_superuser=updated_user.is_superuser,
             totp_enabled=updated_user.totp_enabled,
             totp_enforced=updated_user.totp_enforced,
+            totp_locked=updated_user.totp_locked,
             created_at=updated_user.created_at,
             last_login=updated_user.last_login,
             permissions=[p.slug for p in updated_user.permissions]
@@ -514,24 +554,25 @@ async def change_own_password(
 ):
     """
     Change own password (requires current password verification).
-    This endpoint allows any authenticated user to change their own password.
     """
     if not service.verify_password(data.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password attuale non corretta"
         )
-    
-    if len(data.new_password) < 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La nuova password deve essere di almeno 6 caratteri"
-        )
-    
+
+    ok, msg = service.validate_password_strength(data.new_password)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+
     await service.update_user(session, current_user.id, UserUpdate(password=data.new_password))
+
+    # Revoke existing tokens — forces re-login with new password
+    await token_blacklist.revoke_user(session, current_user.id)
+
     await session.commit()
-    
-    return {"message": "Password aggiornata con successo"}
+
+    return {"message": "Password aggiornata con successo. Effettua nuovamente il login."}
 
 
 # --- 2FA Management ---
@@ -541,10 +582,19 @@ async def get_2fa_status(
     current_user: User = Depends(get_current_user)
 ):
     """Get 2FA status for current user."""
+    has_backup_codes = False
+    if current_user.backup_codes:
+        try:
+            codes = json.loads(current_user.backup_codes)
+            has_backup_codes = any(not c.get("used", False) for c in codes)
+        except (json.JSONDecodeError, AttributeError):
+            has_backup_codes = False
+
     return {
         "enabled": current_user.totp_enabled,
         "enforced": current_user.totp_enforced,
-        "has_backup_codes": bool(current_user.backup_codes and json.loads(current_user.backup_codes))
+        "locked": current_user.totp_locked,
+        "has_backup_codes": has_backup_codes
     }
 
 
@@ -554,30 +604,31 @@ async def setup_2fa(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Start 2FA setup - generates secret and QR code.
-    The user must verify a code with /me/2fa/enable to complete setup.
+    Start 2FA setup — generates secret and QR code.
+    Plaintext secret and backup codes are returned ONCE and never again.
+    The user must verify a code with /me/2fa/enable to activate 2FA.
     """
     if current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="2FA è già attiva. Disattivala prima di configurarla nuovamente."
         )
-    
+
     secret = generate_totp_secret()
-    backup_codes = generate_backup_codes()
+    backup_codes_plain = generate_backup_codes()
     uri = get_provisioning_uri(secret, current_user.username)
     qr = generate_qr_base64(uri)
-    
-    # Store secret and backup codes (not enabled yet)
-    current_user.totp_secret = secret
-    current_user.backup_codes = json.dumps(backup_codes)
+
+    # Store encrypted secret and hashed backup codes
+    current_user.totp_secret = service.encrypt_totp_secret(secret)
+    current_user.backup_codes = json.dumps(hash_backup_codes(backup_codes_plain))
     session.add(current_user)
     await session.commit()
-    
+
     return TwoFactorSetupResponse(
-        secret=secret,
+        secret=secret,                  # plaintext shown to user once
         qr_code=qr,
-        backup_codes=backup_codes
+        backup_codes=backup_codes_plain  # plaintext shown to user once
     )
 
 
@@ -596,23 +647,24 @@ async def enable_2fa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Prima esegui /me/2fa/setup per generare il secret"
         )
-    
+
     if current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="2FA è già attiva"
         )
-    
-    if not verify_totp(current_user.totp_secret, data.code):
+
+    plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
+    if not verify_totp(plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Codice non valido. Verifica che l'ora del tuo dispositivo sia corretta."
         )
-    
+
     current_user.totp_enabled = True
     session.add(current_user)
     await session.commit()
-    
+
     return {"message": "2FA attivata con successo"}
 
 
@@ -631,27 +683,28 @@ async def disable_2fa(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="2FA non è attiva"
         )
-    
+
     # Block non-superusers from disabling enforced 2FA
     if current_user.totp_enforced and not current_user.is_superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="La 2FA è stata forzata dall'amministratore e non può essere disattivata"
         )
-    
+
     if not service.verify_password(data.password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password non corretta"
         )
-    
+
     current_user.totp_secret = None
     current_user.totp_enabled = False
+    current_user.totp_locked = False
     # Note: totp_enforced remains true - admin must remove it
     current_user.backup_codes = None
     session.add(current_user)
     await session.commit()
-    
+
     return {"message": "2FA disattivata"}
 
 
@@ -663,26 +716,27 @@ async def regenerate_backup_codes(
 ):
     """
     Regenerate backup codes (requires TOTP code verification).
-    Returns a new set of 10 backup codes.
+    Returns a new set of 8 backup codes (plaintext, shown once).
     """
     if not current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="2FA non è attiva"
         )
-    
-    if not verify_totp(current_user.totp_secret, data.code):
+
+    plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
+    if not verify_totp(plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Codice non valido"
         )
-    
-    backup_codes = generate_backup_codes()
-    current_user.backup_codes = json.dumps(backup_codes)
+
+    backup_codes_plain = generate_backup_codes()
+    current_user.backup_codes = json.dumps(hash_backup_codes(backup_codes_plain))
     session.add(current_user)
     await session.commit()
-    
-    return {"backup_codes": backup_codes}
+
+    return {"backup_codes": backup_codes_plain}
 
 
 # --- User Edit Permission Check ---
@@ -700,33 +754,32 @@ async def can_edit_user(
     user = await service.get_user_by_username(session, username)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
     can_edit = True
     can_change_password = True
     can_delete = True
-    
+
     # Self-edit: can only change password via /me/password
     if user.id == current_user.id:
         can_edit = current_user.has_permission("users.manage")
         can_change_password = True
         can_delete = False
-    
+
     # Root user can only be modified by themselves
     root_id = await service.get_root_user_id(session)
     if user.id == root_id and current_user.id != root_id:
         can_edit = False
         can_change_password = False
         can_delete = False
-    
+
     # Must have users.manage to edit others
     if not current_user.has_permission("users.manage") and user.id != current_user.id:
         can_edit = False
         can_change_password = False
         can_delete = False
-    
+
     return {
         "can_edit": can_edit,
         "can_change_password": can_change_password,
         "can_delete": can_delete
     }
-
