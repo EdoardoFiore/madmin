@@ -77,6 +77,7 @@ def _user_response(user: User) -> UserResponse:
         email=user.email,
         is_active=user.is_active,
         is_superuser=user.is_superuser,
+        is_protected=user.is_protected,
         totp_enabled=user.totp_enabled,
         totp_enforced=user.totp_enforced,
         totp_locked=user.totp_locked,
@@ -107,6 +108,7 @@ async def init_first_user(
             email=user.email,
             is_active=user.is_active,
             is_superuser=user.is_superuser,
+            is_protected=user.is_protected,
             totp_enabled=user.totp_enabled,
             totp_enforced=user.totp_enforced,
             totp_locked=user.totp_locked,
@@ -316,6 +318,7 @@ async def list_users(
             email=u.email,
             is_active=u.is_active,
             is_superuser=u.is_superuser,
+            is_protected=u.is_protected,
             totp_enabled=u.totp_enabled,
             totp_enforced=u.totp_enforced,
             totp_locked=u.totp_locked,
@@ -392,12 +395,11 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Root user protection: the first created user can only be modified by themselves
-    root_id = await service.get_root_user_id(session)
-    if user.id == root_id and current_user.id != root_id:
+    # Protected user: the first setup user can only be modified by themselves
+    if user.is_protected and user.id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Il primo utente può essere modificato solo da se stesso"
+            detail="Il primo utente di sistema può essere modificato solo da se stesso"
         )
 
     # Prevent non-superusers from creating superusers
@@ -450,6 +452,13 @@ async def delete_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account"
+        )
+
+    # Protected user: the first setup user cannot be deleted by anyone
+    if user.is_protected:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Il primo utente di sistema non può essere eliminato"
         )
 
     # Revoke any active tokens for this user

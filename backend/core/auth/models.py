@@ -58,6 +58,7 @@ class User(SQLModel, table=True):
     # Status
     is_active: bool = Field(default=True)
     is_superuser: bool = Field(default=False)
+    is_protected: bool = Field(default=False)  # First setup user — cannot be modified or deleted by others
 
     # 2FA Fields
     totp_secret: Optional[str] = Field(default=None, max_length=512)  # encrypted, longer than plain
@@ -148,6 +149,7 @@ class UserResponse(SQLModel):
     email: Optional[str]
     is_active: bool
     is_superuser: bool
+    is_protected: bool = False
     totp_enabled: bool = False
     totp_enforced: bool = False
     totp_locked: bool = False

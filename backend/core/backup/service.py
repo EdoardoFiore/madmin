@@ -895,6 +895,7 @@ async def _export_users(session: AsyncSession) -> List[dict]:
             "hashed_password": user.hashed_password,
             "is_active": user.is_active,
             "is_superuser": user.is_superuser,
+            "is_protected": user.is_protected,
             "totp_secret": user.totp_secret,
             "totp_enabled": user.totp_enabled,
             "totp_enforced": user.totp_enforced,
@@ -1101,6 +1102,7 @@ async def _import_users(session: AsyncSession, users_file: str) -> int:
             existing.hashed_password = u_data.get("hashed_password", existing.hashed_password)
             existing.is_active = u_data.get("is_active", existing.is_active)
             existing.is_superuser = u_data.get("is_superuser", existing.is_superuser)
+            existing.is_protected = u_data.get("is_protected", existing.is_protected)
             existing.totp_secret = totp_secret or existing.totp_secret
             existing.totp_enabled = totp_enabled
             existing.totp_enforced = u_data.get("totp_enforced", existing.totp_enforced)
@@ -1116,6 +1118,7 @@ async def _import_users(session: AsyncSession, users_file: str) -> int:
                 hashed_password=u_data.get("hashed_password", ""),
                 is_active=u_data.get("is_active", True),
                 is_superuser=u_data.get("is_superuser", False),
+                is_protected=u_data.get("is_protected", False),
                 totp_secret=totp_secret,
                 totp_enabled=totp_enabled,
                 totp_enforced=u_data.get("totp_enforced", False),

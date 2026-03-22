@@ -246,7 +246,7 @@ export async function render(container) {
                     <div class="modal-body">
                         <p class="text-muted">Inserisci il codice dall'app authenticator o un codice di backup:</p>
                         <input type="text" class="form-control form-control-lg text-center font-monospace"
-                               id="modal-otp-input" maxlength="8" pattern="[0-9A-Za-z]{6,8}"
+                               id="modal-otp-input" maxlength="12" pattern="[0-9A-Za-z]{6,12}"
                                placeholder="000000" inputmode="numeric" autofocus>
                     </div>
                     <div class="modal-footer">

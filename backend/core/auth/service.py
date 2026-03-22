@@ -346,7 +346,8 @@ async def create_first_user(session: AsyncSession, username: str, password: str)
         username=username,
         email=f"{username}@localhost",
         hashed_password=get_password_hash(password),
-        is_superuser=True
+        is_superuser=True,
+        is_protected=True
     )
     session.add(user)
     await session.commit()
