@@ -6,7 +6,7 @@
  */
 
 import { apiGet, apiPost, apiDelete } from '../api.js';
-import { showToast, confirmDialog, isValidCIDR, isValidIP } from '../utils.js';
+import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml } from '../utils.js';
 import { checkPermission } from '../app.js';
 
 function formatBytes(bytes) {
@@ -224,7 +224,7 @@ async function loadInterfaces() {
         container.innerHTML = `
             <div class="text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2">Errore caricamento interfacce: ${error.message}</p>
+                <p class="mt-2">Errore caricamento interfacce: ${escapeHtml(error.message)}</p>
             </div>
         `;
     }

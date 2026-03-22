@@ -5,10 +5,11 @@ Database models for system configuration.
 All settings tables are singleton (only id=1 used).
 """
 from sqlmodel import SQLModel, Field
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import Column, BigInteger
 from typing import Optional
 from datetime import datetime
+import re
 
 
 class SystemStatsHistory(SQLModel, table=True):
@@ -119,6 +120,24 @@ class SystemSettingsUpdate(SQLModel):
     logo_url: Optional[str] = None
     favicon_url: Optional[str] = None
     support_url: Optional[str] = None
+
+    @field_validator('primary_color', mode='before')
+    @classmethod
+    def validate_color(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^#[0-9a-fA-F]{3,6}$', str(v)):
+            raise ValueError("Colore non valido: deve essere esadecimale (#RGB o #RRGGBB)")
+        return v
+
+    @field_validator('logo_url', 'favicon_url', 'support_url', mode='before')
+    @classmethod
+    def validate_url(cls, v):
+        if v is None:
+            return v
+        if not str(v).startswith(('http://', 'https://', '/')):
+            raise ValueError("URL non sicuro: solo http/https consentiti")
+        return v
 
 
 class SystemSettingsResponse(SQLModel):

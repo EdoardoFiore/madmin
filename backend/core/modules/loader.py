@@ -8,6 +8,7 @@ All modules are pre-installed in backend/modules/. This loader handles:
 - Activate/deactivate lifecycle (migrations on first activation)
 """
 import os
+import re
 import json
 import logging
 import importlib.util
@@ -24,6 +25,8 @@ from .models import InstalledModule, ModuleManifest, ModulePermission
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+MODULE_ID_RE = re.compile(r'^[a-z0-9_-]+$')
 
 
 class ModuleLoader:
@@ -87,6 +90,9 @@ class ModuleLoader:
         Returns:
             FastAPI APIRouter or None if loading fails
         """
+        if not MODULE_ID_RE.match(module_id):
+            logger.error(f"Module ID non valido: {module_id}")
+            return None
         module_path = self.modules_dir / module_id
         router_file = module_path / manifest.backend_router
         
@@ -272,9 +278,12 @@ class ModuleLoader:
         Returns:
             True if loaded successfully
         """
+        if not MODULE_ID_RE.match(module_id):
+            logger.error(f"Module ID non valido: {module_id}")
+            return False
         module_path = self.modules_dir / module_id
         manifest_path = module_path / "manifest.json"
-        
+
         manifest = self._parse_manifest(manifest_path)
         if not manifest:
             return False
@@ -407,9 +416,11 @@ class ModuleLoader:
         
         Returns dict with status info.
         """
+        if not MODULE_ID_RE.match(module_id):
+            return {"success": False, "error": f"Module ID non valido: {module_id}"}
         module_path = self.modules_dir / module_id
         manifest_path = module_path / "manifest.json"
-        
+
         if not manifest_path.exists():
             return {"success": False, "error": f"Modulo '{module_id}' non trovato"}
         
@@ -496,10 +507,13 @@ class ModuleLoader:
         
         Returns dict with status info.
         """
+        if not MODULE_ID_RE.match(module_id):
+            return {"success": False, "error": f"Module ID non valido: {module_id}"}
+
         from sqlalchemy import text, delete
         from core.firewall.models import ModuleChain
         from core.auth.models import Permission
-        
+
         result = await session.execute(
             select(InstalledModule).where(InstalledModule.id == module_id)
         )

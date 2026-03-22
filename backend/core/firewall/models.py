@@ -4,9 +4,11 @@ MADMIN Firewall Models
 Database models for machine firewall rules and module chain registration.
 """
 from sqlmodel import SQLModel, Field
+from pydantic import field_validator
 from typing import Optional
 from datetime import datetime
 import uuid
+import re
 
 
 class MachineFirewallRule(SQLModel, table=True):
@@ -90,7 +92,41 @@ class ModuleChain(SQLModel, table=True):
 
 # --- Pydantic Schemas ---
 
-class MachineFirewallRuleCreate(SQLModel):
+class _FirewallRuleValidators(SQLModel):
+    """Mixin with shared validators for firewall rule create/update schemas."""
+
+    @field_validator('to_destination', 'to_source', mode='before')
+    @classmethod
+    def validate_ip_port(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^[\d.:/-]+$', str(v)):
+            raise ValueError(f"Formato IP/porta non valido: {v}")
+        return v
+
+    @field_validator('to_ports', mode='before')
+    @classmethod
+    def validate_to_ports(cls, v):
+        if v is None:
+            return v
+        if not re.match(r'^\d+(-\d+)?$', str(v)):
+            raise ValueError(f"Formato porta non valido: {v}")
+        return v
+
+    @field_validator('port', mode='before')
+    @classmethod
+    def validate_port(cls, v):
+        if v is None:
+            return v
+        # Accept single port, range "80:443", multiport "80,443,8080"
+        parts = re.split(r'[:,]', str(v))
+        for p in parts:
+            if not p.isdigit() or not (1 <= int(p) <= 65535):
+                raise ValueError(f"Porta non valida: {p} (range 1-65535)")
+        return v
+
+
+class MachineFirewallRuleCreate(_FirewallRuleValidators):
     """Schema for creating a firewall rule."""
     chain: str
     action: str
@@ -114,7 +150,7 @@ class MachineFirewallRuleCreate(SQLModel):
     enabled: bool = True
 
 
-class MachineFirewallRuleUpdate(SQLModel):
+class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     """Schema for updating a firewall rule."""
     chain: Optional[str] = None
     action: Optional[str] = None

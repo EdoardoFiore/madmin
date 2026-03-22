@@ -333,7 +333,7 @@ window._openModuleDetail = async (moduleId) => {
                         readmeContent.classList.remove('d-none');
                         readmeLoading.classList.add('d-none');
                     } catch (e) {
-                        readmeLoading.innerHTML = `<p class="text-danger">Errore: ${e.message}</p>`;
+                        readmeLoading.innerHTML = `<p class="text-danger">Errore: ${escapeHtml(e.message)}</p>`;
                     }
                 }
             });

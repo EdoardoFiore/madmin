@@ -201,6 +201,13 @@ async function verifyGlobal2FA() {
     }
 }
 
+function isSafeUrl(url) {
+    try {
+        const u = new URL(url, window.location.origin);
+        return ['http:', 'https:'].includes(u.protocol);
+    } catch { return false; }
+}
+
 /**
  * Load and apply system settings (company name, primary color, etc.)
  */
@@ -232,20 +239,21 @@ async function loadSystemSettings() {
         }
 
         // Apply primary color as CSS variable
-        if (settings.primary_color) {
-            document.documentElement.style.setProperty('--madmin-primary', settings.primary_color);
-            document.documentElement.style.setProperty('--tblr-primary', settings.primary_color);
+        if (settings.primary_color && /^#[0-9a-fA-F]{3,6}$/.test(settings.primary_color)) {
+            const safeColor = settings.primary_color;
+            document.documentElement.style.setProperty('--madmin-primary', safeColor);
+            document.documentElement.style.setProperty('--tblr-primary', safeColor);
             const style = document.createElement('style');
             style.textContent = `
-                .btn-primary { background-color: ${settings.primary_color} !important; border-color: ${settings.primary_color} !important; }
-                .nav-link.active { background-color: ${settings.primary_color} !important; }
-                .text-primary { color: ${settings.primary_color} !important; }
+                .btn-primary { background-color: ${safeColor} !important; border-color: ${safeColor} !important; }
+                .nav-link.active { background-color: ${safeColor} !important; }
+                .text-primary { color: ${safeColor} !important; }
             `;
             document.head.appendChild(style);
         }
 
         // Apply logo if set - show img and hide default icon
-        if (settings.logo_url) {
+        if (settings.logo_url && isSafeUrl(settings.logo_url)) {
             const logoImg = document.getElementById('navbar-logo-img');
             const logoDefault = document.getElementById('navbar-logo-default');
             if (logoImg && logoDefault) {
@@ -256,7 +264,7 @@ async function loadSystemSettings() {
         }
 
         // Apply favicon if set (override default)
-        if (settings.favicon_url) {
+        if (settings.favicon_url && isSafeUrl(settings.favicon_url)) {
             const faviconLink = document.getElementById('favicon-link');
             if (faviconLink) {
                 faviconLink.href = settings.favicon_url;
@@ -264,7 +272,7 @@ async function loadSystemSettings() {
         }
 
         // Show support URL in footer if configured (inline with version)
-        if (settings.support_url) {
+        if (settings.support_url && isSafeUrl(settings.support_url)) {
             const supportLink = document.getElementById('support-link');
             const supportItem = document.getElementById('support-link-item');
             if (supportLink && supportItem) {

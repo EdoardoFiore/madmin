@@ -6,7 +6,7 @@
  */
 
 import { apiGet, apiPatch } from '../api.js';
-import { formatRelativeTime } from '../utils.js';
+import { formatRelativeTime, escapeHtml } from '../utils.js';
 
 let autoRefreshInterval = null;
 let netTrafficChart = null;
@@ -925,7 +925,7 @@ async function loadAlerts() {
                     <i class="ti ${alert.icon}"></i>
                 </span>
                 <div>
-                    <div class="fw-bold text-${alert.severity === 'danger' ? 'danger' : 'warning'}">${alert.message}</div>
+                    <div class="fw-bold text-${alert.severity === 'danger' ? 'danger' : 'warning'}">${escapeHtml(alert.message)}</div>
                 </div>
             </div>
         `).join('');

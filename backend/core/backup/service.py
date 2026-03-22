@@ -12,6 +12,7 @@ Only irrecoverable files (PKI, certs, keys) are included — everything else
 is regenerated from DB by post_restore hooks.
 """
 import os
+import re
 import glob
 import json
 import shutil
@@ -231,6 +232,17 @@ async def preview_config(archive_path: str) -> dict:
 # ============== CONFIG IMPORT ==============
 
 
+def _safe_tar_members(tar: tarfile.TarFile, restore_path: str):
+    """Yield tar members whose resolved path stays within restore_path (prevents path traversal)."""
+    abs_restore = os.path.realpath(restore_path)
+    for member in tar.getmembers():
+        member_path = os.path.realpath(os.path.join(abs_restore, member.name))
+        if not member_path.startswith(abs_restore + os.sep) and member_path != abs_restore:
+            logger.warning(f"Backup import: percorso non sicuro ignorato: {member.name}")
+            continue
+        yield member
+
+
 async def import_config(session: AsyncSession, archive_path: str) -> dict:
     """
     Import configuration from a config archive.
@@ -260,9 +272,9 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
     }
     
     try:
-        # Extract
+        # Extract (safe: filter members to prevent path traversal)
         with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(restore_path)
+            tar.extractall(restore_path, members=_safe_tar_members(tar, restore_path))
         
         # Find root dir
         extracted = os.listdir(restore_path)
@@ -972,7 +984,7 @@ async def _export_settings(session: AsyncSession) -> dict:
             "smtp_port": smtp_row.smtp_port,
             "smtp_encryption": smtp_row.smtp_encryption,
             "smtp_username": smtp_row.smtp_username,
-            "smtp_password": smtp_row.smtp_password,
+            # smtp_password esclusa: da re-inserire manualmente dopo il restore
             "sender_email": smtp_row.sender_email,
             "sender_name": smtp_row.sender_name,
             "public_download_url": smtp_row.public_download_url
@@ -990,7 +1002,7 @@ async def _export_settings(session: AsyncSession) -> dict:
             "remote_host": bk_row.remote_host,
             "remote_port": bk_row.remote_port,
             "remote_user": bk_row.remote_user,
-            "remote_password": bk_row.remote_password,
+            # remote_password esclusa: da re-inserire manualmente dopo il restore
             "remote_path": bk_row.remote_path,
             "retention_days": bk_row.retention_days
         }
@@ -1183,12 +1195,22 @@ async def _import_settings(session: AsyncSession, settings_file: str):
     if "system" in data:
         sys_result = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
         sys_row = sys_result.scalar_one_or_none()
+        _SYSTEM_ALLOWLIST = {"company_name", "primary_color", "logo_url", "favicon_url", "support_url"}
+        _URL_FIELDS = {"logo_url", "favicon_url", "support_url"}
         if sys_row:
             for k, v in data["system"].items():
-                if hasattr(sys_row, k) and v is not None:
-                    setattr(sys_row, k, v)
+                if k not in _SYSTEM_ALLOWLIST or v is None:
+                    continue
+                if k in _URL_FIELDS and not str(v).startswith(("http://", "https://", "/")):
+                    logger.warning(f"Import: URL non sicuro ignorato per {k}: {v}")
+                    continue
+                if k == "primary_color" and not re.match(r'^#[0-9a-fA-F]{3,6}$', str(v)):
+                    logger.warning(f"Import: primary_color non valido ignorato: {v}")
+                    continue
+                setattr(sys_row, k, v)
         else:
-            session.add(SystemSettings(id=1, **data["system"]))
+            safe_system = {k: v for k, v in data["system"].items() if k in _SYSTEM_ALLOWLIST}
+            session.add(SystemSettings(id=1, **safe_system))
     
     if "smtp" in data:
         smtp_data = dict(data["smtp"])
@@ -1383,8 +1405,12 @@ def _restore_irrecoverable_files(files_dir: str):
             src = os.path.join(root, filename)
             # Reconstruct original path
             rel_path = os.path.relpath(src, files_dir)
-            dest = os.path.join("/", rel_path)
-            
+            # Block path traversal attempts
+            if ".." in rel_path.split(os.sep):
+                logger.warning(f"Backup: percorso non sicuro ignorato: {rel_path}")
+                continue
+            dest = os.path.realpath(os.path.join("/", rel_path))
+
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copy2(src, dest)
             logger.info(f"Restored irrecoverable file: {dest}")
