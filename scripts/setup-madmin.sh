@@ -15,21 +15,49 @@ log_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 log_error() { echo -e "\033[31m[ERROR]\033[0m $1" >&2; }
 log_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 
+# --- Disabilita unattended-upgrades per la durata dell'installazione ---
+disable_unattended_upgrades() {
+    log_info "Sospensione unattended-upgrades per la durata dell'installazione..."
+    systemctl stop unattended-upgrades 2>/dev/null || true
+    systemctl stop apt-daily.service 2>/dev/null || true
+    systemctl stop apt-daily-upgrade.service 2>/dev/null || true
+    # Attendi che eventuali processi apt in corso terminino
+    local waited=0
+    while pgrep -x "unattended-upgr" >/dev/null 2>&1 || pgrep -x "apt-get" >/dev/null 2>&1; do
+        if [ $waited -eq 0 ]; then
+            log_warning "Processo apt ancora in esecuzione, attendo terminazione..."
+        fi
+        sleep 2
+        waited=$((waited + 2))
+        if [ $waited -ge 120 ]; then
+            log_warning "Timeout attesa processo apt. Procedo comunque."
+            break
+        fi
+    done
+}
+
+# Riabilita unattended-upgrades al termine (o in caso di errore)
+reenable_unattended_upgrades() {
+    systemctl start unattended-upgrades 2>/dev/null || true
+    systemctl start apt-daily.timer 2>/dev/null || true
+    systemctl start apt-daily-upgrade.timer 2>/dev/null || true
+}
+
 # --- Attendi rilascio lock apt/dpkg ---
 wait_for_apt() {
-    local max_wait=120
+    local max_wait=60
     local waited=0
     while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
           fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
           fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
           fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
         if [ $waited -eq 0 ]; then
-            log_warning "Un altro processo sta usando apt/dpkg (probabilmente unattended-upgrades). Attendo..."
+            log_warning "Lock apt ancora occupato, attendo..."
         fi
         sleep 2
         waited=$((waited + 2))
         if [ $waited -ge $max_wait ]; then
-            log_error "Timeout: impossibile ottenere il lock apt dopo ${max_wait}s. Prova: sudo systemctl stop unattended-upgrades && sudo apt-get install -y"
+            log_error "Timeout: impossibile ottenere il lock apt dopo ${max_wait}s."
             exit 1
         fi
     done
@@ -73,6 +101,9 @@ fi
 
 print_banner
 
+# Riabilita unattended-upgrades alla fine dello script (anche in caso di errore)
+trap reenable_unattended_upgrades EXIT
+
 # --- Variabili di Configurazione ---
 INSTALL_DIR="/opt/madmin"
 DB_NAME="madmin"
@@ -88,6 +119,7 @@ log_info "Directory del progetto: $PROJECT_DIR"
 # --- Fase 1: Dipendenze di Sistema ---
 log_info "Fase 1/7: Installazione dipendenze di sistema..."
 
+disable_unattended_upgrades
 wait_for_apt
 apt-get update
 
