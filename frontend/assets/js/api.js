@@ -8,6 +8,19 @@
 const API_BASE = '/api';
 
 /**
+ * Extract a human-readable message from a FastAPI error response body.
+ * Handles both string detail (4xx generic) and array detail (422 Pydantic).
+ */
+function _extractDetail(error) {
+    const detail = error?.detail;
+    if (!detail) return 'Request failed';
+    if (Array.isArray(detail)) {
+        return detail.map(e => e.msg?.replace(/^Value error, /, '') ?? JSON.stringify(e)).join('; ');
+    }
+    return String(detail);
+}
+
+/**
  * Get the stored authentication token
  * @returns {string|null} JWT token or null
  */
@@ -98,7 +111,7 @@ export async function apiGet(endpoint) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(error.detail || 'Request failed');
+        throw new Error(_extractDetail(error));
     }
 
     return response.json();
@@ -118,7 +131,7 @@ export async function apiPost(endpoint, data) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(error.detail || 'Request failed');
+        throw new Error(_extractDetail(error));
     }
 
     // Handle 204 No Content
@@ -143,7 +156,7 @@ export async function apiPatch(endpoint, data) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(error.detail || 'Request failed');
+        throw new Error(_extractDetail(error));
     }
 
     return response.json();
@@ -163,7 +176,7 @@ export async function apiPut(endpoint, data) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(error.detail || 'Request failed');
+        throw new Error(_extractDetail(error));
     }
 
     return response.json();
@@ -179,7 +192,7 @@ export async function apiDelete(endpoint) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(error.detail || 'Request failed');
+        throw new Error(_extractDetail(error));
     }
 
     return null;
@@ -200,7 +213,7 @@ export async function apiDeleteWithBody(endpoint, data = {}) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(error.detail || 'Request failed');
+        throw new Error(_extractDetail(error));
     }
 
     return response.json().catch(() => null);

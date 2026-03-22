@@ -133,7 +133,7 @@ class SystemSettingsUpdate(SQLModel):
     @field_validator('logo_url', 'favicon_url', 'support_url', mode='before')
     @classmethod
     def validate_url(cls, v):
-        if v is None:
+        if not v:  # None or empty string — router converts '' to None
             return v
         if not str(v).startswith(('http://', 'https://', '/')):
             raise ValueError("URL non sicuro: solo http/https consentiti")

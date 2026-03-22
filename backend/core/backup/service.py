@@ -318,13 +318,36 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
         
         # 3. Settings
         settings_file = os.path.join(core_path, "settings.json")
+        public_download_url_to_restore = None
         if os.path.exists(settings_file):
-            await _import_settings(session, settings_file)
+            public_download_url_to_restore = await _import_settings(session, settings_file)
             result["settings_restored"] = True
             logger.info("Imported settings")
-        
+
         await session.commit()
-        
+
+        # Restore nginx public download block AFTER commit.
+        # _get_vpn_ports_in_use may query tables from modules not yet installed; if it
+        # swallows a DB error internally, PG's transaction is left in aborted state.
+        # We always rollback afterwards to guarantee a clean session before module imports.
+        if public_download_url_to_restore:
+            try:
+                from core.settings.service import network_service
+                from core.settings.router import _get_vpn_ports_in_use
+                vpn_ports = await _get_vpn_ports_in_use(session)
+                await network_service.update_public_download_block(
+                    public_download_url_to_restore, extra_reserved_ports=vpn_ports
+                )
+                logger.info(f"Nginx public download block restored for {public_download_url_to_restore}")
+            except Exception as e:
+                logger.warning(f"Could not restore nginx public download block: {e}")
+            finally:
+                # Reset session: _get_vpn_ports_in_use may leave PG in aborted state
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
+
         # --- Import modules ---
         from core.modules.loader import module_loader
         
@@ -979,21 +1002,29 @@ async def _export_settings(session: AsyncSession) -> dict:
     smtp = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
     smtp_row = smtp.scalar_one_or_none()
     if smtp_row:
+        from core.auth.service import encrypt_totp_secret
+        smtp_password_enc = None
+        if smtp_row.smtp_password:
+            smtp_password_enc = encrypt_totp_secret(smtp_row.smtp_password)
         result["smtp"] = {
             "smtp_host": smtp_row.smtp_host,
             "smtp_port": smtp_row.smtp_port,
             "smtp_encryption": smtp_row.smtp_encryption,
             "smtp_username": smtp_row.smtp_username,
-            # smtp_password esclusa: da re-inserire manualmente dopo il restore
+            "smtp_password_enc": smtp_password_enc,
             "sender_email": smtp_row.sender_email,
             "sender_name": smtp_row.sender_name,
             "public_download_url": smtp_row.public_download_url
         }
-    
+
     # BackupSettings
     bk = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
     bk_row = bk.scalar_one_or_none()
     if bk_row:
+        from core.auth.service import encrypt_totp_secret
+        remote_password_enc = None
+        if bk_row.remote_password:
+            remote_password_enc = encrypt_totp_secret(bk_row.remote_password)
         result["backup"] = {
             "enabled": bk_row.enabled,
             "frequency": bk_row.frequency,
@@ -1002,7 +1033,7 @@ async def _export_settings(session: AsyncSession) -> dict:
             "remote_host": bk_row.remote_host,
             "remote_port": bk_row.remote_port,
             "remote_user": bk_row.remote_user,
-            # remote_password esclusa: da re-inserire manualmente dopo il restore
+            "remote_password_enc": remote_password_enc,
             "remote_path": bk_row.remote_path,
             "retention_days": bk_row.retention_days
         }
@@ -1185,12 +1216,15 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> i
     return count
 
 
-async def _import_settings(session: AsyncSession, settings_file: str):
-    """Import settings. Merges with existing singletons."""
+async def _import_settings(session: AsyncSession, settings_file: str) -> Optional[str]:
+    """Import settings. Merges with existing singletons.
+    Returns public_download_url if present (caller must restore nginx block after commit)."""
     from core.settings.models import SystemSettings, SMTPSettings, BackupSettings
-    
+
     with open(settings_file) as f:
         data = json.load(f)
+
+    public_download_url: Optional[str] = None
     
     if "system" in data:
         sys_result = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
@@ -1218,6 +1252,15 @@ async def _import_settings(session: AsyncSession, settings_file: str):
         if "public_url" in smtp_data:
             smtp_data.setdefault("public_download_url", smtp_data.pop("public_url"))
 
+        # Decrypt password if present; skip silently on SECRET_KEY mismatch
+        if smtp_data.get("smtp_password_enc"):
+            try:
+                from core.auth.service import decrypt_totp_secret
+                smtp_data["smtp_password"] = decrypt_totp_secret(smtp_data["smtp_password_enc"])
+            except Exception:
+                logger.warning("Import: smtp_password non decifrata (SECRET_KEY diversa), campo azzerato")
+        smtp_data.pop("smtp_password_enc", None)
+
         smtp_result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
         smtp_row = smtp_result.scalar_one_or_none()
         if smtp_row:
@@ -1228,29 +1271,31 @@ async def _import_settings(session: AsyncSession, settings_file: str):
             clean = {k: v for k, v in smtp_data.items() if hasattr(SMTPSettings, k)}
             session.add(SMTPSettings(id=1, **clean))
 
-        # Rigenera il blocco nginx per il download pubblico se presente
-        public_download_url = smtp_data.get("public_download_url")
-        if public_download_url:
-            try:
-                from core.settings.service import network_service
-                from core.settings.router import _get_vpn_ports_in_use
-                vpn_ports = await _get_vpn_ports_in_use(session)
-                await network_service.update_public_download_block(
-                    public_download_url, extra_reserved_ports=vpn_ports
-                )
-                logger.info(f"Nginx public download block restored for {public_download_url}")
-            except Exception as e:
-                logger.warning(f"Could not restore nginx public download block: {e}")
+        # Store URL so caller can restore nginx block AFTER commit (outside this transaction)
+        public_download_url = smtp_data.get("public_download_url") or None
 
     if "backup" in data:
+        bk_data = dict(data["backup"])
+
+        # Decrypt password if present; skip silently on SECRET_KEY mismatch
+        if bk_data.get("remote_password_enc"):
+            try:
+                from core.auth.service import decrypt_totp_secret
+                bk_data["remote_password"] = decrypt_totp_secret(bk_data["remote_password_enc"])
+            except Exception:
+                logger.warning("Import: remote_password non decifrata (SECRET_KEY diversa), campo azzerato")
+        bk_data.pop("remote_password_enc", None)
+
         bk_result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
         bk_row = bk_result.scalar_one_or_none()
         if bk_row:
-            for k, v in data["backup"].items():
+            for k, v in bk_data.items():
                 if hasattr(bk_row, k) and v is not None:
                     setattr(bk_row, k, v)
         else:
-            session.add(BackupSettings(id=1, **data["backup"]))
+            session.add(BackupSettings(id=1, **bk_data))
+
+    return public_download_url
 
 
 async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
