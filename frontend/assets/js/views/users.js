@@ -385,12 +385,9 @@ function renderUsers() {
     tbody.innerHTML = users.map(user => {
         // Determine if we should show action buttons
         const isSelf = user.username === currentUser?.username;
-        const isTargetAdmin = user.username === 'admin';
-        const isCurrentAdmin = currentUser?.username === 'admin';
 
-        // Don't show actions on self (already present) and on admin if not admin
-        // Admin can only be edited by admin themselves
-        const showActions = canManage && !isSelf && !(isTargetAdmin && !isCurrentAdmin);
+        // Protected user (first setup user): no one else can edit or delete
+        const showActions = canManage && !isSelf && !user.is_protected;
 
         // 2FA status icon
         const twoFaIcon = user.totp_locked
@@ -565,7 +562,7 @@ function openUserModal(user = null) {
 
     // Show "Reset 2FA" button for superusers editing users with 2FA enabled or locked
     const reset2faBtn = document.getElementById('btn-reset-user-2fa');
-    if (isSuperuser && user && (user.totp_enabled || user.totp_locked) && user.username !== currentUser?.username) {
+    if (isSuperuser && user && (user.totp_enabled || user.totp_locked) && user.username !== currentUser?.username && !user.is_protected) {
         reset2faBtn.classList.remove('d-none');
         // Remove old listeners by cloning
         const newBtn = reset2faBtn.cloneNode(true);

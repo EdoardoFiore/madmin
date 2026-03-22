@@ -158,8 +158,9 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Authentication successful — reset rate limit for this IP
+    # Authentication successful — reset rate limit and clear any token revocation
     await login_rate_limiter.record_success(session, client_ip)
+    await token_blacklist.unrevoke_user(session, user.id)
 
     # If 2FA is enabled, require OTP verification
     if user.totp_enabled:
@@ -500,6 +501,12 @@ async def disable_user_2fa(
             detail="Utente non trovato"
         )
 
+    if user.is_protected and user.id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Il primo utente di sistema può modificare il proprio 2FA solo autonomamente"
+        )
+
     # Disable 2FA and clear lock
     user.totp_enabled = False
     user.totp_locked = False
@@ -525,6 +532,13 @@ async def set_user_permissions(
     user = await service.get_user_by_username(session, username)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Cannot modify own permissions (privilege escalation prevention)
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Non puoi modificare i tuoi stessi permessi"
+        )
 
     # Cannot modify superuser permissions (they have all permissions implicitly)
     if user.is_superuser:
