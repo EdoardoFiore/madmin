@@ -17,7 +17,7 @@ from passlib.context import CryptContext
 from cryptography.fernet import Fernet
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 import uuid
 import logging
@@ -325,12 +325,6 @@ async def init_core_permissions(session: AsyncSession) -> None:
             logger.info(f"Created core permission: {perm_data['slug']}")
 
     await session.commit()
-
-
-async def get_root_user_id(session: AsyncSession) -> Optional[int]:
-    """Return the ID of the first created user (minimum ID), used as the root/protected account."""
-    result = await session.execute(select(func.min(User.id)))
-    return result.scalar_one_or_none()
 
 
 async def create_first_user(session: AsyncSession, username: str, password: str) -> User:

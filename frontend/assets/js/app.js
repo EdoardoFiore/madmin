@@ -202,6 +202,7 @@ async function verifyGlobal2FA() {
 }
 
 function isSafeUrl(url) {
+    if (url.startsWith('//')) return false;  // block protocol-relative URLs
     try {
         const u = new URL(url, window.location.origin);
         return ['http:', 'https:'].includes(u.protocol);
@@ -239,7 +240,7 @@ async function loadSystemSettings() {
         }
 
         // Apply primary color as CSS variable
-        if (settings.primary_color && /^#[0-9a-fA-F]{3,6}$/.test(settings.primary_color)) {
+        if (settings.primary_color && /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(settings.primary_color)) {
             const safeColor = settings.primary_color;
             document.documentElement.style.setProperty('--madmin-primary', safeColor);
             document.documentElement.style.setProperty('--tblr-primary', safeColor);

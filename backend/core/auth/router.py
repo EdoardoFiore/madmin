@@ -341,19 +341,9 @@ async def create_user(
     try:
         user = await service.create_user(session, user_data)
         await session.commit()
-        return UserResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            is_active=user.is_active,
-            is_superuser=user.is_superuser,
-            totp_enabled=user.totp_enabled,
-            totp_enforced=user.totp_enforced,
-            totp_locked=user.totp_locked,
-            created_at=user.created_at,
-            last_login=user.last_login,
-            permissions=[]
-        )
+        # Re-fetch to get eagerly-loaded permissions (commit expires all relationships)
+        user = await service.get_user_by_username(session, user.username)
+        return _user_response(user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -369,19 +359,7 @@ async def get_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        is_active=user.is_active,
-        is_superuser=user.is_superuser,
-        totp_enabled=user.totp_enabled,
-        totp_enforced=user.totp_enforced,
-        totp_locked=user.totp_locked,
-        created_at=user.created_at,
-        last_login=user.last_login,
-        permissions=[p.slug for p in user.permissions]
-    )
+    return _user_response(user)
 
 
 @router.patch("/users/{username}", response_model=UserResponse)
@@ -416,23 +394,13 @@ async def update_user(
 
         # Revoke tokens if user was disabled, unrevoke if re-enabled
         if user_data.is_active is False:
-            await token_blacklist.revoke_user(session, updated_user.id)
+            await token_blacklist.revoke_user(session, user.id)
         elif user_data.is_active is True:
-            await token_blacklist.unrevoke_user(session, updated_user.id)
+            await token_blacklist.unrevoke_user(session, user.id)
 
-        return UserResponse(
-            id=updated_user.id,
-            username=updated_user.username,
-            email=updated_user.email,
-            is_active=updated_user.is_active,
-            is_superuser=updated_user.is_superuser,
-            totp_enabled=updated_user.totp_enabled,
-            totp_enforced=updated_user.totp_enforced,
-            totp_locked=updated_user.totp_locked,
-            created_at=updated_user.created_at,
-            last_login=updated_user.last_login,
-            permissions=[p.slug for p in updated_user.permissions]
-        )
+        # Re-fetch to get eagerly-loaded permissions (commit expires all relationships)
+        updated_user = await service.get_user_by_username(session, username)
+        return _user_response(updated_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -548,21 +516,11 @@ async def set_user_permissions(
         )
 
     try:
-        updated_user = await service.set_user_permissions(session, user.id, permission_slugs)
+        await service.set_user_permissions(session, user.id, permission_slugs)
         await session.commit()
-        return UserResponse(
-            id=updated_user.id,
-            username=updated_user.username,
-            email=updated_user.email,
-            is_active=updated_user.is_active,
-            is_superuser=updated_user.is_superuser,
-            totp_enabled=updated_user.totp_enabled,
-            totp_enforced=updated_user.totp_enforced,
-            totp_locked=updated_user.totp_locked,
-            created_at=updated_user.created_at,
-            last_login=updated_user.last_login,
-            permissions=[p.slug for p in updated_user.permissions]
-        )
+        # Re-fetch to get eagerly-loaded permissions (commit expires all relationships)
+        updated_user = await service.get_user_by_username(session, username)
+        return _user_response(updated_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -788,9 +746,8 @@ async def can_edit_user(
         can_change_password = True
         can_delete = False
 
-    # Root user can only be modified by themselves
-    root_id = await service.get_root_user_id(session)
-    if user.id == root_id and current_user.id != root_id:
+    # Protected user can only be modified by themselves
+    if user.is_protected and user.id != current_user.id:
         can_edit = False
         can_change_password = False
         can_delete = False

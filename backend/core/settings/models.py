@@ -126,7 +126,7 @@ class SystemSettingsUpdate(SQLModel):
     def validate_color(cls, v):
         if v is None:
             return v
-        if not re.match(r'^#[0-9a-fA-F]{3,6}$', str(v)):
+        if not re.match(r'^#(?:[0-9a-fA-F]{3}){1,2}$', str(v)):
             raise ValueError("Colore non valido: deve essere esadecimale (#RGB o #RRGGBB)")
         return v
 
@@ -135,7 +135,10 @@ class SystemSettingsUpdate(SQLModel):
     def validate_url(cls, v):
         if not v:  # None or empty string — router converts '' to None
             return v
-        if not str(v).startswith(('http://', 'https://', '/')):
+        v_str = str(v)
+        if v_str.startswith('//'):
+            raise ValueError("URL non sicuro: protocol-relative URLs non consentiti")
+        if not v_str.startswith(('http://', 'https://', '/')):
             raise ValueError("URL non sicuro: solo http/https consentiti")
         return v
 

@@ -1235,10 +1235,12 @@ async def _import_settings(session: AsyncSession, settings_file: str) -> Optiona
             for k, v in data["system"].items():
                 if k not in _SYSTEM_ALLOWLIST or v is None:
                     continue
-                if k in _URL_FIELDS and not str(v).startswith(("http://", "https://", "/")):
-                    logger.warning(f"Import: URL non sicuro ignorato per {k}: {v}")
-                    continue
-                if k == "primary_color" and not re.match(r'^#[0-9a-fA-F]{3,6}$', str(v)):
+                if k in _URL_FIELDS:
+                    _v = str(v)
+                    if _v.startswith("//") or not _v.startswith(("http://", "https://", "/")):
+                        logger.warning(f"Import: URL non sicuro ignorato per {k}: {v}")
+                        continue
+                if k == "primary_color" and not re.match(r'^#(?:[0-9a-fA-F]{3}){1,2}$', str(v)):
                     logger.warning(f"Import: primary_color non valido ignorato: {v}")
                     continue
                 setattr(sys_row, k, v)

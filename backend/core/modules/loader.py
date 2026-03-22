@@ -72,11 +72,11 @@ class ModuleLoader:
             return modules
         
         for item in self.modules_dir.iterdir():
-            if item.is_dir():
+            if item.is_dir() and MODULE_ID_RE.match(item.name):
                 manifest_path = item / "manifest.json"
                 if manifest_path.exists():
                     modules.append(item.name)
-        
+
         return modules
     
     def load_module_router(self, module_id: str, manifest: ModuleManifest) -> Optional[APIRouter]:
@@ -642,7 +642,7 @@ class ModuleLoader:
             return available
         
         for item in self.modules_dir.iterdir():
-            if not item.is_dir():
+            if not item.is_dir() or not MODULE_ID_RE.match(item.name):
                 continue
             manifest_path = item / "manifest.json"
             if not manifest_path.exists():
