@@ -95,7 +95,7 @@ class ModuleChain(SQLModel, table=True):
 class _FirewallRuleValidators(SQLModel):
     """Mixin with shared validators for firewall rule create/update schemas."""
 
-    @field_validator('to_destination', 'to_source', mode='before')
+    @field_validator('to_destination', 'to_source', mode='before', check_fields=False)
     @classmethod
     def validate_ip_port(cls, v):
         if v is None:
@@ -104,7 +104,7 @@ class _FirewallRuleValidators(SQLModel):
             raise ValueError(f"Formato IP/porta non valido: {v}")
         return v
 
-    @field_validator('to_ports', mode='before')
+    @field_validator('to_ports', mode='before', check_fields=False)
     @classmethod
     def validate_to_ports(cls, v):
         if v is None:
@@ -113,7 +113,7 @@ class _FirewallRuleValidators(SQLModel):
             raise ValueError(f"Formato porta non valido: {v}")
         return v
 
-    @field_validator('port', mode='before')
+    @field_validator('port', mode='before', check_fields=False)
     @classmethod
     def validate_port(cls, v):
         if v is None:
