@@ -52,7 +52,7 @@
         "source": null,
         "destination": null,
         "port": "7443",
-        "in_interface": null,
+        "in_interface": "eth0",
         "out_interface": null,
         "state": null,
         "limit_rate": null,
