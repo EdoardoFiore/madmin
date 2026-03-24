@@ -856,13 +856,19 @@ def build_gateway_protect_lines(
         if not ips:
             continue
         setname = ipset_name_for_iface(iface_name)
+        if not ipset_exists(setname):
+            logger.warning(
+                f"Ipset {setname} for interface {iface_name} does not exist "
+                f"(ipset not installed?); skipping gateway protection rule for this interface"
+            )
+            continue
         lines.append(
             f"-A {chain} -i {iface_name}"
             f" -m set ! --match-set {setname} dst"
             f" -m addrtype --dst-type LOCAL"
             f" -j DROP"
         )
-    # If no LAN interfaces: chain is empty, all traffic passes through (safe default)
+    # If no LAN interfaces (or no ipsets ready): chain is empty, all traffic passes (safe default)
     return lines
 
 

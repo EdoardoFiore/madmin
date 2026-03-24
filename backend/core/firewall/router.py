@@ -100,7 +100,7 @@ async def create_rule(
     """Create a new firewall rule."""
     # Valid chains per table
     table_chains = {
-        "filter": ("INPUT", "OUTPUT", "FORWARD"),
+        "filter": ("INPUT", "OUTPUT", "FORWARD", "GW_EXCEPTIONS"),
         "nat": ("PREROUTING", "POSTROUTING", "OUTPUT"),
         "mangle": ("PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"),
         "raw": ("PREROUTING", "OUTPUT")

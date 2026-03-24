@@ -1164,7 +1164,7 @@ async function renderGatewayMatrix() {
                             );
                             const active = !!existing;
                             return `<span
-                                class="badge ${active ? 'bg-success' : 'bg-secondary'} me-1 mb-1 gw-badge"
+                                class="badge ${active ? 'bg-success-lt' : 'bg-secondary-lt'} me-1 mb-1 gw-badge"
                                 style="cursor:pointer;font-size:.8rem;padding:.4em .7em"
                                 data-src="${escapeHtml(src.name)}"
                                 data-dst="${escapeHtml(dst.ipv4)}"
@@ -1186,8 +1186,8 @@ async function renderGatewayMatrix() {
                 </tbody>
             </table>
             <small class="text-muted">
-                <span class="badge bg-success">verde</span> = accesso abilitato &nbsp;
-                <span class="badge bg-secondary">grigio</span> = bloccato (default)
+                <span class="badge bg-success-lt">verde</span> = accesso abilitato &nbsp;
+                <span class="badge bg-secondary-lt">grigio</span> = bloccato (default)
             </small>`;
 
         // Bind badge clicks
@@ -1217,8 +1217,8 @@ async function handleGatewayBadgeToggle(e) {
     try {
         if (active) {
             await apiDelete(`/firewall/rules/${ruleId}`);
-            badge.classList.remove('bg-success');
-            badge.classList.add('bg-secondary');
+            badge.classList.remove('bg-success-lt');
+            badge.classList.add('bg-secondary-lt');
             badge.dataset.active = 'false';
             badge.dataset.ruleId = '';
             badge.title = 'Clicca per abilitare';
@@ -1231,8 +1231,8 @@ async function handleGatewayBadgeToggle(e) {
                 destination: dst,
                 comment: `${src} → ${dstName} gateway`
             });
-            badge.classList.remove('bg-secondary');
-            badge.classList.add('bg-success');
+            badge.classList.remove('bg-secondary-lt');
+            badge.classList.add('bg-success-lt');
             badge.dataset.active = 'true';
             badge.dataset.ruleId = result.id;
             badge.title = 'Clicca per bloccare';

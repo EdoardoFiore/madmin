@@ -72,7 +72,10 @@ async def lifespan(app: FastAPI):
     
     # Apply firewall rules from database
     async with async_session_maker() as session:
-        await firewall_orchestrator.apply_rules(session)
+        try:
+            await firewall_orchestrator.apply_rules(session)
+        except Exception as e:
+            logger.error(f"Firewall apply_rules failed on startup: {e}", exc_info=True)
     
     # Start background stats collection task
     import asyncio

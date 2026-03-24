@@ -155,7 +155,7 @@ echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 
 # Firewall
-apt-get install -y iptables iptables-persistent
+apt-get install -y iptables iptables-persistent ipset
 
 # Abilita e avvia cron daemon
 systemctl enable cron
