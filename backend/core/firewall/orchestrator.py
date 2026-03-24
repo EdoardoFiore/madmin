@@ -6,8 +6,9 @@ High-level firewall management that coordinates:
 - Module chains with priority-based ordering
 - Rule application from database
 """
+import asyncio
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
@@ -176,6 +177,18 @@ class FirewallOrchestrator:
         # Build ordered target list: verify chains exist before building restore block
         # (all checks happen before touching iptables — old jumps remain active)
         target_chains = []
+
+        # For INPUT/filter: prepend gateway chains before any module chain.
+        # MADMIN_GW_EXCEPTS (priority 0) runs first to allow admin overrides,
+        # MADMIN_GW_PROTECT (priority 1) runs second to enforce LAN isolation.
+        if parent_chain == "INPUT" and table_name == "filter":
+            for gw_chain in (
+                iptables.MADMIN_GW_EXCEPTS_CHAIN,
+                iptables.MADMIN_GW_PROTECT_CHAIN,
+            ):
+                if iptables.chain_exists(gw_chain, table_name):
+                    target_chains.append(gw_chain)
+
         for mc in module_chains:
             if not iptables.chain_exists(mc.chain_name, table_name):
                 logger.debug(f"Skipping jump to {mc.chain_name}: chain not yet created in iptables")
@@ -374,6 +387,47 @@ class FirewallOrchestrator:
         
         return True
     
+    async def _get_lan_interfaces(self) -> List[Tuple[str, List[str]]]:
+        """
+        Return list of (iface_name, [ip, ...]) for all physical LAN interfaces.
+        Excludes WAN (default route interface) and loopback.
+        NetworkService.get_interfaces() is synchronous — runs in executor.
+        """
+        from core.network.service import NetworkService
+        from core.network.utils import get_default_interface
+
+        wan_iface = get_default_interface()
+        loop = asyncio.get_event_loop()
+        all_ifaces = await loop.run_in_executor(None, NetworkService().get_interfaces)
+
+        result = []
+        for iface in all_ifaces:
+            name = iface.get("name", "")
+            if not name or name == wan_iface or name == "lo":
+                continue
+            ips = iface.get("addresses", [])
+            if ips:
+                result.append((name, ips))
+        return result
+
+    async def _rebuild_gateway_ipsets(
+        self,
+        lan_interfaces: List[Tuple[str, List[str]]]
+    ) -> None:
+        """
+        Create or refresh ipsets MADMIN_GW_<IFACE> for each LAN interface.
+        Each ipset contains all IPs assigned to that interface.
+        Called within apply_rules() before restore_chains().
+        """
+        for iface_name, ips in lan_interfaces:
+            setname = iptables.ipset_name_for_iface(iface_name)
+            if iptables.ipset_exists(setname):
+                iptables.ipset_flush(setname)
+            else:
+                iptables.ipset_create(setname)
+            for ip in ips:
+                iptables.ipset_add(setname, ip)
+
     async def apply_rules(self, session: AsyncSession) -> bool:
         """
         Apply all rules from database to iptables atomically.
@@ -381,10 +435,17 @@ class FirewallOrchestrator:
         Uses iptables-restore --noflush to flush and repopulate each MADMIN
         core chain as a single kernel transaction — no window where chains are
         empty and traffic is unprotected.
+
+        Also rebuilds MADMIN_GW_PROTECT from current network topology (ipset-based
+        cross-gateway isolation) and MADMIN_GW_EXCEPTS from DB rules.
         """
         success = True
 
-        # Get all enabled rules ordered by chain and order
+        # --- Gateway protection: resolve topology and rebuild ipsets ---
+        lan_interfaces = await self._get_lan_interfaces()
+        await self._rebuild_gateway_ipsets(lan_interfaces)
+
+        # --- Get all enabled DB rules ordered by chain and order ---
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.enabled == True)
@@ -406,7 +467,14 @@ class FirewallOrchestrator:
                     )
                 chain_rules[table][madmin_chain] = lines
 
-        # Assign DB rules to their respective MADMIN chains
+        # --- Inject auto-generated MADMIN_GW_PROTECT content ---
+        protect_lines = iptables.build_gateway_protect_lines(lan_interfaces)
+        chain_rules["filter"][iptables.MADMIN_GW_PROTECT_CHAIN] = protect_lines
+
+        # MADMIN_GW_EXCEPTS starts empty (populated below by DB rules with chain=GW_EXCEPTIONS)
+        chain_rules["filter"][iptables.MADMIN_GW_EXCEPTS_CHAIN] = []
+
+        # --- Assign DB rules to their respective MADMIN chains ---
         for rule in rules:
             madmin_chain = iptables.get_madmin_chain(rule.table_name, rule.chain)
             if not madmin_chain:
@@ -416,14 +484,17 @@ class FirewallOrchestrator:
                 iptables.rule_to_restore_line(madmin_chain, rule)
             )
 
-        # Apply atomically per table
+        # --- Apply atomically per table ---
         for table, chains in chain_rules.items():
             if not iptables.restore_chains(table, chains):
                 logger.error(f"Failed to atomically restore table {table}")
                 success = False
 
         if success:
-            logger.info(f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables")
+            logger.info(
+                f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
+                f" (gateway protect: {len(lan_interfaces)} LAN interfaces)"
+            )
 
         return success
 

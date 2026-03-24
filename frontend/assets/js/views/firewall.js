@@ -68,6 +68,9 @@ export async function render(container) {
                 <button class="btn btn-outline-secondary" id="btn-import">
                     <i class="ti ti-upload me-2"></i>Importa
                 </button>
+                <button class="btn btn-outline-secondary" id="btn-gw-access">
+                    <i class="ti ti-network me-2"></i>Accesso Gateway
+                </button>
                 <button class="btn btn-primary" id="btn-add-rule">
                     <i class="ti ti-plus me-2"></i>Nuova Regola
                 </button>
@@ -349,6 +352,42 @@ iptables -t filter -A INPUT -j ACCEPT
                 </div>
             </div>
         </div>
+
+        <!-- Gateway Access Modal -->
+        <div class="modal modal-blur fade" id="gw-access-modal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">
+                            <i class="ti ti-network me-2"></i>Accesso Gateway
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-info mb-3">
+                            <div class="d-flex">
+                                <i class="ti ti-info-circle me-2 mt-1 flex-shrink-0"></i>
+                                <div>
+                                    <strong>Isolamento reti</strong> — Per default ogni rete può raggiungere solo il proprio gateway.
+                                    Abilita qui l'accesso ai servizi di altri gateway (DNS, VPN, ecc.) dove necessario.
+                                    <br><small class="text-muted mt-1 d-block">
+                                        Questo non influenza il traffico VM↔VM tra reti, gestito separatamente dalle regole FORWARD.
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="gw-matrix-content">
+                            <div class="text-center py-4">
+                                <div class="spinner-border text-primary"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">Chiudi</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     `;
 
     setupEventListeners();
@@ -539,6 +578,9 @@ function setupEventListeners() {
     document.getElementById('btn-import')?.addEventListener('click', () => {
         new bootstrap.Modal(document.getElementById('import-modal')).show();
     });
+
+    // Gateway access button
+    document.getElementById('btn-gw-access')?.addEventListener('click', openGatewayModal);
 
     // Import form submit
     document.getElementById('import-form')?.addEventListener('submit', handleImportSubmit);
@@ -1053,5 +1095,152 @@ async function deleteRule(ruleId) {
         await loadRules();
     } catch (error) {
         showToast('Errore: ' + error.message, 'error');
+    }
+}
+
+
+// =============================================================================
+// GATEWAY ACCESS MODAL
+// =============================================================================
+
+// Virtual interface prefixes to exclude from LAN list (mirrors backend filter)
+const GW_VIRTUAL_PREFIXES = ['lo', 'wg', 'veth', 'docker', 'br-', 'virbr', 'tun', 'tap'];
+const GW_WAN_IFACE = 'eth0';
+
+/**
+ * Open the Gateway Access modal and render the badge matrix.
+ */
+async function openGatewayModal() {
+    const modal = new bootstrap.Modal(document.getElementById('gw-access-modal'));
+    modal.show();
+    await renderGatewayMatrix();
+}
+
+/**
+ * Load interfaces and current GW_EXCEPTIONS rules, then render the badge matrix.
+ */
+async function renderGatewayMatrix() {
+    const content = document.getElementById('gw-matrix-content');
+    content.innerHTML = `<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>`;
+
+    try {
+        const [ifaceData, exceptionsData] = await Promise.all([
+            apiGet('/network/interfaces'),
+            apiGet('/firewall/rules?chain=GW_EXCEPTIONS')
+        ]);
+
+        const lanIfaces = (ifaceData.interfaces || []).filter(i =>
+            i.ipv4 &&
+            !GW_VIRTUAL_PREFIXES.some(p => i.name.startsWith(p)) &&
+            i.name !== GW_WAN_IFACE
+        );
+
+        const exceptions = exceptionsData || [];
+
+        if (lanIfaces.length < 2) {
+            content.innerHTML = `
+                <div class="empty">
+                    <p class="empty-title">Meno di 2 reti LAN configurate</p>
+                    <p class="empty-subtitle text-muted">Aggiungi almeno due interfacce LAN per gestire le eccezioni gateway.</p>
+                </div>`;
+            return;
+        }
+
+        content.innerHTML = `
+            <table class="table table-sm table-hover">
+                <thead>
+                    <tr>
+                        <th style="width:200px">Rete sorgente</th>
+                        <th>Può raggiungere</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${lanIfaces.map(src => {
+                        const targets = lanIfaces.filter(dst => dst.name !== src.name);
+                        const badges = targets.map(dst => {
+                            const existing = exceptions.find(r =>
+                                r.in_interface === src.name &&
+                                r.destination === dst.ipv4
+                            );
+                            const active = !!existing;
+                            return `<span
+                                class="badge ${active ? 'bg-success' : 'bg-secondary'} me-1 mb-1 gw-badge"
+                                style="cursor:pointer;font-size:.8rem;padding:.4em .7em"
+                                data-src="${escapeHtml(src.name)}"
+                                data-dst="${escapeHtml(dst.ipv4)}"
+                                data-dst-name="${escapeHtml(dst.name)}"
+                                data-rule-id="${existing ? existing.id : ''}"
+                                data-active="${active}"
+                                title="${active ? 'Clicca per bloccare' : 'Clicca per abilitare'}"
+                            >${escapeHtml(dst.name)} <small>${escapeHtml(dst.ipv4)}</small></span>`;
+                        }).join('');
+
+                        return `<tr>
+                            <td class="align-middle">
+                                <strong>${escapeHtml(src.name)}</strong>
+                                <br><small class="text-muted">${escapeHtml(src.ipv4)}</small>
+                            </td>
+                            <td class="align-middle">${badges}</td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+            <small class="text-muted">
+                <span class="badge bg-success">verde</span> = accesso abilitato &nbsp;
+                <span class="badge bg-secondary">grigio</span> = bloccato (default)
+            </small>`;
+
+        // Bind badge clicks
+        content.querySelectorAll('.gw-badge').forEach(badge => {
+            badge.addEventListener('click', handleGatewayBadgeToggle);
+        });
+
+    } catch (error) {
+        content.innerHTML = `<div class="alert alert-danger">Errore caricamento: ${escapeHtml(error.message)}</div>`;
+    }
+}
+
+/**
+ * Toggle a gateway exception on badge click.
+ */
+async function handleGatewayBadgeToggle(e) {
+    const badge = e.currentTarget;
+    const src = badge.dataset.src;
+    const dst = badge.dataset.dst;
+    const dstName = badge.dataset.dstName;
+    const ruleId = badge.dataset.ruleId;
+    const active = badge.dataset.active === 'true';
+
+    badge.style.opacity = '0.5';
+    badge.style.pointerEvents = 'none';
+
+    try {
+        if (active) {
+            await apiDelete(`/firewall/rules/${ruleId}`);
+            badge.classList.remove('bg-success');
+            badge.classList.add('bg-secondary');
+            badge.dataset.active = 'false';
+            badge.dataset.ruleId = '';
+            badge.title = 'Clicca per abilitare';
+        } else {
+            const result = await apiPost('/firewall/rules', {
+                chain: 'GW_EXCEPTIONS',
+                table_name: 'filter',
+                action: 'ACCEPT',
+                in_interface: src,
+                destination: dst,
+                comment: `${src} → ${dstName} gateway`
+            });
+            badge.classList.remove('bg-secondary');
+            badge.classList.add('bg-success');
+            badge.dataset.active = 'true';
+            badge.dataset.ruleId = result.id;
+            badge.title = 'Clicca per bloccare';
+        }
+    } catch (error) {
+        showToast('Errore: ' + error.message, 'error');
+    } finally {
+        badge.style.opacity = '';
+        badge.style.pointerEvents = '';
     }
 }

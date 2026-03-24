@@ -4,13 +4,19 @@ MADMIN Network Router
 API endpoints for network interface information and netplan configuration.
 """
 import ipaddress
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 from core.auth.dependencies import get_current_user, require_permission
 from core.auth.models import User
+from core.database import get_session
+from core.firewall.orchestrator import firewall_orchestrator
 
 from .service import network_service, netplan_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/network", tags=["network"])
 
@@ -161,17 +167,25 @@ async def delete_interface_config(
 
 @router.post("/netplan/apply")
 async def apply_netplan(
+    session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("network.manage"))
 ):
     """
     Apply netplan configuration.
-    
+
     WARNING: This may temporarily disrupt network connectivity.
+    After apply, the firewall gateway protection is rebuilt to reflect the
+    new network topology (new/removed/changed LAN interfaces).
     """
     success, message = netplan_service.apply_netplan()
-    
+
     if not success:
         raise HTTPException(status_code=500, detail=message)
-    
+
+    try:
+        await firewall_orchestrator.apply_rules(session)
+    except Exception as e:
+        logger.warning(f"Firewall rebuild after netplan apply failed: {e}")
+
     return {"success": True, "message": message}
 

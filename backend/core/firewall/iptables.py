@@ -23,6 +23,10 @@ MADMIN_INPUT_CHAIN = "MADMIN_INPUT"
 MADMIN_OUTPUT_CHAIN = "MADMIN_OUTPUT"
 MADMIN_FORWARD_CHAIN = "MADMIN_FORWARD"
 
+# Gateway protection chains (filter only, not jumped from built-in INPUT directly)
+MADMIN_GW_EXCEPTS_CHAIN = "MADMIN_GW_EXCEPTS"   # user-managed ACCEPT exceptions
+MADMIN_GW_PROTECT_CHAIN = "MADMIN_GW_PROTECT"   # auto-generated ipset DROP
+
 # NAT table chains
 MADMIN_PREROUTING_NAT_CHAIN = "MADMIN_PREROUTING"
 MADMIN_POSTROUTING_NAT_CHAIN = "MADMIN_POSTROUTING"
@@ -51,6 +55,10 @@ CHAIN_MAP: Dict[str, Dict[str, str]] = {
         "INPUT": MADMIN_INPUT_CHAIN,
         "OUTPUT": MADMIN_OUTPUT_CHAIN,
         "FORWARD": MADMIN_FORWARD_CHAIN,
+        # GW_EXCEPTIONS is a virtual key (not a real iptables parent chain).
+        # Rules with chain="GW_EXCEPTIONS" are routed to MADMIN_GW_EXCEPTS by apply_rules().
+        # The jump from INPUT is managed by rebuild_chain_jumps(), not initialize_core_chains().
+        "GW_EXCEPTIONS": MADMIN_GW_EXCEPTS_CHAIN,
     },
     "nat": {
         "PREROUTING": MADMIN_PREROUTING_NAT_CHAIN,
@@ -762,6 +770,102 @@ def save_rules() -> bool:
 # INITIALIZATION
 # =============================================================================
 
+# =============================================================================
+# IPSET MANAGEMENT (used by gateway protection)
+# =============================================================================
+
+def ipset_name_for_iface(iface_name: str) -> str:
+    """
+    Build a deterministic ipset name for an interface.
+    Example: eth1 → MADMIN_GW_ETH1, eth1.100 → MADMIN_GW_ETH1_100
+    Max ipset name length is 31 chars; prefix is 10 chars, leaving 21 for iface.
+    """
+    sanitized = iface_name.upper().replace(".", "_").replace("-", "_")[:21]
+    return f"MADMIN_GW_{sanitized}"
+
+
+def _run_ipset(args: List[str], suppress_errors: bool = False) -> bool:
+    """Execute an ipset command. Returns bool. Never raises."""
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK ipset] Would execute: ipset {' '.join(args)}")
+        return True
+    try:
+        result = subprocess.run(
+            ["ipset"] + args,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        if not suppress_errors:
+            logger.error(f"ipset command failed: ipset {' '.join(args)}: {e.stderr.strip()}")
+        return False
+    except FileNotFoundError:
+        logger.error("ipset command not found — install ipset package")
+        return False
+
+
+def ipset_exists(setname: str) -> bool:
+    """Check if an ipset exists."""
+    return _run_ipset(["list", setname, "-name"], suppress_errors=True)
+
+
+def ipset_create(setname: str) -> bool:
+    """Create an ipset of type hash:ip."""
+    success = _run_ipset(["create", setname, "hash:ip"])
+    if success:
+        logger.debug(f"Created ipset {setname}")
+    return success
+
+
+def ipset_flush(setname: str) -> bool:
+    """Flush all entries from an ipset."""
+    return _run_ipset(["flush", setname])
+
+
+def ipset_add(setname: str, ip: str) -> bool:
+    """Add an IP to an ipset (idempotent via --exist)."""
+    return _run_ipset(["add", setname, ip, "--exist"])
+
+
+def ipset_destroy(setname: str) -> bool:
+    """Destroy an ipset."""
+    return _run_ipset(["destroy", setname], suppress_errors=True)
+
+
+def build_gateway_protect_lines(
+    lan_interfaces: List[Tuple[str, List[str]]]
+) -> List[str]:
+    """
+    Build iptables-restore format lines for MADMIN_GW_PROTECT.
+
+    For each LAN interface, drops traffic that:
+    - arrives on that interface (-i ethX)
+    - is destined for a LOCAL address (-m addrtype --dst-type LOCAL)
+    - but the destination is NOT in the interface's own ipset (! --match-set)
+
+    This blocks cross-gateway access while allowing each client to reach
+    its own gateway. Requires ipsets to be populated via _rebuild_gateway_ipsets().
+
+    lan_interfaces: list of (iface_name, [ip, ...]) for each LAN interface.
+    """
+    chain = MADMIN_GW_PROTECT_CHAIN
+    lines = []
+    for iface_name, ips in lan_interfaces:
+        if not ips:
+            continue
+        setname = ipset_name_for_iface(iface_name)
+        lines.append(
+            f"-A {chain} -i {iface_name}"
+            f" -m set ! --match-set {setname} dst"
+            f" -m addrtype --dst-type LOCAL"
+            f" -j DROP"
+        )
+    # If no LAN interfaces: chain is empty, all traffic passes through (safe default)
+    return lines
+
+
 def initialize_core_chains() -> bool:
     """
     Initialize all MADMIN core chains across all tables.
@@ -776,7 +880,10 @@ def initialize_core_chains() -> bool:
     """
     logger.info("Initializing MADMIN core firewall chains for all tables...")
     success = True
-    
+
+    # Built-in iptables parent chains — only these have real jump rules from parent
+    _BUILTIN_PARENTS = {"INPUT", "OUTPUT", "FORWARD", "PREROUTING", "POSTROUTING"}
+
     for table, chains in CHAIN_MAP.items():
         for parent_chain, madmin_chain in chains.items():
             # Create the MADMIN chain only if it doesn't exist — do NOT flush.
@@ -787,6 +894,12 @@ def initialize_core_chains() -> bool:
                 success = False
                 continue
 
+            # Skip jump rule for virtual CHAIN_MAP keys (e.g. GW_EXCEPTIONS) —
+            # these are not real iptables parent chains. Their jumps are managed
+            # by rebuild_chain_jumps() in the orchestrator.
+            if parent_chain not in _BUILTIN_PARENTS:
+                continue
+
             # Ensure jump rule exists from parent to MADMIN chain
             # Try position 1 first (highest priority), fallback to append
             if not ensure_jump_rule(parent_chain, madmin_chain, table, position=1):
@@ -794,6 +907,12 @@ def initialize_core_chains() -> bool:
                 if not ensure_jump_rule(parent_chain, madmin_chain, table, position=None):
                     logger.error(f"Failed to add jump from {parent_chain} to {madmin_chain} in table {table}")
                     success = False
+
+    # Create gateway protection chains (not in CHAIN_MAP as they need no direct parent jump)
+    for gw_chain in (MADMIN_GW_EXCEPTS_CHAIN, MADMIN_GW_PROTECT_CHAIN):
+        if not create_chain(gw_chain, "filter"):
+            logger.error(f"Failed to create gateway chain {gw_chain}")
+            success = False
     
     if success:
         logger.info("All MADMIN core chains initialized successfully")
