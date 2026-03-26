@@ -40,9 +40,14 @@ class NetplanConfig(BaseModel):
             return v
         for addr in v:
             try:
-                ipaddress.IPv4Interface(addr)
+                iface = ipaddress.IPv4Interface(addr)
             except ValueError:
                 raise ValueError(f"Indirizzo IP non valido: '{addr}'. Usa il formato CIDR (es. 192.168.1.100/24)")
+            net = iface.network
+            if iface.ip == net.network_address:
+                raise ValueError(f"'{addr}' è un indirizzo di rete, non un indirizzo host. Usa un indirizzo host valido (es. 192.168.1.1/24)")
+            if iface.ip == net.broadcast_address:
+                raise ValueError(f"'{addr}' è l'indirizzo di broadcast, non un indirizzo host.")
         return v
 
     @field_validator('gateway', mode='before')
