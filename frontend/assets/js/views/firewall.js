@@ -12,6 +12,7 @@ import { setPageActions, checkPermission } from '../app.js';
 let rules = [];
 let editingRule = null;
 let currentTable = 'filter';
+let currentChain = 'INPUT';
 let userPreferences = {};
 let visibleColumns = [];
 
@@ -285,6 +286,18 @@ export async function render(container) {
                                          style="font-family: monospace; font-size: 0.85rem; overflow-x: auto;">
 iptables -t filter -A INPUT -j ACCEPT
                                     </pre>
+                                </div>
+                            </div>
+                            <div class="field-drop-info mt-3" style="display:none">
+                                <div class="alert alert-info py-2 mb-0" style="font-size:0.82rem">
+                                    <div class="d-flex">
+                                        <i class="ti ti-info-circle me-2 mt-1 flex-shrink-0"></i>
+                                        <div>
+                                            Per chiudere <strong>immediatamente</strong> le connessioni già stabilite che verrebbero bloccate,
+                                            posiziona prima la regola nella posizione corretta, poi usa il pulsante
+                                            <strong><i class="ti ti-plug-x"></i> Termina sessioni</strong> sulla riga.
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -647,11 +660,13 @@ function renderChainTabs() {
     if (!tabsContainer || !contentContainer) return;
 
     const chains = TABLES[currentTable].chains;
+    currentChain = chains[0];
 
     tabsContainer.innerHTML = chains.map((chain, i) => `
         <li class="nav-item" role="presentation">
-            <button class="nav-link ${i === 0 ? 'active' : ''}" data-bs-toggle="tab" 
-                    data-bs-target="#tab-${chain.toLowerCase()}" type="button">
+            <button class="nav-link ${i === 0 ? 'active' : ''}" data-bs-toggle="tab"
+                    data-bs-target="#tab-${chain.toLowerCase()}" type="button"
+                    data-chain="${chain}">
                 ${chain}
                 <span class="badge bg-azure-lt ms-2" id="count-${chain.toLowerCase()}">0</span>
             </button>
@@ -663,6 +678,12 @@ function renderChainTabs() {
             <div id="rules-${chain.toLowerCase()}"></div>
         </div>
     `).join('');
+
+    tabsContainer.querySelectorAll('button[data-bs-toggle="tab"]').forEach(btn => {
+        btn.addEventListener('shown.bs.tab', () => {
+            currentChain = btn.dataset.chain;
+        });
+    });
 }
 
 /**
@@ -700,6 +721,11 @@ function toggleActionFields() {
     if (action === 'LOG') document.querySelectorAll('.field-log').forEach(el => el.style.display = 'block');
     if (action === 'REJECT') document.querySelectorAll('.field-reject').forEach(el => el.style.display = 'block');
 
+    // Show informational banner for blocking actions
+    const isBlocking = ['DROP', 'REJECT'].includes(action);
+    document.querySelectorAll('.field-drop-info').forEach(el => {
+        el.style.display = isBlocking ? 'block' : 'none';
+    });
 }
 
 /**
@@ -851,6 +877,11 @@ function renderRuleRow(rule, orderedColumns) {
             <td class="rule-actions">
                 ${canManage ? `
                     <div class="btn-group btn-group-sm">
+                        ${['DROP', 'REJECT'].includes(rule.action) ? `
+                        <button class="btn btn-ghost-warning btn-flush-conntrack"
+                                title="Termina connessioni esistenti che matchano questa regola">
+                            <i class="ti ti-plug-x"></i>
+                        </button>` : ''}
                         <button class="btn btn-ghost-primary btn-edit" title="Modifica">
                             <i class="ti ti-edit"></i>
                         </button>
@@ -954,6 +985,44 @@ function setupDragDrop(tbody) {
  * Setup row event listeners
  */
 function setupRowEvents(container) {
+    // Flush conntrack buttons
+    container.querySelectorAll('.btn-flush-conntrack').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const row = e.target.closest('tr');
+            const ruleId = row.dataset.id;
+            const rule = rules.find(r => r.id === ruleId);
+
+            const confirmed = await confirmDialog(
+                'Termina connessioni esistenti',
+                `Verranno terminate immediatamente tutte le sessioni attive che corrispondono a questa regola ${rule?.action || ''}. `
+                + `Questa operazione è utile principalmente per regole appena create o riposizionate, `
+                + `per forzare il re-evaluation del traffico già stabilito.`,
+                'Termina',
+                'btn-warning'
+            );
+            if (!confirmed) return;
+
+            btn.disabled = true;
+            const icon = btn.querySelector('i');
+            icon.className = 'ti ti-loader-2 spin';
+            try {
+                const result = await apiPost(`/firewall/rules/${ruleId}/flush-conntrack`, {});
+                const count = result.flushed ?? 0;
+                showToast(
+                    count > 0
+                        ? `${count} session${count === 1 ? 'e terminata' : 'i terminate'}.`
+                        : 'Nessuna sessione attiva corrispondente.',
+                    'success'
+                );
+            } catch (error) {
+                showToast('Errore: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                icon.className = 'ti ti-plug-x';
+            }
+        });
+    });
+
     // Edit buttons
     container.querySelectorAll('.btn-edit').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -1002,7 +1071,7 @@ function openRuleModal(rule = null) {
     updateModalActions(tableSelect.value);
 
     // Reset form fields
-    document.getElementById('rule-chain').value = rule?.chain || TABLES[tableSelect.value].chains[0];
+    document.getElementById('rule-chain').value = rule?.chain || currentChain;
     document.getElementById('rule-action').value = rule?.action || TABLE_ACTIONS[tableSelect.value][0];
     document.getElementById('rule-protocol').value = rule?.protocol || '';
     document.getElementById('rule-port').value = rule?.port || '';
@@ -1024,7 +1093,7 @@ function openRuleModal(rule = null) {
     document.getElementById('rule-log-level').value = rule?.log_level || '';
     document.getElementById('rule-reject-with').value = rule?.reject_with || '';
 
-    // Trigger visibility update
+    // Trigger visibility update (handles action-specific fields and drop info banner)
     toggleActionFields();
 
     // Show/hide port field based on protocol

@@ -724,6 +724,78 @@ def delete_rule_by_spec(
 
 
 # =============================================================================
+# CONNTRACK SESSION TERMINATION
+# =============================================================================
+
+def flush_conntrack_for_rule(
+    protocol: Optional[str] = None,
+    source: Optional[str] = None,
+    destination: Optional[str] = None,
+    port: Optional[str] = None,
+) -> int:
+    """
+    Flush conntrack entries matching the given rule criteria.
+
+    Used after applying a DROP/REJECT rule to immediately terminate existing
+    established sessions that would now be blocked by the new rule.
+
+    Returns the number of flushed entries, or 0 if none found / error.
+    """
+    if settings.mock_iptables:
+        logger.debug(
+            f"[MOCK] Would flush conntrack: proto={protocol} src={source} "
+            f"dst={destination} port={port}"
+        )
+        return 0
+
+    args = ["conntrack", "-D"]
+
+    if protocol in ("tcp", "udp", "icmp"):
+        args.extend(["-p", protocol])
+    if source:
+        args.extend(["-s", source])
+    if destination:
+        args.extend(["-d", destination])
+    # Only add dport filter for single numeric ports — conntrack does not support ranges
+    if port and protocol in ("tcp", "udp"):
+        port_str = str(port).strip()
+        if re.match(r'^\d+$', port_str):
+            args.extend(["--dport", port_str])
+
+    # Safety guard: never flush the entire conntrack table with no filter
+    if args == ["conntrack", "-D"]:
+        logger.warning("flush_conntrack_for_rule: no filter criteria provided, skipping flush")
+        return 0
+
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        # conntrack -D exits 0 on success, 1 when no matching entries found (both are OK)
+        if result.returncode in (0, 1):
+            match = re.search(r'(\d+) flow entries have been deleted', result.stdout + result.stderr)
+            count = int(match.group(1)) if match else 0
+            logger.info(
+                f"Flushed {count} conntrack entries: proto={protocol} "
+                f"src={source} dst={destination} port={port}"
+            )
+            return count
+        logger.warning(
+            f"conntrack -D returned unexpected code {result.returncode}: {result.stderr.strip()}"
+        )
+        return 0
+    except FileNotFoundError:
+        logger.warning("conntrack command not found — install conntrack package for session termination")
+        return 0
+    except Exception as e:
+        logger.error(f"Unexpected error flushing conntrack: {e}")
+        return 0
+
+
+# =============================================================================
 # PERSISTENCE
 # =============================================================================
 

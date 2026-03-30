@@ -390,8 +390,9 @@ async function loadInterfaces() {
 function populateInterfaceSelect(selectId) {
     const select = document.getElementById(selectId);
     if (!select) return;
+    const lanIfaces = networkInterfaces.filter(iface => iface.name !== 'eth0');
     select.innerHTML = '<option value="">Seleziona interfaccia...</option>' +
-        networkInterfaces.map(iface =>
+        lanIfaces.map(iface =>
             `<option value="${iface.name}" ${iface.state === 'up' ? 'class="fw-bold"' : ''}>
                 ${iface.name} ${iface.state === 'up' ? '●' : '○'} ${iface.addresses?.join(', ') || ''}
             </option>`
@@ -811,11 +812,13 @@ function setupSubnetDetailActions(subnet, subnetId) {
     document.getElementById('btn-edit-subnet')?.addEventListener('click', async () => {
         await loadInterfaces();
         const select = document.getElementById('edit-subnet-interface');
-        select.innerHTML = networkInterfaces.map(iface =>
-            `<option value="${iface.name}" ${iface.name === subnet.interface ? 'selected' : ''}>
-                ${iface.name} ${iface.state === 'up' ? '●' : '○'}
-            </option>`
-        ).join('');
+        select.innerHTML = networkInterfaces
+            .filter(iface => iface.name !== 'eth0')
+            .map(iface =>
+                `<option value="${iface.name}" ${iface.name === subnet.interface ? 'selected' : ''}>
+                    ${iface.name} ${iface.state === 'up' ? '●' : '○'}
+                </option>`
+            ).join('');
         new bootstrap.Modal(document.getElementById('modal-edit-subnet')).show();
     });
 

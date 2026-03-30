@@ -24,7 +24,7 @@ from .models import (
     ModuleChainResponse
 )
 from .orchestrator import firewall_orchestrator
-from .iptables import IptablesError
+from .iptables import IptablesError, flush_conntrack_for_rule
 
 logger = logging.getLogger(__name__)
 
@@ -155,19 +155,20 @@ async def update_rule(
         rule_uuid = uuid.UUID(rule_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid rule ID format")
-    
+
     # Filter out None values
     update_data = rule_data.model_dump(exclude_unset=True)
-    
+
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
-    
+
     try:
         rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)
         if not rule:
             raise HTTPException(status_code=404, detail="Rule not found")
 
         await session.commit()
+
         return _rule_to_response(rule)
     except IptablesError as e:
         await session.rollback()
@@ -209,6 +210,38 @@ async def delete_rule(
         await session.rollback()
         logger.error(f"Error deleting firewall rule {rule_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Errore interno del server")
+
+
+@router.post("/rules/{rule_id}/flush-conntrack")
+async def flush_rule_conntrack(
+    rule_id: str,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Flush conntrack entries matching a DROP/REJECT rule's criteria.
+    Call this after positioning the rule to immediately terminate existing
+    sessions that would now be blocked.
+    """
+    try:
+        rule_uuid = uuid.UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid rule ID format")
+
+    rule = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+    if rule.action not in ("DROP", "REJECT"):
+        raise HTTPException(status_code=400, detail="Flush conntrack is only applicable to DROP or REJECT rules")
+
+    flushed = flush_conntrack_for_rule(
+        protocol=rule.protocol,
+        source=rule.source,
+        destination=rule.destination,
+        port=rule.port,
+    )
+    return {"status": "ok", "flushed": flushed}
 
 
 @router.put("/rules/order")

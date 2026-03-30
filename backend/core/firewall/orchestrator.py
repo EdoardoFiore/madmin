@@ -490,6 +490,11 @@ class FirewallOrchestrator:
                 logger.error(f"Failed to atomically restore table {table}")
                 success = False
 
+        # --- Rebuild parent-chain jump order for INPUT ---
+        # Ensures MADMIN_GW_EXCEPTS → MADMIN_GW_PROTECT → MADMIN_INPUT are wired
+        # in the correct order even when no module chain is registered for INPUT.
+        await self.rebuild_chain_jumps(session, "INPUT", "filter")
+
         if success:
             logger.info(
                 f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
