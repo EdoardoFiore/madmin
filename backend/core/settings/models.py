@@ -58,7 +58,8 @@ class SystemSettings(SQLModel, table=True):
     logo_url: Optional[str] = Field(default=None, max_length=255)
     favicon_url: Optional[str] = Field(default=None, max_length=255)
     support_url: Optional[str] = Field(default=None, max_length=255)
-    
+    default_language: str = Field(default="en", max_length=10)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -120,6 +121,7 @@ class SystemSettingsUpdate(SQLModel):
     logo_url: Optional[str] = None
     favicon_url: Optional[str] = None
     support_url: Optional[str] = None
+    default_language: Optional[str] = None
 
     @field_validator('primary_color', mode='before')
     @classmethod
@@ -127,7 +129,7 @@ class SystemSettingsUpdate(SQLModel):
         if v is None:
             return v
         if not re.match(r'^#(?:[0-9a-fA-F]{3}){1,2}$', str(v)):
-            raise ValueError("Colore non valido: deve essere esadecimale (#RGB o #RRGGBB)")
+            raise ValueError("Invalid color: must be hexadecimal (#RGB or #RRGGBB)")
         return v
 
     @field_validator('logo_url', 'favicon_url', 'support_url', mode='before')
@@ -137,9 +139,9 @@ class SystemSettingsUpdate(SQLModel):
             return v
         v_str = str(v)
         if v_str.startswith('//'):
-            raise ValueError("URL non sicuro: protocol-relative URLs non consentiti")
+            raise ValueError("Unsafe URL: protocol-relative URLs not allowed")
         if not v_str.startswith(('http://', 'https://', '/')):
-            raise ValueError("URL non sicuro: solo http/https consentiti")
+            raise ValueError("Unsafe URL: only http/https allowed")
         return v
 
 
@@ -150,6 +152,7 @@ class SystemSettingsResponse(SQLModel):
     logo_url: Optional[str]
     favicon_url: Optional[str]
     support_url: Optional[str]
+    default_language: str
     updated_at: datetime
 
 

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="it" data-bs-theme="light">
+<html lang="en" data-bs-theme="light">
 
 <head>
     <meta charset="UTF-8">
@@ -85,29 +85,29 @@
                 <form id="login-form">
                     <div class="mb-3">
                         <label class="form-label" for="username">
-                            <i class="ti ti-user"></i> Username
+                            <i class="ti ti-user"></i> <span data-i18n="auth.username">Username</span>
                         </label>
                         <input type="text" class="form-control" id="username" name="username"
-                            placeholder="Inserisci username" required autofocus>
+                            data-i18n-placeholder="auth.usernamePlaceholder" placeholder="Enter username" required autofocus>
                     </div>
 
                     <div class="mb-3">
                         <label class="form-label" for="password">
-                            <i class="ti ti-lock"></i> Password
+                            <i class="ti ti-lock"></i> <span data-i18n="auth.password">Password</span>
                         </label>
                         <input type="password" class="form-control" id="password" name="password"
-                            placeholder="Inserisci password" required>
+                            data-i18n-placeholder="auth.passwordPlaceholder" placeholder="Enter password" required>
                     </div>
 
                     <div class="mb-3">
                         <label class="form-check">
                             <input type="checkbox" class="form-check-input" id="remember">
-                            <span class="form-check-label">Ricordami</span>
+                            <span class="form-check-label" data-i18n="auth.rememberMe">Remember me</span>
                         </label>
                     </div>
 
                     <button type="submit" class="btn btn-primary w-100" id="login-btn">
-                        <span class="btn-text">Accedi</span>
+                        <span class="btn-text" data-i18n="auth.login">Sign in</span>
                         <span class="spinner-border spinner-border-sm d-none" role="status"></span>
                     </button>
                 </form>
@@ -117,23 +117,23 @@
                     <div class="text-center mb-3">
                         <i class="ti ti-shield-lock" style="font-size: 3rem; color: var(--tblr-primary);"></i>
                     </div>
-                    <p class="text-center mb-3">
-                        Inserisci il codice a 6 cifre dalla tua app authenticator
+                    <p class="text-center mb-3" data-i18n="auth.enterOtp">
+                        Enter the 6-digit code from your authenticator app
                     </p>
                     <div class="mb-3">
                         <input type="text" class="form-control form-control-lg text-center" id="otp-code"
                             placeholder="000000" maxlength="12" autocomplete="one-time-code" pattern="[0-9A-Za-z]{6,12}"
                             inputmode="numeric">
-                        <small class="form-hint text-center d-block mt-2">
-                            Puoi usare anche un codice di backup
+                        <small class="form-hint text-center d-block mt-2" data-i18n="auth.backupCodeHint">
+                            You can also use a backup code
                         </small>
                     </div>
                     <button type="button" class="btn btn-primary w-100 mb-2" id="verify-2fa-btn">
-                        <span class="btn-text">Verifica</span>
+                        <span class="btn-text" data-i18n="auth.verify">Verify</span>
                         <span class="spinner-border spinner-border-sm d-none" role="status"></span>
                     </button>
                     <button type="button" class="btn btn-link w-100" id="back-to-login">
-                        <i class="ti ti-arrow-left"></i> Torna al login
+                        <i class="ti ti-arrow-left"></i> <span data-i18n="auth.backToLogin">Back to login</span>
                     </button>
                 </div>
             </div>
@@ -146,6 +146,61 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Minimal i18n for login page (pre-authentication, no ES module imports)
+        (function () {
+            const SUPPORTED = ['en', 'it'];
+            const DEFAULT = 'en';
+            let _tr = {};
+
+            function detectLang() {
+                const stored = localStorage.getItem('madmin_lang');
+                if (stored && SUPPORTED.includes(stored)) return stored;
+                const browser = (navigator.language || '').split('-')[0];
+                if (SUPPORTED.includes(browser)) return browser;
+                return DEFAULT;
+            }
+
+            const _lang = detectLang();
+
+            async function loadLocale() {
+                try {
+                    const resp = await fetch(`/static/locales/${_lang}.json`);
+                    if (resp.ok) _tr = await resp.json();
+                } catch (e) {
+                    console.warn('Failed to load locale:', e);
+                }
+            }
+
+            function t(key) {
+                const parts = key.split('.');
+                let val = _tr;
+                for (const p of parts) {
+                    if (val && typeof val === 'object') val = val[p];
+                    else return key;
+                }
+                return (typeof val === 'string') ? val : key;
+            }
+
+            function translateDOM() {
+                document.querySelectorAll('[data-i18n]').forEach(el => {
+                    const key = el.getAttribute('data-i18n');
+                    const translated = t(key);
+                    if (translated !== key) el.textContent = translated;
+                });
+                document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+                    const key = el.getAttribute('data-i18n-placeholder');
+                    const translated = t(key);
+                    if (translated !== key) el.placeholder = translated;
+                });
+            }
+
+            // Expose helpers for use in the login script below
+            window._loginI18n = { t, lang: _lang };
+
+            loadLocale().then(translateDOM);
+        })();
+    </script>
     <script>
         // Check if already logged in
         const token = localStorage.getItem('madmin_token');
@@ -166,6 +221,10 @@
         // State for 2FA flow
         let tempToken = null;
 
+        function _t(key) {
+            return (window._loginI18n && window._loginI18n.t(key)) || key;
+        }
+
         function showError(message) {
             errorSpan.textContent = message;
             alertBox.classList.add('show');
@@ -175,16 +234,16 @@
             alertBox.classList.remove('show');
         }
 
-        function setLoading(btn, loading, loadingText = 'Caricamento...', defaultText = 'Accedi') {
+        function setLoading(btn, loading, loadingKey, defaultKey) {
             const btnText = btn.querySelector('.btn-text');
             const spinner = btn.querySelector('.spinner-border');
 
             if (loading) {
-                btnText.textContent = loadingText;
+                btnText.textContent = _t(loadingKey);
                 spinner.classList.remove('d-none');
                 btn.disabled = true;
             } else {
-                btnText.textContent = defaultText;
+                btnText.textContent = _t(defaultKey);
                 spinner.classList.add('d-none');
                 btn.disabled = false;
             }
@@ -209,7 +268,7 @@
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             hideError();
-            setLoading(loginBtn, true, 'Accesso in corso...', 'Accedi');
+            setLoading(loginBtn, true, 'auth.signingIn', 'auth.login');
 
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
@@ -246,13 +305,13 @@
                     }
                 } else {
                     const error = await response.json();
-                    showError(error.detail || 'Credenziali non valide');
+                    showError(error.detail || _t('auth.invalidCredentials'));
                 }
             } catch (error) {
-                showError('Errore di connessione al server');
+                showError(_t('auth.connectionError'));
                 console.error('Login error:', error);
             } finally {
-                setLoading(loginBtn, false, 'Accesso in corso...', 'Accedi');
+                setLoading(loginBtn, false, 'auth.signingIn', 'auth.login');
             }
         });
 
@@ -261,12 +320,12 @@
             const code = otpInput.value.trim();
 
             if (!code) {
-                showError('Inserisci il codice');
+                showError(_t('auth.enterCode'));
                 return;
             }
 
             hideError();
-            setLoading(verify2faBtn, true, 'Verifica...', 'Verifica');
+            setLoading(verify2faBtn, true, 'auth.verifying', 'auth.verify');
 
             try {
                 const response = await fetch(`/api/auth/token/2fa?code=${encodeURIComponent(code)}`, {
@@ -283,15 +342,15 @@
                     window.location.href = '/';
                 } else {
                     const error = await response.json();
-                    showError(error.detail || 'Codice non valido');
+                    showError(error.detail || _t('auth.invalidCode'));
                     otpInput.value = '';
                     otpInput.focus();
                 }
             } catch (error) {
-                showError('Errore di connessione al server');
+                showError(_t('auth.connectionError'));
                 console.error('2FA error:', error);
             } finally {
-                setLoading(verify2faBtn, false, 'Verifica...', 'Verifica');
+                setLoading(verify2faBtn, false, 'auth.verifying', 'auth.verify');
             }
         });
 

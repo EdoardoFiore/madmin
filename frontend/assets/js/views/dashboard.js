@@ -7,6 +7,7 @@
 
 import { apiGet, apiPatch } from '../api.js';
 import { formatRelativeTime, escapeHtml } from '../utils.js';
+import { t, getLang } from '../i18n.js';
 
 let autoRefreshInterval = null;
 let netTrafficChart = null;
@@ -29,15 +30,15 @@ let diskChart = null;
  *  - load: async function to populate data (null if static)
  */
 const CORE_WIDGETS = [
-    { id: 'welcome', title: 'Benvenuto', col: 12, fixed: true, render: renderWelcome, load: loadWelcome },
-    { id: 'system_stats', title: 'Statistiche', col: 12, fixed: false, render: renderSystemStats, load: loadSystemStats },
-    { id: 'services', title: 'Stato Servizi', col: 12, fixed: false, render: renderServices, load: loadServicesStatus },
-    { id: 'resource_graphs', title: 'Grafici Risorse', col: 12, fixed: false, render: renderResourceGraphs, load: loadResourceGraphs },
-    { id: 'net_traffic', title: 'Traffico Rete', col: 6, fixed: false, render: renderNetTraffic, load: loadNetTraffic },
-    { id: 'alerts', title: 'Alert Sistema', col: 6, fixed: false, render: renderAlerts, load: loadAlerts },
-    { id: 'backup_status', title: 'Stato Backup', col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus },
-    { id: 'quick_actions', title: 'Azioni Rapide', col: 6, fixed: false, render: renderQuickActions, load: null },
-    { id: 'stat_cards', title: 'Contatori', col: 12, fixed: false, render: renderStatCards, load: loadStatCards },
+    { id: 'welcome', get title() { return t('dashboard.welcome'); }, col: 12, fixed: true, render: renderWelcome, load: loadWelcome },
+    { id: 'system_stats', get title() { return t('dashboard.systemStats'); }, col: 12, fixed: false, render: renderSystemStats, load: loadSystemStats },
+    { id: 'services', get title() { return t('dashboard.serviceStatus'); }, col: 12, fixed: false, render: renderServices, load: loadServicesStatus },
+    { id: 'resource_graphs', get title() { return t('dashboard.resourceTrend'); }, col: 12, fixed: false, render: renderResourceGraphs, load: loadResourceGraphs },
+    { id: 'net_traffic', get title() { return t('dashboard.networkTraffic'); }, col: 6, fixed: false, render: renderNetTraffic, load: loadNetTraffic },
+    { id: 'alerts', get title() { return t('dashboard.systemAlerts'); }, col: 6, fixed: false, render: renderAlerts, load: loadAlerts },
+    { id: 'backup_status', get title() { return t('dashboard.backupStatus'); }, col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus },
+    { id: 'quick_actions', get title() { return t('dashboard.quickActions'); }, col: 6, fixed: false, render: renderQuickActions, load: null },
+    { id: 'stat_cards', get title() { return t('dashboard.counters'); }, col: 12, fixed: false, render: renderStatCards, load: loadStatCards },
 ];
 
 // Build a lookup map for quick access
@@ -255,7 +256,7 @@ function openWidgetConfigModal() {
             <div class="modal-dialog modal-sm modal-dialog-centered">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title"><i class="ti ti-layout-dashboard me-2"></i>Gestione Widget</h5>
+                        <h5 class="modal-title"><i class="ti ti-layout-dashboard me-2"></i>${t('app.widgetManagement')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body p-0">
@@ -355,8 +356,8 @@ function renderWelcome() {
                         <i class="ti ti-server-cog" style="font-size: 3rem;"></i>
                     </div>
                     <div class="flex-fill">
-                        <h2 class="mb-1" id="dashboard-welcome">Benvenuto in MADMIN</h2>
-                        <p class="mb-0 opacity-75">Sistema di amministrazione modulare per il tuo server</p>
+                        <h2 class="mb-1" id="dashboard-welcome">${t('dashboard.welcomeTitle')}</h2>
+                        <p class="mb-0 opacity-75">${t('dashboard.welcomeSubtitle')}</p>
                     </div>
                     <div class="d-flex align-items-center gap-3">
                         <div class="text-end" id="uptime-display">
@@ -375,14 +376,14 @@ function renderSystemStats() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-cpu me-2"></i>Statistiche Sistema
+                    <i class="ti ti-cpu me-2"></i>${t('dashboard.systemStats')}
                 </h3>
                 <div class="card-actions">
                     <div class="form-check form-switch me-3">
                         <input class="form-check-input" type="checkbox" id="auto-refresh-toggle">
-                        <label class="form-check-label" for="auto-refresh-toggle">Auto (30s)</label>
+                        <label class="form-check-label" for="auto-refresh-toggle">${t('dashboard.auto30s')}</label>
                     </div>
-                    <button class="btn btn-ghost-primary" id="btn-refresh-stats" title="Aggiorna">
+                    <button class="btn btn-ghost-primary" id="btn-refresh-stats" title="${t('common.refresh')}">
                         <i class="ti ti-refresh"></i>
                     </button>
                 </div>
@@ -412,7 +413,7 @@ function renderSystemStats() {
                     <div class="col-md-4 mb-3">
                         <div class="d-flex align-items-center mb-2">
                             <i class="ti ti-database me-2 text-orange"></i>
-                            <span class="fw-bold">Disco</span>
+                            <span class="fw-bold">${t('dashboard.disk')}</span>
                             <span class="ms-auto text-muted" id="disk-info">--</span>
                         </div>
                         <div class="progress progress-sm">
@@ -430,7 +431,7 @@ function renderServices() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-activity me-2"></i>Stato Servizi
+                    <i class="ti ti-activity me-2"></i>${t('dashboard.serviceStatus')}
                 </h3>
             </div>
             <div class="card-body">
@@ -468,7 +469,7 @@ function renderResourceGraphs() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-chart-line me-2"></i>Andamento Risorse
+                    <i class="ti ti-chart-line me-2"></i>${t('dashboard.resourceTrend')}
                 </h3>
                 <div class="card-actions">
                     <div class="btn-group" role="group">
@@ -492,7 +493,7 @@ function renderResourceGraphs() {
                         <div id="chart-ram" style="height: 150px;"></div>
                     </div>
                     <div class="col-md-4">
-                        <h4 class="subheader">Disco</h4>
+                        <h4 class="subheader">${t('dashboard.disk')}</h4>
                         <div id="chart-disk" style="height: 150px;"></div>
                     </div>
                 </div>
@@ -506,11 +507,11 @@ function renderNetTraffic() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-arrows-transfer-down me-2"></i>Traffico di Rete
+                    <i class="ti ti-arrows-transfer-down me-2"></i>${t('dashboard.networkTraffic')}
                 </h3>
                 <div class="card-actions d-flex align-items-center gap-2">
                     <select class="form-select form-select-sm" id="net-interface-select" style="width: auto; min-width: 120px;">
-                        <option value="">Caricamento...</option>
+                        <option value="">${t('common.loading')}</option>
                     </select>
                     <div class="btn-group" role="group">
                         <input type="radio" class="btn-check" name="net-range" id="net-1h" value="1" checked>
@@ -525,7 +526,7 @@ function renderNetTraffic() {
             <div class="card-body">
                 <div id="chart-net-traffic" style="height: 200px;">
                     <div class="text-muted text-center py-5">
-                        <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                        <span class="spinner-border spinner-border-sm"></span> ${t('common.loading')}
                     </div>
                 </div>
             </div>
@@ -538,12 +539,12 @@ function renderAlerts() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-bell me-2"></i>Alert Sistema
+                    <i class="ti ti-bell me-2"></i>${t('dashboard.systemAlerts')}
                 </h3>
             </div>
             <div class="card-body" id="alerts-container">
                 <div class="text-muted text-center py-3">
-                    <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                    <span class="spinner-border spinner-border-sm"></span> ${t('common.loading')}
                 </div>
             </div>
         </div>
@@ -555,14 +556,14 @@ function renderBackupStatus() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-archive me-2"></i>Stato Backup
+                    <i class="ti ti-archive me-2"></i>${t('dashboard.backupStatus')}
                 </h3>
                 <div class="card-actions" id="backup-icons">
                 </div>
             </div>
             <div class="card-body" id="backup-status-container">
                 <div class="text-muted text-center py-3">
-                    <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                    <span class="spinner-border spinner-border-sm"></span> ${t('common.loading')}
                 </div>
             </div>
         </div>
@@ -576,16 +577,16 @@ function renderStatCards() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-chart-bar me-2"></i>Contatori
+                    <i class="ti ti-chart-bar me-2"></i>${t('dashboard.counters')}
                 </h3>
             </div>
             <div class="card-body">
                 <div class="row g-3">
                     ${[
-            { id: 'system-status', title: 'Stato Sistema', sub: 'Database', subId: 'db-status' },
-            { id: 'firewall-count', title: 'Regole Firewall', sub: 'Regole attive', subId: null },
-            { id: 'modules-count', title: 'Moduli Installati', sub: 'Moduli attivi', subId: null },
-            { id: 'users-count', title: 'Utenti', sub: 'Utenti registrati', subId: null },
+            { id: 'system-status', get title() { return t('dashboard.systemStatus'); }, sub: t('dashboard.database'), subId: 'db-status' },
+            { id: 'firewall-count', get title() { return t('dashboard.firewallRules'); }, get sub() { return t('dashboard.activeRules'); }, subId: null },
+            { id: 'modules-count', get title() { return t('dashboard.installedModules'); }, get sub() { return t('dashboard.activeModules'); }, subId: null },
+            { id: 'users-count', get title() { return t('dashboard.usersCount'); }, get sub() { return t('dashboard.registeredUsers'); }, subId: null },
         ].map(c => `
                         <div class="col-sm-6 col-lg-3">
                             <div class="card card-sm">
@@ -615,29 +616,29 @@ function renderQuickActions() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title">
-                    <i class="ti ti-bolt me-2"></i>Azioni Rapide
+                    <i class="ti ti-bolt me-2"></i>${t('dashboard.quickActions')}
                 </h3>
             </div>
             <div class="card-body">
                 <div class="row g-3">
                     <div class="col-6">
                         <a href="#users" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-user-plus me-2"></i>Nuovo Utente
+                            <i class="ti ti-user-plus me-2"></i>${t('dashboard.newUser')}
                         </a>
                     </div>
                     <div class="col-6">
                         <a href="#firewall" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-shield-plus me-2"></i>Nuova Regola
+                            <i class="ti ti-shield-plus me-2"></i>${t('dashboard.newRule')}
                         </a>
                     </div>
                     <div class="col-6">
                         <a href="#settings" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-settings me-2"></i>Impostazioni
+                            <i class="ti ti-settings me-2"></i>${t('dashboard.settings')}
                         </a>
                     </div>
                     <div class="col-6">
                         <a href="#modules" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-puzzle me-2"></i>Moduli
+                            <i class="ti ti-puzzle me-2"></i>${t('dashboard.modules')}
                         </a>
                     </div>
                 </div>
@@ -657,7 +658,7 @@ async function loadWelcome() {
         if (el && uptime.available) {
             el.innerHTML = `
                 <div class="text-white opacity-75" style="font-size: 0.85rem;">
-                    <i class="ti ti-clock me-1"></i>Online da <strong>${uptime.uptime_formatted}</strong>
+                    <i class="ti ti-clock me-1"></i>${t('dashboard.onlineSince')} <strong>${uptime.uptime_formatted}</strong>
                 </div>
             `;
         }
@@ -674,7 +675,7 @@ async function loadSystemStats() {
             document.getElementById('system-stats-container').innerHTML = `
                 <div class="col-12 text-center text-muted">
                     <i class="ti ti-alert-circle me-2"></i>
-                    Statistiche non disponibili: ${stats.error || 'psutil non installato'}
+                    ${t('dashboard.statsNotAvailable', { error: stats.error || 'psutil' })}
                 </div>
             `;
             return;
@@ -707,7 +708,7 @@ async function loadSystemStats() {
         const el = document.getElementById('system-stats-container');
         if (el) el.innerHTML = `
             <div class="col-12 text-center text-danger">
-                <i class="ti ti-alert-circle me-2"></i>Errore caricamento statistiche
+                <i class="ti ti-alert-circle me-2"></i>${t('dashboard.statsLoadError')}
             </div>
         `;
     }
@@ -722,7 +723,7 @@ async function loadServicesStatus() {
                 const isActive = data.active;
                 el.innerHTML = `
                     <span class="badge bg-${isActive ? 'success' : 'danger'}-lt">
-                        ${isActive ? 'Attivo' : data.status || 'Inattivo'}
+                        ${isActive ? t('dashboard.operational') : data.status || t('dashboard.degraded')}
                     </span>
                 `;
             }
@@ -731,9 +732,10 @@ async function loadServicesStatus() {
         console.error('Error loading services status:', error);
         ['madmin', 'postgresql', 'nginx', 'iptables'].forEach(svc => {
             const el = document.getElementById(`svc-${svc}`);
-            if (el) el.innerHTML = '<span class="badge bg-secondary-lt">Sconosciuto</span>';
+            if (el) el.innerHTML = `<span class="badge bg-secondary-lt">${t('dashboard.unknown')}</span>`;
         });
     }
+
 }
 
 async function loadResourceGraphs(hours) {
@@ -747,12 +749,12 @@ async function loadResourceGraphs(hours) {
         if (history.length === 0) {
             ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
                 const el = document.getElementById(id);
-                if (el) el.innerHTML = '<div class="text-muted text-center py-4">Dati non ancora disponibili</div>';
+                if (el) el.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.dataNotYetAvailable')}</div>`;
             });
             return;
         }
 
-        const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+        const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
         const cpuData = history.map(h => parseFloat(h.cpu.toFixed(1)));
 
         const ramTotalGB = currentStats.available ? (currentStats.memory.total / (1024 ** 3)) : 2;
@@ -807,7 +809,7 @@ async function loadResourceGraphs(hours) {
         console.error('Error loading resource graphs:', error);
         ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
             const el = document.getElementById(id);
-            if (el) el.innerHTML = '<div class="text-muted text-center py-4">Errore caricamento dati</div>';
+            if (el) el.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.errorLoadingData')}</div>`;
         });
     }
 }
@@ -820,7 +822,7 @@ async function loadNetTraffic() {
         // Populate interface dropdown
         const netData = await apiGet('/system/network');
         if (!netData.available) {
-            document.getElementById('chart-net-traffic').innerHTML = '<div class="text-muted text-center py-4">Dati non disponibili</div>';
+            document.getElementById('chart-net-traffic').innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.dataNotAvailable')}</div>`;
             return;
         }
 
@@ -835,7 +837,7 @@ async function loadNetTraffic() {
         }
     } catch (error) {
         console.error('Error loading net traffic:', error);
-        document.getElementById('chart-net-traffic').innerHTML = '<div class="text-muted text-center py-4">Errore caricamento</div>';
+        document.getElementById('chart-net-traffic').innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.loadingError')}</div>`;
     }
 }
 
@@ -847,11 +849,11 @@ async function loadNetTrafficGraph(iface, hours) {
         const history = await apiGet(`/system/network/history?hours=${hours}&interface=${iface}`);
 
         if (history.length === 0) {
-            container.innerHTML = '<div class="text-muted text-center py-4"><i class="ti ti-clock me-2"></i>In attesa dei primi dati di traffico (circa 2 minuti)</div>';
+            container.innerHTML = `<div class="text-muted text-center py-4"><i class="ti ti-clock me-2"></i>${t('dashboard.waitingForTrafficData')}</div>`;
             return;
         }
 
-        const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
+        const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
 
         // Convert bytes/s → Mbit/s  (bytes × 8 ÷ 1,000,000)
         const toBits = v => parseFloat(((v * 8) / 1_000_000).toFixed(3));
@@ -895,7 +897,7 @@ async function loadNetTrafficGraph(iface, hours) {
 
     } catch (error) {
         console.error('Error loading net traffic graph:', error);
-        container.innerHTML = '<div class="text-muted text-center py-4">Errore caricamento dati</div>';
+        container.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.errorLoadingData')}</div>`;
     }
 }
 
@@ -911,8 +913,8 @@ async function loadAlerts() {
                 <div class="d-flex align-items-center text-success py-2">
                     <i class="ti ti-circle-check me-2 fs-2"></i>
                     <div>
-                        <div class="fw-bold">Tutto OK</div>
-                        <div class="text-muted small">Nessun avviso attivo</div>
+                        <div class="fw-bold">${t('dashboard.allOk')}</div>
+                        <div class="text-muted small">${t('dashboard.noActiveAlerts')}</div>
                     </div>
                 </div>
             `;
@@ -932,7 +934,7 @@ async function loadAlerts() {
 
     } catch (error) {
         console.error('Error loading alerts:', error);
-        container.innerHTML = '<div class="text-muted">Errore caricamento alert</div>';
+        container.innerHTML = `<div class="text-muted">${t('dashboard.alertLoadError')}</div>`;
     }
 }
 
@@ -957,12 +959,13 @@ async function loadBackupStatus() {
             const daysOld = Math.floor((now - backupDate) / (1000 * 60 * 60 * 24));
 
             let timeStr;
+            const timeFormatted = backupDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             if (daysOld === 0) {
-                timeStr = `Oggi alle ${backupDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                timeStr = t('dashboard.todayAt', { time: timeFormatted });
             } else if (daysOld === 1) {
-                timeStr = `Ieri alle ${backupDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                timeStr = t('dashboard.yesterdayAt', { time: timeFormatted });
             } else {
-                timeStr = `${daysOld} giorni fa (${backupDate.toLocaleDateString()})`;
+                timeStr = t('dashboard.daysAgo', { days: daysOld, date: backupDate.toLocaleDateString() });
             }
 
             // Check for failures
@@ -976,13 +979,13 @@ async function loadBackupStatus() {
 
             let badge, avatarColor, avatarIcon;
             if (status === 'failed') {
-                badge = '<span class="badge bg-danger-lt">Fallito</span>';
+                badge = `<span class="badge bg-danger-lt">${t('dashboard.failed')}</span>`;
                 avatarColor = 'danger'; avatarIcon = 'x';
             } else if (status === 'upload_failed') {
-                badge = '<span class="badge bg-warning-lt">Upload remoto fallito</span>';
+                badge = `<span class="badge bg-warning-lt">${t('dashboard.uploadFailed')}</span>`;
                 avatarColor = 'warning'; avatarIcon = 'cloud-off';
             } else {
-                badge = '<span class="badge bg-success-lt">Successo</span>';
+                badge = `<span class="badge bg-success-lt">${t('common.success')}</span>`;
                 avatarColor = 'blue'; avatarIcon = 'check';
             }
 
@@ -1000,21 +1003,21 @@ async function loadBackupStatus() {
 
             // Warning icons
             if (daysOld > 7) {
-                icons += `<i class="ti ti-clock text-warning fs-3 ms-2" title="Backup più vecchio di 7 giorni"></i>`;
+                icons += `<i class="ti ti-clock text-warning fs-3 ms-2" title="${t('dashboard.backupOlderThan7d')}"></i>`;
             }
         } else {
             content = `
                 <div class="d-flex align-items-center text-muted">
                     <span class="avatar bg-secondary-lt me-3"><i class="ti ti-archive-off"></i></span>
-                    <div>Nessun backup trovato</div>
+                    <div>${t('dashboard.noBackupFound')}</div>
                 </div>
             `;
-            icons += `<i class="ti ti-clock text-warning fs-3 ms-2" title="Nessun backup mai eseguito"></i>`;
+            icons += `<i class="ti ti-clock text-warning fs-3 ms-2" title="${t('dashboard.noBackupEverRun')}"></i>`;
         }
 
         // Periodic backup not enabled
         if (!settings || !settings.enabled) {
-            icons += `<i class="ti ti-settings text-warning fs-3 ms-2" title="Backup periodico non abilitato"></i>`;
+            icons += `<i class="ti ti-settings text-warning fs-3 ms-2" title="${t('dashboard.periodicBackupNotEnabled')}"></i>`;
         }
 
         if (iconsEl) iconsEl.innerHTML = icons;
@@ -1022,7 +1025,7 @@ async function loadBackupStatus() {
 
     } catch (error) {
         console.error('Error loading backup status:', error);
-        container.innerHTML = '<div class="text-muted">Errore caricamento stato backup</div>';
+        container.innerHTML = `<div class="text-muted">${t('dashboard.backupStatusLoadError')}</div>`;
     }
 }
 
@@ -1034,16 +1037,16 @@ async function loadStatCards() {
         const health = await apiGet('/health');
         document.getElementById('system-status').innerHTML = `
             <span class="status-dot status-dot-${health.status === 'healthy' ? 'active' : 'warning'} me-2"></span>
-            ${health.status === 'healthy' ? 'Operativo' : 'Degradato'}
+            ${health.status === 'healthy' ? t('dashboard.operational') : t('dashboard.degraded')}
         `;
         document.getElementById('db-status').innerHTML = `
             <span class="badge bg-${health.database === 'connected' ? 'success' : 'danger'}">
-                ${health.database === 'connected' ? 'Connesso' : 'Disconnesso'}
+                ${health.database === 'connected' ? t('dashboard.connected') : t('dashboard.disconnected')}
             </span>
         `;
     } catch (e) {
         const el = document.getElementById('system-status');
-        if (el) el.innerHTML = '<span class="status-dot status-dot-warning me-2"></span>Errore';
+        if (el) el.innerHTML = `<span class="status-dot status-dot-warning me-2"></span>${t('dashboard.loadingError')}`;
     }
 
     // Firewall
@@ -1100,7 +1103,7 @@ async function loadCompanyName() {
             const settings = await response.json();
             if (settings.company_name) {
                 const welcomeEl = document.getElementById('dashboard-welcome');
-                if (welcomeEl) welcomeEl.textContent = `Benvenuto in ${settings.company_name}`;
+                if (welcomeEl) welcomeEl.textContent = t('dashboard.welcomeTo', { name: settings.company_name });
             }
         }
     } catch (e) {

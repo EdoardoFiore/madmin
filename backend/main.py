@@ -296,16 +296,16 @@ def create_app() -> FastAPI:
         """Get complete menu structure for frontend sidebar."""
         from core.modules.loader import module_loader
         
-        # Core menu items
+        # Core menu items (labels are i18n keys, resolved by the frontend)
         core_menu = [
-            {"label": "Dashboard", "icon": "home", "route": "#dashboard", "permission": None},
-            {"label": "Utenti", "icon": "users", "route": "#users", "permission": "users.view"},
-            {"label": "Firewall Macchina", "icon": "shield", "route": "#firewall", "permission": "firewall.view"},
-            {"label": "Rete", "icon": "network", "route": "#network", "permission": "network.view"},
-            {"label": "Crontab", "icon": "clock", "route": "#crontab", "permission": "settings.view"},
-            {"label": "Logs", "icon": "file-text", "route": "#logs", "permission": "logs.view"},
-            {"label": "Impostazioni", "icon": "settings", "route": "#settings", "permission": "settings.view"},
-            {"label": "Moduli", "icon": "puzzle", "route": "#modules", "permission": "modules.view"},
+            {"label": "menu.dashboard", "icon": "home", "route": "#dashboard", "permission": None},
+            {"label": "menu.users", "icon": "users", "route": "#users", "permission": "users.view"},
+            {"label": "menu.firewall", "icon": "shield", "route": "#firewall", "permission": "firewall.view"},
+            {"label": "menu.network", "icon": "network", "route": "#network", "permission": "network.view"},
+            {"label": "menu.crontab", "icon": "clock", "route": "#crontab", "permission": "settings.view"},
+            {"label": "menu.logs", "icon": "file-text", "route": "#logs", "permission": "logs.view"},
+            {"label": "menu.settings", "icon": "settings", "route": "#settings", "permission": "settings.view"},
+            {"label": "menu.modules", "icon": "puzzle", "route": "#modules", "permission": "modules.view"},
         ]
         
         # Add module menu items

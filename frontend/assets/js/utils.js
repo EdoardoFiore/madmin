@@ -1,8 +1,10 @@
 /**
  * MADMIN - Utilities Module
- * 
+ *
  * Common utility functions used across the application.
  */
+
+import { t, getLang } from './i18n.js';
 
 /**
  * Show a toast notification
@@ -22,10 +24,10 @@ export function showToast(message, type = 'info', duration = 3000) {
     };
 
     const titles = {
-        success: 'Successo',
-        error: 'Errore',
-        warning: 'Attenzione',
-        info: 'Info'
+        success: t('common.success'),
+        error: t('common.error'),
+        warning: t('common.warning'),
+        info: t('common.info')
     };
 
     const toastId = `toast-${Date.now()}`;
@@ -71,7 +73,8 @@ export function escapeHtml(text) {
 export function formatDate(date) {
     if (!date) return '-';
     const d = new Date(date);
-    return d.toLocaleDateString('it-IT', {
+    const locale = getLang() === 'it' ? 'it-IT' : 'en-US';
+    return d.toLocaleDateString(locale, {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -95,10 +98,10 @@ export function formatRelativeTime(date) {
     const hours = Math.floor(diff / 3600000);
     const days = Math.floor(diff / 86400000);
 
-    if (minutes < 1) return 'Adesso';
-    if (minutes < 60) return `${minutes} min fa`;
-    if (hours < 24) return `${hours} ore fa`;
-    if (days < 7) return `${days} giorni fa`;
+    if (minutes < 1) return t('time.now');
+    if (minutes < 60) return t('time.minutesAgo', { n: minutes });
+    if (hours < 24) return t('time.hoursAgo', { n: hours });
+    if (days < 7) return t('time.daysAgo', { n: days });
 
     return formatDate(date);
 }
@@ -111,7 +114,7 @@ export function loadingSpinner() {
     return `
         <div class="d-flex align-items-center justify-content-center py-5">
             <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Caricamento...</span>
+                <span class="visually-hidden">${t('common.loading')}</span>
             </div>
         </div>
     `;
@@ -163,7 +166,8 @@ export function debounce(func, wait) {
  * @param {boolean} htmlContent - If true, message is rendered as HTML (use with caution)
  * @returns {Promise<boolean>}
  */
-export function confirmDialog(title, message, confirmText = 'Conferma', confirmClass = 'btn-danger', htmlContent = false, size = 'sm') {
+export function confirmDialog(title, message, confirmText = null, confirmClass = 'btn-danger', htmlContent = false, size = 'sm') {
+    if (confirmText === null) confirmText = t('common.confirm');
     return new Promise((resolve) => {
         const modalId = `confirm-modal-${Date.now()}`;
         const sizeClass = size ? ` modal-${size}` : '';
@@ -177,7 +181,7 @@ export function confirmDialog(title, message, confirmText = 'Conferma', confirmC
                         </div>
                         <div class="modal-body">${htmlContent ? message : escapeHtml(message)}</div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
+                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
                             <button type="button" class="btn ${confirmClass}" id="${modalId}-confirm">${escapeHtml(confirmText)}</button>
                         </div>
                     </div>
@@ -254,9 +258,9 @@ export function actionBadge(action) {
  */
 export function statusBadge(active) {
     if (active) {
-        return '<span class="badge bg-green-lt">Attivo</span>';
+        return `<span class="badge bg-green-lt">${t('common.active')}</span>`;
     }
-    return '<span class="badge bg-secondary-lt">Disattivato</span>';
+    return `<span class="badge bg-secondary-lt">${t('common.disabled')}</span>`;
 }
 
 /**
@@ -286,8 +290,8 @@ export function inputDialog(title, label, placeholder = '', type = 'text') {
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
-                            <button type="button" class="btn btn-primary" id="${modalId}-confirm">Conferma</button>
+                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
+                            <button type="button" class="btn btn-primary" id="${modalId}-confirm">${t('common.confirm')}</button>
                         </div>
                     </div>
                 </div>

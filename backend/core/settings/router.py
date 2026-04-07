@@ -181,7 +181,7 @@ async def update_smtp_settings(
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.error(f"Error updating public download nginx block: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Errore aggiornamento blocco nginx pubblico")
+            raise HTTPException(status_code=500, detail="Error updating public Nginx block")
 
     return SMTPSettingsResponse(
         smtp_host=settings.smtp_host,
@@ -219,7 +219,7 @@ async def test_smtp_settings(
     if not settings or not settings.smtp_host:
         raise HTTPException(
             status_code=400,
-            detail="Configura prima le impostazioni SMTP"
+            detail="Configure SMTP settings first"
         )
     
     # Send test email
@@ -351,7 +351,7 @@ async def update_management_port(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error updating management port: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/network/ssl/renew", response_model=CertificateInfo)
@@ -366,7 +366,7 @@ async def renew_ssl_certificate(
         return await network_service.renew_self_signed_cert()
     except Exception as e:
         logger.error(f"Error renewing SSL certificate: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/network/ssl/upload", response_model=CertificateInfo)
@@ -393,5 +393,5 @@ async def upload_ssl_certificate(
         return info
     except Exception as e:
         logger.error(f"Error uploading SSL certificate: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 

@@ -140,7 +140,7 @@ async def create_rule(
     except Exception as e:
         await session.rollback()
         logger.error(f"Error creating firewall rule: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.patch("/rules/{rule_id}", response_model=MachineFirewallRuleResponse)
@@ -179,7 +179,7 @@ async def update_rule(
     except Exception as e:
         await session.rollback()
         logger.error(f"Error updating firewall rule {rule_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -209,7 +209,7 @@ async def delete_rule(
     except Exception as e:
         await session.rollback()
         logger.error(f"Error deleting firewall rule {rule_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/rules/{rule_id}/flush-conntrack")
@@ -263,7 +263,7 @@ async def update_rule_order(
     except Exception as e:
         await session.rollback()
         logger.error(f"Error reordering firewall rules: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 class SingleRuleReorder(SQLModel):
@@ -335,7 +335,7 @@ async def reorder_single_rule(
     except Exception as e:
         await session.rollback()
         logger.error(f"Error reordering firewall rule {rule_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/apply")
@@ -442,7 +442,7 @@ async def import_rules(
     except Exception as e:
         await session.rollback()
         logger.error(f"Error importing firewall rules: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Errore interno del server")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # --- Module Chain Endpoints (for admin/debug) ---

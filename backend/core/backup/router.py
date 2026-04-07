@@ -61,7 +61,7 @@ async def export_configuration(
         }
     except Exception as e:
         logger.error(f"Export failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Esportazione fallita")
+        raise HTTPException(status_code=500, detail="Export failed")
 
 
 # ============== CONFIG IMPORT ==============
@@ -74,7 +74,7 @@ async def preview_import(
 ):
     """Preview contents of a config archive without applying."""
     if not file.filename.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     # Save uploaded file temporarily
     temp_path = os.path.join(BACKUP_DIR, f"_preview_temp_{file.filename}")
@@ -105,7 +105,7 @@ async def import_configuration(
 ):
     """Import configuration from uploaded tar.gz archive."""
     if not file.filename.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     # Save uploaded file
     temp_path = os.path.join(BACKUP_DIR, f"_import_{file.filename}")
@@ -119,7 +119,7 @@ async def import_configuration(
         
         if not result.get("success"):
             raise HTTPException(status_code=400, detail={
-                "message": "Importazione completata con errori",
+                "message": "Import completed with errors",
                 "result": result
             })
         
@@ -128,7 +128,7 @@ async def import_configuration(
         raise
     except Exception as e:
         logger.error(f"Import failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Importazione fallita")
+        raise HTTPException(status_code=500, detail="Import failed")
     finally:
         try:
             os.remove(temp_path)
@@ -145,11 +145,11 @@ async def import_from_scp_file(
     """Import configuration from file uploaded via SCP to imports directory."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     file_path = os.path.join(IMPORTS_DIR, safe_name)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File non trovato nella cartella imports")
+        raise HTTPException(status_code=404, detail="File not found in imports folder")
     
     result = await import_config(session, file_path)
     return result
@@ -171,11 +171,11 @@ async def preview_scp_file(
     """Preview a config archive from the imports directory."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     file_path = os.path.join(IMPORTS_DIR, safe_name)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File non trovato")
+        raise HTTPException(status_code=404, detail="File not found")
     
     result = await preview_config(file_path)
     if "error" in result:
@@ -195,11 +195,11 @@ async def preview_local_backup(
     """Preview a local backup file for restore."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     file_path = os.path.join(BACKUP_DIR, safe_name)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File non trovato")
+        raise HTTPException(status_code=404, detail="File not found")
     
     result = await preview_config(file_path)
     if "error" in result:
@@ -217,11 +217,11 @@ async def restore_local_backup(
     """Restore configuration from a local backup file."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Il file deve essere un archivio .tar.gz")
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     file_path = os.path.join(BACKUP_DIR, safe_name)
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File non trovato nella cartella backup")
+        raise HTTPException(status_code=404, detail="File not found in backup folder")
     
     result = await import_config(session, file_path)
     return result
@@ -262,7 +262,7 @@ async def trigger_backup(
     if not bk_settings or not bk_settings.remote_host or not bk_settings.remote_user:
         raise HTTPException(
             status_code=400,
-            detail="Storage remoto non configurato. Imposta host e utente nelle impostazioni backup."
+            detail="Remote storage not configured. Set host and user in backup settings."
         )
 
     backup_result = await run_backup(
@@ -300,11 +300,11 @@ async def download_backup(
     """Download a config export archive."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Nome file non valido")
+        raise HTTPException(status_code=400, detail="Invalid filename")
     
     file_path = Path(BACKUP_DIR) / safe_name
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File non trovato")
+        raise HTTPException(status_code=404, detail="File not found")
     
     return FileResponse(
         path=str(file_path),
@@ -321,14 +321,14 @@ async def delete_backup(
     """Delete a config export archive."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Nome file non valido")
+        raise HTTPException(status_code=400, detail="Invalid filename")
     
     file_path = Path(BACKUP_DIR) / safe_name
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File non trovato")
+        raise HTTPException(status_code=404, detail="File not found")
     
     file_path.unlink()
-    return {"status": "ok", "message": "File eliminato"}
+    return {"status": "ok", "message": "File deleted"}
 
 
 # ============== REMOTE STORAGE ==============
@@ -350,7 +350,7 @@ async def list_remote_backup_files(
     bk_settings = result.scalar_one_or_none()
     
     if not bk_settings or not bk_settings.remote_protocol or not bk_settings.remote_host:
-        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
+        raise HTTPException(status_code=400, detail="Remote storage not configured")
     
     backups = list_remote_backups(
         bk_settings.remote_protocol,
@@ -380,13 +380,13 @@ async def download_remote_backup_file(
     """Download a backup from remote storage to local."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Nome file non valido")
+        raise HTTPException(status_code=400, detail="Invalid filename")
     
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
     bk_settings = result.scalar_one_or_none()
     
     if not bk_settings or not bk_settings.remote_protocol:
-        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
+        raise HTTPException(status_code=400, detail="Remote storage not configured")
     
     local_path = download_remote_backup(
         bk_settings.remote_protocol,
@@ -399,9 +399,9 @@ async def download_remote_backup_file(
     )
     
     if local_path:
-        return {"status": "ok", "message": "File scaricato", "local_path": local_path}
+        return {"status": "ok", "message": "File downloaded", "local_path": local_path}
     else:
-        raise HTTPException(status_code=500, detail="Download fallito")
+        raise HTTPException(status_code=500, detail="Download failed")
 
 
 @router.delete("/remote/delete/{filename}")
@@ -413,13 +413,13 @@ async def delete_remote_backup_file(
     """Delete a backup from remote storage."""
     safe_name = Path(filename).name
     if not safe_name.endswith(".tar.gz"):
-        raise HTTPException(status_code=400, detail="Nome file non valido")
+        raise HTTPException(status_code=400, detail="Invalid filename")
     
     result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
     bk_settings = result.scalar_one_or_none()
     
     if not bk_settings or not bk_settings.remote_protocol:
-        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
+        raise HTTPException(status_code=400, detail="Remote storage not configured")
     
     success = delete_remote_backup(
         bk_settings.remote_protocol,
@@ -432,9 +432,9 @@ async def delete_remote_backup_file(
     )
     
     if success:
-        return {"status": "ok", "message": "File remoto eliminato"}
+        return {"status": "ok", "message": "Remote file deleted"}
     else:
-        raise HTTPException(status_code=500, detail="Eliminazione fallita")
+        raise HTTPException(status_code=500, detail="Deletion failed")
 
 
 @router.post("/remote/cleanup")
@@ -447,7 +447,7 @@ async def cleanup_remote_storage(
     bk_settings = result.scalar_one_or_none()
     
     if not bk_settings or not bk_settings.remote_protocol:
-        raise HTTPException(status_code=400, detail="Storage remoto non configurato")
+        raise HTTPException(status_code=400, detail="Remote storage not configured")
     
     deleted = cleanup_remote_backups(
         bk_settings.remote_protocol,

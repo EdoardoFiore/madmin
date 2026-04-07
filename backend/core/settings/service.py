@@ -54,11 +54,11 @@ class NetworkService:
         Returns True if successful and Nginx reloaded.
         """
         if not 1 <= new_port <= 65535:
-            raise ValueError("Porta non valida (1-65535)")
+            raise ValueError("Invalid port (1-65535)")
 
         all_reserved = RESERVED_PORTS | (extra_reserved_ports or set())
         if new_port in all_reserved:
-            raise ValueError(f"La porta {new_port} è già in uso da un altro servizio")
+            raise ValueError(f"Port {new_port} is already in use by another service")
             
         try:
             # Read config
@@ -70,7 +70,7 @@ class NetworkService:
             
             match = re.search(pattern, content)
             if not match:
-                raise ValueError("Direttiva 'listen' non trovata in Nginx config")
+                raise ValueError("Directive 'listen' not found in Nginx config")
                 
             current_port = int(match.group(1))
             full_match = match.group(0)
@@ -131,15 +131,15 @@ class NetworkService:
         port = self.get_public_download_port(url)
 
         if not (1 <= port <= 65535):
-            raise ValueError("Porta non valida (1-65535)")
+            raise ValueError("Invalid port (1-65535)")
 
         all_reserved = RESERVED_PORTS | (extra_reserved_ports or set())
         if port in all_reserved:
-            raise ValueError(f"La porta {port} è già in uso da un altro servizio")
+            raise ValueError(f"Port {port} is already in use by another service")
 
         admin_port = await self._get_current_port()
         if port == admin_port:
-            raise ValueError(f"La porta {port} è già usata dal pannello di amministrazione")
+            raise ValueError(f"Port {port} is already used by the administration panel")
 
         # --- Genera blocco nginx ---
         ssl_crt = str(SSL_DIR / "server.crt")
@@ -181,7 +181,7 @@ class NetworkService:
                 os.remove(NGINX_PUBLIC_CONF_ENABLED)
             if os.path.exists(NGINX_PUBLIC_CONF_PATH):
                 os.remove(NGINX_PUBLIC_CONF_PATH)
-            raise RuntimeError("Configurazione nginx non valida. Verifica la porta e riprova.")
+            raise RuntimeError("Invalid Nginx configuration. Check the port and try again.")
 
     async def renew_self_signed_cert(self) -> CertificateInfo:
         """
@@ -261,7 +261,7 @@ class NetworkService:
                 # Cleanup temp files
                 if temp_crt_path.exists(): os.remove(temp_crt_path)
                 if temp_key_path.exists(): os.remove(temp_key_path)
-                raise ValueError("Il certificato non corrisponde alla chiave privata fornita.")
+                raise ValueError("The certificate does not match the provided private key.")
             
             # Backup existing
             if key_path.exists():

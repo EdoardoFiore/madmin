@@ -1,12 +1,13 @@
 /**
  * MADMIN - Main Application Module
- * 
+ *
  * Handles routing, menu loading, and view rendering.
  * Uses ES modules for dynamic view loading.
  */
 
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
 import { showToast, loadingSpinner, copyToClipboard } from './utils.js';
+import { init as i18nInit, t, getLang, detectLang, translateDOM, loadModuleTranslations } from './i18n.js';
 
 // View registry - maps routes to view modules
 const views = {
@@ -44,6 +45,26 @@ async function init() {
         redirectToLogin();
         return;
     }
+
+    // Load system settings to get default language before i18n init
+    let systemDefault = 'en';
+    try {
+        const sysSettings = await fetch('/api/settings/system', {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
+        });
+        if (sysSettings.ok) {
+            const s = await sysSettings.json();
+            systemDefault = s.default_language || 'en';
+        }
+    } catch { /* ignore */ }
+
+    // Initialize i18n
+    const lang = detectLang(currentUser, systemDefault);
+    localStorage.setItem('madmin_lang', lang);
+    await i18nInit(lang);
+
+    // Translate static HTML elements
+    translateDOM();
 
     // Check if 2FA is enforced but not enabled - force user to set it up
     await check2FAEnforcement();
@@ -106,7 +127,6 @@ function showGlobal2FAModal() {
 
     // Setup button handlers
     document.getElementById('btn-start-global-2fa')?.addEventListener('click', startGlobal2FASetup);
-    // document.getElementById('global-copy-secret') removed
     document.getElementById('btn-global-verify-2fa')?.addEventListener('click', verifyGlobal2FA);
     document.getElementById('global-verify-code')?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') verifyGlobal2FA();
@@ -118,7 +138,7 @@ function showGlobal2FAModal() {
  */
 async function startGlobal2FASetup() {
     const btn = document.getElementById('btn-start-global-2fa');
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Generazione...';
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>${t('app.generating')}`;
     btn.disabled = true;
 
     try {
@@ -131,7 +151,7 @@ async function startGlobal2FASetup() {
             body: '{}'
         });
 
-        if (!response.ok) throw new Error('Errore generazione 2FA');
+        if (!response.ok) throw new Error(t('app.2faGenerationError'));
 
         const data = await response.json();
 
@@ -150,8 +170,8 @@ async function startGlobal2FASetup() {
         ).join('');
 
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
-        btn.innerHTML = '<i class="ti ti-shield-plus me-2"></i>Configura 2FA';
+        showToast(t('common.errorPrefix') + error.message, 'error');
+        btn.innerHTML = `<i class="ti ti-shield-plus me-2"></i>${t('app.configure2fa')}`;
         btn.disabled = false;
     }
 }
@@ -162,12 +182,12 @@ async function startGlobal2FASetup() {
 async function verifyGlobal2FA() {
     const code = document.getElementById('global-verify-code').value.trim();
     if (!code || code.length !== 6) {
-        showToast('Inserisci un codice a 6 cifre', 'error');
+        showToast(t('app.enter6digitCode'), 'error');
         return;
     }
 
     const btn = document.getElementById('btn-global-verify-2fa');
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifica...';
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('app.verificationInProgress')}`;
     btn.disabled = true;
 
     try {
@@ -182,10 +202,10 @@ async function verifyGlobal2FA() {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail || 'Codice non valido');
+            throw new Error(error.detail || t('auth.invalidCode'));
         }
 
-        showToast('2FA attivata con successo!', 'success');
+        showToast(t('app.2faActivatedSuccess'), 'success');
 
         // Clear localStorage flag and close modal
         localStorage.removeItem('madmin_2fa_setup_required');
@@ -195,8 +215,8 @@ async function verifyGlobal2FA() {
         window.location.reload();
 
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
-        btn.innerHTML = '<i class="ti ti-check me-1"></i>Attiva 2FA';
+        showToast(t('common.errorPrefix') + error.message, 'error');
+        btn.innerHTML = `<i class="ti ti-check me-1"></i>${t('app.activate2fa')}`;
         btn.disabled = false;
     }
 }
@@ -345,7 +365,7 @@ export function applyTheme(theme) {
         icon.className = theme === 'dark' ? 'ti ti-sun me-2' : 'ti ti-moon me-2';
     }
     if (label) {
-        label.textContent = theme === 'dark' ? 'Tema chiaro' : 'Tema scuro';
+        label.textContent = theme === 'dark' ? t('auth.lightTheme') : t('auth.darkTheme');
     }
 }
 
@@ -429,9 +449,7 @@ function closeMobileMenu() {
 }
 
 /**
- * Global Dropdown Manager (Vanilla JS polyfill for data-bs-toggle="dropdown")
- * Handles all Bootstrap-style dropdowns without requiring Bootstrap JS.
- * Supports: data-bs-auto-close="outside" (clicking inside keeps it open).
+ * Global Dropdown Manager
  */
 function setupDropdowns() {
     // Toggle on trigger click
@@ -461,9 +479,8 @@ function setupDropdowns() {
             // Clicked outside - close all dropdowns
             closeAllDropdowns();
         }
-    }, true); // Use capture phase so stopPropagation doesn't block us
+    }, true);
 
-    // Also handle click *inside* dropdown-menu: only close if auto-close is not "outside"
     document.addEventListener('click', (e) => {
         const menuEl = e.target.closest('.dropdown-menu.show');
         if (menuEl) {
@@ -471,8 +488,6 @@ function setupDropdowns() {
             const trigger = parent?.querySelector('[data-bs-toggle="dropdown"]');
             const autoClose = trigger?.getAttribute('data-bs-auto-close');
 
-            // "outside" = keep open when clicking inside menu items
-            // default ("true" / missing) = close on any click including inside
             if (autoClose !== 'outside') {
                 closeAllDropdowns();
             }
@@ -516,15 +531,13 @@ async function loadMenu() {
 
         // Core menu items
         for (const item of menuData.core) {
-            // Check permission (null = always visible)
             if (item.permission && !hasPermission(item.permission)) {
                 continue;
             }
-
             menuHtml += createMenuItem(item);
         }
 
-        // Module menu items (if any) — filtered by permission
+        // Module menu items
         if (menuData.modules && menuData.modules.length > 0) {
             const visibleModules = menuData.modules.filter(item =>
                 !item.permission || hasPermission(item.permission)
@@ -534,7 +547,7 @@ async function loadMenu() {
                 menuHtml += `
                     <li class="nav-item pt-3">
                         <span class="nav-link disabled text-uppercase text-muted" style="font-size: 0.7rem;">
-                            Moduli
+                            ${t('menu.modulesSection')}
                         </span>
                     </li>
                 `;
@@ -563,13 +576,15 @@ function createMenuItem(item) {
         const iconClass = item.icon ? `ti-${item.icon}` : 'ti-circle';
         iconHtml = `<i class="ti ${iconClass}"></i>`;
     }
+    // item.label is either a translation key (e.g. "menu.users") or a display name (module names)
+    const label = item.label.includes('.') ? t(item.label) : item.label;
     return `
         <li class="nav-item">
             <a class="nav-link" href="${item.route}">
                 <span class="nav-link-icon d-md-none d-lg-inline-block">
                     ${iconHtml}
                 </span>
-                <span class="nav-link-title">${item.label}</span>
+                <span class="nav-link-title">${label}</span>
             </a>
         </li>
     `;
@@ -591,7 +606,7 @@ function hasPermission(permission) {
 async function handleRoute() {
     let hash = window.location.hash.slice(1);
 
-    // Remove leading slash if present (handle #/dashboard vs #dashboard)
+    // Remove leading slash if present
     if (hash.startsWith('/')) {
         hash = hash.substring(1);
     }
@@ -625,11 +640,10 @@ async function handleRoute() {
     try {
         let viewModule;
 
-        // Check if this is a module view (route starts with module ID like "wireguard", "openvpn", etc.)
-        // Module views are loaded dynamically from /static/modules/{moduleId}/views/main.js
         if (!views[viewName]) {
             // Try to load as module view
             try {
+                await loadModuleTranslations(viewName);
                 viewModule = await import(`/static/modules/${viewName}/views/main.js`);
             } catch (moduleError) {
                 // Not a core view and not a module - show 404
@@ -637,9 +651,9 @@ async function handleRoute() {
                     <div class="card">
                         <div class="card-body text-center py-5">
                             <i class="ti ti-error-404 text-muted" style="font-size: 4rem;"></i>
-                            <h3 class="mt-3">Pagina non trovata</h3>
-                            <p class="text-muted">La pagina richiesta non esiste.</p>
-                            <a href="#dashboard" class="btn btn-primary">Torna alla Dashboard</a>
+                            <h3 class="mt-3">${t('app.pageNotFound')}</h3>
+                            <p class="text-muted">${t('app.pageNotFoundDesc')}</p>
+                            <a href="#dashboard" class="btn btn-primary">${t('app.backToDashboard')}</a>
                         </div>
                     </div>
                 `;
@@ -659,9 +673,9 @@ async function handleRoute() {
             <div class="card">
                 <div class="card-body text-center py-5">
                     <i class="ti ti-alert-circle text-danger" style="font-size: 4rem;"></i>
-                    <h3 class="mt-3">Errore di caricamento</h3>
+                    <h3 class="mt-3">${t('app.loadingError')}</h3>
                     <p class="text-muted">${error.message}</p>
-                    <button class="btn btn-primary" onclick="location.reload()">Ricarica</button>
+                    <button class="btn btn-primary" onclick="location.reload()">${t('app.reload')}</button>
                 </div>
             </div>
         `;
@@ -673,14 +687,14 @@ async function handleRoute() {
  */
 function getViewTitle(viewName) {
     const titles = {
-        'dashboard': 'Dashboard',
-        'users': 'Gestione Utenti',
-        'firewall': 'Firewall Macchina',
-        'network': 'Interfacce di Rete',
-        'crontab': 'Gestione Crontab',
-        'settings': 'Impostazioni',
-        'modules': 'Gestione Moduli',
-        'logs': 'Logs',
+        'dashboard': t('menu.dashboard'),
+        'users': t('menu.users'),
+        'firewall': t('menu.firewall'),
+        'network': t('menu.network'),
+        'crontab': t('menu.crontab'),
+        'settings': t('menu.settings'),
+        'modules': t('menu.modules'),
+        'logs': t('menu.logs'),
     };
     return titles[viewName] || viewName.charAt(0).toUpperCase() + viewName.slice(1);
 }

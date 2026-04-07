@@ -1,12 +1,13 @@
 /**
  * MADMIN - Crontab Management View
- * 
+ *
  * UI for viewing and managing crontab entries.
  */
 
 import { apiGet, apiPost, apiDelete, apiPatch } from '../api.js';
 import { showToast, escapeHtml, confirmDialog } from '../utils.js';
 import { checkPermission } from '../app.js';
+import { t } from '../i18n.js';
 
 let presets = {};
 
@@ -22,15 +23,15 @@ export async function render(container) {
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
-                            <i class="ti ti-clock me-2"></i>Crontab (root)
+                            <i class="ti ti-clock me-2"></i>${t('crontab.title')}
                         </h3>
                         <div class="card-actions">
                             ${canManage ? `
                             <button class="btn btn-primary" id="btn-add-cron">
-                                <i class="ti ti-plus me-1"></i>Nuovo Job
+                                <i class="ti ti-plus me-1"></i>${t('crontab.newJob')}
                             </button>
                             ` : ''}
-                            <button class="btn btn-ghost-primary ms-2" id="btn-refresh-cron" title="Aggiorna">
+                            <button class="btn btn-ghost-primary ms-2" id="btn-refresh-cron" title="${t('common.refresh')}">
                                 <i class="ti ti-refresh"></i>
                             </button>
                         </div>
@@ -38,51 +39,51 @@ export async function render(container) {
                     <div class="card-body" id="cron-container">
                         <div class="text-center py-4 text-muted">
                             <i class="ti ti-loader ti-spin" style="font-size: 2rem;"></i>
-                            <p class="mt-2">Caricamento crontab...</p>
+                            <p class="mt-2">${t('crontab.loadingCrontab')}</p>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
-        
+
         <!-- Add Cron Modal -->
         <div class="modal" id="modal-add-cron" tabindex="-1">
             <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Nuovo Cron Job</h5>
+                        <h5 class="modal-title">${t('crontab.newCronJob')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="row g-3">
                             <div class="col-12">
-                                <label class="form-label">Preset</label>
+                                <label class="form-label">${t('crontab.preset')}</label>
                                 <select class="form-select" id="cron-preset">
-                                    <option value="">Personalizzato</option>
+                                    <option value="">${t('crontab.custom')}</option>
                                 </select>
                             </div>
                             <div class="col-12">
-                                <label class="form-label">Schedule</label>
+                                <label class="form-label">${t('crontab.schedule')}</label>
                                 <div class="row g-2">
                                     <div class="col">
                                         <input type="text" class="form-control" id="cron-minute" placeholder="*" value="*">
-                                        <small class="form-hint text-center">Minuto</small>
+                                        <small class="form-hint text-center">${t('crontab.minute')}</small>
                                     </div>
                                     <div class="col">
                                         <input type="text" class="form-control" id="cron-hour" placeholder="*" value="*">
-                                        <small class="form-hint text-center">Ora</small>
+                                        <small class="form-hint text-center">${t('crontab.hour')}</small>
                                     </div>
                                     <div class="col">
                                         <input type="text" class="form-control" id="cron-day" placeholder="*" value="*">
-                                        <small class="form-hint text-center">Giorno</small>
+                                        <small class="form-hint text-center">${t('crontab.day')}</small>
                                     </div>
                                     <div class="col">
                                         <input type="text" class="form-control" id="cron-month" placeholder="*" value="*">
-                                        <small class="form-hint text-center">Mese</small>
+                                        <small class="form-hint text-center">${t('crontab.month')}</small>
                                     </div>
                                     <div class="col">
                                         <input type="text" class="form-control" id="cron-weekday" placeholder="*" value="*">
-                                        <small class="form-hint text-center">Giorno Sett.</small>
+                                        <small class="form-hint text-center">${t('crontab.weekday')}</small>
                                     </div>
                                 </div>
                             </div>
@@ -93,14 +94,14 @@ export async function render(container) {
                                 </div>
                             </div>
                             <div class="col-12">
-                                <label class="form-label">Comando</label>
+                                <label class="form-label">${t('common.command')}</label>
                                 <input type="text" class="form-control" id="cron-command" placeholder="/usr/bin/script.sh">
                             </div>
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button type="button" class="btn btn-primary" id="btn-save-cron">Salva</button>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${t('common.cancel')}</button>
+                        <button type="button" class="btn btn-primary" id="btn-save-cron">${t('common.save')}</button>
                     </div>
                 </div>
             </div>
@@ -180,23 +181,10 @@ async function loadCrontab() {
         // Populate preset dropdown
         const presetSelect = document.getElementById('cron-preset');
         if (presetSelect) {
-            presetSelect.innerHTML = '<option value="">Personalizzato</option>';
-            const presetLabels = {
-                "every_minute": "Ogni minuto",
-                "every_5_minutes": "Ogni 5 minuti",
-                "every_15_minutes": "Ogni 15 minuti",
-                "every_30_minutes": "Ogni 30 minuti",
-                "hourly": "Ogni ora",
-                "daily_midnight": "Ogni giorno a mezzanotte",
-                "daily_6am": "Ogni giorno alle 6:00",
-                "daily_noon": "Ogni giorno a mezzogiorno",
-                "weekly_sunday": "Ogni domenica",
-                "weekly_monday": "Ogni lunedì",
-                "monthly": "Ogni mese",
-                "yearly": "Ogni anno"
-            };
+            presetSelect.innerHTML = `<option value="">${t('crontab.custom')}</option>`;
             for (const [key, value] of Object.entries(presets)) {
-                presetSelect.innerHTML += `<option value="${key}">${presetLabels[key] || key} (${value})</option>`;
+                const label = t(`crontab.presetLabels.${key}`) || key;
+                presetSelect.innerHTML += `<option value="${key}">${label} (${value})</option>`;
             }
         }
 
@@ -204,7 +192,7 @@ async function loadCrontab() {
             container.innerHTML = `
                 <div class="text-center py-4 text-muted">
                     <i class="ti ti-clock-off" style="font-size: 2rem;"></i>
-                    <p class="mt-2">Nessun job crontab configurato</p>
+                    <p class="mt-2">${t('crontab.noCronJobs')}</p>
                 </div>
             `;
             return;
@@ -217,11 +205,11 @@ async function loadCrontab() {
                 <table class="table table-vcenter">
                     <thead>
                         <tr>
-                            <th>Stato</th>
-                            <th>Schedule</th>
-                            <th>Descrizione</th>
-                            <th>Comando</th>
-                            ${canManage ? '<th class="w-1">Azioni</th>' : ''}
+                            <th>${t('crontab.state')}</th>
+                            <th>${t('crontab.schedule')}</th>
+                            <th>${t('common.description')}</th>
+                            <th>${t('common.command')}</th>
+                            ${canManage ? `<th class="w-1">${t('common.actions')}</th>` : ''}
                         </tr>
                     </thead>
                     <tbody>
@@ -245,7 +233,7 @@ async function loadCrontab() {
         container.innerHTML = `
             <div class="text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2">Errore caricamento crontab: ${error.message}</p>
+                <p class="mt-2">${t('crontab.errorLoadingCrontab', { error: error.message })}</p>
             </div>
         `;
     }
@@ -256,9 +244,8 @@ async function loadCrontab() {
  */
 function renderCronRow(entry, index, canManage) {
     const isEnabled = entry.enabled;
-    // Use proper contrast colors for badges
     const statusClass = isEnabled ? 'bg-success-lt' : 'bg-secondary-lt';
-    const statusText = isEnabled ? 'Attivo' : 'Disabilitato';
+    const statusText = isEnabled ? t('common.active') : t('common.disabled');
 
     if (entry.comment && !entry.schedule) {
         // Comment-only row
@@ -290,11 +277,11 @@ function renderCronRow(entry, index, canManage) {
             ${canManage ? `
             <td>
                 <div class="btn-group">
-                    <button class="btn btn-sm btn-outline-${isEnabled ? 'warning' : 'success'}" 
-                            data-toggle-cron="${index}" title="${isEnabled ? 'Disabilita' : 'Abilita'}">
+                    <button class="btn btn-sm btn-outline-${isEnabled ? 'warning' : 'success'}"
+                            data-toggle-cron="${index}" title="${isEnabled ? t('crontab.disable') : t('crontab.enable')}">
                         <i class="ti ti-${isEnabled ? 'player-pause' : 'player-play'}"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" data-delete-cron="${index}" title="Elimina">
+                    <button class="btn btn-sm btn-outline-danger" data-delete-cron="${index}" title="${t('common.delete')}">
                         <i class="ti ti-trash"></i>
                     </button>
                 </div>
@@ -319,17 +306,17 @@ async function saveCronJob() {
     const command = document.getElementById('cron-command')?.value.trim();
 
     if (!command) {
-        showToast('Inserisci un comando', 'error');
+        showToast(t('crontab.enterCommand'), 'error');
         return;
     }
 
     try {
         await apiPost('/cron/entries', { schedule, command });
-        showToast('Cron job aggiunto', 'success');
+        showToast(t('crontab.cronJobAdded'), 'success');
         bootstrap.Modal.getInstance(document.getElementById('modal-add-cron'))?.hide();
         await loadCrontab();
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
+        showToast(t('common.errorPrefix') + error.message, 'error');
     }
 }
 
@@ -339,10 +326,10 @@ async function saveCronJob() {
 async function toggleCronJob(entryId) {
     try {
         await apiPatch(`/cron/entries/${entryId}/toggle`, {});
-        showToast('Stato aggiornato', 'success');
+        showToast(t('crontab.statusUpdated'), 'success');
         await loadCrontab();
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
+        showToast(t('common.errorPrefix') + error.message, 'error');
     }
 }
 
@@ -351,18 +338,18 @@ async function toggleCronJob(entryId) {
  */
 async function deleteCronJob(entryId) {
     const confirmed = await confirmDialog(
-        'Elimina Cron Job',
-        'Sei sicuro di eliminare questo cron job?',
-        'Elimina',
+        t('crontab.deleteCronJob'),
+        t('crontab.deleteCronJobConfirm'),
+        t('common.delete'),
         'btn-danger'
     );
     if (!confirmed) return;
 
     try {
         await apiDelete(`/cron/entries/${entryId}`);
-        showToast('Cron job eliminato', 'success');
+        showToast(t('crontab.cronJobDeleted'), 'success');
         await loadCrontab();
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
+        showToast(t('common.errorPrefix') + error.message, 'error');
     }
 }

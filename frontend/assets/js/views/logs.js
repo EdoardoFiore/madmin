@@ -1,6 +1,6 @@
 /**
  * MADMIN - Logs View
- * 
+ *
  * Two-tab log viewer:
  * - Audit Log: structured API call log from DB (with user info)
  * - System Log: raw journalctl output
@@ -8,6 +8,7 @@
 
 import { apiGet } from '../api.js';
 import { showToast, escapeHtml } from '../utils.js';
+import { t } from '../i18n.js';
 
 // State
 let currentTab = 'audit';
@@ -27,12 +28,12 @@ export async function render(container) {
                         <ul class="nav nav-tabs card-header-tabs" id="logs-tabs">
                             <li class="nav-item">
                                 <a class="nav-link active" href="#" data-tab="audit">
-                                    <i class="ti ti-list-search me-1"></i>Audit Log
+                                    <i class="ti ti-list-search me-1"></i>${t('logs.auditLog')}
                                 </a>
                             </li>
                             <li class="nav-item">
                                 <a class="nav-link" href="#" data-tab="system">
-                                    <i class="ti ti-terminal me-1"></i>System Log
+                                    <i class="ti ti-terminal me-1"></i>${t('logs.systemLog')}
                                 </a>
                             </li>
                         </ul>
@@ -95,30 +96,30 @@ async function renderAuditTab() {
             <div class="d-flex flex-wrap gap-2 align-items-center">
                 <div class="input-icon flex-grow-1" style="max-width: 250px;">
                     <span class="input-icon-addon"><i class="ti ti-search"></i></span>
-                    <input type="text" class="form-control form-control-sm" id="audit-search" 
-                           placeholder="Cerca nel percorso..." value="${escapeHtml(auditFilters.search)}">
+                    <input type="text" class="form-control form-control-sm" id="audit-search"
+                           placeholder="${t('logs.searchPath')}" value="${escapeHtml(auditFilters.search)}">
                 </div>
                 <select class="form-select form-select-sm w-auto" id="audit-user-filter">
-                    <option value="">Tutti gli utenti</option>
+                    <option value="">${t('logs.allUsers')}</option>
                     ${userOptions}
                 </select>
                 <select class="form-select form-select-sm w-auto" id="audit-category-filter">
-                    <option value="write" ${auditFilters.category === 'write' ? 'selected' : ''}>Solo scritture</option>
-                    <option value="" ${auditFilters.category === '' ? 'selected' : ''}>Tutte le operazioni</option>
-                    <option value="read" ${auditFilters.category === 'read' ? 'selected' : ''}>Solo letture</option>
+                    <option value="write" ${auditFilters.category === 'write' ? 'selected' : ''}>${t('logs.writesOnly')}</option>
+                    <option value="" ${auditFilters.category === '' ? 'selected' : ''}>${t('logs.allOperations')}</option>
+                    <option value="read" ${auditFilters.category === 'read' ? 'selected' : ''}>${t('logs.readsOnly')}</option>
                 </select>
                 <div class="d-flex align-items-center gap-1">
-                    <span class="text-muted" style="font-size: .75rem;">Da</span>
-                    <input type="date" class="form-control form-control-sm" id="audit-from-date" 
+                    <span class="text-muted" style="font-size: .75rem;">${t('logs.from')}</span>
+                    <input type="date" class="form-control form-control-sm" id="audit-from-date"
                            value="${auditFilters.from_date}" style="width: 130px;">
-                    <span class="text-muted" style="font-size: .75rem;">A</span>
+                    <span class="text-muted" style="font-size: .75rem;">${t('logs.to')}</span>
                     <input type="date" class="form-control form-control-sm" id="audit-to-date"
                            value="${auditFilters.to_date}" style="width: 130px;">
                 </div>
-                <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-export" title="Esporta CSV">
+                <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-export" title="${t('logs.exportCsv')}">
                     <i class="ti ti-download"></i>
                 </button>
-                <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-refresh" title="Aggiorna">
+                <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-refresh" title="${t('common.refresh')}">
                     <i class="ti ti-refresh"></i>
                 </button>
             </div>
@@ -126,7 +127,7 @@ async function renderAuditTab() {
         <div id="audit-table-container">
             <div class="card-body text-center py-4 text-muted">
                 <div class="spinner-border spinner-border-sm me-2"></div>
-                Caricamento...
+                ${t('common.loading')}
             </div>
         </div>
     `;
@@ -163,7 +164,7 @@ function exportAuditCsv() {
         headers: { 'Authorization': `Bearer ${token}` }
     })
         .then(resp => {
-            if (!resp.ok) throw new Error('Export fallito');
+            if (!resp.ok) throw new Error(t('logs.exportFailed'));
             const filename = resp.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'audit_log.csv';
             return resp.blob().then(blob => ({ blob, filename }));
         })
@@ -178,7 +179,7 @@ function exportAuditCsv() {
             URL.revokeObjectURL(url);
         })
         .catch(err => {
-            import('../utils.js').then(m => m.showToast('Errore export: ' + err.message, 'error'));
+            showToast(t('logs.exportError', { error: err.message }), 'error');
         });
 }
 
@@ -214,7 +215,7 @@ async function loadAuditData() {
             container.innerHTML = `
                 <div class="card-body text-center py-4 text-muted">
                     <i class="ti ti-list-search" style="font-size: 2rem;"></i>
-                    <p class="mt-2 mb-0">Nessun log trovato con i filtri attuali</p>
+                    <p class="mt-2 mb-0">${t('logs.noLogsFound')}</p>
                 </div>
             `;
             return;
@@ -225,12 +226,12 @@ async function loadAuditData() {
                 <table class="table table-vcenter card-table table-hover table-sm">
                     <thead>
                         <tr>
-                            <th>Timestamp</th>
-                            <th>Utente</th>
-                            <th>Richiesta</th>
+                            <th>${t('logs.timestamp')}</th>
+                            <th>${t('logs.user')}</th>
+                            <th>${t('logs.request')}</th>
                             <th>Status</th>
-                            <th>Durata</th>
-                            <th>IP</th>
+                            <th>${t('logs.duration')}</th>
+                            <th>${t('logs.ip')}</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -254,7 +255,7 @@ async function loadAuditData() {
         container.innerHTML = `
             <div class="card-body text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2 mb-0">Errore: ${escapeHtml(error.message)}</p>
+                <p class="mt-2 mb-0">${t('common.errorPrefix')}${escapeHtml(error.message)}</p>
             </div>
         `;
     }
@@ -272,7 +273,7 @@ function renderAuditRow(log) {
     if (log.status_code >= 500) statusColor = 'red';
 
     const ts = new Date(log.timestamp);
-    const timeStr = ts.toLocaleString('it-IT', {
+    const timeStr = ts.toLocaleString(undefined, {
         day: '2-digit', month: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
@@ -284,7 +285,7 @@ function renderAuditRow(log) {
         window._auditPayloads[log.id] = log.request_body;
 
         payloadHtml = `
-            <button class="btn btn-icon btn-sm btn-ghost-primary ms-1" onclick="showAuditPayload('${log.id}')" title="Vedi payload">
+            <button class="btn btn-icon btn-sm btn-ghost-primary ms-1" onclick="showAuditPayload('${log.id}')" title="${t('logs.viewPayload')}">
                 <i class="ti ti-eye"></i>
             </button>
         `;
@@ -297,7 +298,7 @@ function renderAuditRow(log) {
         window._auditErrors[log.id] = log.response_summary;
 
         errorHtml = `
-            <button class="btn btn-icon btn-sm btn-ghost-danger ms-1" onclick="showAuditError('${log.id}')" title="Dettaglio errore">
+            <button class="btn btn-icon btn-sm btn-ghost-danger ms-1" onclick="showAuditError('${log.id}')" title="${t('logs.errorDetail')}">
                 <i class="ti ti-alert-triangle"></i>
             </button>
         `;
@@ -335,7 +336,7 @@ window.showAuditPayload = function (logId) {
         rawPayload = formatted;
     } catch (e) { }
 
-    _showCodeModal('Payload Richiesta', 'ti-code', formattedHtml, rawPayload);
+    _showCodeModal(t('logs.requestPayload'), 'ti-code', formattedHtml, rawPayload);
 };
 
 // --- Error Detail Modal ---
@@ -353,7 +354,7 @@ window.showAuditError = function (logId) {
         rawDetail = formatted;
     } catch (e) { }
 
-    _showCodeModal('Dettaglio Errore', 'ti-alert-triangle', formattedHtml, rawDetail);
+    _showCodeModal(t('logs.errorDetailTitle'), 'ti-alert-triangle', formattedHtml, rawDetail);
 };
 
 // --- Shared Code Modal helper ---
@@ -368,8 +369,8 @@ function _showCodeModal(title, icon, formattedHtml, rawText) {
                     <div class="modal-header">
                         <h5 class="modal-title"><i class="${icon} me-2"></i>${escapeHtml(title)}</h5>
                         <div class="ms-auto d-flex gap-2">
-                            <button type="button" class="btn btn-sm btn-ghost-primary" id="btn-copy-audit-detail" title="Copia">
-                                <i class="ti ti-copy me-1"></i>Copia
+                            <button type="button" class="btn btn-sm btn-ghost-primary" id="btn-copy-audit-detail" title="${t('common.copy')}">
+                                <i class="ti ti-copy me-1"></i>${t('common.copy')}
                             </button>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
@@ -390,11 +391,11 @@ function _showCodeModal(title, icon, formattedHtml, rawText) {
         navigator.clipboard.writeText(rawText).then(() => {
             const btn = document.getElementById('btn-copy-audit-detail');
             if (btn) {
-                btn.innerHTML = '<i class="ti ti-check me-1"></i>Copiato!';
-                setTimeout(() => { btn.innerHTML = '<i class="ti ti-copy me-1"></i>Copia'; }, 2000);
+                btn.innerHTML = `<i class="ti ti-check me-1"></i>${t('common.copied')}`;
+                setTimeout(() => { btn.innerHTML = `<i class="ti ti-copy me-1"></i>${t('common.copy')}`; }, 2000);
             }
         }).catch(() => {
-            showToast('Errore nella copia', 'error');
+            showToast(t('logs.copyError'), 'error');
         });
     });
 
@@ -409,7 +410,7 @@ function truncatePath(path) {
 
 function renderPagination(currentPage, totalPages, totalItems) {
     if (totalPages <= 1) {
-        return `<div class="card-footer"><small class="text-muted">${totalItems} risultati</small></div>`;
+        return `<div class="card-footer"><small class="text-muted">${totalItems} ${t('common.results')}</small></div>`;
     }
 
     let pages = '';
@@ -433,7 +434,7 @@ function renderPagination(currentPage, totalPages, totalItems) {
 
     return `
         <div class="card-footer d-flex align-items-center justify-content-between">
-            <small class="text-muted">Pagina ${currentPage} di ${totalPages} (${totalItems} totali)</small>
+            <small class="text-muted">${t('logs.pageOf', { current: currentPage, total: totalPages, items: totalItems })}</small>
             <ul class="pagination m-0 ms-auto">
                 <li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
                     <a class="page-link" href="#" data-audit-page="${currentPage - 1}"><i class="ti ti-chevron-left"></i></a>
@@ -460,31 +461,31 @@ async function renderSystemTab() {
         <div class="card-body border-bottom py-3">
             <div class="d-flex flex-wrap gap-2 align-items-center">
                 <select class="form-select form-select-sm w-auto" id="syslog-lines">
-                    <option value="100">100 righe</option>
-                    <option value="200" selected>200 righe</option>
-                    <option value="500">500 righe</option>
-                    <option value="1000">1000 righe</option>
+                    <option value="100">100 ${t('logs.lines')}</option>
+                    <option value="200" selected>200 ${t('logs.lines')}</option>
+                    <option value="500">500 ${t('logs.lines')}</option>
+                    <option value="1000">1000 ${t('logs.lines')}</option>
                 </select>
                 <div class="input-icon flex-grow-1" style="max-width: 300px;">
                     <span class="input-icon-addon"><i class="ti ti-search"></i></span>
-                    <input type="text" class="form-control form-control-sm" id="syslog-search" 
-                           placeholder="Filtra (grep)...">
+                    <input type="text" class="form-control form-control-sm" id="syslog-search"
+                           placeholder="${t('logs.filterGrep')}">
                 </div>
                 <div class="form-check form-switch ms-2">
                     <input class="form-check-input" type="checkbox" id="syslog-hide-audit" checked>
                     <label class="form-check-label" for="syslog-hide-audit" style="font-size: .8125rem;">
-                        Nascondi AUDIT
+                        ${t('logs.hideAudit')}
                     </label>
                 </div>
                 <button class="btn btn-sm btn-primary" id="btn-syslog-load">
-                    <i class="ti ti-refresh me-1"></i>Carica
+                    <i class="ti ti-refresh me-1"></i>${t('logs.load')}
                 </button>
             </div>
         </div>
         <div id="syslog-container">
             <div class="card-body text-center py-4 text-muted">
                 <div class="spinner-border spinner-border-sm me-2"></div>
-                Caricamento...
+                ${t('common.loading')}
             </div>
         </div>
     `;
@@ -523,7 +524,7 @@ async function loadSystemLog() {
             container.innerHTML = `
                 <div class="card-body text-center py-4 text-muted">
                     <i class="ti ti-file-off" style="font-size: 2rem;"></i>
-                    <p class="mt-2 mb-0">Nessun log trovato</p>
+                    <p class="mt-2 mb-0">${t('logs.noLogFound')}</p>
                 </div>
             `;
             return;
@@ -540,7 +541,7 @@ async function loadSystemLog() {
                 ">${logLines.map(formatSystemLogLine).join('\n')}</pre>
             </div>
             <div class="card-footer">
-                <small class="text-muted">${logLines.length} righe — <code>journalctl -u madmin</code></small>
+                <small class="text-muted">${t('logs.linesLabel', { count: logLines.length })} — <code>journalctl -u madmin</code></small>
             </div>
         `;
 
@@ -552,7 +553,7 @@ async function loadSystemLog() {
         container.innerHTML = `
             <div class="card-body text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2 mb-0">Errore: ${escapeHtml(error.message)}</p>
+                <p class="mt-2 mb-0">${t('common.errorPrefix')}${escapeHtml(error.message)}</p>
             </div>
         `;
     }

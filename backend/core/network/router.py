@@ -42,12 +42,12 @@ class NetplanConfig(BaseModel):
             try:
                 iface = ipaddress.IPv4Interface(addr)
             except ValueError:
-                raise ValueError(f"Indirizzo IP non valido: '{addr}'. Usa il formato CIDR (es. 192.168.1.100/24)")
+                raise ValueError(f"Invalid IP address: '{addr}'. Use CIDR format (e.g. 192.168.1.100/24)")
             net = iface.network
             if iface.ip == net.network_address:
-                raise ValueError(f"'{addr}' è un indirizzo di rete, non un indirizzo host. Usa un indirizzo host valido (es. 192.168.1.1/24)")
+                raise ValueError(f"'{addr}' is a network address, not a host address. Use a valid host address (e.g. 192.168.1.1/24)")
             if iface.ip == net.broadcast_address:
-                raise ValueError(f"'{addr}' è l'indirizzo di broadcast, non un indirizzo host.")
+                raise ValueError(f"'{addr}' is the broadcast address, not a host address.")
         return v
 
     @field_validator('gateway', mode='before')
@@ -58,7 +58,7 @@ class NetplanConfig(BaseModel):
         try:
             ipaddress.IPv4Address(v)
         except ValueError:
-            raise ValueError(f"Gateway non valido: '{v}'. Inserisci un indirizzo IPv4")
+            raise ValueError(f"Invalid gateway: '{v}'. Enter an IPv4 address")
         return v
 
     @field_validator('dns_servers', mode='before')
@@ -70,7 +70,7 @@ class NetplanConfig(BaseModel):
             try:
                 ipaddress.IPv4Address(dns)
             except ValueError:
-                raise ValueError(f"DNS server non valido: '{dns}'. Inserisci un indirizzo IPv4")
+                raise ValueError(f"Invalid DNS server: '{dns}'. Enter an IPv4 address")
         return v
 
     @field_validator('mtu', mode='before')
@@ -79,7 +79,7 @@ class NetplanConfig(BaseModel):
         if v is None:
             return v
         if not (576 <= int(v) <= 9000):
-            raise ValueError("MTU deve essere compreso tra 576 e 9000")
+            raise ValueError("MTU must be between 576 and 9000")
         return v
 
 
@@ -129,7 +129,7 @@ async def set_interface_config(
     if interface in PROTECTED_INTERFACES:
         raise HTTPException(
             status_code=403,
-            detail=f"L'interfaccia {interface} (WAN) non è modificabile."
+            detail=f"Interface {interface} (WAN) is not modifiable."
         )
     success, message = netplan_service.set_interface_config(
         interface=interface,
@@ -160,7 +160,7 @@ async def delete_interface_config(
     if interface in PROTECTED_INTERFACES:
         raise HTTPException(
             status_code=403,
-            detail=f"L'interfaccia {interface} (WAN) non è modificabile."
+            detail=f"Interface {interface} (WAN) is not modifiable."
         )
     success, message = netplan_service.delete_interface_config(interface)
     

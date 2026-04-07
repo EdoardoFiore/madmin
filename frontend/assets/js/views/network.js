@@ -8,6 +8,7 @@
 import { apiGet, apiPost, apiDelete } from '../api.js';
 import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml } from '../utils.js';
 import { checkPermission } from '../app.js';
+import { t } from '../i18n.js';
 
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -30,15 +31,15 @@ export async function render(container) {
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
-                            <i class="ti ti-network me-2"></i>Interfacce di Rete
+                            <i class="ti ti-network me-2"></i>${t('network.title')}
                         </h3>
                         <div class="card-actions">
                             ${canManage ? `
-                            <button class="btn btn-outline-warning me-2" id="btn-apply-netplan" title="Applica Configurazione">
-                                <i class="ti ti-check me-1"></i>Applica Netplan
+                            <button class="btn btn-outline-warning me-2" id="btn-apply-netplan" title="${t('network.applyNetplan')}">
+                                <i class="ti ti-check me-1"></i>${t('network.applyNetplan')}
                             </button>
                             ` : ''}
-                            <button class="btn btn-ghost-primary" id="btn-refresh-interfaces" title="Aggiorna">
+                            <button class="btn btn-ghost-primary" id="btn-refresh-interfaces" title="${t('common.refresh')}">
                                 <i class="ti ti-refresh"></i>
                             </button>
                         </div>
@@ -46,7 +47,7 @@ export async function render(container) {
                     <div class="card-body p-2" id="interfaces-container" style="background: var(--tblr-bg-surface-secondary, #e9ecef)">
                         <div class="text-center py-4 text-muted">
                             <i class="ti ti-loader ti-spin" style="font-size: 2rem;"></i>
-                            <p class="mt-2">Caricamento interfacce...</p>
+                            <p class="mt-2">${t('network.loadingInterfaces')}</p>
                         </div>
                     </div>
                 </div>
@@ -62,7 +63,7 @@ export async function render(container) {
                             <span class="avatar avatar-sm bg-primary-lt">
                                 <i class="ti ti-settings"></i>
                             </span>
-                            Configura <code id="modal-iface-name" class="ms-1"></code>
+                            ${t('network.configureInterface')} <code id="modal-iface-name" class="ms-1"></code>
                         </h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
@@ -70,7 +71,7 @@ export async function render(container) {
                         <input type="hidden" id="netplan-interface">
 
                         <div class="mb-4">
-                            <label class="form-label fw-semibold">Modalità indirizzo IP</label>
+                            <label class="form-label fw-semibold">${t('network.ipMode')}</label>
                             <div class="form-selectgroup form-selectgroup-boxes d-flex">
                                 <label class="form-selectgroup-item flex-fill">
                                     <input type="radio" name="netplan-mode" value="dhcp" class="form-selectgroup-input" checked>
@@ -78,7 +79,7 @@ export async function render(container) {
                                         <i class="ti ti-refresh me-2 text-cyan"></i>
                                         <div>
                                             <div class="fw-semibold">DHCP</div>
-                                            <small class="text-muted">Automatico</small>
+                                            <small class="text-muted">${t('network.automatic')}</small>
                                         </div>
                                     </div>
                                 </label>
@@ -87,8 +88,8 @@ export async function render(container) {
                                     <div class="form-selectgroup-label d-flex align-items-center p-3">
                                         <i class="ti ti-pin me-2 text-purple"></i>
                                         <div>
-                                            <div class="fw-semibold">Statico</div>
-                                            <small class="text-muted">IP fisso</small>
+                                            <div class="fw-semibold">${t('network.staticIp')}</div>
+                                            <small class="text-muted">${t('network.staticIp')}</small>
                                         </div>
                                     </div>
                                 </label>
@@ -98,27 +99,27 @@ export async function render(container) {
                         <div id="static-config" style="display: none;">
                             <div class="row g-3 mb-3">
                                 <div class="col-12">
-                                    <label class="form-label">Indirizzo IP (CIDR)</label>
+                                    <label class="form-label">${t('network.ipCidr')}</label>
                                     <input type="text" class="form-control" id="netplan-address"
-                                           placeholder="es. 192.168.1.100/24">
-                                    <small class="form-hint">Formato: IP/prefisso (es. 192.168.1.100/24)</small>
+                                           placeholder="192.168.1.100/24">
+                                    <small class="form-hint">${t('network.ipCidrHint')}</small>
                                 </div>
                                 <div class="col-sm-6">
-                                    <label class="form-label">Gateway</label>
+                                    <label class="form-label">${t('network.gateway')}</label>
                                     <input type="text" class="form-control" id="netplan-gateway"
-                                           placeholder="es. 192.168.1.1">
+                                           placeholder="192.168.1.1">
                                 </div>
                                 <div class="col-sm-6">
-                                    <label class="form-label">DNS Server</label>
+                                    <label class="form-label">${t('network.dnsServer')}</label>
                                     <input type="text" class="form-control" id="netplan-dns"
-                                           placeholder="es. 8.8.8.8, 8.8.4.4">
-                                    <small class="form-hint">Separati da virgola</small>
+                                           placeholder="8.8.8.8, 8.8.4.4">
+                                    <small class="form-hint">${t('network.dnsHint')}</small>
                                 </div>
                             </div>
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label">MTU <span class="text-muted">(opzionale)</span></label>
+                            <label class="form-label">${t('network.mtuLabel')} <span class="text-muted">(${t('network.mtuOptional')})</span></label>
                             <input type="number" class="form-control" id="netplan-mtu"
                                    placeholder="1500" min="576" max="9000">
                         </div>
@@ -126,14 +127,14 @@ export async function render(container) {
                         <div class="alert alert-warning py-2 mb-0">
                             <div class="d-flex align-items-center">
                                 <i class="ti ti-alert-triangle me-2 flex-shrink-0"></i>
-                                <small>Dopo il salvataggio, clicca <strong>Applica Netplan</strong> per attivare le modifiche.</small>
+                                <small>${t('network.afterSaveNote')}</small>
                             </div>
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
+                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
                         <button type="button" class="btn btn-primary" id="btn-save-netplan">
-                            <i class="ti ti-device-floppy me-1"></i>Salva
+                            <i class="ti ti-device-floppy me-1"></i>${t('common.save')}
                         </button>
                     </div>
                 </div>
@@ -187,7 +188,7 @@ async function loadInterfaces() {
             container.innerHTML = `
                 <div class="text-center py-4 text-muted">
                     <i class="ti ti-network-off" style="font-size: 2rem;"></i>
-                    <p class="mt-2">Nessuna interfaccia di rete trovata</p>
+                    <p class="mt-2">${t('network.noInterfaces')}</p>
                 </div>
             `;
             return;
@@ -224,7 +225,7 @@ async function loadInterfaces() {
         container.innerHTML = `
             <div class="text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2">Errore caricamento interfacce: ${escapeHtml(error.message)}</p>
+                <p class="mt-2">${t('network.loadError', { error: escapeHtml(error.message) })}</p>
             </div>
         `;
     }
@@ -249,22 +250,22 @@ function renderInterfaceRow(iface) {
     }
 
     const statusBadge = isUp
-        ? '<span class="badge bg-success-lt">Attiva</span>'
-        : '<span class="badge bg-secondary-lt">Inattiva</span>';
+        ? `<span class="badge bg-success-lt">${t('network.up')}</span>`
+        : `<span class="badge bg-secondary-lt">${t('network.down')}</span>`;
 
     let netplanBadge = '';
     if (iface.netplan?.dhcp4) {
         netplanBadge = '<span class="badge bg-cyan-lt">DHCP</span>';
     } else if (iface.netplan?.addresses?.length > 0) {
-        netplanBadge = '<span class="badge bg-purple-lt">Statico</span>';
+        netplanBadge = `<span class="badge bg-purple-lt">${t('network.staticIp')}</span>`;
     }
 
     const wanBadge = isWAN ? '<span class="badge bg-orange-lt">WAN</span>' : '';
     const speedBadge = iface.speed > 0 ? `<span class="badge bg-azure-lt">${iface.speed} Mbps</span>` : '';
-    const lockBadge = isWAN ? '<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>Sola lettura</span>' : '';
+    const lockBadge = isWAN ? `<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
 
     const secondaryBadge = secondaryCount > 0
-        ? `<span class="badge bg-secondary-lt ms-1" title="${secondaryCount} IP secondari aggiuntivi">+${secondaryCount}</span>`
+        ? `<span class="badge bg-secondary-lt ms-1" title="${t('network.secondaryIps', { count: secondaryCount })}">+${secondaryCount}</span>`
         : '';
 
     const ipDisplay = iface.ipv4
@@ -273,7 +274,7 @@ function renderInterfaceRow(iface) {
 
     const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isWAN;
     const configureBtn = canConfigure
-        ? `<button class="btn btn-sm btn-ghost-primary" data-configure-iface="${iface.name}" title="Configura interfaccia">
+        ? `<button class="btn btn-sm btn-ghost-primary" data-configure-iface="${iface.name}" title="${t('network.configureInterface')}">
                <i class="ti ti-settings"></i>
            </button>`
         : '';
@@ -281,8 +282,8 @@ function renderInterfaceRow(iface) {
     // ── Expanded section ────────────────────────────────────────────────────
 
     const allIps = [
-        iface.ipv4 ? { label: 'IPv4 primario', value: iface.ipv4 } : null,
-        ...(iface.secondary_ips || []).map((ip, i) => ({ label: `IPv4 secondario ${i + 1}`, value: ip })),
+        iface.ipv4 ? { label: t('network.primaryIpv4'), value: iface.ipv4 } : null,
+        ...(iface.secondary_ips || []).map((ip, i) => ({ label: t('network.secondaryIpv4', { index: i + 1 }), value: ip })),
         iface.ipv6 ? { label: 'IPv6', value: iface.ipv6 } : null,
     ].filter(Boolean);
 
@@ -306,7 +307,7 @@ function renderInterfaceRow(iface) {
 
     const errorsRow = (iface.errors_in > 0 || iface.errors_out > 0) ? `
         <tr>
-            <td class="text-muted small">Errori</td>
+            <td class="text-muted small">${t('network.errors')}</td>
             <td>
                 <span class="badge bg-danger-lt">
                     <i class="ti ti-alert-triangle me-1"></i>${iface.errors_in} in / ${iface.errors_out} out
@@ -316,7 +317,7 @@ function renderInterfaceRow(iface) {
 
     const wanNote = isWAN ? `
         <div class="mt-3 text-muted small">
-            <i class="ti ti-lock me-1"></i>Interfaccia in sola lettura — gestita esternamente
+            <i class="ti ti-lock me-1"></i>${t('network.wanReadOnly')}
         </div>` : '';
 
     return `
@@ -361,7 +362,7 @@ function renderInterfaceRow(iface) {
                 <div class="border-top px-3 py-3">
                     <div class="row g-4">
                         <div class="col-md-6">
-                            <div class="small text-muted fw-semibold text-uppercase mb-2">Indirizzi</div>
+                            <div class="small text-muted fw-semibold text-uppercase mb-2">${t('network.addresses')}</div>
                             <table class="table table-sm table-borderless mb-0">
                                 <tbody>
                                     ${ipRows}
@@ -372,13 +373,13 @@ function renderInterfaceRow(iface) {
                             </table>
                         </div>
                         <div class="col-md-6">
-                            <div class="small text-muted fw-semibold text-uppercase mb-2">Traffico</div>
+                            <div class="small text-muted fw-semibold text-uppercase mb-2">${t('network.traffic')}</div>
                             <table class="table table-sm table-borderless mb-0">
                                 <tbody>
                                     <tr>
                                         <td style="width:140px">
                                             <i class="ti ti-arrow-down text-success me-1"></i>
-                                            <span class="text-muted small">Ricevuti</span>
+                                            <span class="text-muted small">${t('network.received')}</span>
                                         </td>
                                         <td>
                                             <strong>${formatBytes(iface.bytes_recv)}</strong>
@@ -388,7 +389,7 @@ function renderInterfaceRow(iface) {
                                     <tr>
                                         <td>
                                             <i class="ti ti-arrow-up text-primary me-1"></i>
-                                            <span class="text-muted small">Inviati</span>
+                                            <span class="text-muted small">${t('network.sent')}</span>
                                         </td>
                                         <td>
                                             <strong>${formatBytes(iface.bytes_sent)}</strong>
@@ -448,13 +449,13 @@ async function saveNetplanConfig() {
         const gateway = document.getElementById('netplan-gateway').value.trim();
         const dns = document.getElementById('netplan-dns').value.trim();
 
-        if (!address) { showToast('Inserisci un indirizzo IP', 'error'); return; }
-        if (!isValidCIDR(address)) { showToast('Indirizzo IP non valido. Usa il formato CIDR (es. 192.168.1.100/24)', 'error'); return; }
-        if (gateway && !isValidIP(gateway)) { showToast('Gateway non valido. Inserisci un indirizzo IPv4 (es. 192.168.1.1)', 'error'); return; }
+        if (!address) { showToast(t('network.enterIp'), 'error'); return; }
+        if (!isValidCIDR(address)) { showToast(t('network.invalidIp'), 'error'); return; }
+        if (gateway && !isValidIP(gateway)) { showToast(t('network.invalidGateway'), 'error'); return; }
 
         const dnsArr = dns ? dns.split(',').map(s => s.trim()).filter(Boolean) : [];
         for (const d of dnsArr) {
-            if (!isValidIP(d)) { showToast(`DNS non valido: "${d}". Inserisci indirizzi IPv4 separati da virgola`, 'error'); return; }
+            if (!isValidIP(d)) { showToast(t('network.invalidDns', { dns: d }), 'error'); return; }
         }
 
         data.addresses = [address];
@@ -467,28 +468,28 @@ async function saveNetplanConfig() {
 
     try {
         await apiPost(`/network/interfaces/${interfaceName}/config`, data);
-        showToast('Configurazione salvata. Clicca "Applica Netplan" per attivare.', 'success');
+        showToast(t('network.configSaved'), 'success');
         bootstrap.Modal.getInstance(document.getElementById('modal-netplan'))?.hide();
         await loadInterfaces();
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
+        showToast(t('common.errorPrefix') + error.message, 'error');
     }
 }
 
 async function applyNetplan() {
     const confirmed = await confirmDialog(
-        'Applica Configurazione Rete',
-        'Stai per applicare le modifiche alla configurazione di rete. Questo potrebbe interrompere temporaneamente la connettività. Continuare?',
-        'Applica',
+        t('network.applyNetworkConfig'),
+        t('network.applyNetworkConfirm'),
+        t('common.apply'),
         'btn-warning'
     );
     if (!confirmed) return;
 
     try {
         await apiPost('/network/netplan/apply', {});
-        showToast('Configurazione applicata con successo', 'success');
+        showToast(t('network.configApplied'), 'success');
         await loadInterfaces();
     } catch (error) {
-        showToast('Errore applicazione: ' + error.message, 'error');
+        showToast(t('network.applyError', { error: error.message }), 'error');
     }
 }

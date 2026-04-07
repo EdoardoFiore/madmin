@@ -8,6 +8,7 @@
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut, apiFetch } from '../api.js';
 import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../utils.js';
 import { setPageActions, checkPermission } from '../app.js';
+import { t } from '../i18n.js';
 
 let rules = [];
 let editingRule = null;
@@ -18,19 +19,19 @@ let visibleColumns = [];
 
 // Column definitions
 const ALL_COLUMNS = {
-    protocol: { label: 'Protocollo' },
-    source: { label: 'Sorgente' },
-    destination: { label: 'Destinazione' },
-    port: { label: 'Porta' },
-    state: { label: 'Stato' },
-    in_interface: { label: 'In Iface' },
-    out_interface: { label: 'Out Iface' },
-    to_destination: { label: 'To Dest', tables: ['nat'] },
-    to_source: { label: 'To Source', tables: ['nat'] },
-    to_ports: { label: 'To Ports', tables: ['nat'] },
-    log_prefix: { label: 'Log Prefix' },
-    limit_rate: { label: 'Rate Limit' },
-    comment: { label: 'Commento' }
+    protocol: { get label() { return t('firewall.columnLabels.protocol'); } },
+    source: { get label() { return t('firewall.columnLabels.source'); } },
+    destination: { get label() { return t('firewall.columnLabels.destination'); } },
+    port: { get label() { return t('firewall.columnLabels.port'); } },
+    state: { get label() { return t('firewall.columnLabels.state'); } },
+    in_interface: { get label() { return t('firewall.columnLabels.in_interface'); } },
+    out_interface: { get label() { return t('firewall.columnLabels.out_interface'); } },
+    to_destination: { get label() { return t('firewall.columnLabels.to_destination'); }, tables: ['nat'] },
+    to_source: { get label() { return t('firewall.columnLabels.to_source'); }, tables: ['nat'] },
+    to_ports: { get label() { return t('firewall.columnLabels.to_ports'); }, tables: ['nat'] },
+    log_prefix: { get label() { return t('firewall.columnLabels.log_prefix'); } },
+    limit_rate: { get label() { return t('firewall.columnLabels.limit_rate'); } },
+    comment: { get label() { return t('firewall.columnLabels.comment'); } }
 };
 
 const DEFAULT_COLUMNS = {
@@ -64,16 +65,16 @@ export async function render(container) {
         setPageActions(`
             <div class="btn-list">
                 <button class="btn btn-outline-secondary" id="btn-export">
-                    <i class="ti ti-download me-2"></i>Esporta
+                    <i class="ti ti-download me-2"></i>${t('firewall.exportBtn')}
                 </button>
                 <button class="btn btn-outline-secondary" id="btn-import">
-                    <i class="ti ti-upload me-2"></i>Importa
+                    <i class="ti ti-upload me-2"></i>${t('firewall.importBtn')}
                 </button>
                 <button class="btn btn-outline-secondary" id="btn-gw-access">
-                    <i class="ti ti-network me-2"></i>Accesso Gateway
+                    <i class="ti ti-network me-2"></i>${t('firewall.gatewayAccess')}
                 </button>
                 <button class="btn btn-primary" id="btn-add-rule">
-                    <i class="ti ti-plus me-2"></i>Nuova Regola
+                    <i class="ti ti-plus me-2"></i>${t('firewall.newRule')}
                 </button>
             </div>
         `);
@@ -97,7 +98,7 @@ export async function render(container) {
                             </div>
                             <div class="dropdown">
                                 <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                                    <i class="ti ti-columns me-2"></i>Colonne
+                                    <i class="ti ti-columns me-2"></i>${t('common.columns')}
                                 </button>
                                 <div class="dropdown-menu dropdown-menu-end" id="column-selector">
                                     <!-- Populated dynamically -->
@@ -128,62 +129,62 @@ export async function render(container) {
             <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title" id="rule-modal-title">Nuova Regola</h5>
+                        <h5 class="modal-title" id="rule-modal-title">${t('firewall.newRule')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <form id="rule-form">
                         <div class="modal-body">
                             <div class="row g-3">
                                 <div class="col-md-4">
-                                    <label class="form-label required">Tabella</label>
+                                    <label class="form-label required">${t('firewall.table')}</label>
                                     <select class="form-select" id="rule-table" required>
-                                        ${Object.entries(TABLES).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('')}
+                                        ${Object.entries(TABLES).map(([k, tbl]) => `<option value="${k}">${tbl.label}</option>`).join('')}
                                     </select>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label required">Catena</label>
+                                    <label class="form-label required">${t('firewall.chain')}</label>
                                     <select class="form-select" id="rule-chain" required>
                                         <!-- Populated dynamically -->
                                     </select>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label required">Azione</label>
+                                    <label class="form-label required">${t('firewall.action')}</label>
                                     <select class="form-select" id="rule-action" required>
                                         <!-- Populated dynamically -->
                                     </select>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Protocollo</label>
+                                    <label class="form-label">${t('firewall.protocol')}</label>
                                     <select class="form-select" id="rule-protocol">
-                                        <option value="">Tutti</option>
+                                        <option value="">${t('firewall.allProtocols')}</option>
                                         <option value="tcp">TCP</option>
                                         <option value="udp">UDP</option>
                                         <option value="icmp">ICMP</option>
                                     </select>
                                 </div>
                                 <div class="col-md-6" id="port-group">
-                                    <label class="form-label">Porta</label>
+                                    <label class="form-label">${t('firewall.port')}</label>
                                     <input type="text" class="form-control" id="rule-port" placeholder="80, 443, 8000:8080">
-                                    <small class="form-hint">Singola porta o range (80:443)</small>
+                                    <small class="form-hint">${t('firewall.portHint')}</small>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Sorgente</label>
-                                    <input type="text" class="form-control" id="rule-source" 
+                                    <label class="form-label">${t('firewall.source')}</label>
+                                    <input type="text" class="form-control" id="rule-source"
                                            placeholder="es. 192.168.1.0/24">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Destinazione</label>
-                                    <input type="text" class="form-control" id="rule-destination" 
+                                    <label class="form-label">${t('firewall.destination')}</label>
+                                    <input type="text" class="form-control" id="rule-destination"
                                            placeholder="es. 10.0.0.0/8">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Interfaccia In</label>
-                                    <input type="text" class="form-control" id="rule-in-interface" 
+                                    <label class="form-label">${t('firewall.inInterface')}</label>
+                                    <input type="text" class="form-control" id="rule-in-interface"
                                            placeholder="es. eth0, wg0">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Interfaccia Out</label>
-                                    <input type="text" class="form-control" id="rule-out-interface" 
+                                    <label class="form-label">${t('firewall.outInterface')}</label>
+                                    <input type="text" class="form-control" id="rule-out-interface"
                                            placeholder="es. eth0, wg0">
                                 </div>
 
@@ -246,9 +247,9 @@ export async function render(container) {
                                     </select>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Stato Connessione</label>
+                                    <label class="form-label">${t('firewall.connectionState')}</label>
                                     <select class="form-select" id="rule-state">
-                                        <option value="">Nessuno</option>
+                                        <option value="">${t('common.none')}</option>
                                         <option value="NEW">NEW</option>
                                         <option value="ESTABLISHED">ESTABLISHED</option>
                                         <option value="RELATED">RELATED</option>
@@ -257,31 +258,31 @@ export async function render(container) {
                                     </select>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label">Rate Limit</label>
-                                    <input type="text" class="form-control" id="rule-limit-rate" 
+                                    <label class="form-label">${t('firewall.rateLimit')}</label>
+                                    <input type="text" class="form-control" id="rule-limit-rate"
                                            placeholder="es. 10/second, 100/minute">
-                                    <small class="form-hint">Limita le connessioni (iptables -m limit)</small>
+                                    <small class="form-hint">${t('firewall.rateLimitHint')}</small>
                                 </div>
                                 <div class="col-md-2">
-                                    <label class="form-label">Burst</label>
+                                    <label class="form-label">${t('firewall.burst')}</label>
                                     <input type="number" class="form-control" id="rule-limit-burst" 
                                            placeholder="es. 5" min="1">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Abilitata</label>
+                                    <label class="form-label">${t('firewall.enabledLabel')}</label>
                                     <label class="form-check form-switch mt-2">
                                         <input class="form-check-input" type="checkbox" id="rule-enabled" checked>
-                                        <span class="form-check-label">Regola attiva</span>
+                                        <span class="form-check-label">${t('firewall.ruleActive')}</span>
                                     </label>
                                 </div>
                                 <div class="col-12">
-                                    <label class="form-label">Commento</label>
-                                    <input type="text" class="form-control" id="rule-comment" 
-                                           placeholder="Descrizione della regola">
+                                    <label class="form-label">${t('firewall.comment')}</label>
+                                    <input type="text" class="form-control" id="rule-comment"
+                                           placeholder="${t('firewall.commentPlaceholder')}">
                                 </div>
                                 <!-- iptables Preview -->
                                 <div class="col-12">
-                                    <label class="form-label">Anteprima Comando iptables</label>
+                                    <label class="form-label">${t('firewall.iptablesPreview')}</label>
                                     <pre class="bg-dark text-success p-3 rounded" id="iptables-preview" 
                                          style="font-family: monospace; font-size: 0.85rem; overflow-x: auto;">
 iptables -t filter -A INPUT -j ACCEPT
@@ -292,18 +293,14 @@ iptables -t filter -A INPUT -j ACCEPT
                                 <div class="alert alert-info py-2 mb-0" style="font-size:0.82rem">
                                     <div class="d-flex">
                                         <i class="ti ti-info-circle me-2 mt-1 flex-shrink-0"></i>
-                                        <div>
-                                            Per chiudere <strong>immediatamente</strong> le connessioni già stabilite che verrebbero bloccate,
-                                            posiziona prima la regola nella posizione corretta, poi usa il pulsante
-                                            <strong><i class="ti ti-plug-x"></i> Termina sessioni</strong> sulla riga.
-                                        </div>
+                                        <div>${t('firewall.dropInfo')}</div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
-                            <button type="submit" class="btn btn-primary" id="rule-submit-btn">Salva</button>
+                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
+                            <button type="submit" class="btn btn-primary" id="rule-submit-btn">${t('common.save')}</button>
                         </div>
                     </form>
                 </div>
@@ -314,17 +311,17 @@ iptables -t filter -A INPUT -j ACCEPT
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Importa Regole Firewall</h5>
+                        <h5 class="modal-title">${t('firewall.importRules')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <form id="import-form">
                         <div class="modal-body">
                             <div class="mb-3">
-                                <label class="form-label required">File di configurazione (JSON)</label>
+                                <label class="form-label required">${t('firewall.importFile')}</label>
                                 <input type="file" class="form-control" id="import-file" accept=".json" required>
                             </div>
                             <div class="mb-3">
-                                <label class="form-label required">Modalità Importazione</label>
+                                <label class="form-label required">${t('firewall.importMode')}</label>
                                 <div class="form-selectgroup">
                                     <label class="form-selectgroup-item">
                                         <input type="radio" name="import-mode" value="append" class="form-selectgroup-input" checked>
@@ -333,8 +330,8 @@ iptables -t filter -A INPUT -j ACCEPT
                                                 <span class="form-selectgroup-check"></span>
                                             </span>
                                             <span class="form-selectgroup-label-content">
-                                                <span class="form-selectgroup-title strong mb-1">Aggiungi</span>
-                                                <span class="d-block text-muted">Aggiunge le regole a quelle esistenti</span>
+                                                <span class="form-selectgroup-title strong mb-1">${t('firewall.importAppend')}</span>
+                                                <span class="d-block text-muted">${t('firewall.importAppendDesc')}</span>
                                             </span>
                                         </span>
                                     </label>
@@ -345,8 +342,8 @@ iptables -t filter -A INPUT -j ACCEPT
                                                 <span class="form-selectgroup-check"></span>
                                             </span>
                                             <span class="form-selectgroup-label-content">
-                                                <span class="form-selectgroup-title strong mb-1">Sostituisci</span>
-                                                <span class="d-block text-muted">Cancella tutto e ripristina dal backup</span>
+                                                <span class="form-selectgroup-title strong mb-1">${t('firewall.importReplace')}</span>
+                                                <span class="d-block text-muted">${t('firewall.importReplaceDesc')}</span>
                                             </span>
                                         </span>
                                     </label>
@@ -354,12 +351,12 @@ iptables -t filter -A INPUT -j ACCEPT
                             </div>
                             <div class="alert alert-warning">
                                 <i class="ti ti-alert-triangle me-2"></i>
-                                Attenzione: l'importazione applicherà immediatamente le regole al firewall.
+                                ${t('firewall.importWarning')}
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">Annulla</button>
-                            <button type="submit" class="btn btn-primary">Importa</button>
+                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
+                            <button type="submit" class="btn btn-primary">${t('firewall.importBtn')}</button>
                         </div>
                     </form>
                 </div>
@@ -372,7 +369,7 @@ iptables -t filter -A INPUT -j ACCEPT
                 <div class="modal-content">
                     <div class="modal-header">
                         <h5 class="modal-title">
-                            <i class="ti ti-network me-2"></i>Accesso Gateway
+                            <i class="ti ti-network me-2"></i>${t('firewall.gatewayAccess')}
                         </h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
@@ -381,10 +378,9 @@ iptables -t filter -A INPUT -j ACCEPT
                             <div class="d-flex">
                                 <i class="ti ti-info-circle me-2 mt-1 flex-shrink-0"></i>
                                 <div>
-                                    <strong>Isolamento reti</strong> — Per default ogni rete può raggiungere solo il proprio gateway.
-                                    Abilita qui l'accesso ai servizi di altri gateway (DNS, VPN, ecc.) dove necessario.
+                                    ${t('firewall.isolationInfo')}
                                     <br><small class="text-muted mt-1 d-block">
-                                        Questo non influenza il traffico VM↔VM tra reti, gestito separatamente dalle regole FORWARD.
+                                        ${t('firewall.isolationNote')}
                                     </small>
                                 </div>
                             </div>
@@ -396,7 +392,7 @@ iptables -t filter -A INPUT -j ACCEPT
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">Chiudi</button>
+                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.close')}</button>
                     </div>
                 </div>
             </div>
@@ -427,7 +423,7 @@ async function handleExport() {
         window.URL.revokeObjectURL(url);
         a.remove();
     } catch (error) {
-        showToast('Errore durante l\'esportazione: ' + error.message, 'error');
+        showToast(t('firewall.exportError', { error: error.message }), 'error');
     }
 }
 
@@ -460,17 +456,17 @@ async function handleImportSubmit(e) {
 
         const result = await response.json();
 
-        showToast(result.message || 'Regole importate con successo', 'success');
+        showToast(result.message || t('firewall.importSuccess'), 'success');
 
         if (result.errors && result.errors.length > 0) {
             console.warn('Import warnings:', result.errors);
-            showToast(`Importato con ${result.errors.length} errori/avvisi (vedi console)`, 'warning');
+            showToast(t('firewall.importWithErrors', { count: result.errors.length }), 'warning');
         }
 
         bootstrap.Modal.getInstance(document.getElementById('import-modal')).hide();
         await loadRules();
     } catch (error) {
-        showToast('Errore importazione: ' + error.message, 'error');
+        showToast(t('firewall.importError', { error: error.message }), 'error');
     }
 }
 
@@ -501,7 +497,7 @@ async function saveUserPreferences() {
             preferences: JSON.stringify(userPreferences)
         });
     } catch (e) {
-        showToast('Errore salvataggio preferenze', 'error');
+        showToast(t('firewall.savePrefError'), 'error');
     }
 }
 
@@ -798,7 +794,7 @@ async function loadRules() {
         rules = await apiGet('/firewall/rules');
         renderRules();
     } catch (error) {
-        showToast('Errore nel caricamento delle regole: ' + error.message, 'error');
+        showToast(t('firewall.loadRulesError', { error: error.message }), 'error');
     }
 }
 
@@ -824,7 +820,7 @@ function renderRules() {
         if (!container) continue;
 
         if (chainRules.length === 0) {
-            container.innerHTML = emptyState('ti-shield-off', 'Nessuna regola', `Non ci sono regole per la catena ${chain}`);
+            container.innerHTML = emptyState('ti-shield-off', t('firewall.noRules'), t('firewall.noRulesInChain', { chain }));
             continue;
         }
 
@@ -836,7 +832,7 @@ function renderRules() {
                     <thead>
                         <tr>
                             <th class="rule-order" style="width: 60px;">#</th>
-                            <th>Azione</th>
+                            <th>${t('firewall.action')}</th>
                             ${orderedColumns.map(col => `<th>${ALL_COLUMNS[col].label}</th>`).join('')}
                             <th class="rule-actions"></th>
                         </tr>
@@ -879,13 +875,13 @@ function renderRuleRow(rule, orderedColumns) {
                     <div class="btn-group btn-group-sm">
                         ${['DROP', 'REJECT'].includes(rule.action) ? `
                         <button class="btn btn-ghost-warning btn-flush-conntrack"
-                                title="Termina connessioni esistenti che matchano questa regola">
+                                title="${t('firewall.terminateSessionsHint')}">
                             <i class="ti ti-plug-x"></i>
                         </button>` : ''}
-                        <button class="btn btn-ghost-primary btn-edit" title="Modifica">
+                        <button class="btn btn-ghost-primary btn-edit" title="${t('common.edit')}">
                             <i class="ti ti-edit"></i>
                         </button>
-                        <button class="btn btn-ghost-danger btn-delete" title="Elimina">
+                        <button class="btn btn-ghost-danger btn-delete" title="${t('common.delete')}">
                             <i class="ti ti-trash"></i>
                         </button>
                     </div>
@@ -901,7 +897,7 @@ function renderRuleRow(rule, orderedColumns) {
 function renderCell(rule, column) {
     const esc = escapeHtml;
     switch (column) {
-        case 'protocol': return rule.protocol ? `<code>${rule.protocol}</code>` : '<span class="text-muted">tutti</span>';
+        case 'protocol': return rule.protocol ? `<code>${rule.protocol}</code>` : `<span class="text-muted">${t('firewall.allProtocols').toLowerCase()}</span>`;
         case 'source': return rule.source ? `<code>${esc(rule.source)}</code>` : '<span class="text-muted">-</span>';
         case 'destination': return rule.destination ? `<code>${esc(rule.destination)}</code>` : '<span class="text-muted">-</span>';
         case 'port': return rule.port ? `<code>${esc(rule.port)}</code>` : '<span class="text-muted">-</span>';
@@ -970,10 +966,10 @@ function setupDragDrop(tbody) {
                         await apiPatch(`/firewall/rules/${draggedId}/reorder`, {
                             new_order: targetRule.order
                         });
-                        showToast('Ordine aggiornato', 'success');
+                        showToast(t('firewall.orderUpdated'), 'success');
                         await loadRules();
                     } catch (error) {
-                        showToast('Errore: ' + error.message, 'error');
+                        showToast(t('common.errorPrefix') + error.message, 'error');
                     }
                 }
             }
@@ -993,11 +989,9 @@ function setupRowEvents(container) {
             const rule = rules.find(r => r.id === ruleId);
 
             const confirmed = await confirmDialog(
-                'Termina connessioni esistenti',
-                `Verranno terminate immediatamente tutte le sessioni attive che corrispondono a questa regola ${rule?.action || ''}. `
-                + `Questa operazione è utile principalmente per regole appena create o riposizionate, `
-                + `per forzare il re-evaluation del traffico già stabilito.`,
-                'Termina',
+                t('firewall.terminateSessionsTitle'),
+                t('firewall.terminateSessionsDesc', { action: rule?.action || '' }),
+                t('firewall.terminateBtn'),
                 'btn-warning'
             );
             if (!confirmed) return;
@@ -1010,12 +1004,12 @@ function setupRowEvents(container) {
                 const count = result.flushed ?? 0;
                 showToast(
                     count > 0
-                        ? `${count} session${count === 1 ? 'e terminata' : 'i terminate'}.`
-                        : 'Nessuna sessione attiva corrispondente.',
+                        ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
+                        : t('firewall.noActiveSessions'),
                     'success'
                 );
             } catch (error) {
-                showToast('Errore: ' + error.message, 'error');
+                showToast(t('common.errorPrefix') + error.message, 'error');
             } finally {
                 btn.disabled = false;
                 icon.className = 'ti ti-plug-x';
@@ -1042,9 +1036,9 @@ function setupRowEvents(container) {
             const ruleId = row.dataset.id;
 
             const confirmed = await confirmDialog(
-                'Elimina Regola',
-                'Sei sicuro di voler eliminare questa regola? L\'azione è immediata.',
-                'Elimina',
+                t('firewall.deleteRule'),
+                t('firewall.deleteRuleConfirm'),
+                t('common.delete'),
                 'btn-danger'
             );
 
@@ -1062,7 +1056,7 @@ function openRuleModal(rule = null) {
     editingRule = rule;
 
     const title = document.getElementById('rule-modal-title');
-    title.textContent = rule ? 'Modifica Regola' : 'Nuova Regola';
+    title.textContent = rule ? t('firewall.editRule') : t('firewall.newRule');
 
     // Set table first, then update chains/actions
     const tableSelect = document.getElementById('rule-table');
@@ -1140,17 +1134,17 @@ async function handleRuleSubmit(e) {
     try {
         if (editingRule) {
             await apiPatch(`/firewall/rules/${editingRule.id}`, data);
-            showToast('Regola aggiornata con successo', 'success');
+            showToast(t('firewall.ruleUpdated'), 'success');
         } else {
             await apiPost('/firewall/rules', data);
-            showToast('Regola creata con successo', 'success');
+            showToast(t('firewall.ruleCreated'), 'success');
         }
 
         bootstrap.Modal.getInstance(document.getElementById('rule-modal')).hide();
         await loadRules();
 
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
+        showToast(t('common.errorPrefix') + error.message, 'error');
     }
 }
 
@@ -1160,10 +1154,10 @@ async function handleRuleSubmit(e) {
 async function deleteRule(ruleId) {
     try {
         await apiDelete(`/firewall/rules/${ruleId}`);
-        showToast('Regola eliminata', 'success');
+        showToast(t('firewall.ruleDeleted'), 'success');
         await loadRules();
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
+        showToast(t('common.errorPrefix') + error.message, 'error');
     }
 }
 
@@ -1209,8 +1203,8 @@ async function renderGatewayMatrix() {
         if (lanIfaces.length < 2) {
             content.innerHTML = `
                 <div class="empty">
-                    <p class="empty-title">Meno di 2 reti LAN configurate</p>
-                    <p class="empty-subtitle text-muted">Aggiungi almeno due interfacce LAN per gestire le eccezioni gateway.</p>
+                    <p class="empty-title">${t('firewall.lessThan2Lans')}</p>
+                    <p class="empty-subtitle text-muted">${t('firewall.add2LansHint')}</p>
                 </div>`;
             return;
         }
@@ -1219,8 +1213,8 @@ async function renderGatewayMatrix() {
             <table class="table table-sm table-hover">
                 <thead>
                     <tr>
-                        <th style="width:200px">Rete sorgente</th>
-                        <th>Può raggiungere</th>
+                        <th style="width:200px">${t('firewall.sourceNetwork')}</th>
+                        <th>${t('firewall.canReach')}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1240,7 +1234,7 @@ async function renderGatewayMatrix() {
                                 data-dst-name="${escapeHtml(dst.name)}"
                                 data-rule-id="${existing ? existing.id : ''}"
                                 data-active="${active}"
-                                title="${active ? 'Clicca per bloccare' : 'Clicca per abilitare'}"
+                                title="${active ? t('firewall.clickToBlock') : t('firewall.clickToEnable')}"
                             >${escapeHtml(dst.name)} <small>${escapeHtml(dst.ipv4)}</small></span>`;
                         }).join('');
 
@@ -1255,8 +1249,7 @@ async function renderGatewayMatrix() {
                 </tbody>
             </table>
             <small class="text-muted">
-                <span class="badge bg-success-lt">verde</span> = accesso abilitato &nbsp;
-                <span class="badge bg-secondary-lt">grigio</span> = bloccato (default)
+                ${t('firewall.legendEnabled')} &nbsp;&nbsp; ${t('firewall.legendBlocked')}
             </small>`;
 
         // Bind badge clicks
@@ -1265,7 +1258,7 @@ async function renderGatewayMatrix() {
         });
 
     } catch (error) {
-        content.innerHTML = `<div class="alert alert-danger">Errore caricamento: ${escapeHtml(error.message)}</div>`;
+        content.innerHTML = `<div class="alert alert-danger">${t('firewall.gatewayLoadError', { error: escapeHtml(error.message) })}</div>`;
     }
 }
 
@@ -1290,7 +1283,7 @@ async function handleGatewayBadgeToggle(e) {
             badge.classList.add('bg-secondary-lt');
             badge.dataset.active = 'false';
             badge.dataset.ruleId = '';
-            badge.title = 'Clicca per abilitare';
+            badge.title = t('firewall.clickToEnable');
         } else {
             const result = await apiPost('/firewall/rules', {
                 chain: 'GW_EXCEPTIONS',
@@ -1304,10 +1297,10 @@ async function handleGatewayBadgeToggle(e) {
             badge.classList.add('bg-success-lt');
             badge.dataset.active = 'true';
             badge.dataset.ruleId = result.id;
-            badge.title = 'Clicca per bloccare';
+            badge.title = t('firewall.clickToBlock');
         }
     } catch (error) {
-        showToast('Errore: ' + error.message, 'error');
+        showToast(t('common.errorPrefix') + error.message, 'error');
     } finally {
         badge.style.opacity = '';
         badge.style.pointerEvents = '';

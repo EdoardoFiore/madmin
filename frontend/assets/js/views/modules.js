@@ -1,6 +1,6 @@
 /**
  * MADMIN - Module Management View
- * 
+ *
  * Card-based module management with detail modal, confirmation dialogs,
  * and firewall chain priority drag-and-drop.
  */
@@ -8,6 +8,7 @@
 import { apiGet, apiPost, apiPut } from '../api.js';
 import { showToast, escapeHtml, emptyState, confirmDialog } from '../utils.js';
 import { checkPermission } from '../app.js';
+import { t } from '../i18n.js';
 
 /**
  * Render icon - supports both Tabler icon names and custom URLs (SVG/PNG)
@@ -29,13 +30,13 @@ export async function render(container) {
     container.innerHTML = `
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-puzzle me-2"></i>Gestione Moduli</h3>
+                <h3 class="card-title"><i class="ti ti-puzzle me-2"></i>${t('modules.title')}</h3>
             </div>
             <div class="card-body">
                 <div id="modules-grid" class="row g-3">
                     <div class="col-12 text-center py-4">
                         <div class="spinner-border spinner-border-sm"></div>
-                        <p class="text-muted mt-2">Caricamento moduli...</p>
+                        <p class="text-muted mt-2">${t('modules.loadingModules')}</p>
                     </div>
                 </div>
             </div>
@@ -61,7 +62,7 @@ async function loadModules() {
         renderModuleCards();
     } catch (e) {
         document.getElementById('modules-grid').innerHTML =
-            `<div class="col-12">${emptyState('ti-alert-circle', 'Errore caricamento moduli', e.message)}</div>`;
+            `<div class="col-12">${emptyState('ti-alert-circle', t('modules.errorLoadingModules'), e.message)}</div>`;
     }
 }
 
@@ -80,7 +81,7 @@ function renderModuleCards() {
     const canManage = checkPermission('modules.manage');
 
     if (availableModules.length === 0) {
-        container.innerHTML = `<div class="col-12">${emptyState('ti-puzzle-off', 'Nessun modulo disponibile', 'Nessun modulo trovato nella directory dei moduli.')}</div>`;
+        container.innerHTML = `<div class="col-12">${emptyState('ti-puzzle-off', t('modules.noModules'), t('modules.noModulesHint'))}</div>`;
         return;
     }
 
@@ -91,7 +92,7 @@ function renderModuleCards() {
 
         return `
         <div class="col-md-6 col-xl-4">
-            <div class="card card-sm h-100 module-card ${m.enabled ? 'border-primary border-2' : ''}" 
+            <div class="card card-sm h-100 module-card ${m.enabled ? 'border-primary border-2' : ''}"
                  id="module-card-${m.id}" style="cursor: pointer;"
                  onclick="window._openModuleDetail('${m.id}')">
                 <div class="card-body">
@@ -107,23 +108,23 @@ function renderModuleCards() {
                             <div class="text-muted small mt-1">v${escapeHtml(m.version)} ${m.author ? '· ' + escapeHtml(m.author) : ''}</div>
                         </div>
                     </div>
-                    
-                    <p class="text-secondary small mb-3" style="min-height: 2.5em;">${escapeHtml(m.description || 'Nessuna descrizione disponibile.')}</p>
-                    
+
+                    <p class="text-secondary small mb-3" style="min-height: 2.5em;">${escapeHtml(m.description || t('modules.noDescription'))}</p>
+
                     <div class="d-flex align-items-center justify-content-between">
                         <div class="d-flex gap-3">
                             ${chainsCount > 0 ? `
-                                <span class="d-inline-flex align-items-center text-muted small" title="Firewall chains">
+                                <span class="d-inline-flex align-items-center text-muted small" title="${t('modules.firewallChains')}">
                                     <i class="ti ti-shield me-1" style="font-size: 14px;"></i>${chainsCount}
                                 </span>
                             ` : ''}
                             ${permsCount > 0 ? `
-                                <span class="d-inline-flex align-items-center text-muted small" title="Permessi">
+                                <span class="d-inline-flex align-items-center text-muted small" title="${t('modules.permissionsLabel')}">
                                     <i class="ti ti-lock me-1" style="font-size: 14px;"></i>${permsCount}
                                 </span>
                             ` : ''}
                             ${m.has_readme ? `
-                                <span class="d-inline-flex align-items-center text-muted small" title="Documentazione disponibile">
+                                <span class="d-inline-flex align-items-center text-muted small" title="${t('modules.docTab')}">
                                     <i class="ti ti-file-text me-1" style="font-size: 14px;"></i>Docs
                                 </span>
                             ` : ''}
@@ -138,20 +139,20 @@ function renderModuleCards() {
 
 function getStatusInfo(mod) {
     if (mod.enabled) {
-        return { label: 'Attivo', class: 'bg-green-lt' };
+        return { label: t('common.active'), class: 'bg-green-lt' };
     } else {
-        return { label: 'Disponibile', class: 'bg-secondary-lt' };
+        return { label: t('common.available'), class: 'bg-secondary-lt' };
     }
 }
 
 function getActionButton(mod) {
     if (mod.enabled) {
         return `<button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); window._confirmDeactivate('${mod.id}', '${escapeHtml(mod.name)}')">
-            <i class="ti ti-player-stop me-1"></i>Disattiva
+            <i class="ti ti-player-stop me-1"></i>${t('modules.deactivate')}
         </button>`;
     } else {
         return `<button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); window._confirmActivate('${mod.id}', '${escapeHtml(mod.name)}')">
-            <i class="ti ti-player-play me-1"></i>Attiva
+            <i class="ti ti-player-play me-1"></i>${t('modules.activate')}
         </button>`;
     }
 }
@@ -159,13 +160,12 @@ function getActionButton(mod) {
 // === Confirmation Dialogs ===
 
 window._confirmActivate = async (moduleId, moduleName) => {
-    const message = `<p>Stai per <strong>attivare</strong> il modulo <strong>${moduleName}</strong>.</p>
-        <p class="text-muted small">Verrà eseguita la migrazione del database e la configurazione iniziale del modulo. Sarà necessario un riavvio del servizio.</p>`;
+    const message = t('modules.activateConfirmMsg', { name: `<strong>${moduleName}</strong>` });
 
     const confirmed = await confirmDialog(
-        `Attiva ${moduleName}`,
+        t('modules.activateConfirmTitle', { name: moduleName }),
         message,
-        'Attiva',
+        t('modules.activateModule'),
         'btn-primary',
         true
     );
@@ -175,46 +175,45 @@ window._confirmActivate = async (moduleId, moduleName) => {
     const btn = document.querySelector(`#module-card-${moduleId} .btn-primary`);
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '<div class="spinner-border spinner-border-sm me-1"></div>Attivazione...';
+        btn.innerHTML = `<div class="spinner-border spinner-border-sm me-1"></div>${t('modules.activating')}`;
     }
 
     try {
         const result = await apiPost(`/modules/${moduleId}/activate`);
-        showToast(result.message || 'Modulo attivato', 'success');
+        showToast(result.message || t('modules.moduleActivated'), 'success');
         if (result.warnings && result.warnings.length > 0) {
-            showToast(`Avvisi: ${result.warnings.join('; ')}`, 'warning');
+            showToast(t('modules.warnings', { warnings: result.warnings.join('; ') }), 'warning');
         }
     } catch (e) {
-        const detail = e?.response?.detail || e?.detail || e.message || 'Attivazione fallita';
+        const detail = e?.response?.detail || e?.detail || e.message || t('modules.activationFailed');
         showToast(detail, 'error');
     } finally {
-        // Always refresh list and restore button
         try { await loadModules(); await loadModuleChains(); } catch (_) { }
     }
 };
 
 window._confirmDeactivate = async (moduleId, moduleName) => {
     const confirmed = await confirmDialog(
-        `Disattiva ${moduleName}`,
+        t('modules.deactivateConfirmTitle', { name: moduleName }),
         `<div class="alert alert-warning">
             <div class="d-flex">
                 <div><i class="ti ti-alert-triangle icon me-2"></i></div>
                 <div>
-                    <h4 class="alert-title">Attenzione: questa operazione è distruttiva</h4>
+                    <h4 class="alert-title">${t('modules.deactivateWarning')}</h4>
                     <div class="text-secondary">
-                        La disattivazione del modulo <strong>${moduleName}</strong> comporterà:
+                        ${t('modules.deactivateDetails', { name: `<strong>${moduleName}</strong>` })}
                         <ul class="mt-2 mb-0">
-                            <li>Arresto dei servizi correlati</li>
-                            <li>Rimozione delle regole firewall del modulo</li>
-                            <li>Eliminazione di tutte le tabelle e dati del modulo dal database</li>
-                            <li>Rimozione dei file di configurazione generati</li>
+                            <li>${t('modules.deactivateList1')}</li>
+                            <li>${t('modules.deactivateList2')}</li>
+                            <li>${t('modules.deactivateList3')}</li>
+                            <li>${t('modules.deactivateList4')}</li>
                         </ul>
                     </div>
                 </div>
             </div>
         </div>
-        <p class="text-muted small">Sarà necessario un riavvio del servizio. Per riattivare il modulo in futuro, sarà necessaria una nuova configurazione iniziale.</p>`,
-        'Disattiva e rimuovi dati',
+        <p class="text-muted small">${t('modules.deactivateNote')}</p>`,
+        t('modules.deactivateAndRemove'),
         'btn-danger',
         true
     );
@@ -224,17 +223,17 @@ window._confirmDeactivate = async (moduleId, moduleName) => {
     const btn = document.querySelector(`#module-card-${moduleId} .btn-outline-danger`);
     if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '<div class="spinner-border spinner-border-sm me-1"></div>Disattivazione...';
+        btn.innerHTML = `<div class="spinner-border spinner-border-sm me-1"></div>${t('modules.deactivating')}`;
     }
 
     try {
         const result = await apiPost(`/modules/${moduleId}/deactivate`);
-        showToast(result.message || 'Modulo disattivato', 'success');
+        showToast(result.message || t('modules.moduleDeactivated'), 'success');
         if (result.warnings && result.warnings.length > 0) {
-            showToast(`Avvisi: ${result.warnings.join('; ')}`, 'warning');
+            showToast(t('modules.warnings', { warnings: result.warnings.join('; ') }), 'warning');
         }
     } catch (e) {
-        const detail = e?.response?.detail || e?.detail || e.message || 'Disattivazione fallita';
+        const detail = e?.response?.detail || e?.detail || e.message || t('modules.deactivationFailed');
         showToast(detail, 'error');
     } finally {
         try { await loadModules(); await loadModuleChains(); } catch (_) { }
@@ -255,7 +254,7 @@ window._openModuleDetail = async (moduleId) => {
         readmeTab = `
             <li class="nav-item">
                 <a href="#detail-readme" class="nav-link" data-bs-toggle="tab">
-                    <i class="ti ti-file-text me-1"></i>Documentazione
+                    <i class="ti ti-file-text me-1"></i>${t('modules.docTab')}
                 </a>
             </li>`;
     }
@@ -281,7 +280,7 @@ window._openModuleDetail = async (moduleId) => {
             <ul class="nav nav-tabs nav-fill px-3 pt-3" data-bs-toggle="tabs">
                 <li class="nav-item">
                     <a href="#detail-info" class="nav-link active" data-bs-toggle="tab">
-                        <i class="ti ti-info-circle me-1"></i>Info
+                        <i class="ti ti-info-circle me-1"></i>${t('modules.infoTab')}
                     </a>
                 </li>
                 ${readmeTab}
@@ -294,7 +293,7 @@ window._openModuleDetail = async (moduleId) => {
                 <div class="tab-pane" id="detail-readme">
                     <div class="text-center py-3" id="readme-loading">
                         <div class="spinner-border spinner-border-sm"></div>
-                        <p class="text-muted mt-2">Caricamento documentazione...</p>
+                        <p class="text-muted mt-2">${t('modules.loadingDoc')}</p>
                     </div>
                     <div id="readme-content" class="d-none markdown-body" style="max-height: 500px; overflow-y: auto;"></div>
                 </div>
@@ -305,10 +304,10 @@ window._openModuleDetail = async (moduleId) => {
         <div class="modal-footer">
             ${mod.enabled
                 ? `<button class="btn btn-danger" onclick="bootstrap.Modal.getInstance(document.getElementById('module-detail-modal')).hide(); window._confirmDeactivate('${mod.id}', '${escapeHtml(mod.name)}')">
-                    <i class="ti ti-player-stop me-1"></i>Disattiva modulo
+                    <i class="ti ti-player-stop me-1"></i>${t('modules.deactivateModule')}
                 </button>`
                 : `<button class="btn btn-primary" onclick="bootstrap.Modal.getInstance(document.getElementById('module-detail-modal')).hide(); window._confirmActivate('${mod.id}', '${escapeHtml(mod.name)}')">
-                    <i class="ti ti-player-play me-1"></i>Attiva modulo
+                    <i class="ti ti-player-play me-1"></i>${t('modules.activateModule')}
                 </button>`
             }
         </div>
@@ -333,7 +332,7 @@ window._openModuleDetail = async (moduleId) => {
                         readmeContent.classList.remove('d-none');
                         readmeLoading.classList.add('d-none');
                     } catch (e) {
-                        readmeLoading.innerHTML = `<p class="text-danger">Errore: ${escapeHtml(e.message)}</p>`;
+                        readmeLoading.innerHTML = `<p class="text-danger">${t('common.errorPrefix')}${escapeHtml(e.message)}</p>`;
                     }
                 }
             });
@@ -348,15 +347,15 @@ function renderDetailInfoTab(mod) {
     const pipDeps = mod.system_dependencies?.pip || [];
 
     return `
-        <p class="text-secondary">${escapeHtml(mod.description || 'Nessuna descrizione disponibile.')}</p>
-        
+        <p class="text-secondary">${escapeHtml(mod.description || t('modules.noDescription'))}</p>
+
         <div class="row g-3 mt-2">
             ${permsCount > 0 ? `
             <div class="col-12">
-                <h4 class="mb-2"><i class="ti ti-lock me-1"></i>Permessi (${permsCount})</h4>
+                <h4 class="mb-2"><i class="ti ti-lock me-1"></i>${t('modules.permissionsLabel')} (${permsCount})</h4>
                 <div class="table-responsive">
                     <table class="table table-sm table-vcenter">
-                        <thead><tr><th>Slug</th><th>Descrizione</th></tr></thead>
+                        <thead><tr><th>Slug</th><th>${t('common.description')}</th></tr></thead>
                         <tbody>
                             ${mod.permissions.map(p => `
                                 <tr>
@@ -369,13 +368,13 @@ function renderDetailInfoTab(mod) {
                 </div>
             </div>
             ` : ''}
-            
+
             ${chainsCount > 0 ? `
             <div class="col-12">
-                <h4 class="mb-2"><i class="ti ti-shield me-1"></i>Firewall Chains (${chainsCount})</h4>
+                <h4 class="mb-2"><i class="ti ti-shield me-1"></i>${t('modules.firewallChains')} (${chainsCount})</h4>
                 <div class="table-responsive">
                     <table class="table table-sm table-vcenter">
-                        <thead><tr><th>Chain</th><th>Parent</th><th>Tabella</th><th>Priorità</th></tr></thead>
+                        <thead><tr><th>Chain</th><th>Parent</th><th>${t('common.table')}</th><th>Priority</th></tr></thead>
                         <tbody>
                             ${mod.firewall_chains.map(c => `
                                 <tr>
@@ -390,10 +389,10 @@ function renderDetailInfoTab(mod) {
                 </div>
             </div>
             ` : ''}
-            
+
             ${(aptDeps.length > 0 || pipDeps.length > 0) ? `
             <div class="col-12">
-                <h4 class="mb-2"><i class="ti ti-package me-1"></i>Dipendenze</h4>
+                <h4 class="mb-2"><i class="ti ti-package me-1"></i>${t('modules.dependencies')}</h4>
                 ${aptDeps.length > 0 ? `
                     <div class="mb-2">
                         <small class="text-muted text-uppercase fw-bold">APT</small>
@@ -467,18 +466,18 @@ function renderFirewallPriority() {
         <div class="card">
             <div class="card-header">
                 <h3 class="card-title mb-0">
-                    <i class="ti ti-shield me-2"></i>Priorità Firewall Moduli
+                    <i class="ti ti-shield me-2"></i>${t('modules.firewallPriority')}
                 </h3>
             </div>
             <div class="card-body">
                 <p class="text-muted small mb-3">
-                    L'ordine dei moduli determina la priorità delle regole firewall. Trascina per riordinare.
+                    ${t('modules.firewallPriorityDesc')}
                 </p>
                 <div class="row">
                     ${Object.entries(chainsStructure).map(([table, parents]) => `
                         <div class="col-12 mb-3">
                             <h5 class="text-uppercase text-muted small mb-2">
-                                Tabella: <span class="text-primary fw-bold">${escapeHtml(table)}</span>
+                                ${t('common.table')}: <span class="text-primary fw-bold">${escapeHtml(table)}</span>
                             </h5>
                             <div class="row g-3">
                                 ${Object.entries(parents).map(([parent, chains]) => `
@@ -488,7 +487,7 @@ function renderFirewallPriority() {
                                         </label>
                                         <ul class="list-group" id="priority-list-${table}-${parent}">
                                             ${chains.map((c, idx) => `
-                                                <li class="list-group-item d-flex align-items-center py-2" 
+                                                <li class="list-group-item d-flex align-items-center py-2"
                                                     data-chain-name="${c.chain_name}" data-priority="${c.priority}">
                                                     <i class="ti ti-grip-vertical cursor-move text-muted me-2"></i>
                                                     <span class="badge bg-azure-lt me-2">${idx + 1}</span>
@@ -526,7 +525,7 @@ function renderFirewallPriority() {
                         });
                         try {
                             await apiPut('/modules/chains/priority', { chains });
-                            showToast('Priorità aggiornata', 'success');
+                            showToast(t('modules.priorityUpdated'), 'success');
                         } catch (e) {
                             showToast(e.message, 'error');
                             await loadModuleChains();

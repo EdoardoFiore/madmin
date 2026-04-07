@@ -119,7 +119,7 @@ async def init_first_user(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Setup già completato: utenti già presenti"
+            detail="Setup already completed: users already present"
         )
 
 
@@ -211,21 +211,21 @@ async def verify_2fa_login(
     if not payload or not payload.get("2fa_pending"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token 2FA non valido o scaduto"
+            detail="Invalid or expired 2FA token"
         )
 
     user = await service.get_user_by_username(session, payload.get("sub"))
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utente non trovato"
+            detail="User not found"
         )
 
     # Refuse locked accounts immediately
     if user.totp_locked:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="L'accesso 2FA è bloccato. Contatta un amministratore per sbloccare l'account."
+            detail="2FA access is locked. Contact an administrator to unlock the account."
         )
 
     user_id_str = str(user.id)
@@ -259,7 +259,7 @@ async def verify_2fa_login(
 
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Codice 2FA non valido ({attempts}/{_2FA_MAX_ATTEMPTS} tentativi)"
+                detail=f"Invalid 2FA code ({attempts}/{_2FA_MAX_ATTEMPTS} attempts)"
             )
         # Backup code used — save updated codes list
         user.backup_codes = new_codes
@@ -378,7 +378,7 @@ async def update_user(
     if user.is_protected and user.id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Il primo utente di sistema può essere modificato solo da se stesso"
+            detail="The system first user can only be modified by themselves"
         )
 
     # Prevent non-superusers from creating superusers
@@ -427,7 +427,7 @@ async def delete_user(
     if user.is_protected:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Il primo utente di sistema non può essere eliminato"
+            detail="The system first user cannot be deleted"
         )
 
     # Revoke any active tokens for this user
@@ -466,13 +466,13 @@ async def disable_user_2fa(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Utente non trovato"
+            detail="User not found"
         )
 
     if user.is_protected and user.id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Il primo utente di sistema può modificare il proprio 2FA solo autonomamente"
+            detail="The system first user can only manage their own 2FA"
         )
 
     # Disable 2FA and clear lock
@@ -505,7 +505,7 @@ async def set_user_permissions(
     if user.id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Non puoi modificare i tuoi stessi permessi"
+            detail="You cannot modify your own permissions"
         )
 
     # Cannot modify superuser permissions (they have all permissions implicitly)
@@ -539,7 +539,7 @@ async def change_own_password(
     if not service.verify_password(data.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password attuale non corretta"
+            detail="Current password is incorrect"
         )
 
     ok, msg = service.validate_password_strength(data.new_password)
@@ -553,7 +553,7 @@ async def change_own_password(
 
     await session.commit()
 
-    return {"message": "Password aggiornata con successo. Effettua nuovamente il login."}
+    return {"message": "Password updated successfully. Please log in again."}
 
 
 # --- 2FA Management ---
@@ -592,7 +592,7 @@ async def setup_2fa(
     if current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="2FA è già attiva. Disattivala prima di configurarla nuovamente."
+            detail="2FA is already active. Disable it before setting it up again."
         )
 
     secret = generate_totp_secret()
@@ -626,27 +626,27 @@ async def enable_2fa(
     if not current_user.totp_secret:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Prima esegui /me/2fa/setup per generare il secret"
+            detail="Run /me/2fa/setup first to generate the secret"
         )
 
     if current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="2FA è già attiva"
+            detail="2FA is already active"
         )
 
     plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
     if not verify_totp(plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Codice non valido. Verifica che l'ora del tuo dispositivo sia corretta."
+            detail="Invalid code. Make sure your device time is correct."
         )
 
     current_user.totp_enabled = True
     session.add(current_user)
     await session.commit()
 
-    return {"message": "2FA attivata con successo"}
+    return {"message": "2FA activated successfully"}
 
 
 @router.delete("/me/2fa/disable")
@@ -662,20 +662,20 @@ async def disable_2fa(
     if not current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="2FA non è attiva"
+            detail="2FA is not active"
         )
 
     # Block non-superusers from disabling enforced 2FA
     if current_user.totp_enforced and not current_user.is_superuser:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="La 2FA è stata forzata dall'amministratore e non può essere disattivata"
+            detail="2FA has been enforced by the administrator and cannot be disabled"
         )
 
     if not service.verify_password(data.password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password non corretta"
+            detail="Incorrect password"
         )
 
     current_user.totp_secret = None
@@ -686,7 +686,7 @@ async def disable_2fa(
     session.add(current_user)
     await session.commit()
 
-    return {"message": "2FA disattivata"}
+    return {"message": "2FA disabled"}
 
 
 @router.post("/me/2fa/backup-codes")
@@ -702,14 +702,14 @@ async def regenerate_backup_codes(
     if not current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="2FA non è attiva"
+            detail="2FA is not active"
         )
 
     plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
     if not verify_totp(plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Codice non valido"
+            detail="Invalid code"
         )
 
     backup_codes_plain = generate_backup_codes()

@@ -5,6 +5,7 @@
 import { apiGet, apiPatch, apiPost, apiDelete } from '../api.js';
 import { showToast, escapeHtml, inputDialog, confirmDialog } from '../utils.js';
 import { checkPermission, applyTheme, getCurrentTheme } from '../app.js';
+import { t, init as i18nInit, getLang } from '../i18n.js';
 
 /**
  * Render the settings view
@@ -18,45 +19,61 @@ export async function render(container) {
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title"><i class="ti ti-palette me-2"></i>Personalizzazione</h3>
+                        <h3 class="card-title"><i class="ti ti-palette me-2"></i>${t('settings.personalization')}</h3>
                     </div>
                     <div class="card-body">
                         <div class="row g-3">
                             <div class="col-md-4">
-                                <label class="form-label">Nome Azienda</label>
+                                <label class="form-label">${t('settings.companyName')}</label>
                                 <div class="input-group">
                                     <input type="text" class="form-control" id="company-name" placeholder="MADMIN" ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? '<button type="button" class="btn btn-outline-secondary" id="reset-company" title="Ripristina predefinito"><i class="ti ti-refresh"></i></button>' : ''}
+                                    ${canManage ? `<button type="button" class="btn btn-outline-secondary" id="reset-company" title="${t('settings.resetDefault')}"><i class="ti ti-refresh"></i></button>` : ''}
                                 </div>
-                                <small class="form-hint">Predefinito: MADMIN</small>
+                                <small class="form-hint">${t('settings.companyNameDefault')}</small>
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">Colore Primario</label>
+                                <label class="form-label">${t('settings.primaryColor')}</label>
                                 <div class="input-group">
                                     <input type="color" class="form-control form-control-color" id="primary-color" ${canManage ? '' : 'disabled'}>
                                     <input type="text" class="form-control" id="primary-color-hex" placeholder="#206bc4" ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? '<button type="button" class="btn btn-outline-secondary" id="reset-color" title="Ripristina predefinito"><i class="ti ti-refresh"></i></button>' : ''}
+                                    ${canManage ? `<button type="button" class="btn btn-outline-secondary" id="reset-color" title="${t('settings.resetDefault')}"><i class="ti ti-refresh"></i></button>` : ''}
                                 </div>
-                                <small class="form-hint">Predefinito: #206bc4</small>
+                                <small class="form-hint">${t('settings.primaryColorDefault')}</small>
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">URL Supporto</label>
+                                <label class="form-label">${t('settings.supportUrl')}</label>
                                 <div class="input-group">
                                     <input type="url" class="form-control" id="support-url" placeholder="https://..." ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? '<button type="button" class="btn btn-outline-secondary" id="reset-support" title="Rimuovi link supporto"><i class="ti ti-x"></i></button>' : ''}
+                                    ${canManage ? `<button type="button" class="btn btn-outline-secondary" id="reset-support" title="${t('settings.remove')}"><i class="ti ti-x"></i></button>` : ''}
                                 </div>
                             </div>
                             <div class="col-md-4 d-flex align-items-end">
                                 <div class="mb-0">
                                     <label class="form-check form-switch">
                                         <input type="checkbox" class="form-check-input" id="dark-mode-toggle">
-                                        <span class="form-check-label">Tema scuro</span>
+                                        <span class="form-check-label">${t('settings.darkMode')}</span>
                                     </label>
-                                    <small class="form-hint">Preferenza personale per utente</small>
+                                    <small class="form-hint">${t('settings.darkModeHint')}</small>
                                 </div>
                             </div>
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.language')}</label>
+                                <select class="form-select" id="system-language" ${canManage ? '' : 'disabled'}>
+                                    <option value="en">English</option>
+                                    <option value="it">Italiano</option>
+                                </select>
+                                <small class="form-hint">${t('settings.languageHint')}</small>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.myLanguage')}</label>
+                                <select class="form-select" id="my-language">
+                                    <option value="en">English</option>
+                                    <option value="it">Italiano</option>
+                                </select>
+                                <small class="form-hint">${t('settings.myLanguageHint')}</small>
+                            </div>
                             <div class="col-md-6">
-                                <label class="form-label">Logo</label>
+                                <label class="form-label">${t('settings.logo')}</label>
                                 <div class="d-flex align-items-center gap-3">
                                     <div id="logo-preview-container" class="border rounded p-2 d-flex align-items-center justify-content-center bg-dark"
                                          style="min-height: 50px; min-width: 120px;">
@@ -69,10 +86,10 @@ export async function render(container) {
                                     ${canManage ? `
                                     <div class="btn-group">
                                         <label class="btn btn-outline-primary btn-sm">
-                                            <i class="ti ti-upload me-1"></i>Carica
+                                            <i class="ti ti-upload me-1"></i>${t('common.upload')}
                                             <input type="file" id="logo-upload" accept="image/*" class="d-none">
                                         </label>
-                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-logo" title="Rimuovi logo">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-logo" title="${t('settings.remove')}">
                                             <i class="ti ti-x"></i>
                                         </button>
                                     </div>
@@ -81,7 +98,7 @@ export async function render(container) {
                                 <small class="form-hint">PNG o SVG, max 200x50px</small>
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label">Favicon</label>
+                                <label class="form-label">${t('settings.favicon')}</label>
                                 <div class="d-flex align-items-center gap-3">
                                     <div id="favicon-preview-container" class="border rounded d-flex align-items-center justify-content-center bg-dark"
                                          style="width: 40px; height: 40px;">
@@ -91,10 +108,10 @@ export async function render(container) {
                                     ${canManage ? `
                                     <div class="btn-group">
                                         <label class="btn btn-outline-primary btn-sm">
-                                            <i class="ti ti-upload me-1"></i>Carica
+                                            <i class="ti ti-upload me-1"></i>${t('common.upload')}
                                             <input type="file" id="favicon-upload" accept="image/*,.ico" class="d-none">
                                         </label>
-                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-favicon" title="Ripristina predefinito">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-favicon" title="${t('settings.resetDefault')}">
                                             <i class="ti ti-refresh"></i>
                                         </button>
                                     </div>
@@ -103,7 +120,7 @@ export async function render(container) {
                                 <small class="form-hint">ICO o PNG 32x32px</small>
                             </div>
                             <div class="col-12">
-                                ${canManage ? '<button class="btn btn-primary" id="save-system">Salva Impostazioni</button>' : ''}
+                                ${canManage ? `<button class="btn btn-primary" id="save-system">${t('settings.saveSettings')}</button>` : ''}
                             </div>
                         </div>
                     </div>
@@ -114,26 +131,26 @@ export async function render(container) {
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title"><i class="ti ti-lock me-2"></i>Sicurezza e Rete</h3>
+                        <h3 class="card-title"><i class="ti ti-lock me-2"></i>${t('settings.networkSecurity')}</h3>
                     </div>
                     <div class="card-body">
                         <div class="row g-3">
                              <!-- Port Configuration -->
                             <div class="col-md-6">
-                                <label class="form-label">Porta di Gestione (HTTPS)</label>
+                                <label class="form-label">${t('settings.managementPort')}</label>
                                 <div class="input-group">
                                     <input type="number" class="form-control" id="network-port" placeholder="7443" ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? '<button class="btn btn-warning" id="save-port">Cambia Porta</button>' : ''}
+                                    ${canManage ? `<button class="btn btn-warning" id="save-port">${t('settings.changePort')}</button>` : ''}
                                 </div>
                                 <small class="form-hint text-warning">
                                     <i class="ti ti-alert-triangle me-1"></i>
-                                    Il cambio porta interromperà la connessione. Dovrai ricollegarti manualmente.
+                                    ${t('settings.portWarning')}
                                 </small>
                             </div>
 
                             <!-- SSL Certificate Info -->
                             <div class="col-md-6">
-                                 <label class="form-label">Certificato SSL</label>
+                                 <label class="form-label">${t('settings.sslCert')}</label>
                                  <div class="card card-sm">
                                     <div class="card-body">
                                         <div class="d-flex align-items-center mb-2">
@@ -145,10 +162,10 @@ export async function render(container) {
                                         ${canManage ? `
                                         <div class="btn-group w-100">
                                             <button class="btn btn-outline-primary btn-sm" id="renew-ssl">
-                                                <i class="ti ti-refresh me-1"></i>Rinnova Self-Signed
+                                                <i class="ti ti-refresh me-1"></i>${t('settings.renewSelfSigned')}
                                             </button>
                                             <button class="btn btn-outline-secondary btn-sm" id="btn-upload-ssl-modal">
-                                                <i class="ti ti-upload me-1"></i>Carica Custom
+                                                <i class="ti ti-upload me-1"></i>${t('settings.uploadCustomCert')}
                                             </button>
                                         </div>
                                         ` : ''}
@@ -164,28 +181,28 @@ export async function render(container) {
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title"><i class="ti ti-mail me-2"></i>Configurazione Email (SMTP)</h3>
+                        <h3 class="card-title"><i class="ti ti-mail me-2"></i>${t('settings.smtpConfig')}</h3>
                     </div>
                     <div class="card-body">
                         <div class="row g-3">
                             <div class="col-md-4">
-                                <label class="form-label">Server SMTP</label>
+                                <label class="form-label">${t('settings.smtpServer')}</label>
                                 <input type="text" class="form-control" id="smtp-host" placeholder="smtp.gmail.com" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Porta</label>
+                                <label class="form-label">${t('settings.smtpPort')}</label>
                                 <input type="number" class="form-control" id="smtp-port" value="587" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
-                                <label class="form-label">Crittografia</label>
+                                <label class="form-label">${t('settings.smtpEncryption')}</label>
                                 <select class="form-select" id="smtp-encryption" ${canManage ? '' : 'disabled'}>
-                                    <option value="none">Nessuna</option>
+                                    <option value="none">${t('settings.encryptionNone')}</option>
                                     <option value="tls" selected>TLS (STARTTLS)</option>
                                     <option value="ssl">SSL/TLS</option>
                                 </select>
                             </div>
                             <div class="col-md-5">
-                                <label class="form-label">URL Pubblico Download VPN</label>
+                                <label class="form-label">${t('settings.publicDownloadUrl')}</label>
                                 <div class="input-group">
                                     <span class="input-group-text text-muted">https://</span>
                                     <input type="text" class="form-control" id="public-download-host" placeholder="192.168.1.1 o dominio.it" ${canManage ? '' : 'disabled'}>
@@ -200,26 +217,26 @@ export async function render(container) {
                                 </small>
                             </div>
                             <div class="col-md-3">
-                                <label class="form-label">Username SMTP</label>
+                                <label class="form-label">${t('settings.smtpUsername')}</label>
                                 <input type="text" class="form-control" id="smtp-username" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
-                                <label class="form-label">Password SMTP</label>
+                                <label class="form-label">${t('settings.smtpPassword')}</label>
                                 <input type="password" class="form-control" id="smtp-password" placeholder="••••••••" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
-                                <label class="form-label">Email Mittente</label>
+                                <label class="form-label">${t('settings.senderEmail')}</label>
                                 <input type="email" class="form-control" id="sender-email" placeholder="noreply@example.com" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
-                                <label class="form-label">Nome Mittente</label>
+                                <label class="form-label">${t('settings.senderName')}</label>
                                 <input type="text" class="form-control" id="sender-name" placeholder="MADMIN" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-12">
                                 ${canManage ? `
-                                <button class="btn btn-primary" id="save-smtp">Salva</button>
+                                <button class="btn btn-primary" id="save-smtp">${t('common.save')}</button>
                                 <button class="btn btn-outline-secondary ms-2" id="test-smtp">
-                                    <i class="ti ti-send me-1"></i>Test Invio
+                                    <i class="ti ti-send me-1"></i>${t('settings.sendTestEmail')}
                                 </button>
                                 ` : ''}
                             </div>
@@ -232,19 +249,19 @@ export async function render(container) {
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup & Migrazione</h3>
+                        <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup & ${t('settings.restore')}</h3>
                         <div class="card-actions">
                             ${canManage ? `
                             <div class="btn-group">
                                 <button class="btn btn-primary btn-sm" id="backup-local-btn">
-                                    <i class="ti ti-device-floppy me-1"></i>Backup Locale
+                                    <i class="ti ti-device-floppy me-1"></i>${t('settings.localBackup')}
                                 </button>
                                 <button class="btn btn-cyan btn-sm" id="backup-remote-btn" style="display:none">
-                                    <i class="ti ti-cloud-upload me-1"></i>Backup Remoto
+                                    <i class="ti ti-cloud-upload me-1"></i>${t('settings.remoteBackup')}
                                 </button>
                             </div>
                             <button class="btn btn-warning btn-sm ms-2" id="open-import-modal-btn">
-                                <i class="ti ti-file-import me-1"></i>Ripristina...
+                                <i class="ti ti-file-import me-1"></i>${t('settings.restore')}...
                             </button>
                             ` : ''}
                         </div>
@@ -254,82 +271,82 @@ export async function render(container) {
                         <div class="alert alert-info mb-3" id="backup-status-alert">
                             <div class="d-flex align-items-center">
                                 <i class="ti ti-info-circle me-2"></i>
-                                <span id="backup-last-status">Caricamento...</span>
+                                <span id="backup-last-status">${t('common.loading')}</span>
                             </div>
                         </div>
 
                         <!-- Scheduled Backup Settings -->
-                        <h4 class="mb-3"><i class="ti ti-clock me-2"></i>Backup Programmato</h4>
+                        <h4 class="mb-3"><i class="ti ti-clock me-2"></i>${t('settings.scheduledBackup')}</h4>
                         <div class="row g-3">
                             <div class="col-md-2">
                                 <label class="form-check form-switch">
                                     <input class="form-check-input" type="checkbox" id="backup-enabled" ${canManage ? '' : 'disabled'}>
-                                    <span class="form-check-label">Automatico</span>
+                                    <span class="form-check-label">${t('settings.automatic')}</span>
                                 </label>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Frequenza</label>
+                                <label class="form-label">${t('settings.backupFrequency')}</label>
                                 <select class="form-select" id="backup-frequency" ${canManage ? '' : 'disabled'}>
-                                    <option value="daily">Giornaliero</option>
-                                    <option value="weekly">Settimanale</option>
+                                    <option value="daily">${t('settings.daily')}</option>
+                                    <option value="weekly">${t('settings.weekly')}</option>
                                 </select>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Ora</label>
+                                <label class="form-label">${t('settings.backupTime')}</label>
                                 <input type="time" class="form-control" id="backup-time" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Retention (giorni)</label>
+                                <label class="form-label">${t('settings.retention')}</label>
                                 <input type="number" class="form-control" id="backup-retention" min="0" placeholder="30" ${canManage ? '' : 'disabled'}>
-                                <small class="form-hint">0 = illimitato</small>
+                                <small class="form-hint">${t('settings.retentionUnlimited')}</small>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Protocollo</label>
+                                <label class="form-label">${t('settings.remoteProtocol')}</label>
                                 <select class="form-select" id="backup-protocol" ${canManage ? '' : 'disabled'}>
                                     <option value="sftp">SFTP</option>
                                     <option value="ftp">FTP</option>
                                 </select>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Porta</label>
+                                <label class="form-label">${t('settings.remotePort')}</label>
                                 <input type="number" class="form-control" id="backup-port" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">Host Remoto</label>
+                                <label class="form-label">${t('settings.remoteHost')}</label>
                                 <input type="text" class="form-control" id="backup-host" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">Percorso</label>
+                                <label class="form-label">${t('settings.remotePath')}</label>
                                 <input type="text" class="form-control" id="backup-path" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Utente</label>
+                                <label class="form-label">${t('settings.remoteUser')}</label>
                                 <input type="text" class="form-control" id="backup-user" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">Password</label>
+                                <label class="form-label">${t('settings.remotePassword')}</label>
                                 <input type="password" class="form-control" id="backup-password" placeholder="••••••••" ${canManage ? '' : 'disabled'}>
                             </div>
                             <div class="col-12">
-                                ${canManage ? '<button class="btn btn-primary" id="save-backup">Salva Configurazione</button>' : ''}
+                                ${canManage ? `<button class="btn btn-primary" id="save-backup">${t('settings.saveConfig')}</button>` : ''}
                             </div>
                         </div>
                         
                         <!-- Local Backup History -->
                         <hr class="my-4">
-                        <h4 class="mb-3"><i class="ti ti-history me-2"></i>Backup Locali</h4>
+                        <h4 class="mb-3"><i class="ti ti-history me-2"></i>${t('settings.localBackups')}</h4>
                         <div class="table-responsive">
                             <table class="table table-vcenter">
                                 <thead>
                                     <tr>
-                                        <th>File</th>
-                                        <th>Dimensione</th>
-                                        <th>Data</th>
-                                        <th class="text-end">Azioni</th>
+                                        <th>${t('settings.backupTableFile')}</th>
+                                        <th>${t('settings.fileSize')}</th>
+                                        <th>${t('settings.fileDate')}</th>
+                                        <th class="text-end">${t('common.actions')}</th>
                                     </tr>
                                 </thead>
                                 <tbody id="backup-history-body">
-                                    <tr><td colspan="4" class="text-center text-muted">Caricamento...</td></tr>
+                                    <tr><td colspan="4" class="text-center text-muted">${t('common.loading')}</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -337,10 +354,10 @@ export async function render(container) {
                     
                     <!-- Remote Backup History -->
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <h4 class="card-title m-0"><i class="ti ti-cloud me-2"></i>Backup Remoti</h4>
+                        <h4 class="card-title m-0"><i class="ti ti-cloud me-2"></i>${t('settings.remoteBackups')}</h4>
                         ${canManage ? `
-                        <button class="btn btn-sm btn-outline-warning" onclick="cleanupRemoteBackups()" title="Applica retention">
-                            <i class="ti ti-trash me-1"></i>Pulizia
+                        <button class="btn btn-sm btn-outline-warning" onclick="cleanupRemoteBackups()" title="${t('settings.cleanupBtn')}">
+                            <i class="ti ti-trash me-1"></i>${t('settings.cleanupBtn')}
                         </button>` : ''}
                     </div>
                     <div class="card-body pt-2">
@@ -355,7 +372,7 @@ export async function render(container) {
                                     </tr>
                                 </thead>
                                 <tbody id="remote-backup-history-body">
-                                    <tr><td colspan="4" class="text-center text-muted">Caricamento...</td></tr>
+                                    <tr><td colspan="4" class="text-center text-muted">${t('common.loading')}</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -368,21 +385,21 @@ export async function render(container) {
                 <div class="modal-dialog modal-dialog-centered" role="document">
                     <div class="modal-content">
                         <div class="modal-header">
-                            <h5 class="modal-title"><i class="ti ti-file-import me-2"></i>Ripristina Configurazione</h5>
+                            <h5 class="modal-title"><i class="ti ti-file-import me-2"></i>${t('settings.restoreConfig')}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
                         <div class="modal-body">
                             <!-- Upload -->
-                            <h4 class="mb-2">Carica file</h4>
+                            <h4 class="mb-2">${t('settings.uploadFile')}</h4>
                             <div class="border border-2 border-dashed rounded-3 p-3 text-center mb-3" id="import-dropzone"
                                  style="cursor: pointer; transition: all 0.2s;">
                                 <i class="ti ti-file-upload" style="font-size: 1.5rem; color: var(--tblr-primary);"></i>
-                                <p class="mt-1 mb-0 text-muted small">Trascina un file .tar.gz o clicca per selezionare</p>
+                                <p class="mt-1 mb-0 text-muted small">${t('settings.dropzoneHint')}</p>
                                 <input type="file" id="import-file-input" accept=".tar.gz" class="d-none">
                             </div>
 
                             <!-- SCP Files -->
-                            <h4 class="mb-2"><i class="ti ti-server me-1"></i>File da SCP</h4>
+                            <h4 class="mb-2"><i class="ti ti-server me-1"></i>${t('settings.scpFiles')}</h4>
                             <p class="text-muted small mb-2">
                                 Carica via SCP in <code>/opt/madmin/data/imports/</code>
                             </p>
@@ -394,34 +411,34 @@ export async function render(container) {
                                 <div class="progress">
                                     <div class="progress-bar progress-bar-indeterminate"></div>
                                 </div>
-                                <small class="text-muted">Importazione in corso...</small>
+                                <small class="text-muted">${t('settings.importProgress')}</small>
                             </div>
                         </div>
                         <div class="modal-footer">
-                            <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">Chiudi</button>
+                            <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">${t('common.close')}</button>
                         </div>
                     </div>
                 </div>
             </div>
-            
+
             <!-- System Management -->
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title"><i class="ti ti-server me-2"></i>Gestione Sistema</h3>
+                        <h3 class="card-title"><i class="ti ti-server me-2"></i>${t('settings.systemManagement')}</h3>
                     </div>
                     <div class="card-body">
                         <div class="row g-3 align-items-center">
                             <div class="col-md-8">
-                                <h4 class="mb-1">Riavvia MADMIN</h4>
-                                <p class="text-muted mb-0">Riavvia il servizio MADMIN per applicare eventuali modifiche di configurazione.</p>
+                                <h4 class="mb-1">${t('settings.restartMadmin')}</h4>
+                                <p class="text-muted mb-0">${t('settings.restartService')}</p>
                             </div>
                             <div class="col-md-4 text-end">
                                 ${canManage ? `
                                 <button class="btn btn-warning" id="btn-restart-madmin">
-                                    <i class="ti ti-refresh me-1"></i>Riavvia MADMIN
+                                    <i class="ti ti-refresh me-1"></i>${t('settings.restartMadmin')}
                                 </button>
-                                ` : '<span class="text-muted">Permessi insufficienti</span>'}
+                                ` : `<span class="text-muted">${t('settings.insufficientPerms')}</span>`}
                             </div>
                         </div>
                     </div>
@@ -435,34 +452,34 @@ export async function render(container) {
           <div class="modal-dialog modal-dialog-centered" role="document">
             <div class="modal-content">
               <div class="modal-header">
-                <h5 class="modal-title">Carica Certificato SSL Custom</h5>
+                <h5 class="modal-title">${t('settings.uploadCustomCertTitle')}</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
               </div>
               <div class="modal-body">
                 <div class="mb-3">
-                  <label class="form-label">Certificato (server.crt)</label>
+                  <label class="form-label">${t('settings.certFile')}</label>
                   <input type="file" class="form-control" id="upload-ssl-crt" accept=".crt,.pem,.cer">
-                  <small class="form-hint">Certificato pubblico X.509 (PEM)</small>
+                  <small class="form-hint">${t('settings.certFileHint')}</small>
                 </div>
                 <div class="mb-3">
-                  <label class="form-label">Chiave Privata (server.key)</label>
+                  <label class="form-label">${t('settings.keyFile')}</label>
                   <input type="file" class="form-control" id="upload-ssl-key" accept=".key,.pem">
-                  <small class="form-hint">Chiave privata RSA (senza password)</small>
+                  <small class="form-hint">${t('settings.keyFileHint')}</small>
                 </div>
                 <div class="mb-3">
-                  <label class="form-label">CA Bundle/Chain (Opzionale)</label>
+                  <label class="form-label">${t('settings.caFile')}</label>
                   <input type="file" class="form-control" id="upload-ssl-ca" accept=".crt,.pem,.ca-bundle">
-                  <small class="form-hint">Certificati intermedi per la catena di fiducia</small>
+                  <small class="form-hint">${t('settings.caFileHint')}</small>
                 </div>
                 <div class="alert alert-warning">
                     <i class="ti ti-alert-triangle me-1"></i>
-                    <strong>Attenzione:</strong> Il caricamento riavvierà il servizio web. La connessione verrà interrotta temporaneamente.
+                    ${t('settings.sslUploadWarning')}
                 </div>
               </div>
               <div class="modal-footer">
-                <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">Annulla</button>
+                <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">${t('common.cancel')}</button>
                 <button type="button" class="btn btn-primary ms-auto" id="confirm-upload-ssl">
-                  <i class="ti ti-upload me-1"></i>Carica e Riavvia
+                  <i class="ti ti-upload me-1"></i>${t('settings.uploadAndRestart')}
                 </button>
               </div>
             </div>
@@ -489,8 +506,8 @@ async function loadSettings() {
         // SSL Info
         if (network.certificate) {
             document.getElementById('ssl-issuer').textContent = `Issuer: ${network.certificate.issuer}`;
-            const validTo = new Date(network.certificate.valid_to).toLocaleDateString('it-IT');
-            document.getElementById('ssl-validity').textContent = `Scadenza: ${validTo} (${network.certificate.days_remaining} giorni rimanenti)`;
+            const validTo = new Date(network.certificate.valid_to).toLocaleDateString(undefined);
+            document.getElementById('ssl-validity').textContent = t('settings.sslExpiry', { date: validTo, days: network.certificate.days_remaining });
 
             const badge = document.getElementById('ssl-status-badge');
             if (network.certificate.is_self_signed) {
@@ -502,7 +519,7 @@ async function loadSettings() {
             }
         } else {
             document.getElementById('ssl-status-badge').className = 'badge bg-secondary-lt me-2';
-            document.getElementById('ssl-status-badge').textContent = 'Nessuno';
+            document.getElementById('ssl-status-badge').textContent = t('common.none');
         }
 
         // System
@@ -516,6 +533,12 @@ async function loadSettings() {
         if (darkToggle) {
             darkToggle.checked = getCurrentTheme() === 'dark';
         }
+
+        // Language dropdowns
+        const systemLangEl = document.getElementById('system-language');
+        if (systemLangEl) systemLangEl.value = system.default_language || 'en';
+        const myLangEl = document.getElementById('my-language');
+        if (myLangEl) myLangEl.value = getLang();
 
         // Logo preview - show uploaded image if URL exists (toggle img/default visibility)
         if (system.logo_url) {
@@ -576,12 +599,12 @@ async function loadSettings() {
         const statusEl = document.getElementById('backup-last-status');
         const alertEl = document.getElementById('backup-status-alert');
         if (backup.last_run_time) {
-            const date = new Date(backup.last_run_time).toLocaleString('it-IT');
-            const status = backup.last_run_status === 'success' ? 'completato' : backup.last_run_status;
-            statusEl.textContent = `Ultimo backup: ${date} - ${status}`;
+            const date = new Date(backup.last_run_time).toLocaleString(undefined);
+            const status = backup.last_run_status === 'success' ? t('common.success').toLowerCase() : backup.last_run_status;
+            statusEl.textContent = t('settings.lastBackupStatus', { date, status });
             alertEl.className = backup.last_run_status === 'success' ? 'alert alert-success mb-3' : 'alert alert-warning mb-3';
         } else {
-            statusEl.textContent = 'Nessun backup eseguito';
+            statusEl.textContent = t('settings.noBackupRun');
         }
 
         // Show remote backup button only if remote is configured
@@ -598,7 +621,7 @@ async function loadSettings() {
         setupExportImportListeners();
 
     } catch (error) {
-        showToast('Errore caricamento impostazioni', 'error');
+        showToast(t('settings.settingsLoadError'), 'error');
     }
 }
 
@@ -627,7 +650,24 @@ function setupEventListeners() {
             allPrefs.theme = newTheme;
             await apiPatch('/auth/me/preferences', { preferences: JSON.stringify(allPrefs) });
         } catch (err) {
-            showToast('Errore salvataggio tema', 'error');
+            showToast(t('settings.themeError'), 'error');
+        }
+    });
+
+    // Personal language change
+    document.getElementById('my-language')?.addEventListener('change', async (e) => {
+        const newLang = e.target.value;
+        try {
+            const user = await apiGet('/auth/me');
+            const allPrefs = JSON.parse(user.preferences || '{}');
+            allPrefs.lang = newLang;
+            await apiPatch('/auth/me/preferences', { preferences: JSON.stringify(allPrefs) });
+            localStorage.setItem('madmin_lang', newLang);
+            await i18nInit(newLang);
+            showToast(t('settings.settingsSaved'), 'success');
+            setTimeout(() => location.reload(), 800);
+        } catch (err) {
+            showToast(t('settings.themeError'), 'error');
         }
     });
 
@@ -636,7 +676,7 @@ function setupEventListeners() {
         const defaultColor = '#206bc4';
         colorPicker.value = defaultColor;
         colorHex.value = defaultColor;
-        showToast('Colore ripristinato al predefinito', 'info');
+        showToast(t('settings.colorReset'), 'info');
     });
 
     // Reset company name to default
@@ -645,7 +685,7 @@ function setupEventListeners() {
         companyInput.value = 'MADMIN';
         try {
             await apiPatch('/settings/system', { company_name: 'MADMIN' });
-            showToast('Nome azienda ripristinato', 'success');
+            showToast(t('settings.companyNameReset'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
 
@@ -655,7 +695,7 @@ function setupEventListeners() {
         supportInput.value = '';
         try {
             await apiPatch('/settings/system', { support_url: '' });
-            showToast('URL supporto rimosso', 'success');
+            showToast(t('settings.supportUrlRemoved'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
 
@@ -670,7 +710,7 @@ function setupEventListeners() {
                 logoImg.classList.add('d-none');
                 logoDefault.classList.remove('d-none');
             }
-            showToast('Logo rimosso', 'success');
+            showToast(t('settings.logoRemoved'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
 
@@ -685,7 +725,7 @@ function setupEventListeners() {
                 faviconImg.classList.add('d-none');
                 faviconDefault.classList.remove('d-none');
             }
-            showToast('Favicon ripristinata al predefinito', 'success');
+            showToast(t('settings.faviconReset'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
 
@@ -717,14 +757,14 @@ function setupEventListeners() {
                     body: formData
                 });
 
-                if (!response.ok) throw new Error('Upload fallito');
+                if (!response.ok) throw new Error('Upload failed');
                 const data = await response.json();
 
                 // Save URL to settings
                 await apiPatch('/settings/system', { logo_url: data.url });
-                showToast('Logo caricato e salvato', 'success');
+                showToast(t('settings.logoUploaded'), 'success');
             } catch (err) {
-                showToast('Errore caricamento: ' + err.message, 'error');
+                showToast(t('settings.uploadError', { error: err.message }), 'error');
             }
         }
     });
@@ -757,14 +797,14 @@ function setupEventListeners() {
                     body: formData
                 });
 
-                if (!response.ok) throw new Error('Upload fallito');
+                if (!response.ok) throw new Error('Upload failed');
                 const data = await response.json();
 
                 // Save URL to settings
                 await apiPatch('/settings/system', { favicon_url: data.url });
-                showToast('Favicon caricata e salvata', 'success');
+                showToast(t('settings.faviconUploaded'), 'success');
             } catch (err) {
-                showToast('Errore caricamento: ' + err.message, 'error');
+                showToast(t('settings.uploadError', { error: err.message }), 'error');
             }
         }
     });
@@ -775,11 +815,13 @@ function setupEventListeners() {
             const companyName = document.getElementById('company-name').value || 'MADMIN';
             const primaryColor = document.getElementById('primary-color').value;
             const supportUrl = document.getElementById('support-url').value || '';
+            const systemLang = document.getElementById('system-language')?.value || 'en';
 
             await apiPatch('/settings/system', {
                 company_name: companyName,
                 primary_color: primaryColor,
-                support_url: supportUrl
+                support_url: supportUrl,
+                default_language: systemLang
             });
 
             // Apply changes immediately to UI
@@ -810,7 +852,7 @@ function setupEventListeners() {
                 }
             }
 
-            showToast('Impostazioni salvate', 'success');
+            showToast(t('settings.settingsSaved'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
 
@@ -834,36 +876,36 @@ function setupEventListeners() {
             if (pwd) data.smtp_password = pwd;
 
             await apiPatch('/settings/smtp', data);
-            showToast('Impostazioni SMTP salvate', 'success');
+            showToast(t('settings.smtpSaved'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
 
     // Test SMTP - use modal for recipient email
     document.getElementById('test-smtp')?.addEventListener('click', async () => {
         const recipient = await inputDialog(
-            'Test Email SMTP',
-            'Email destinatario',
-            'esempio@dominio.it',
+            t('settings.smtpTestTitle'),
+            t('settings.smtpTestRecipient'),
+            'user@example.com',
             'email'
         );
         if (!recipient) return;
 
         // Validate email format
         if (!recipient.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
-            showToast('Inserisci un indirizzo email valido', 'error');
+            showToast(t('settings.smtpInvalidEmail'), 'error');
             return;
         }
 
         const btn = document.getElementById('test-smtp');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Invio...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.smtpTestSending')}`;
         btn.disabled = true;
 
         try {
             await apiPost('/settings/smtp/test', { recipient_email: recipient });
-            showToast(`Email di test inviata a ${recipient}`, 'success');
+            showToast(t('settings.smtpTestSent', { recipient }), 'success');
         } catch (e) {
-            showToast('Errore invio: ' + e.message, 'error');
+            showToast(t('settings.smtpSendError', { error: e.message }), 'error');
         } finally {
             btn.innerHTML = originalText;
             btn.disabled = false;
@@ -888,33 +930,33 @@ function setupEventListeners() {
             if (pwd) data.remote_password = pwd;
 
             await apiPatch('/settings/backup', data);
-            showToast('Impostazioni backup salvate', 'success');
+            showToast(t('settings.backupSaved'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
 
     // Restart MADMIN service
     document.getElementById('btn-restart-madmin')?.addEventListener('click', async () => {
         const confirmed = await confirmDialog(
-            'Riavvia MADMIN',
-            'Sei sicuro di voler riavviare MADMIN? La connessione sarà temporaneamente interrotta.',
-            'Riavvia',
+            t('settings.restartMadmin'),
+            t('settings.restartConfirm'),
+            t('settings.restartMadmin'),
             'btn-warning'
         );
         if (!confirmed) return;
 
         const btn = document.getElementById('btn-restart-madmin');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Riavvio...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.portChanging')}`;
         btn.disabled = true;
 
         try {
             await apiPost('/services/madmin.service/restart', {});
-            showToast('Servizio MADMIN riavviato. La pagina si ricaricherà tra 5 secondi...', 'success');
+            showToast(t('settings.serviceRestarted'), 'success');
             setTimeout(() => {
                 location.reload();
             }, 5000);
         } catch (e) {
-            showToast('Errore riavvio: ' + e.message, 'error');
+            showToast(t('settings.restartError', { error: e.message }), 'error');
             btn.innerHTML = originalText;
             btn.disabled = false;
         }
@@ -924,15 +966,15 @@ function setupEventListeners() {
     document.getElementById('backup-local-btn')?.addEventListener('click', async () => {
         const btn = document.getElementById('backup-local-btn');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Backup...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.backupInProgress')}`;
         btn.disabled = true;
 
         try {
-            const result = await apiPost('/backup/export', {});
-            showToast('Backup locale completato!', 'success');
+            await apiPost('/backup/export', {});
+            showToast(t('settings.backupCompleted'), 'success');
             await loadBackupHistory();
         } catch (e) {
-            showToast('Errore backup: ' + e.message, 'error');
+            showToast(t('settings.backupError', { error: e.message }), 'error');
         } finally {
             btn.innerHTML = originalText;
             btn.disabled = false;
@@ -943,20 +985,20 @@ function setupEventListeners() {
     document.getElementById('backup-remote-btn')?.addEventListener('click', async () => {
         const btn = document.getElementById('backup-remote-btn');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Backup...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.backupInProgress')}`;
         btn.disabled = true;
 
         try {
             const result = await apiPost('/backup/run', {});
             if (result.success) {
-                showToast('Backup remoto completato!', 'success');
+                showToast(t('settings.remoteBackupCompleted'), 'success');
                 await loadBackupHistory();
                 await loadRemoteBackupHistory();
             } else {
-                showToast('Backup con errori: ' + (result.errors || []).join(', '), 'warning');
+                showToast(t('settings.remoteBackupWithErrors', { errors: (result.errors || []).join(', ') }), 'warning');
             }
         } catch (e) {
-            showToast('Errore backup remoto: ' + e.message, 'error');
+            showToast(t('settings.remoteBackupError', { error: e.message }), 'error');
         } finally {
             btn.innerHTML = originalText;
             btn.disabled = false;
@@ -973,25 +1015,25 @@ function setupEventListeners() {
     document.getElementById('save-port')?.addEventListener('click', async () => {
         const port = parseInt(document.getElementById('network-port').value);
         if (!port || port < 1 || port > 65535) {
-            showToast('Porta non valida (1-65535)', 'error');
+            showToast(t('settings.portInvalid'), 'error');
             return;
         }
 
         const confirmed = await confirmDialog(
-            'Cambia Porta di Gestione',
-            `<p>Stai per spostare il pannello alla porta <strong>${port}</strong>.</p>
+            t('settings.changePortConfirmTitle'),
+            `<p>${t('settings.portChangeMsg', { port })}</p>
             <div class="alert alert-warning mb-2">
-                <div class="fw-bold mb-1"><i class="ti ti-shield-lock me-1"></i>Firewall — azione richiesta</div>
-                <p class="mb-1">Prima di continuare, assicurati di aver aperto la porta nel firewall:</p>
+                <div class="fw-bold mb-1"><i class="ti ti-shield-lock me-1"></i>Firewall</div>
+                <p class="mb-1">${t('settings.portFirewallWarning')}</p>
                 <code class="d-block p-1 bg-dark text-white rounded small">iptables -A INPUT -p tcp --dport ${port} -j ACCEPT</code>
-                <p class="mt-1 mb-0 small text-muted">Senza questa regola il pannello non sarà più raggiungibile.</p>
+                <p class="mt-1 mb-0 small text-muted">${t('settings.portFirewallNoAccess')}</p>
             </div>
             <div class="alert alert-danger mb-0">
                 <i class="ti ti-plug-connected-x me-1"></i>
-                La connessione attuale verrà interrotta. Ricollegati a:<br>
+                ${t('settings.portDisconnectWarning')}<br>
                 <strong>https://${location.hostname}:${port}</strong>
             </div>`,
-            'Cambia e Riavvia',
+            t('settings.portChangeAndRestart'),
             'btn-warning',
             true,
             ''
@@ -1000,15 +1042,15 @@ function setupEventListeners() {
 
         const btn = document.getElementById('save-port');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Riavvio...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.portChanging')}`;
         btn.disabled = true;
 
         try {
             await apiPost('/settings/network/port', { port });
-            showToast(`Porta cambiata a ${port}. Il servizio si sta riavviando...`, 'success');
+            showToast(t('settings.portChanged2', { port }), 'success');
             // Do not reload, connection will be lost
         } catch (e) {
-            showToast('Errore cambio porta: ' + e.message, 'error');
+            showToast(t('settings.portChangeError', { error: e.message }), 'error');
             btn.innerHTML = originalText;
             btn.disabled = false;
         }
@@ -1017,9 +1059,9 @@ function setupEventListeners() {
     // Network - Renew SSL
     document.getElementById('renew-ssl')?.addEventListener('click', async () => {
         const confirmed = await confirmDialog(
-            'Rinnova Certificato',
-            'Vuoi rigenerare il certificato Self-Signed per altri 10 anni? Il servizio web verrà riavviato.',
-            'Rinnova',
+            t('settings.regenerateCert'),
+            t('settings.regenerateCertConfirm'),
+            t('settings.renewSelfSigned'),
             'btn-primary'
         );
         if (!confirmed) return;
@@ -1031,10 +1073,10 @@ function setupEventListeners() {
 
         try {
             await apiPost('/settings/network/ssl/renew', {});
-            showToast('Certificato rinnovato. Ricarica la pagina se necessario.', 'success');
+            showToast(t('settings.certRegenerated'), 'success');
             setTimeout(() => location.reload(), 5000);
         } catch (e) {
-            showToast('Errore rinnovo: ' + e.message, 'error');
+            showToast(t('settings.certRenewError', { error: e.message }), 'error');
             btn.innerHTML = originalText;
             btn.disabled = false;
         }
@@ -1053,13 +1095,13 @@ function setupEventListeners() {
         const caFile = document.getElementById('upload-ssl-ca').files[0];
 
         if (!crtFile || !keyFile) {
-            showToast('Seleziona sia il certificato (.crt) che la chiave privata (.key)', 'warning');
+            showToast(t('settings.sslSelectBoth'), 'warning');
             return;
         }
 
         const btn = document.getElementById('confirm-upload-ssl');
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caricamento...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.certUploading')}`;
         btn.disabled = true;
 
         try {
@@ -1078,16 +1120,16 @@ function setupEventListeners() {
 
             if (!response.ok) {
                 const err = await response.json();
-                throw new Error(err.detail || 'Upload fallito');
+                throw new Error(err.detail || 'Upload failed');
             }
 
-            showToast('Certificato caricato con successo. Riavvio in corso...', 'success');
+            showToast(t('settings.certUploadSuccess'), 'success');
             const modal = bootstrap.Modal.getInstance(document.getElementById('modal-upload-ssl'));
             modal.hide();
             setTimeout(() => location.reload(), 5000);
 
         } catch (e) {
-            showToast('Errore: ' + e.message, 'error');
+            showToast(t('settings.certUploadError', { error: e.message }), 'error');
         } finally {
             btn.innerHTML = originalText;
             btn.disabled = false;
@@ -1110,7 +1152,7 @@ async function loadBackupHistory() {
         const history = await apiGet('/backup/history');
 
         if (history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun backup disponibile</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">${t('settings.noLocalBackups')}</td></tr>`;
             return;
         }
 
@@ -1118,22 +1160,22 @@ async function loadBackupHistory() {
             <tr>
                 <td><i class="ti ti-file-zip me-2"></i>${backup.filename}</td>
                 <td>${formatFileSize(backup.size_bytes)}</td>
-                <td>${new Date(backup.created_at).toLocaleString('it-IT')}</td>
+                <td>${new Date(backup.created_at).toLocaleString(undefined)}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-ghost-warning" onclick="restoreFromLocalBackup('${backup.filename}')" title="Ripristina">
+                    <button class="btn btn-sm btn-ghost-warning" onclick="restoreFromLocalBackup('${backup.filename}')" title="${t('settings.restore')}">
                         <i class="ti ti-refresh"></i>
                     </button>
-                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadLocalBackup('${backup.filename}')" title="Scarica">
+                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadLocalBackup('${backup.filename}')" title="${t('common.download')}">
                         <i class="ti ti-download"></i>
                     </button>
-                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteBackup('${backup.filename}')" title="Elimina">
+                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteBackup('${backup.filename}')" title="${t('common.delete')}">
                         <i class="ti ti-trash"></i>
                     </button>
                 </td>
             </tr>
         `).join('');
     } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Errore caricamento storico</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-danger">${t('settings.backupHistoryError')}</td></tr>`;
     }
 }
 
@@ -1166,7 +1208,7 @@ function setupExportImportListeners() {
             if (file && file.name.endsWith('.tar.gz')) {
                 handleImportFile(file);
             } else {
-                showToast('Il file deve essere un archivio .tar.gz', 'warning');
+                showToast(t('settings.fileNotTarGz'), 'warning');
             }
         });
 
@@ -1196,13 +1238,13 @@ async function handleImportFile(file) {
 
         if (!response.ok) {
             const err = await response.json();
-            throw new Error(err.detail || 'Preview fallito');
+            throw new Error(err.detail || 'Preview failed');
         }
 
         const preview = await response.json();
         showImportPreviewModal(preview, file);
     } catch (e) {
-        showToast('Errore preview: ' + e.message, 'error');
+        showToast(t('settings.previewError', { error: e.message }), 'error');
     }
 }
 
@@ -1210,7 +1252,7 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
     const versionWarning = preview.source_version !== preview.current_version
         ? `<div class="alert alert-warning mb-3">
             <i class="ti ti-alert-triangle me-2"></i>
-            <strong>Versione diversa!</strong> Sorgente: ${preview.source_version} → Corrente: ${preview.current_version}
+            <strong>${t('settings.versionMismatch', { source: preview.source_version, current: preview.current_version })}</strong>
            </div>`
         : '';
 
@@ -1218,8 +1260,8 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
     const coreUsers = (preview.core?.users || []).map(u =>
         `<tr>
             <td><i class="ti ti-user me-1"></i>${u.username}</td>
-            <td>${u.is_superuser ? '<span class="badge bg-red-lt">Super Admin</span>' : '<span class="badge bg-blue-lt">Utente</span>'}</td>
-            <td>${u.is_active ? '<span class="badge bg-green-lt">Attivo</span>' : '<span class="badge bg-secondary-lt">Disattivo</span>'}</td>
+            <td>${u.is_superuser ? '<span class="badge bg-red-lt">Super Admin</span>' : `<span class="badge bg-blue-lt">${t('menu.users')}</span>`}</td>
+            <td>${u.is_active ? `<span class="badge bg-green-lt">${t('common.active')}</span>` : `<span class="badge bg-secondary-lt">${t('common.inactive')}</span>`}</td>
         </tr>`
     ).join('');
 
@@ -1249,33 +1291,33 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
             <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
                 <div class="modal-content">
                     <div class="modal-header bg-primary-lt">
-                        <h5 class="modal-title"><i class="ti ti-file-import me-2"></i>Anteprima Importazione</h5>
+                        <h5 class="modal-title"><i class="ti ti-file-import me-2"></i>${t('settings.importPreviewTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         ${versionWarning}
-                        
+
                         <div class="d-flex gap-3 mb-3">
-                            <span class="badge bg-blue-lt">Versione: ${preview.source_version}</span>
-                            <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString('it-IT')}</span>
+                            <span class="badge bg-blue-lt">v${preview.source_version}</span>
+                            <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString(undefined)}</span>
                         </div>
 
                         <!-- Core Section -->
                         <h4 class="mb-2"><i class="ti ti-settings me-2"></i>Core</h4>
-                        
+
                         <div class="row g-3 mb-3">
                             <div class="col-12">
                                 <div class="card card-sm">
                                     <div class="card-body">
                                         <div class="d-flex align-items-center mb-2">
                                             <span class="avatar avatar-sm bg-green-lt me-2"><i class="ti ti-users"></i></span>
-                                            <strong>Utenti (${preview.core?.users?.length || 0})</strong>
+                                            <strong>${t('settings.importUsers', { count: preview.core?.users?.length || 0 })}</strong>
                                         </div>
                                         ${coreUsers ? `
                                         <table class="table table-sm table-vcenter mb-0">
-                                            <thead><tr><th>Username</th><th>Ruolo</th><th>Stato</th></tr></thead>
+                                            <thead><tr><th>Username</th><th>${t('users.role')}</th><th>${t('common.status')}</th></tr></thead>
                                             <tbody>${coreUsers}</tbody>
-                                        </table>` : '<span class="text-muted">Nessun utente</span>'}
+                                        </table>` : `<span class="text-muted">${t('settings.importNoUsers')}</span>`}
                                     </div>
                                 </div>
                             </div>
@@ -1284,7 +1326,7 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
                                     <div class="card-body">
                                         <div class="d-flex align-items-center">
                                             <span class="avatar avatar-sm bg-orange-lt me-2"><i class="ti ti-shield"></i></span>
-                                            <strong>Regole Firewall</strong>
+                                            <strong>${t('settings.importFirewallRules')}</strong>
                                             <span class="badge bg-orange-lt ms-auto">${preview.core?.firewall_rules || 0}</span>
                                         </div>
                                     </div>
@@ -1295,7 +1337,7 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
                                     <div class="card-body">
                                         <div class="d-flex align-items-center">
                                             <span class="avatar avatar-sm bg-cyan-lt me-2"><i class="ti ti-adjustments"></i></span>
-                                            <strong>Impostazioni</strong>
+                                            <strong>${t('settings.importCoreSettings')}</strong>
                                             <span class="badge bg-cyan-lt ms-auto">${preview.core?.settings?.company_name || '-'}</span>
                                         </div>
                                     </div>
@@ -1305,20 +1347,19 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
 
                         <!-- Modules Section -->
                         ${modulesHtml ? `
-                        <h4 class="mb-2"><i class="ti ti-puzzle me-2"></i>Moduli</h4>
+                        <h4 class="mb-2"><i class="ti ti-puzzle me-2"></i>${t('settings.importModules')}</h4>
                         <div class="row g-3">${modulesHtml}</div>
                         ` : ''}
 
                         <div class="alert alert-warning mt-3 mb-0">
                             <i class="ti ti-alert-circle me-2"></i>
-                            <strong>Attenzione!</strong> L'importazione sovrascriverà le regole firewall e i dati dei moduli esistenti.
-                            I moduli non attivi verranno attivati automaticamente.
+                            ${t('settings.importWarningOverwrite')}
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${t('common.cancel')}</button>
                         <button type="button" class="btn btn-primary" id="confirm-import-btn">
-                            <i class="ti ti-file-import me-1"></i>Importa
+                            <i class="ti ti-file-import me-1"></i>${t('settings.importConfirm')}
                         </button>
                     </div>
                 </div>
@@ -1366,24 +1407,21 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
             if (progressEl) progressEl.classList.add('d-none');
 
             if (result.success || response.ok) {
-                let summary = 'Importazione completata: ';
-                summary += `${result.users_imported || 0} utenti, `;
-                summary += `${result.firewall_rules_imported || 0} regole firewall, `;
-                summary += `${result.modules_imported?.length || 0} moduli`;
-
-                if (result.warnings?.length > 0) {
-                    summary += '. Avvisi: ' + result.warnings.join(', ');
-                }
-
-                showToast(summary + '. MADMIN si riavvierà automaticamente...', 'success');
+                const summary = t('settings.importCompleted', {
+                    users: result.users_imported || 0,
+                    rules: result.firewall_rules_imported || 0,
+                    modules: result.modules_imported?.length || 0
+                });
+                const warnings = result.warnings?.length > 0 ? '. ' + result.warnings.join(', ') : '';
+                showToast(summary + warnings + '. ' + t('settings.importRestarting'), 'success');
                 setTimeout(() => location.reload(), 5000);
             } else {
-                const errors = result.result?.errors || result.errors || ['Errore sconosciuto'];
-                showToast('Importazione fallita: ' + errors.join(', '), 'error');
+                const errors = result.result?.errors || result.errors || [t('common.error')];
+                showToast(t('settings.importFailed', { errors: errors.join(', ') }), 'error');
             }
         } catch (err) {
             if (progressEl) progressEl.classList.add('d-none');
-            showToast('Errore importazione: ' + err.message, 'error');
+            showToast(t('settings.importError', { error: err.message }), 'error');
         }
     });
 }
@@ -1398,7 +1436,7 @@ async function loadScpFiles() {
         const files = await apiGet('/backup/import/files');
 
         if (files.length === 0) {
-            container.innerHTML = '<div class="text-muted small">Nessun file disponibile</div>';
+            container.innerHTML = `<div class="text-muted small">${t('settings.noScpFiles')}</div>`;
             return;
         }
 
@@ -1410,12 +1448,12 @@ async function loadScpFiles() {
                     <span class="badge bg-secondary-lt ms-1">${formatFileSize(f.size_bytes)}</span>
                 </div>
                 <button class="btn btn-sm btn-outline-primary" onclick="importScpFile('${f.filename}')">
-                    <i class="ti ti-file-import me-1"></i>Importa
+                    <i class="ti ti-file-import me-1"></i>${t('common.import')}
                 </button>
             </div>
         `).join('');
     } catch (e) {
-        container.innerHTML = '<div class="text-muted small">Errore caricamento</div>';
+        container.innerHTML = `<div class="text-muted small">${t('settings.scpLoadError')}</div>`;
     }
 }
 
@@ -1428,13 +1466,13 @@ window.importScpFile = async function (filename) {
 
         if (!response.ok) {
             const err = await response.json();
-            throw new Error(err.detail || 'Preview fallito');
+            throw new Error(err.detail || 'Preview failed');
         }
 
         const preview = await response.json();
         showImportPreviewModal(preview, null, filename);
     } catch (e) {
-        showToast('Errore preview: ' + e.message, 'error');
+        showToast(t('settings.previewError', { error: e.message }), 'error');
     }
 };
 // ============== RESTORE FROM LOCAL BACKUP ==============
@@ -1448,13 +1486,13 @@ window.restoreFromLocalBackup = async function (filename) {
 
         if (!response.ok) {
             const err = await response.json();
-            throw new Error(err.detail || 'Preview fallito');
+            throw new Error(err.detail || 'Preview failed');
         }
 
         const preview = await response.json();
         showRestorePreviewModal(preview, filename);
     } catch (e) {
-        showToast('Errore preview: ' + e.message, 'error');
+        showToast(t('settings.previewError', { error: e.message }), 'error');
     }
 };
 
@@ -1462,16 +1500,18 @@ function showRestorePreviewModal(preview, filename) {
     const versionWarning = preview.source_version !== preview.current_version
         ? `<div class="alert alert-warning mb-3">
             <i class="ti ti-alert-triangle me-2"></i>
-            <strong>Versione diversa!</strong> Sorgente: ${preview.source_version} → Corrente: ${preview.current_version}
+            ${t('settings.versionMismatch', {source: preview.source_version, current: preview.current_version})}
            </div>`
         : '';
 
-    const coreUsers = (preview.core?.users || []).map(u =>
-        `<tr>
+    const coreUsers = (preview.core?.users || []).map(u => {
+        const roleLabel = u.is_superuser ? 'Super Admin' : t('logs.user');
+        const roleColor = u.is_superuser ? 'bg-red-lt' : 'bg-blue-lt';
+        return `<tr>
             <td><i class="ti ti-user me-1"></i>${u.username}</td>
-            <td>${u.is_superuser ? '<span class="badge bg-red-lt">Super Admin</span>' : '<span class="badge bg-blue-lt">Utente</span>'}</td>
-        </tr>`
-    ).join('');
+            <td><span class="badge ${roleColor}">${roleLabel}</span></td>
+        </tr>`;
+    }).join('');
 
     const modulesHtml = Object.entries(preview.modules || {}).map(([modId, modData]) => {
         const tablesHtml = Object.entries(modData.tables || {}).map(([table, count]) =>
@@ -1498,7 +1538,7 @@ function showRestorePreviewModal(preview, filename) {
             <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
                 <div class="modal-content">
                     <div class="modal-header bg-warning-lt">
-                        <h5 class="modal-title"><i class="ti ti-refresh me-2"></i>Conferma Ripristino</h5>
+                        <h5 class="modal-title"><i class="ti ti-refresh me-2"></i>${t('settings.restoreConfirmTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -1506,7 +1546,7 @@ function showRestorePreviewModal(preview, filename) {
 
                         <div class="d-flex gap-2 mb-3">
                             <span class="badge bg-blue-lt">v${preview.source_version}</span>
-                            <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString('it-IT')}</span>
+                            <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString(undefined)}</span>
                             <span class="badge bg-secondary-lt">${filename}</span>
                         </div>
 
@@ -1516,7 +1556,7 @@ function showRestorePreviewModal(preview, filename) {
                                     <div class="card-body py-2">
                                         <div class="d-flex align-items-center">
                                             <span class="avatar avatar-xs bg-green-lt me-2"><i class="ti ti-users"></i></span>
-                                            <strong class="small">Utenti (${preview.core?.users?.length || 0})</strong>
+                                            <strong class="small">${t('settings.importUsers', {count: preview.core?.users?.length || 0})}</strong>
                                         </div>
                                         ${coreUsers ? `<table class="table table-sm mb-0 mt-1"><tbody>${coreUsers}</tbody></table>` : ''}
                                     </div>
@@ -1535,7 +1575,7 @@ function showRestorePreviewModal(preview, filename) {
                                 <div class="card card-sm">
                                     <div class="card-body py-2 d-flex align-items-center">
                                         <span class="avatar avatar-xs bg-cyan-lt me-2"><i class="ti ti-adjustments"></i></span>
-                                        <strong class="small">Impostazioni</strong>
+                                        <strong class="small">${t('settings.importCoreSettings')}</strong>
                                         <span class="badge bg-cyan-lt ms-auto">${preview.core?.settings?.company_name || '-'}</span>
                                     </div>
                                 </div>
@@ -1543,19 +1583,19 @@ function showRestorePreviewModal(preview, filename) {
                         </div>
 
                         ${modulesHtml ? `
-                        <h4 class="mb-2"><i class="ti ti-puzzle me-1"></i>Moduli</h4>
+                        <h4 class="mb-2"><i class="ti ti-puzzle me-1"></i>${t('settings.importModules')}</h4>
                         <div class="row g-2">${modulesHtml}</div>
                         ` : ''}
 
                         <div class="alert alert-danger mt-3 mb-0">
                             <i class="ti ti-alert-circle me-2"></i>
-                            <strong>Attenzione!</strong> Il ripristino sovrascriverà i dati correnti.
+                            <strong>${t('common.warning')}!</strong> ${t('settings.restoreWarning')}
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${t('common.cancel')}</button>
                         <button type="button" class="btn btn-warning" id="confirm-restore-btn">
-                            <i class="ti ti-refresh me-1"></i>Ripristina
+                            <i class="ti ti-refresh me-1"></i>${t('settings.restoreConfirmBtn')}
                         </button>
                     </div>
                 </div>
@@ -1571,24 +1611,26 @@ function showRestorePreviewModal(preview, filename) {
 
     document.getElementById('confirm-restore-btn').addEventListener('click', async () => {
         modal.hide();
-        showToast('Ripristino in corso...', 'info');
+        showToast(t('settings.restoreInProgress'), 'info');
 
         try {
             const result = await apiPost(`/backup/restore/${encodeURIComponent(filename)}`, {});
 
             if (result.success !== false) {
-                let summary = 'Ripristino completato: ';
-                summary += `${result.users_imported || 0} utenti, `;
-                summary += `${result.firewall_rules_imported || 0} regole firewall, `;
-                summary += `${result.modules_imported?.length || 0} moduli`;
-
-                showToast(summary + '. MADMIN si riavvierà automaticamente...', 'success');
+                showToast(
+                    t('settings.restoreCompleted', {
+                        users: result.users_imported || 0,
+                        rules: result.firewall_rules_imported || 0,
+                        modules: result.modules_imported?.length || 0
+                    }) + '. ' + t('settings.importRestarting'),
+                    'success'
+                );
                 setTimeout(() => location.reload(), 5000);
             } else {
-                showToast('Ripristino fallito: ' + (result.errors || []).join(', '), 'error');
+                showToast(t('settings.restoreFailed', { errors: (result.errors || []).join(', ') }), 'error');
             }
         } catch (err) {
-            showToast('Errore ripristino: ' + err.message, 'error');
+            showToast(t('settings.restoreError', { error: err.message }), 'error');
         }
     });
 }
@@ -1596,9 +1638,9 @@ function showRestorePreviewModal(preview, filename) {
 
 window.deleteBackup = async function (filename) {
     const confirmed = await confirmDialog(
-        'Elimina File',
-        `Eliminare definitivamente ${filename}?`,
-        'Elimina',
+        t('settings.deleteFileTitle'),
+        t('settings.deleteFileConfirm', { filename }),
+        t('common.delete'),
         'btn-danger'
     );
     if (!confirmed) return;
@@ -1608,10 +1650,10 @@ window.deleteBackup = async function (filename) {
             method: 'DELETE',
             headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
         });
-        showToast('File eliminato', 'success');
+        showToast(t('settings.fileDeleted'), 'success');
         await loadBackupHistory();
     } catch (e) {
-        showToast('Errore eliminazione: ' + e.message, 'error');
+        showToast(t('settings.fileDeleteError', { error: e.message }), 'error');
     }
 };
 
@@ -1621,7 +1663,7 @@ async function downloadLocalBackup(filename) {
             headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
         });
 
-        if (!response.ok) throw new Error('Download fallito');
+        if (!response.ok) throw new Error('Download failed');
 
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -1647,7 +1689,7 @@ async function loadRemoteBackupHistory() {
     const protocol = document.getElementById('backup-protocol')?.value;
     const host = document.getElementById('backup-host')?.value;
     if (!protocol || protocol === 'none' || !host) {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Remote non configurato</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">${t('settings.remoteNotConfigured')}</td></tr>`;
         return;
     }
 
@@ -1655,7 +1697,7 @@ async function loadRemoteBackupHistory() {
         const history = await apiGet('/backup/remote/list');
 
         if (history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Nessun backup remoto</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">${t('settings.noRemoteBackups')}</td></tr>`;
             return;
         }
 
@@ -1663,66 +1705,66 @@ async function loadRemoteBackupHistory() {
             <tr>
                 <td><i class="ti ti-cloud me-2"></i>${backup.filename}</td>
                 <td>${formatFileSize(backup.size_bytes)}</td>
-                <td>${backup.mtime ? new Date(backup.mtime).toLocaleString('it-IT') : '-'}</td>
+                <td>${backup.mtime ? new Date(backup.mtime).toLocaleString(undefined) : '-'}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadRemoteBackup('${backup.filename}')" title="Scarica in locale">
+                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadRemoteBackup('${backup.filename}')" title="${t('common.download')}">
                         <i class="ti ti-download"></i>
                     </button>
-                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteRemoteBackup('${backup.filename}')" title="Elimina">
+                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteRemoteBackup('${backup.filename}')" title="${t('common.delete')}">
                         <i class="ti ti-trash"></i>
                     </button>
                 </td>
             </tr>
         `).join('');
     } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Remote non configurato</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">${t('settings.remoteNotConfigured')}</td></tr>`;
     }
 }
 
 window.downloadRemoteBackup = async function (filename) {
     try {
-        showToast('Download in corso...', 'info');
+        showToast(t('settings.downloadInProgress'), 'info');
         const result = await apiPost(`/backup/remote/download/${filename}`, {});
-        showToast('File scaricato in locale', 'success');
+        showToast(t('settings.downloadedLocally'), 'success');
         await loadBackupHistory();
     } catch (e) {
-        showToast('Errore download: ' + e.message, 'error');
+        showToast(t('settings.downloadError', { error: e.message }), 'error');
     }
 };
 
 window.deleteRemoteBackup = async function (filename) {
     const confirmed = await confirmDialog(
-        'Elimina Backup Remoto',
-        `Eliminare definitivamente ${filename} dal server remoto?`,
-        'Elimina',
+        t('settings.deleteRemoteConfirmTitle'),
+        t('settings.deleteRemoteConfirmMsg', { filename }),
+        t('common.delete'),
         'btn-danger'
     );
     if (!confirmed) return;
 
     try {
         await apiDelete(`/backup/remote/delete/${filename}`);
-        showToast('Backup remoto eliminato', 'success');
+        showToast(t('settings.remoteBackupDeleted'), 'success');
         await loadRemoteBackupHistory();
     } catch (e) {
-        showToast('Errore eliminazione: ' + e.message, 'error');
+        showToast(t('settings.fileDeleteError', { error: e.message }), 'error');
     }
 };
 
 window.cleanupRemoteBackups = async function () {
     const confirmed = await confirmDialog(
-        'Pulizia Backup Remoti',
-        'Applicare la policy di retention ed eliminare i backup più vecchi?',
-        'Applica',
+        t('settings.cleanupConfirmTitle'),
+        t('settings.cleanupConfirmMsg'),
+        t('settings.cleanupApply'),
         'btn-warning'
     );
     if (!confirmed) return;
 
     try {
         const result = await apiPost('/backup/remote/cleanup', {});
-        showToast(`Pulizia completata: ${result.deleted_count} file eliminati`, 'success');
+        showToast(t('settings.cleanupDone', { count: result.deleted_count }), 'success');
         await loadRemoteBackupHistory();
     } catch (e) {
-        showToast('Errore pulizia: ' + e.message, 'error');
+        showToast(t('settings.cleanupError', { error: e.message }), 'error');
     }
 };
 

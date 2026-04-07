@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find backend:*)",
+      "Bash(grep -on \"'[A-Z][^']*[àáâãäåèéêëìíîïòóôõöùúûüç][^']*'\" frontend/assets/js/views/*.js)",
+      "Bash(grep -on \"'[A-Z][^']*[àáâãäåèéêëìíîïòóôõöùúûüç][^']*'\" backend/modules/*/static/views/*.js)"
+    ]
+  }
+}
