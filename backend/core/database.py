@@ -67,12 +67,6 @@ async def init_db() -> None:
         await conn.run_sync(SQLModel.metadata.create_all)
         logger.info("Database tables created successfully")
 
-        # Column migrations for existing tables (idempotent ALTER TABLE IF NOT EXISTS)
-        await conn.execute(text(
-            "ALTER TABLE systemsettings ADD COLUMN IF NOT EXISTS default_language VARCHAR(10) DEFAULT 'en'"
-        ))
-        logger.info("Column migrations applied")
-
 
 async def check_db_connection() -> bool:
     """
