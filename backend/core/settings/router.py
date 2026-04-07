@@ -68,6 +68,7 @@ async def get_system_settings(
         logo_url=settings.logo_url,
         favicon_url=settings.favicon_url,
         support_url=settings.support_url,
+        default_language=getattr(settings, 'default_language', 'en') or 'en',
         updated_at=settings.updated_at
     )
 
@@ -107,6 +108,7 @@ async def update_system_settings(
         logo_url=settings.logo_url,
         favicon_url=settings.favicon_url,
         support_url=settings.support_url,
+        default_language=getattr(settings, 'default_language', 'en') or 'en',
         updated_at=settings.updated_at
     )
 

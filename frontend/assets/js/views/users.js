@@ -171,7 +171,7 @@ export async function render(container) {
                                     <small class="form-hint" id="password-hint">${t('users.passwordHintNew')}</small>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label" id="password-confirm-label">Conferma Password</label>
+                                    <label class="form-label" id="password-confirm-label">${t('users.confirmPassword')}</label>
                                     <input type="password" class="form-control" id="user-password-confirm" minlength="8">
                                     <small class="form-hint text-danger d-none" id="password-mismatch">${t('users.passwordsDoNotMatch')}</small>
                                 </div>

@@ -152,7 +152,7 @@ class SystemSettingsResponse(SQLModel):
     logo_url: Optional[str]
     favicon_url: Optional[str]
     support_url: Optional[str]
-    default_language: str
+    default_language: str = "en"
     updated_at: datetime
 
 
