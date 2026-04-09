@@ -8,6 +8,7 @@ import {
     apiPost, apiPut, showToast, escapeHtml,
     CRYPTO_OPTIONS, selectOptions, parseProposal
 } from '/static/modules/strongswan/views/utils.js';
+import { t } from '/static/js/i18n.js';
 
 // Custom CSS for rounded inputs
 const formStyles = `
@@ -90,7 +91,7 @@ function renderProposalPair(index, enc = 'aes256', integ = 'sha256') {
                     <button type="button" class="btn btn-sm btn-outline-danger btn-remove-proposal" data-pair-id="${id}">
                         <i class="ti ti-trash"></i>
                     </button>
-                ` : '<span class="text-muted small">Primario</span>'}
+                ` : `<span class="text-muted small">${t('strongswan.phase2PrimaryProposal')}</span>`}
             </div>
         </div>
     `;
@@ -114,7 +115,7 @@ function renderPfsCheckboxes(selectedGroups = []) {
         <div class="form-check form-check-inline">
             <input class="form-check-input pfs-checkbox" type="checkbox" 
                    value="" id="pfs-none" ${selectedGroups.length === 0 || selectedGroups.includes('') ? 'checked' : ''}>
-            <label class="form-check-label small" for="pfs-none">Nessuno</label>
+            <label class="form-check-label small" for="pfs-none">${t('strongswan.phase2PfsNone')}</label>
         </div>
     `;
     html += groups.map(g => `
@@ -152,7 +153,7 @@ export function renderChildSaForm(tunnelId, onSave, initialData = null) {
         <div class="card bg-light phase2-form" id="new-phase2-form">
             <div class="card-header py-2 d-flex justify-content-between align-items-center">
                 <h6 class="card-title mb-0">
-                    <i class="ti ti-${isEdit ? 'edit' : 'plus'} me-1"></i>${isEdit ? 'Modifica' : 'Nuova'} Phase 2
+                    <i class="ti ti-${isEdit ? 'edit' : 'plus'} me-1"></i>${isEdit ? t('strongswan.phase2FormEditTitle') : t('strongswan.phase2FormNewTitle')}
                 </h6>
                 <div class="btn-group btn-group-sm">
                     <button type="button" class="btn btn-success btn-save-phase2" 
@@ -168,7 +169,7 @@ export function renderChildSaForm(tunnelId, onSave, initialData = null) {
                 <!-- Basic Options -->
                 <div class="row g-2 mb-3">
                     <div class="col-md-4">
-                        <label class="form-label small mb-1">Nome *</label>
+                        <label class="form-label small mb-1">${t('strongswan.phase2NameLabel')}</label>
                         <input type="text" class="form-control form-control-sm" id="phase2-name" 
                                value="${escapeHtml(data.name || '')}" placeholder="es. LAN-to-LAN" required>
                     </div>
@@ -187,7 +188,7 @@ export function renderChildSaForm(tunnelId, onSave, initialData = null) {
                 <!-- Advanced Toggle -->
                 <div class="mb-2">
                     <a class="text-muted small" data-bs-toggle="collapse" href="#phase2-advanced" role="button" aria-expanded="true">
-                        <i class="ti ti-settings me-1"></i>Opzioni Avanzate (Crittografia Multipla)
+                        <i class="ti ti-settings me-1"></i>${t('strongswan.phase2AdvancedOptions')}
                     </a>
                 </div>
                 
@@ -198,7 +199,7 @@ export function renderChildSaForm(tunnelId, onSave, initialData = null) {
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <h6 class="small text-muted mb-0">Phase 2 Proposal (ESP)</h6>
                             <button type="button" class="btn btn-sm btn-outline-primary" id="btn-add-proposal">
-                                <i class="ti ti-plus"></i> Aggiungi Proposal
+                                <i class="ti ti-plus"></i> ${t('strongswan.phase2AddProposal')}
                             </button>
                         </div>
                         
@@ -260,20 +261,20 @@ export function setupChildSaFormEvents(tunnelId, onSave) {
         document.getElementById('phase2-remote').classList.remove('is-invalid');
 
         if (!name || !localTs || !remoteTs) {
-            showToast('Compila tutti i campi obbligatori', 'error');
+            showToast(t('strongswan.phase2ValidationRequired'), 'error');
             return;
         }
 
         // CIDR validation
         if (!isValidCidr(localTs)) {
             document.getElementById('phase2-local').classList.add('is-invalid');
-            showToast('Local Subnet non è un CIDR valido (es. 192.168.1.0/24)', 'error');
+            showToast(t('strongswan.phase2ValidationLocalCidr'), 'error');
             return;
         }
 
         if (!isValidCidr(remoteTs)) {
             document.getElementById('phase2-remote').classList.add('is-invalid');
-            showToast('Remote Subnet non è un CIDR valido (es. 10.0.0.0/24)', 'error');
+            showToast(t('strongswan.phase2ValidationRemoteCidr'), 'error');
             return;
         }
 
@@ -325,11 +326,11 @@ export function setupChildSaFormEvents(tunnelId, onSave) {
                 // UPDATE
                 // Note: using PUT as per router definition
                 await apiPut(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}`, payload);
-                showToast('Phase 2 aggiornata', 'success');
+                showToast(t('strongswan.phase2Updated'), 'success');
             } else {
                 // CREATE
                 await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children`, payload);
-                showToast('Phase 2 creata', 'success');
+                showToast(t('strongswan.phase2Created'), 'success');
             }
             if (onSave) onSave();
         } catch (err) {

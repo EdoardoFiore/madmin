@@ -5,6 +5,7 @@
  * Layout matches WireGuard firewall module for consistency.
  */
 
+import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '/static/js/api.js';
 import { showToast, confirmDialog, loadingSpinner, isValidCIDR, escapeHtml } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
@@ -78,13 +79,13 @@ function render(container) {
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <div class="d-flex align-items-center gap-2">
-                            <h4 class="card-title mb-0">Gruppi</h4>
-                            <i class="ti ti-info-circle text-muted" data-bs-toggle="tooltip" 
-                               title="L'ordine dei gruppi determina la priorità nel firewall. I gruppi in alto hanno priorità maggiore (le loro regole vengono valutate prima). Trascina per riordinare."></i>
+                            <h4 class="card-title mb-0">${t('openvpn.groups')}</h4>
+                            <i class="ti ti-info-circle text-muted" data-bs-toggle="tooltip"
+                               title="${t('openvpn.groupTooltip')}"></i>
                         </div>
                         ${canManageGroups ? `
                         <button class="btn btn-sm btn-primary" id="btn-new-group">
-                            <i class="ti ti-plus me-1"></i>Nuovo
+                            <i class="ti ti-plus me-1"></i>${t('openvpn.newGroup')}
                         </button>` : ''}
                     </div>
                     <div class="list-group list-group-flush" id="groups-list">
@@ -106,22 +107,22 @@ function render(container) {
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Nuovo Gruppo</h5>
+                        <h5 class="modal-title">${t('openvpn.newGroupTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">Nome</label>
-                            <input type="text" class="form-control" id="new-group-name" placeholder="Amministratori">
+                            <label class="form-label">${t('openvpn.groupName')}</label>
+                            <input type="text" class="form-control" id="new-group-name" placeholder="${t('openvpn.groupNamePlaceholder')}">
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Descrizione</label>
-                            <input type="text" class="form-control" id="new-group-desc" placeholder="Opzionale">
+                            <label class="form-label">${t('openvpn.groupDescription')}</label>
+                            <input type="text" class="form-control" id="new-group-desc" placeholder="${t('openvpn.groupDescPlaceholder')}">
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-create-group">Crea</button>
+                        <button class="btn btn-secondary" data-bs-dismiss="modal">${t('openvpn.cancel')}</button>
+                        <button class="btn btn-primary" id="btn-create-group">${t('openvpn.create')}</button>
                     </div>
                 </div>
             </div>
@@ -132,18 +133,18 @@ function render(container) {
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Aggiungi Membro</h5>
+                        <h5 class="modal-title">${t('openvpn.addMemberTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <select class="form-select" id="member-client-select">
-                            <option value="">Seleziona client...</option>
+                            <option value="">${t('openvpn.selectClient')}</option>
                             ${clients.filter(c => !c.revoked).map(c => `<option value="${c.id}">${c.name} (${c.allocated_ip})</option>`).join('')}
                         </select>
                     </div>
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-confirm-add-member">Aggiungi</button>
+                        <button class="btn btn-secondary" data-bs-dismiss="modal">${t('openvpn.cancel')}</button>
+                        <button class="btn btn-primary" id="btn-confirm-add-member">${t('openvpn.addMember')}</button>
                     </div>
                 </div>
             </div>
@@ -154,22 +155,22 @@ function render(container) {
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Nuova Regola</h5>
+                        <h5 class="modal-title">${t('openvpn.newRuleTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="row mb-3">
                             <div class="col-6">
-                                <label class="form-label">Azione</label>
+                                <label class="form-label">${t('openvpn.ruleAction')}</label>
                                 <select class="form-select" id="rule-action">
                                     <option value="ACCEPT">ACCEPT</option>
                                     <option value="DROP">DROP</option>
                                 </select>
                             </div>
                             <div class="col-6">
-                                <label class="form-label">Protocollo</label>
+                                <label class="form-label">${t('openvpn.ruleProtocol')}</label>
                                 <select class="form-select" id="rule-protocol">
-                                    <option value="all">Tutti</option>
+                                    <option value="all">${t('openvpn.allProtocols')}</option>
                                     <option value="tcp">TCP</option>
                                     <option value="udp">UDP</option>
                                     <option value="icmp">ICMP</option>
@@ -178,22 +179,22 @@ function render(container) {
                         </div>
                         <div class="row mb-3">
                             <div class="col-8">
-                                <label class="form-label">Destinazione</label>
+                                <label class="form-label">${t('openvpn.destination')}</label>
                                 <input type="text" class="form-control" id="rule-destination" placeholder="0.0.0.0/0">
                             </div>
                             <div class="col-4" id="port-field-container">
-                                <label class="form-label">Porta</label>
+                                <label class="form-label">${t('openvpn.rulePort')}</label>
                                 <input type="text" class="form-control" id="rule-port" placeholder="80">
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Descrizione</label>
-                            <input type="text" class="form-control" id="rule-description" placeholder="Opzionale">
+                            <label class="form-label">${t('openvpn.ruleDescription')}</label>
+                            <input type="text" class="form-control" id="rule-description" placeholder="${t('openvpn.groupDescPlaceholder')}">
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-create-rule">Crea</button>
+                        <button class="btn btn-secondary" data-bs-dismiss="modal">${t('openvpn.cancel')}</button>
+                        <button class="btn btn-primary" id="btn-create-rule">${t('openvpn.create')}</button>
                     </div>
                 </div>
             </div>
@@ -205,7 +206,7 @@ function render(container) {
 
 function renderGroupsList() {
     if (groups.length === 0) {
-        return '<div class="list-group-item text-muted text-center py-3">Nessun gruppo</div>';
+        return `<div class="list-group-item text-muted text-center py-3">${t('openvpn.noGroups')}</div>`;
     }
 
     return groups.map(g => `
@@ -215,7 +216,7 @@ function renderGroupsList() {
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
                         <strong>${g.name}</strong>
-                        <small class="d-block ${g.id === currentGroupId ? 'text-reset opacity-75' : 'text-muted'}">${g.description || 'Nessuna descrizione'}</small>
+                        <small class="d-block ${g.id === currentGroupId ? 'text-reset opacity-75' : 'text-muted'}">${g.description || t('openvpn.noDescription')}</small>
                     </div>
                     <div class="d-flex gap-1">
                         <span class="badge ${g.id === currentGroupId ? 'bg-white text-primary' : 'bg-blue-lt text-blue'}">${g.member_count} <i class="ti ti-users"></i></span>
@@ -232,7 +233,7 @@ function renderNoGroupSelected() {
         <div class="card">
             <div class="card-body text-center py-5 text-muted">
                 <i class="ti ti-users-group" style="font-size: 3rem;"></i>
-                <p class="mt-3 mb-0">Seleziona un gruppo per gestirne membri e regole</p>
+                <p class="mt-3 mb-0">${t('openvpn.selectGroup')}</p>
             </div>
         </div>
     `;
@@ -259,10 +260,10 @@ function renderGroupDetails() {
         <!-- Members -->
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0"><i class="ti ti-users me-2"></i>Membri</h5>
+                <h5 class="card-title mb-0"><i class="ti ti-users me-2"></i>${t('openvpn.members')}</h5>
                 ${canManageGroups ? `
                 <button class="btn btn-sm btn-primary" id="btn-show-add-member">
-                    <i class="ti ti-user-plus me-1"></i>Aggiungi
+                    <i class="ti ti-user-plus me-1"></i>${t('openvpn.addMember')}
                 </button>` : ''}
             </div>
             <div class="card-body" id="members-container">${loadingSpinner()}</div>
@@ -271,10 +272,10 @@ function renderGroupDetails() {
         <!-- Rules -->
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0"><i class="ti ti-shield me-2"></i>Regole Firewall</h5>
+                <h5 class="card-title mb-0"><i class="ti ti-shield me-2"></i>${t('openvpn.firewallRules')}</h5>
                 ${canManageGroups ? `
                 <button class="btn btn-sm btn-primary" id="btn-add-rule">
-                    <i class="ti ti-plus me-1"></i>Nuova Regola
+                    <i class="ti ti-plus me-1"></i>${t('openvpn.newRule')}
                 </button>` : ''}
             </div>
             <div class="card-body" id="rules-container">${loadingSpinner()}</div>
@@ -303,7 +304,7 @@ function renderMembers(members) {
     if (!container) return;
 
     if (members.length === 0) {
-        container.innerHTML = '<p class="text-muted mb-0">Nessun membro nel gruppo</p>';
+        container.innerHTML = `<p class="text-muted mb-0">${t('openvpn.noMembers')}</p>`;
         return;
     }
 
@@ -327,7 +328,7 @@ function renderRules(rules) {
     if (!container) return;
 
     if (rules.length === 0) {
-        container.innerHTML = '<p class="text-muted mb-0">Nessuna regola definita. Verrà usata la policy di default.</p>';
+        container.innerHTML = `<p class="text-muted mb-0">${t('openvpn.noRules')}</p>`;
         return;
     }
 
@@ -337,11 +338,11 @@ function renderRules(rules) {
                 <tr>
                     ${canManageGroups ? '<th style="width: 30px"></th>' : ''}
                     <th style="width: 40px">#</th>
-                    <th>Azione</th>
-                    <th>Proto</th>
-                    <th>Destinazione</th>
-                    <th>Porta</th>
-                    <th>Note</th>
+                    <th>${t('openvpn.action')}</th>
+                    <th>${t('openvpn.proto')}</th>
+                    <th>${t('openvpn.destination')}</th>
+                    <th>${t('openvpn.rulePort')}</th>
+                    <th>${t('openvpn.notes')}</th>
                     ${canManageGroups ? '<th class="w-1"></th>' : ''}
                 </tr>
             </thead>
@@ -398,13 +399,13 @@ function setupEventHandlers(container) {
         const description = document.getElementById('new-group-desc').value.trim();
 
         if (!name) {
-            showToast('Inserisci un nome', 'error');
+            showToast(t('openvpn.insertName'), 'error');
             return;
         }
 
         try {
             await apiPost(`${MODULE_API}/instances/${currentInstanceId}/groups`, { name, description });
-            showToast('Gruppo creato', 'success');
+            showToast(t('openvpn.groupCreated'), 'success');
             bootstrap.Modal.getInstance(document.getElementById('modal-new-group'))?.hide();
 
             groups = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/groups`);
@@ -416,10 +417,10 @@ function setupEventHandlers(container) {
 
     // Delete group
     document.getElementById('btn-delete-group')?.addEventListener('click', async () => {
-        if (await confirmDialog('Elimina Gruppo', 'Eliminare questo gruppo e tutte le sue regole?', 'Elimina')) {
+        if (await confirmDialog(t('openvpn.confirmDeleteGroup'), t('openvpn.confirmDeleteGroupMsg'))) {
             try {
                 await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/groups/${currentGroupId}`);
-                showToast('Gruppo eliminato', 'success');
+                showToast(t('openvpn.groupDeleted'), 'success');
                 currentGroupId = null;
                 groups = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/groups`);
                 render(container);
@@ -438,13 +439,13 @@ function setupEventHandlers(container) {
     document.getElementById('btn-confirm-add-member')?.addEventListener('click', async () => {
         const clientId = document.getElementById('member-client-select').value;
         if (!clientId) {
-            showToast('Seleziona un client', 'error');
+            showToast(t('openvpn.selectClientFirst'), 'error');
             return;
         }
 
         try {
             await apiPost(`${MODULE_API}/instances/${currentInstanceId}/groups/${currentGroupId}/members?client_id=${clientId}`);
-            showToast('Membro aggiunto', 'success');
+            showToast(t('openvpn.memberAdded'), 'success');
             bootstrap.Modal.getInstance(document.getElementById('modal-add-member'))?.hide();
             loadGroupDetails();
         } catch (err) {
@@ -479,7 +480,7 @@ function setupEventHandlers(container) {
         const protocol = document.getElementById('rule-protocol').value;
         const destRaw = document.getElementById('rule-destination').value.trim();
         if (destRaw && !isValidCIDR(destRaw)) {
-            showToast('Destinazione non valida. Usa il formato CIDR (es. 10.0.0.0/24 o 192.168.1.1/32)', 'error');
+            showToast(t('openvpn.invalidDestination'), 'error');
             return;
         }
         const data = {
@@ -494,11 +495,11 @@ function setupEventHandlers(container) {
             if (editRuleId) {
                 // Edit existing rule
                 await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/groups/${currentGroupId}/rules/${editRuleId}`, data);
-                showToast('Regola aggiornata', 'success');
+                showToast(t('openvpn.ruleUpdated'), 'success');
             } else {
                 // Create new rule
                 await apiPost(`${MODULE_API}/instances/${currentInstanceId}/groups/${currentGroupId}/rules`, data);
-                showToast('Regola creata', 'success');
+                showToast(t('openvpn.ruleCreated'), 'success');
             }
             bootstrap.Modal.getInstance(modal)?.hide();
             loadGroupDetails();
@@ -512,8 +513,8 @@ function setupEventHandlers(container) {
     document.getElementById('modal-add-rule')?.addEventListener('hidden.bs.modal', () => {
         const modal = document.getElementById('modal-add-rule');
         delete modal.dataset.editRuleId;
-        modal.querySelector('.modal-title').textContent = 'Nuova Regola';
-        document.getElementById('btn-create-rule').textContent = 'Crea';
+        modal.querySelector('.modal-title').textContent = t('openvpn.newRuleTitle');
+        document.getElementById('btn-create-rule').textContent = t('openvpn.create');
         // Reset form
         document.getElementById('rule-action').value = 'DROP';
         document.getElementById('rule-protocol').value = 'all';
@@ -526,10 +527,10 @@ function setupEventHandlers(container) {
 
 // Global functions for inline handlers
 window.removeMember = async (clientId) => {
-    if (await confirmDialog('Rimuovi Membro', 'Rimuovere questo membro dal gruppo?', 'Rimuovi')) {
+    if (await confirmDialog(t('openvpn.confirmRemoveMember'), t('openvpn.confirmRemoveMemberMsg'), t('openvpn.confirmRemoveMemberBtn'))) {
         try {
             await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/groups/${currentGroupId}/members/${clientId}`);
-            showToast('Membro rimosso', 'success');
+            showToast(t('openvpn.memberRemoved'), 'success');
             loadGroupDetails();
             refreshGroupsList();
         } catch (err) {
@@ -539,10 +540,10 @@ window.removeMember = async (clientId) => {
 };
 
 window.deleteRule = async (ruleId) => {
-    if (await confirmDialog('Elimina Regola', 'Eliminare questa regola?', 'Elimina')) {
+    if (await confirmDialog(t('openvpn.confirmDeleteRule'), t('openvpn.confirmDeleteRuleMsg'))) {
         try {
             await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/groups/${currentGroupId}/rules/${ruleId}`);
-            showToast('Regola eliminata', 'success');
+            showToast(t('openvpn.ruleDeleted'), 'success');
             loadGroupDetails();
             refreshGroupsList();
         } catch (err) {
@@ -573,8 +574,8 @@ window.editRule = async (ruleId) => {
     // Mark as editing
     const modal = document.getElementById('modal-add-rule');
     modal.dataset.editRuleId = ruleId;
-    modal.querySelector('.modal-title').textContent = 'Modifica Regola';
-    document.getElementById('btn-create-rule').textContent = 'Salva';
+    modal.querySelector('.modal-title').textContent = t('openvpn.editRuleTitle');
+    document.getElementById('btn-create-rule').textContent = t('openvpn.save');
 
     new bootstrap.Modal(modal).show();
 };
@@ -606,7 +607,7 @@ function setupGroupOrdering() {
             // Save to API
             try {
                 await apiPut(`${MODULE_API}/instances/${currentInstanceId}/groups/order`, orders);
-                showToast('Ordine gruppi aggiornato', 'success');
+                showToast(t('openvpn.groupOrderUpdated'), 'success');
                 // Update local groups array order
                 const newGroups = [];
                 items.forEach(item => {
@@ -664,7 +665,7 @@ function initRuleSorting() {
             // Save to API
             try {
                 await apiPut(`${MODULE_API}/instances/${currentInstanceId}/groups/${currentGroupId}/rules/order`, orders);
-                showToast('Ordine aggiornato', 'success');
+                showToast(t('openvpn.orderUpdated'), 'success');
             } catch (err) {
                 showToast(err.message, 'error');
                 loadGroupDetails(); // Reload on error
@@ -680,7 +681,7 @@ document.addEventListener('change', async (e) => {
         try {
             await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/firewall-policy`, { policy: newPolicy });
             instance.firewall_default_policy = newPolicy;
-            showToast(`Policy aggiornata a ${newPolicy}`, 'success');
+            showToast(t('openvpn.policyUpdated').replace('{policy}', newPolicy), 'success');
         } catch (err) {
             showToast(err.message, 'error');
         }

@@ -1,9 +1,10 @@
 /**
  * WireGuard Module - Firewall View
- * 
+ *
  * Manages client groups and firewall rules for WireGuard instances.
  */
 
+import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '/static/js/api.js';
 import { showToast, confirmDialog, loadingSpinner, isValidCIDR, escapeHtml } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
@@ -12,26 +13,21 @@ let currentInstanceId = null;
 let currentGroupId = null;
 let groups = [];
 let clients = [];
-let instance = null;  // Current instance data including firewall_default_policy
-let canManageGroups = false;  // wireguard.groups permission
+let instance = null;
+let canManageGroups = false;
 
-/**
- * Initialize the firewall view for an instance
- */
 export async function init(container, instanceId) {
     currentInstanceId = instanceId;
     canManageGroups = checkPermission('wireguard.groups');
     container.innerHTML = loadingSpinner();
 
     try {
-        // Load instance, groups, and clients
         [instance, groups, clients] = await Promise.all([
             apiGet(`/modules/wireguard/instances/${instanceId}`),
             apiGet(`/modules/wireguard/instances/${instanceId}/groups`),
             apiGet(`/modules/wireguard/instances/${instanceId}/clients`)
         ]);
 
-        // Auto-select first group if available
         if (groups.length > 0 && !currentGroupId) {
             currentGroupId = groups[0].id;
         }
@@ -39,7 +35,6 @@ export async function init(container, instanceId) {
         render(container);
         setupGroupOrdering();
 
-        // Load group details if a group is selected
         if (currentGroupId) {
             loadGroupDetails();
         }
@@ -53,10 +48,10 @@ function render(container) {
         <!-- Instance Default Policy -->
         <div class="card mb-3">
             <div class="card-body py-2 d-flex align-items-center gap-3">
-                <strong>Default Policy</strong>
+                <strong>${t('wireguard.defaultPolicy')}</strong>
                 ${canManageGroups ? `
                 <div class="btn-group" role="group">
-                    <input type="radio" class="btn-check" name="default-policy" id="policy-accept" value="ACCEPT" 
+                    <input type="radio" class="btn-check" name="default-policy" id="policy-accept" value="ACCEPT"
                            ${instance?.firewall_default_policy !== 'DROP' ? 'checked' : ''}>
                     <label class="btn btn-outline-success btn-sm" for="policy-accept">ACCEPT</label>
                     <input type="radio" class="btn-check" name="default-policy" id="policy-drop" value="DROP"
@@ -68,20 +63,20 @@ function render(container) {
                 </span>`}
             </div>
         </div>
-        
+
         <div class="row">
             <!-- Groups List -->
             <div class="col-md-4">
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <div class="d-flex align-items-center gap-2">
-                            <h4 class="card-title mb-0">Gruppi</h4>
-                            <i class="ti ti-info-circle text-muted" data-bs-toggle="tooltip" 
-                               title="L'ordine dei gruppi determina la priorità nel firewall. I gruppi in alto hanno priorità maggiore (le loro regole vengono valutate prima). Trascina per riordinare."></i>
+                            <h4 class="card-title mb-0">${t('wireguard.groups')}</h4>
+                            <i class="ti ti-info-circle text-muted" data-bs-toggle="tooltip"
+                               title="${t('wireguard.groupsOrderTooltip')}"></i>
                         </div>
                         ${canManageGroups ? `
                         <button class="btn btn-sm btn-primary" id="btn-new-group">
-                            <i class="ti ti-plus me-1"></i>Nuovo
+                            <i class="ti ti-plus me-1"></i>${t('wireguard.newGroup')}
                         </button>` : ''}
                     </div>
                     <div class="list-group list-group-flush" id="groups-list">
@@ -89,7 +84,7 @@ function render(container) {
                     </div>
                 </div>
             </div>
-            
+
             <!-- Group Details -->
             <div class="col-md-8">
                 <div id="group-details">
@@ -97,76 +92,76 @@ function render(container) {
                 </div>
             </div>
         </div>
-        
+
         <!-- Create Group Modal -->
         <div class="modal fade" id="modal-new-group" tabindex="-1">
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Nuovo Gruppo</h5>
+                        <h5 class="modal-title">${t('wireguard.newGroupTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">Nome</label>
-                            <input type="text" class="form-control" id="new-group-name" placeholder="Amministratori">
+                            <label class="form-label">${t('wireguard.groupName')}</label>
+                            <input type="text" class="form-control" id="new-group-name" placeholder="${t('wireguard.groupNamePlaceholder')}">
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Descrizione</label>
-                            <input type="text" class="form-control" id="new-group-desc" placeholder="Opzionale">
+                            <label class="form-label">${t('wireguard.groupDescription')}</label>
+                            <input type="text" class="form-control" id="new-group-desc" placeholder="${t('wireguard.groupDescPlaceholder')}">
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-create-group">Crea</button>
+                        <button class="btn btn-secondary" data-bs-dismiss="modal">${t('wireguard.cancel')}</button>
+                        <button class="btn btn-primary" id="btn-create-group">${t('wireguard.createGroup')}</button>
                     </div>
                 </div>
             </div>
         </div>
-        
+
         <!-- Add Member Modal -->
         <div class="modal fade" id="modal-add-member" tabindex="-1">
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Aggiungi Membro</h5>
+                        <h5 class="modal-title">${t('wireguard.addMemberTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <select class="form-select" id="member-client-select">
-                            <option value="">Seleziona client...</option>
-                            ${clients.map(c => `<option value="${c.id}">${c.name} (${c.allocated_ip})</option>`).join('')}
+                            <option value="">${t('wireguard.selectClient')}</option>
+                            ${clients.map(c => `<option value="${c.id}">${escapeHtml(c.name)} (${c.allocated_ip})</option>`).join('')}
                         </select>
                     </div>
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-confirm-add-member">Aggiungi</button>
+                        <button class="btn btn-secondary" data-bs-dismiss="modal">${t('wireguard.cancel')}</button>
+                        <button class="btn btn-primary" id="btn-confirm-add-member">${t('wireguard.confirmAddMember')}</button>
                     </div>
                 </div>
             </div>
         </div>
-        
+
         <!-- Add Rule Modal -->
         <div class="modal fade" id="modal-add-rule" tabindex="-1">
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Nuova Regola</h5>
+                        <h5 class="modal-title">${t('wireguard.newRuleTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="row mb-3">
                             <div class="col-6">
-                                <label class="form-label">Azione</label>
+                                <label class="form-label">${t('wireguard.action')}</label>
                                 <select class="form-select" id="rule-action">
                                     <option value="ACCEPT">ACCEPT</option>
                                     <option value="DROP">DROP</option>
                                 </select>
                             </div>
                             <div class="col-6">
-                                <label class="form-label">Protocollo</label>
+                                <label class="form-label">${t('wireguard.protocol')}</label>
                                 <select class="form-select" id="rule-protocol">
-                                    <option value="all">Tutti</option>
+                                    <option value="all">${t('wireguard.allProtocols')}</option>
                                     <option value="tcp">TCP</option>
                                     <option value="udp">UDP</option>
                                     <option value="icmp">ICMP</option>
@@ -175,22 +170,22 @@ function render(container) {
                         </div>
                         <div class="row mb-3">
                             <div class="col-8">
-                                <label class="form-label">Destinazione</label>
+                                <label class="form-label">${t('wireguard.destination')}</label>
                                 <input type="text" class="form-control" id="rule-destination" placeholder="0.0.0.0/0">
                             </div>
                             <div class="col-4" id="port-field-container">
-                                <label class="form-label">Porta</label>
+                                <label class="form-label">${t('wireguard.portLabel')}</label>
                                 <input type="text" class="form-control" id="rule-port" placeholder="80">
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Descrizione</label>
-                            <input type="text" class="form-control" id="rule-description" placeholder="Opzionale">
+                            <label class="form-label">${t('wireguard.notes')}</label>
+                            <input type="text" class="form-control" id="rule-description" placeholder="${t('wireguard.groupDescPlaceholder')}">
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
-                        <button class="btn btn-primary" id="btn-create-rule">Crea</button>
+                        <button class="btn btn-secondary" data-bs-dismiss="modal">${t('wireguard.cancel')}</button>
+                        <button class="btn btn-primary" id="btn-create-rule">${t('wireguard.createRule')}</button>
                     </div>
                 </div>
             </div>
@@ -202,7 +197,7 @@ function render(container) {
 
 function renderGroupsList() {
     if (groups.length === 0) {
-        return '<div class="list-group-item text-muted text-center py-3">Nessun gruppo</div>';
+        return `<div class="list-group-item text-muted text-center py-3">${t('wireguard.noGroups')}</div>`;
     }
 
     return groups.map(g => `
@@ -211,8 +206,8 @@ function renderGroupsList() {
             <a href="#" class="flex-grow-1 p-3 text-decoration-none text-reset" onclick="event.preventDefault(); selectGroup('${escapeHtml(g.id)}')">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
-                        <strong>${g.name}</strong>
-                        <small class="d-block ${g.id === currentGroupId ? 'text-reset opacity-75' : 'text-muted'}">${g.description || 'Nessuna descrizione'}</small>
+                        <strong>${escapeHtml(g.name)}</strong>
+                        <small class="d-block ${g.id === currentGroupId ? 'text-reset opacity-75' : 'text-muted'}">${g.description || t('wireguard.noDescription')}</small>
                     </div>
                     <div class="d-flex gap-1">
                         <span class="badge ${g.id === currentGroupId ? 'bg-white text-primary' : 'bg-blue-lt text-blue'}">${g.member_count} <i class="ti ti-users"></i></span>
@@ -229,7 +224,7 @@ function renderNoGroupSelected() {
         <div class="card">
             <div class="card-body text-center py-5 text-muted">
                 <i class="ti ti-users-group" style="font-size: 3rem;"></i>
-                <p class="mt-3 mb-0">Seleziona un gruppo per gestirne membri e regole</p>
+                <p class="mt-3 mb-0">${t('wireguard.noGroupSelected')}</p>
             </div>
         </div>
     `;
@@ -243,7 +238,7 @@ function renderGroupDetails() {
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <div>
-                    <h4 class="card-title mb-0">${group.name}</h4>
+                    <h4 class="card-title mb-0">${escapeHtml(group.name)}</h4>
                     <small class="text-muted">${group.description || ''}</small>
                 </div>
                 ${canManageGroups ? `
@@ -252,26 +247,26 @@ function renderGroupDetails() {
                 </button>` : ''}
             </div>
         </div>
-        
+
         <!-- Members -->
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0"><i class="ti ti-users me-2"></i>Membri</h5>
+                <h5 class="card-title mb-0"><i class="ti ti-users me-2"></i>${t('wireguard.members')}</h5>
                 ${canManageGroups ? `
                 <button class="btn btn-sm btn-primary" id="btn-show-add-member">
-                    <i class="ti ti-user-plus me-1"></i>Aggiungi
+                    <i class="ti ti-user-plus me-1"></i>${t('wireguard.addMember')}
                 </button>` : ''}
             </div>
             <div class="card-body" id="members-container">${loadingSpinner()}</div>
         </div>
-        
+
         <!-- Rules -->
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0"><i class="ti ti-shield me-2"></i>Regole Firewall</h5>
+                <h5 class="card-title mb-0"><i class="ti ti-shield me-2"></i>${t('wireguard.firewallRules')}</h5>
                 ${canManageGroups ? `
                 <button class="btn btn-sm btn-primary" id="btn-add-rule">
-                    <i class="ti ti-plus me-1"></i>Nuova Regola
+                    <i class="ti ti-plus me-1"></i>${t('wireguard.newRule')}
                 </button>` : ''}
             </div>
             <div class="card-body" id="rules-container">${loadingSpinner()}</div>
@@ -300,7 +295,7 @@ function renderMembers(members) {
     if (!container) return;
 
     if (members.length === 0) {
-        container.innerHTML = '<p class="text-muted mb-0">Nessun membro nel gruppo</p>';
+        container.innerHTML = `<p class="text-muted mb-0">${t('wireguard.noMembers')}</p>`;
         return;
     }
 
@@ -308,7 +303,7 @@ function renderMembers(members) {
         <div class="d-flex flex-wrap gap-2">
             ${members.map(m => `
                 <span class="badge bg-primary-lt d-inline-flex align-items-center gap-2">
-                    ${m.client_name} <small class="opacity-75">(${m.client_ip})</small>
+                    ${escapeHtml(m.client_name)} <small class="opacity-75">(${m.client_ip})</small>
                     ${canManageGroups ? `
                     <button class="btn btn-ghost-danger btn-sm p-0" onclick="removeMember('${escapeHtml(m.client_id)}')">
                         <i class="ti ti-x"></i>
@@ -324,7 +319,7 @@ function renderRules(rules) {
     if (!container) return;
 
     if (rules.length === 0) {
-        container.innerHTML = '<p class="text-muted mb-0">Nessuna regola definita. Verrà usata la policy di default.</p>';
+        container.innerHTML = `<p class="text-muted mb-0">${t('wireguard.noRules')}</p>`;
         return;
     }
 
@@ -334,11 +329,11 @@ function renderRules(rules) {
                 <tr>
                     ${canManageGroups ? '<th style="width: 30px"></th>' : ''}
                     <th style="width: 40px">#</th>
-                    <th>Azione</th>
-                    <th>Proto</th>
-                    <th>Destinazione</th>
-                    <th>Porta</th>
-                    <th>Note</th>
+                    <th>${t('wireguard.action')}</th>
+                    <th>${t('wireguard.protocol')}</th>
+                    <th>${t('wireguard.destination')}</th>
+                    <th>${t('wireguard.portLabel')}</th>
+                    <th>${t('wireguard.notes')}</th>
                     ${canManageGroups ? '<th class="w-1"></th>' : ''}
                 </tr>
             </thead>
@@ -369,21 +364,10 @@ function renderRules(rules) {
         </table>
     `;
 
-    // Initialize drag-drop sorting
     initRuleSorting();
 }
 
 function setupEventHandlers(container) {
-    // Group selection
-    container.querySelectorAll('[data-group-id]').forEach(el => {
-        el.addEventListener('click', (e) => {
-            e.preventDefault();
-            currentGroupId = e.currentTarget.dataset.groupId;
-            render(container);
-            loadGroupDetails();
-        });
-    });
-
     // New group button
     document.getElementById('btn-new-group')?.addEventListener('click', () => {
         new bootstrap.Modal(document.getElementById('modal-new-group')).show();
@@ -395,15 +379,14 @@ function setupEventHandlers(container) {
         const description = document.getElementById('new-group-desc').value.trim();
 
         if (!name) {
-            showToast('Inserisci un nome', 'error');
+            showToast(t('wireguard.enterGroupName'), 'error');
             return;
         }
 
         try {
             await apiPost(`/modules/wireguard/instances/${currentInstanceId}/groups`, { name, description });
-            showToast('Gruppo creato', 'success');
+            showToast(t('wireguard.groupCreated'), 'success');
             bootstrap.Modal.getInstance(document.getElementById('modal-new-group'))?.hide();
-
             groups = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/groups`);
             render(container);
         } catch (err) {
@@ -413,10 +396,10 @@ function setupEventHandlers(container) {
 
     // Delete group
     document.getElementById('btn-delete-group')?.addEventListener('click', async () => {
-        if (await confirmDialog('Elimina Gruppo', 'Eliminare questo gruppo e tutte le sue regole?', 'Elimina')) {
+        if (await confirmDialog(t('wireguard.confirmDeleteGroupTitle'), t('wireguard.confirmDeleteGroupMsg'), t('wireguard.confirmDeleteBtn'))) {
             try {
                 await apiDelete(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}`);
-                showToast('Gruppo eliminato', 'success');
+                showToast(t('wireguard.groupDeleted'), 'success');
                 currentGroupId = null;
                 groups = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/groups`);
                 render(container);
@@ -431,17 +414,17 @@ function setupEventHandlers(container) {
         new bootstrap.Modal(document.getElementById('modal-add-member')).show();
     });
 
-    // Confirm add member (in modal)
+    // Confirm add member
     document.getElementById('btn-confirm-add-member')?.addEventListener('click', async () => {
         const clientId = document.getElementById('member-client-select').value;
         if (!clientId) {
-            showToast('Seleziona un client', 'error');
+            showToast(t('wireguard.selectClientError'), 'error');
             return;
         }
 
         try {
             await apiPost(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}/members?client_id=${clientId}`);
-            showToast('Membro aggiunto', 'success');
+            showToast(t('wireguard.memberAdded'), 'success');
             bootstrap.Modal.getInstance(document.getElementById('modal-add-member'))?.hide();
             loadGroupDetails();
         } catch (err) {
@@ -451,14 +434,12 @@ function setupEventHandlers(container) {
 
     // Add rule button
     document.getElementById('btn-add-rule')?.addEventListener('click', () => {
-        // Reset port field visibility
-        document.getElementById('port-field-container').style.display = 'block';
         document.getElementById('rule-protocol').value = 'all';
         document.getElementById('port-field-container').style.display = 'none';
         new bootstrap.Modal(document.getElementById('modal-add-rule')).show();
     });
 
-    // Protocol change - toggle port field visibility
+    // Protocol change - toggle port field
     document.getElementById('rule-protocol')?.addEventListener('change', (e) => {
         const portContainer = document.getElementById('port-field-container');
         if (e.target.value === 'all' || e.target.value === 'icmp') {
@@ -476,7 +457,7 @@ function setupEventHandlers(container) {
         const protocol = document.getElementById('rule-protocol').value;
         const destRaw = document.getElementById('rule-destination').value.trim();
         if (destRaw && !isValidCIDR(destRaw)) {
-            showToast('Destinazione non valida. Usa il formato CIDR (es. 10.0.0.0/24 o 192.168.1.1/32)', 'error');
+            showToast(t('wireguard.invalidDestination'), 'error');
             return;
         }
         const data = {
@@ -489,13 +470,11 @@ function setupEventHandlers(container) {
 
         try {
             if (editRuleId) {
-                // Edit existing rule
                 await apiPatch(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}/rules/${editRuleId}`, data);
-                showToast('Regola aggiornata', 'success');
+                showToast(t('wireguard.ruleUpdated'), 'success');
             } else {
-                // Create new rule
                 await apiPost(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}/rules`, data);
-                showToast('Regola creata', 'success');
+                showToast(t('wireguard.ruleCreated'), 'success');
             }
             bootstrap.Modal.getInstance(modal)?.hide();
             loadGroupDetails();
@@ -509,9 +488,8 @@ function setupEventHandlers(container) {
     document.getElementById('modal-add-rule')?.addEventListener('hidden.bs.modal', () => {
         const modal = document.getElementById('modal-add-rule');
         delete modal.dataset.editRuleId;
-        modal.querySelector('.modal-title').textContent = 'Nuova Regola';
-        document.getElementById('btn-create-rule').textContent = 'Crea';
-        // Reset form
+        modal.querySelector('.modal-title').textContent = t('wireguard.newRuleTitle');
+        document.getElementById('btn-create-rule').textContent = t('wireguard.createRule');
         document.getElementById('rule-action').value = 'DROP';
         document.getElementById('rule-protocol').value = 'all';
         document.getElementById('rule-destination').value = '';
@@ -523,10 +501,10 @@ function setupEventHandlers(container) {
 
 // Global functions for inline handlers
 window.removeMember = async (clientId) => {
-    if (await confirmDialog('Rimuovi Membro', 'Rimuovere questo membro dal gruppo?', 'Rimuovi')) {
+    if (await confirmDialog(t('wireguard.confirmRemoveMemberTitle'), t('wireguard.confirmRemoveMemberMsg'), t('wireguard.confirmRemoveBtn'))) {
         try {
             await apiDelete(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}/members/${clientId}`);
-            showToast('Membro rimosso', 'success');
+            showToast(t('wireguard.memberRemoved'), 'success');
             loadGroupDetails();
             refreshGroupsList();
         } catch (err) {
@@ -536,10 +514,10 @@ window.removeMember = async (clientId) => {
 };
 
 window.deleteRule = async (ruleId) => {
-    if (await confirmDialog('Elimina Regola', 'Eliminare questa regola?', 'Elimina')) {
+    if (await confirmDialog(t('wireguard.confirmDeleteRuleTitle'), t('wireguard.confirmDeleteRuleMsg'), t('wireguard.confirmDeleteBtn'))) {
         try {
             await apiDelete(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}/rules/${ruleId}`);
-            showToast('Regola eliminata', 'success');
+            showToast(t('wireguard.ruleDeleted'), 'success');
             loadGroupDetails();
             refreshGroupsList();
         } catch (err) {
@@ -549,29 +527,25 @@ window.deleteRule = async (ruleId) => {
 };
 
 window.editRule = async (ruleId) => {
-    // Find rule data
     const rulesData = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}/rules`);
     const rule = rulesData.find(r => r.id === ruleId);
     if (!rule) return;
 
-    // Populate modal fields
     document.getElementById('rule-action').value = rule.action;
     document.getElementById('rule-protocol').value = rule.protocol;
     document.getElementById('rule-destination').value = rule.destination || '';
     document.getElementById('rule-port').value = rule.port || '';
     document.getElementById('rule-description').value = rule.description || '';
 
-    // Show/hide port field based on protocol
     const portContainer = document.getElementById('port-field-container');
     if (portContainer) {
         portContainer.style.display = (rule.protocol === 'tcp' || rule.protocol === 'udp') ? '' : 'none';
     }
 
-    // Mark as editing
     const modal = document.getElementById('modal-add-rule');
     modal.dataset.editRuleId = ruleId;
-    modal.querySelector('.modal-title').textContent = 'Modifica Regola';
-    document.getElementById('btn-create-rule').textContent = 'Salva';
+    modal.querySelector('.modal-title').textContent = t('wireguard.editRuleTitle');
+    document.getElementById('btn-create-rule').textContent = t('wireguard.save');
 
     new bootstrap.Modal(modal).show();
 };
@@ -579,7 +553,7 @@ window.editRule = async (ruleId) => {
 window.selectGroup = (groupId) => {
     currentGroupId = groupId;
     loadGroupDetails();
-    refreshGroupsList(); // To update active state
+    refreshGroupsList();
 };
 
 function setupGroupOrdering() {
@@ -590,21 +564,15 @@ function setupGroupOrdering() {
         animation: 150,
         handle: '.group-drag-handle',
         onEnd: async function (evt) {
-            // Collect new order
             const items = listEl.querySelectorAll('[data-group-id]');
             const orders = [];
             items.forEach((item, index) => {
-                orders.push({
-                    group_id: item.dataset.groupId,
-                    order: index
-                });
+                orders.push({ group_id: item.dataset.groupId, order: index });
             });
 
-            // Save to API
             try {
                 await apiPut(`/modules/wireguard/instances/${currentInstanceId}/groups/order`, orders);
-                showToast('Ordine gruppi aggiornato', 'success');
-                // Update local groups array order
+                showToast(t('wireguard.groupsOrderUpdated'), 'success');
                 const newGroups = [];
                 items.forEach(item => {
                     const group = groups.find(g => g.id === item.dataset.groupId);
@@ -613,13 +581,12 @@ function setupGroupOrdering() {
                 groups = newGroups;
             } catch (err) {
                 showToast(err.message, 'error');
-                refreshGroupsList(); // Reset UI on error
+                refreshGroupsList();
             }
         }
     });
 }
 
-// Refresh groups list (updates member/rule counts)
 async function refreshGroupsList() {
     try {
         groups = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/groups`);
@@ -633,39 +600,31 @@ async function refreshGroupsList() {
     }
 }
 
-// Initialize drag-drop sorting for rules
 function initRuleSorting() {
     const tbody = document.getElementById('rules-tbody');
     if (!tbody || typeof Sortable === 'undefined') return;
-
 
     new Sortable(tbody, {
         animation: 150,
         handle: 'td.cursor-move',
         ghostClass: 'table-active',
         onEnd: async function (evt) {
-            // Collect new order
             const rows = tbody.querySelectorAll('tr[data-rule-id]');
             const orders = [];
             rows.forEach((row, index) => {
-                orders.push({
-                    id: row.dataset.ruleId,
-                    order: index
-                });
+                orders.push({ id: row.dataset.ruleId, order: index });
             });
 
-            // Update order numbers in UI
             rows.forEach((row, index) => {
                 row.querySelector('td:nth-child(2)').textContent = index + 1;
             });
 
-            // Save to API
             try {
                 await apiPut(`/modules/wireguard/instances/${currentInstanceId}/groups/${currentGroupId}/rules/order`, orders);
-                showToast('Ordine aggiornato', 'success');
+                showToast(t('wireguard.orderUpdated'), 'success');
             } catch (err) {
                 showToast(err.message, 'error');
-                loadGroupDetails(); // Reload on error
+                loadGroupDetails();
             }
         }
     });
@@ -678,7 +637,7 @@ document.addEventListener('change', async (e) => {
         try {
             await apiPatch(`/modules/wireguard/instances/${currentInstanceId}/firewall-policy`, { policy: newPolicy });
             instance.firewall_default_policy = newPolicy;
-            showToast(`Policy aggiornata a ${newPolicy}`, 'success');
+            showToast(t('wireguard.policyUpdated').replace('{policy}', newPolicy), 'success');
         } catch (err) {
             showToast(err.message, 'error');
         }

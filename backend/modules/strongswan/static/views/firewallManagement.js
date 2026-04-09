@@ -8,6 +8,7 @@ import {
     apiGet, apiPost, apiPatch, apiDelete, apiPut,
     showToast, confirmDialog, escapeHtml
 } from '/static/modules/strongswan/views/utils.js';
+import { t } from '/static/js/i18n.js';
 
 let currentTunnel = null;
 let currentChildren = [];
@@ -25,9 +26,9 @@ export async function renderFirewallManagement(container, tunnelId) {
                 <div class="empty-icon">
                     <i class="ti ti-shield-off" style="font-size: 3rem;"></i>
                 </div>
-                <p class="empty-title">Nessuna Phase 2 configurata</p>
+                <p class="empty-title">${t('strongswan.fwNoPhase2Title')}</p>
                 <p class="empty-subtitle text-muted">
-                    Aggiungi una Phase 2 per abilitare le regole firewall
+                    ${t('strongswan.fwNoPhase2Subtitle')}
                 </p>
             </div>
         `;
@@ -58,7 +59,7 @@ export async function renderFirewallManagement(container, tunnelId) {
                      role="tabpanel">
                     <div id="child-firewall-${child.id}">
                         <div class="text-center py-3">
-                            <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                            <span class="spinner-border spinner-border-sm"></span> ${t('strongswan.loading')}
                         </div>
                     </div>
                 </div>
@@ -70,7 +71,7 @@ export async function renderFirewallManagement(container, tunnelId) {
             <div class="modal-dialog modal-lg modal-dialog-centered">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title" id="modal-title">Aggiungi Regola Firewall</h5>
+                        <h5 class="modal-title" id="modal-title">${t('strongswan.fwAddRuleTitle')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -78,67 +79,67 @@ export async function renderFirewallManagement(container, tunnelId) {
                         <input type="hidden" id="rule-child-id">
                         
                         <div class="mb-3">
-                            <label class="form-label required">Direzione</label>
+                            <label class="form-label required">${t('strongswan.fwDirectionLabel')}</label>
                             <select class="form-select" id="rule-direction">
-                                <option value="out">→ Outbound (locale → remoto)</option>
-                                <option value="in">← Inbound (remoto → locale)</option>
-                                <option value="both">↔ Both (entrambe)</option>
+                                <option value="out">${t('strongswan.fwDirectionOut')}</option>
+                                <option value="in">${t('strongswan.fwDirectionIn')}</option>
+                                <option value="both">${t('strongswan.fwDirectionBoth')}</option>
                             </select>
                         </div>
-                        
+
                         <div class="row">
                             <div class="col-md-6 mb-3">
-                                <label class="form-label required">Azione</label>
+                                <label class="form-label required">${t('strongswan.fwActionLabel')}</label>
                                 <select class="form-select" id="rule-action">
-                                    <option value="ACCEPT">ACCEPT (Permetti)</option>
-                                    <option value="DROP">DROP (Blocca)</option>
+                                    <option value="ACCEPT">${t('strongswan.fwActionAccept')}</option>
+                                    <option value="DROP">${t('strongswan.fwActionDrop')}</option>
                                 </select>
                             </div>
                             <div class="col-md-6 mb-3">
-                                <label class="form-label required">Protocollo</label>
+                                <label class="form-label required">${t('strongswan.fwProtocolLabel')}</label>
                                 <select class="form-select" id="rule-protocol">
-                                    <option value="all">Tutti</option>
+                                    <option value="all">${t('strongswan.fwProtocolAllOption')}</option>
                                     <option value="tcp">TCP</option>
                                     <option value="udp">UDP</option>
                                     <option value="icmp">ICMP</option>
                                 </select>
                             </div>
                         </div>
-                        
+
                         <div class="mb-3" id="port-field" style="display:none;">
-                            <label class="form-label">Porta</label>
-                            <input type="text" class="form-control" id="rule-port" 
-                                   placeholder="es. 80 oppure 8000-8100">
-                            <small class="form-hint">Singola porta o range (es. 8000-8100)</small>
+                            <label class="form-label">${t('strongswan.fwPortLabel')}</label>
+                            <input type="text" class="form-control" id="rule-port"
+                                   placeholder="${t('strongswan.fwPortPlaceholder')}">
+                            <small class="form-hint">${t('strongswan.fwPortHint')}</small>
                         </div>
-                        
+
                         <div class="row">
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">Source (opzionale)</label>
+                                <label class="form-label">${t('strongswan.fwSourceLabel')}</label>
                                 <input type="text" class="form-control" id="rule-source"
-                                       placeholder="es. 192.168.1.0/24">
-                                <small class="form-hint">Lascia vuoto per usare il subnet del tunnel</small>
+                                       placeholder="${t('strongswan.fwSourcePlaceholder')}">
+                                <small class="form-hint">${t('strongswan.fwSourceHint')}</small>
                             </div>
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">Destination (opzionale)</label>
+                                <label class="form-label">${t('strongswan.fwDestinationLabel')}</label>
                                 <input type="text" class="form-control" id="rule-destination"
-                                       placeholder="es. 10.0.0.0/24">
-                                <small class="form-hint">Lascia vuoto per usare il subnet del tunnel</small>
+                                       placeholder="${t('strongswan.fwDestinationPlaceholder')}">
+                                <small class="form-hint">${t('strongswan.fwDestinationHint')}</small>
                             </div>
                         </div>
-                        
+
                         <div class="mb-3">
-                            <label class="form-label">Descrizione</label>
+                            <label class="form-label">${t('strongswan.fwDescriptionLabel')}</label>
                             <input type="text" class="form-control" id="rule-description"
-                                   placeholder="es. Permetti traffico HTTPS">
+                                   placeholder="${t('strongswan.fwDescriptionPlaceholder')}">
                         </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">
-                            Annulla
+                            ${t('strongswan.fwCancel')}
                         </button>
                         <button type="button" class="btn btn-primary" id="btn-save-rule">
-                            <i class="ti ti-check me-1"></i>Salva Regola
+                            <i class="ti ti-check me-1"></i>${t('strongswan.fwSaveRule')}
                         </button>
                     </div>
                 </div>
@@ -180,11 +181,11 @@ async function loadChildFirewall(tunnelId, child) {
                 <div class="card-header d-flex align-items-center">
                     <h3 class="card-title mb-0">
                         <i class="ti ti-arrow-right me-1 text-blue"></i>
-                        Regole Outbound (${escapeHtml(child.local_ts)} → ${escapeHtml(child.remote_ts)})
+                        ${t('strongswan.fwOutbound').replace('{local}', escapeHtml(child.local_ts)).replace('{remote}', escapeHtml(child.remote_ts))}
                     </h3>
                     <div class="ms-auto d-flex align-items-center gap-3">
                         <div class="d-flex align-items-center gap-2">
-                            <span class="text-muted">Default:</span>
+                            <span class="text-muted">${t('strongswan.fwDefaultPolicy')}</span>
                             <div class="btn-group" role="group">
                                 <input type="radio" class="btn-check" name="policy-out-${child.id}" 
                                        id="policy-out-accept-${child.id}" value="ACCEPT"
@@ -199,7 +200,7 @@ async function loadChildFirewall(tunnelId, child) {
                             </div>
                         </div>
                         <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'out')">
-                            <i class="ti ti-plus me-1"></i>Aggiungi
+                            <i class="ti ti-plus me-1"></i>${t('strongswan.fwAddRule')}
                         </button>
                     </div>
                 </div>
@@ -213,11 +214,11 @@ async function loadChildFirewall(tunnelId, child) {
                 <div class="card-header d-flex align-items-center">
                     <h3 class="card-title mb-0">
                         <i class="ti ti-arrow-left me-1 text-green"></i>
-                        Regole Inbound (${escapeHtml(child.remote_ts)} → ${escapeHtml(child.local_ts)})
+                        ${t('strongswan.fwInbound').replace('{remote}', escapeHtml(child.remote_ts)).replace('{local}', escapeHtml(child.local_ts))}
                     </h3>
                     <div class="ms-auto d-flex align-items-center gap-3">
                         <div class="d-flex align-items-center gap-2">
-                            <span class="text-muted">Default:</span>
+                            <span class="text-muted">${t('strongswan.fwDefaultPolicy')}</span>
                             <div class="btn-group" role="group">
                                 <input type="radio" class="btn-check" name="policy-in-${child.id}" 
                                        id="policy-in-accept-${child.id}" value="ACCEPT"
@@ -232,7 +233,7 @@ async function loadChildFirewall(tunnelId, child) {
                             </div>
                         </div>
                         <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'in')">
-                            <i class="ti ti-plus me-1"></i>Aggiungi
+                            <i class="ti ti-plus me-1"></i>${t('strongswan.fwAddRule')}
                         </button>
                     </div>
                 </div>
@@ -268,7 +269,7 @@ async function loadChildFirewall(tunnelId, child) {
         container.innerHTML = `
             <div class="alert alert-danger">
                 <i class="ti ti-alert-circle me-2"></i>
-                Errore nel caricamento delle regole: ${escapeHtml(e.message)}
+                ${t('strongswan.fwLoadRulesError').replace('{msg}', escapeHtml(e.message))}
             </div>
         `;
     }
@@ -308,9 +309,9 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
     if (rules.length === 0) {
         return `
             <div class="empty py-4">
-                <p class="empty-title">Nessuna regola configurata</p>
+                <p class="empty-title">${t('strongswan.fwNoRules')}</p>
                 <p class="empty-subtitle text-muted">
-                    Le regole permettono un controllo granulare del traffico
+                    ${t('strongswan.fwNoRulesSubtitle')}
                 </p>
             </div>
         `;
@@ -321,12 +322,12 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
             <thead>
                 <tr>
                     <th width="40">#</th>
-                    <th>Azione</th>
-                    <th>Protocollo</th>
-                    <th>Porta</th>
-                    <th>Sorgente</th>
-                    <th>Destinazione</th>
-                    <th>Commento</th>
+                    <th>${t('strongswan.fwTableAction')}</th>
+                    <th>${t('strongswan.fwTableProtocol')}</th>
+                    <th>${t('strongswan.fwTablePort')}</th>
+                    <th>${t('strongswan.fwTableSource')}</th>
+                    <th>${t('strongswan.fwTableDestination')}</th>
+                    <th>${t('strongswan.fwTableComment')}</th>
                     <th class="rule-actions"></th>
                 </tr>
             </thead>
@@ -341,7 +342,7 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
                                 ${rule.action}
                             </span>
                         </td>
-                        <td>${rule.protocol ? `<code>${escapeHtml(rule.protocol)}</code>` : '<span class="text-muted">tutti</span>'}</td>
+                        <td>${rule.protocol ? `<code>${escapeHtml(rule.protocol)}</code>` : `<span class="text-muted">${t('strongswan.fwProtocolAll')}</span>`}</td>
                         <td>${rule.port ? `<code>${escapeHtml(rule.port)}</code>` : '-'}</td>
                         <td>${rule.source ? `<code>${escapeHtml(rule.source)}</code>` : '-'}</td>
                         <td>${rule.destination ? `<code>${escapeHtml(rule.destination)}</code>` : '-'}</td>
@@ -350,12 +351,12 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
                             <div class="btn-group btn-group-sm">
                                 <button class="btn btn-ghost-primary btn-edit" 
                                         onclick="editRule('${escapeHtml(tunnelId)}', '${escapeHtml(childId)}', '${escapeHtml(rule.id)}')"
-                                        title="Modifica">
+                                        title="${t('strongswan.edit')}">
                                     <i class="ti ti-edit"></i>
                                 </button>
-                                <button class="btn btn-ghost-danger btn-delete" 
+                                <button class="btn btn-ghost-danger btn-delete"
                                         onclick="deleteRule('${escapeHtml(tunnelId)}', '${escapeHtml(childId)}', '${escapeHtml(rule.id)}')"
-                                        title="Elimina">
+                                        title="${t('strongswan.delete')}">
                                     <i class="ti ti-trash"></i>
                                 </button>
                             </div>
@@ -387,11 +388,11 @@ window.showRuleModal = function (tunnelId, childId, direction = null, ruleId = n
     document.getElementById('port-field').style.display = 'none';
 
     if (ruleId) {
-        title.textContent = 'Modifica Regola Firewall';
+        title.textContent = t('strongswan.fwEditRuleTitle');
         // Load rule data
         loadRuleData(tunnelId, childId, ruleId);
     } else {
-        title.textContent = 'Aggiungi Regola Firewall';
+        title.textContent = t('strongswan.fwAddRuleTitle');
     }
 
     modal.show();
@@ -420,7 +421,7 @@ async function loadRuleData(tunnelId, childId, ruleId) {
             }
         }
     } catch (e) {
-        showToast('Errore nel caricamento della regola', 'error');
+        showToast(t('strongswan.fwLoadRuleError'), 'error');
     }
 }
 
@@ -447,11 +448,11 @@ async function saveRule() {
         if (ruleId) {
             // Update
             await apiPatch(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/firewall/rules/${ruleId}`, data);
-            showToast('Regola aggiornata', 'success');
+            showToast(t('strongswan.fwRuleUpdated'), 'success');
         } else {
             // Create
             await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/firewall/rules`, data);
-            showToast('Regola creata', 'success');
+            showToast(t('strongswan.fwRuleCreated'), 'success');
         }
 
         // Close modal and reload
@@ -477,16 +478,16 @@ window.editRule = function (tunnelId, childId, ruleId) {
  */
 window.deleteRule = async function (tunnelId, childId, ruleId) {
     const confirmed = await confirmDialog(
-        'Elimina Regola',
-        'Sei sicuro di voler eliminare questa regola firewall?',
-        'Elimina',
+        t('strongswan.fwConfirmDeleteRuleTitle'),
+        t('strongswan.fwConfirmDeleteRuleBody'),
+        t('strongswan.confirmDeleteBtn'),
         'btn-danger'
     );
 
     if (confirmed) {
         try {
             await apiDelete(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/firewall/rules/${ruleId}`);
-            showToast('Regola eliminata', 'success');
+            showToast(t('strongswan.fwRuleDeleted'), 'success');
 
             // Refresh child data from API to get updated policy values
             await refreshAndReloadChildFirewall(tunnelId, childId);
@@ -513,9 +514,9 @@ async function reorderRules(tunnelId, childId, direction) {
             `/modules/strongswan/tunnels/${tunnelId}/children/${childId}/firewall/rules/order`,
             { rules: rulesOrder }
         );
-        showToast('Ordine aggiornato', 'success');
+        showToast(t('strongswan.fwOrderUpdated'), 'success');
     } catch (e) {
-        showToast('Errore nell\'aggiornamento dell\'ordine', 'error');
+        showToast(t('strongswan.fwOrderError'), 'error');
         // Reload to restore correct order with fresh data
         await refreshAndReloadChildFirewall(tunnelId, childId);
     }
@@ -534,8 +535,8 @@ window.togglePolicy = async function (tunnelId, childId, isAccept, type) {
             payload
         );
 
-        const typeLabel = type === 'out' ? 'Outbound' : 'Inbound';
-        showToast(`Policy ${typeLabel} impostata su ${policy}`, 'success');
+        const typeLabel = type === 'out' ? t('strongswan.fwPolicyOutbound') : t('strongswan.fwPolicyInbound');
+        showToast(t('strongswan.fwPolicyUpdated').replace('{type}', typeLabel).replace('{policy}', policy), 'success');
     } catch (e) {
         showToast(e.message, 'error');
         // Revert radio button selection

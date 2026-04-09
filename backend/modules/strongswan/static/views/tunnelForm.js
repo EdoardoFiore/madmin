@@ -10,6 +10,7 @@ import {
     CRYPTO_OPTIONS, getEncryptionOptions, getDhGroups,
     buildProposal, parseProposal, selectOptions
 } from '/static/modules/strongswan/views/utils.js';
+import { t } from '/static/js/i18n.js';
 
 let currentTunnel = null;
 let onSaveCallback = null;
@@ -51,7 +52,7 @@ function renderP1ProposalPair(idx, version, enc = 'aes256', integ = 'sha256') {
                     <button type="button" class="btn btn-sm btn-outline-danger btn-remove-p1-proposal" data-pair-id="${id}">
                         <i class="ti ti-trash"></i>
                     </button>
-                ` : '<span class="text-muted small mb-2">Primario</span>'}
+                ` : `<span class="text-muted small mb-2">${t('strongswan.tunnelPrimaryProposal')}</span>`}
             </div>
         </div>
     `;
@@ -96,7 +97,7 @@ export function showTunnelForm(tunnel, onSave) {
                 <div class="modal-header">
                     <h5 class="modal-title">
                         <i class="ti ti-shield-lock me-2"></i>
-                        ${isEdit ? 'Modifica Tunnel' : 'Nuovo Tunnel IPsec'}
+                        ${isEdit ? t('strongswan.editTunnelTitle') : t('strongswan.newTunnelTitle')}
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
@@ -105,21 +106,21 @@ export function showTunnelForm(tunnel, onSave) {
                         <!-- General Section -->
                         <div class="card mb-3">
                             <div class="card-header py-2">
-                                <h6 class="card-title mb-0">Generale</h6>
+                                <h6 class="card-title mb-0">${t('strongswan.sectionGeneral')}</h6>
                             </div>
                             <div class="card-body">
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">Nome *</label>
+                                        <label class="form-label">${t('strongswan.tunnelNameLabel')}</label>
                                         <input type="text" class="form-control" id="tunnel-name" 
                                                value="${escapeHtml(tunnel?.name || '')}" 
                                                placeholder="es. VPN-Site-A" required>
                                     </div>
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">Descrizione</label>
-                                        <input type="text" class="form-control" id="tunnel-description" 
-                                               value="${escapeHtml(tunnel?.description || '')}" 
-                                               placeholder="Tunnel verso sede remota">
+                                        <label class="form-label">${t('strongswan.tunnelDescriptionLabel')}</label>
+                                        <input type="text" class="form-control" id="tunnel-description"
+                                               value="${escapeHtml(tunnel?.description || '')}"
+                                               placeholder="${t('strongswan.tunnelDescriptionPlaceholder')}">
                                     </div>
                                 </div>
                             </div>
@@ -128,7 +129,7 @@ export function showTunnelForm(tunnel, onSave) {
                         <!-- Network Section -->
                         <div class="card mb-3">
                             <div class="card-header py-2">
-                                <h6 class="card-title mb-0">Rete</h6>
+                                <h6 class="card-title mb-0">${t('strongswan.sectionNetwork')}</h6>
                             </div>
                             <div class="card-body">
                                 <div class="row">
@@ -149,7 +150,7 @@ export function showTunnelForm(tunnel, onSave) {
                                                    value="${escapeHtml(tunnel?.local_address || '')}" 
                                                    placeholder="Auto-detect" ${!tunnel?.local_address ? 'disabled' : ''}>
                                         </div>
-                                        <small class="form-hint">Seleziona per auto-detect (%any)</small>
+                                        <small class="form-hint">${t('strongswan.tunnelLocalGatewayHint')}</small>
                                     </div>
                                 </div>
                                 <div class="row">
@@ -182,12 +183,12 @@ export function showTunnelForm(tunnel, onSave) {
                         <!-- Authentication Section -->
                         <div class="card mb-3">
                             <div class="card-header py-2">
-                                <h6 class="card-title mb-0">Autenticazione</h6>
+                                <h6 class="card-title mb-0">${t('strongswan.sectionAuthentication')}</h6>
                             </div>
                             <div class="card-body">
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">Metodo</label>
+                                        <label class="form-label">${t('strongswan.tunnelAuthMethodLabel')}</label>
                                         <select class="form-select" id="tunnel-auth-method">
                                             <option value="psk" ${(tunnel?.auth_method || 'psk') === 'psk' ? 'selected' : ''}>
                                                 Pre-shared Key
@@ -195,10 +196,10 @@ export function showTunnelForm(tunnel, onSave) {
                                         </select>
                                     </div>
                                     <div class="col-md-6 mb-3" id="psk-container">
-                                        <label class="form-label">Pre-shared Key ${isEdit ? '' : '*'}</label>
+                                        <label class="form-label">${isEdit ? t('strongswan.tunnelPskLabel') : t('strongswan.tunnelPskLabelRequired')}</label>
                                         <div class="input-group">
-                                            <input type="password" class="form-control" id="tunnel-psk" 
-                                                   placeholder="${isEdit ? 'Lascia vuoto per mantenere' : 'Chiave condivisa'}"
+                                            <input type="password" class="form-control" id="tunnel-psk"
+                                                   placeholder="${isEdit ? t('strongswan.tunnelPskPlaceholderEdit') : t('strongswan.tunnelPskPlaceholderNew')}"
                                                    ${isEdit ? '' : 'required'}>
                                             <button type="button" class="btn btn-outline-secondary" id="btn-toggle-psk">
                                                 <i class="ti ti-eye"></i>
@@ -208,7 +209,7 @@ export function showTunnelForm(tunnel, onSave) {
                                 </div>
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">Versione IKE</label>
+                                        <label class="form-label">${t('strongswan.tunnelIkeVersionLabel')}</label>
                                         <div class="btn-group w-100" role="group">
                                             <input type="radio" class="btn-check" name="tunnel-ike" id="ike-1" value="1" 
                                                    ${ikeVersion === '1' ? 'checked' : ''}>
@@ -228,14 +229,14 @@ export function showTunnelForm(tunnel, onSave) {
                                 </div>
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">Local ID (opzionale)</label>
-                                        <input type="text" class="form-control" id="tunnel-local-id" 
+                                        <label class="form-label">${t('strongswan.tunnelLocalIdLabel')}</label>
+                                        <input type="text" class="form-control" id="tunnel-local-id"
                                                value="${escapeHtml(tunnel?.local_id || '')}" 
                                                placeholder="es. @vpn.example.com">
                                     </div>
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">Remote ID (opzionale)</label>
-                                        <input type="text" class="form-control" id="tunnel-remote-id" 
+                                        <label class="form-label">${t('strongswan.tunnelRemoteIdLabel')}</label>
+                                        <input type="text" class="form-control" id="tunnel-remote-id"
                                                value="${escapeHtml(tunnel?.remote_id || '')}" 
                                                placeholder="es. @peer.example.com">
                                     </div>
@@ -267,7 +268,7 @@ export function showTunnelForm(tunnel, onSave) {
                                 
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">Key Lifetime (secondi)</label>
+                                        <label class="form-label">${t('strongswan.tunnelKeyLifetimeLabel')}</label>
                                         <input type="number" class="form-control" id="tunnel-lifetime" 
                                                value="${tunnel?.ike_lifetime || 86400}" min="300" max="172800">
                                     </div>
@@ -277,9 +278,9 @@ export function showTunnelForm(tunnel, onSave) {
                     </form>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annulla</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${t('strongswan.tunnelCancel')}</button>
                     <button type="button" class="btn btn-primary" id="btn-save-tunnel">
-                        <i class="ti ti-check me-1"></i>${isEdit ? 'Salva' : 'Crea Tunnel'}
+                        <i class="ti ti-check me-1"></i>${isEdit ? t('strongswan.tunnelSave') : t('strongswan.tunnelCreate')}
                     </button>
                 </div>
             </div>
@@ -413,23 +414,23 @@ async function saveTunnel() {
 
     // Validation
     if (!name) {
-        showToast('Inserisci un nome per il tunnel', 'error');
+        showToast(t('strongswan.validationName'), 'error');
         return;
     }
     if (!remoteAddress) {
-        showToast('Inserisci l\'indirizzo del remote gateway', 'error');
+        showToast(t('strongswan.validationRemote'), 'error');
         return;
     }
     if (/^\d/.test(remoteAddress) && !isValidIP(remoteAddress)) {
-        showToast('Remote gateway non valido. Inserisci un indirizzo IPv4 o un hostname', 'error');
+        showToast(t('strongswan.validationRemoteInvalid'), 'error');
         return;
     }
     if (!localAuto && localAddress && !isValidIP(localAddress)) {
-        showToast('Local gateway non valido. Inserisci un indirizzo IPv4', 'error');
+        showToast(t('strongswan.validationLocal'), 'error');
         return;
     }
     if (!isEdit && !psk) {
-        showToast('Inserisci la Pre-shared Key', 'error');
+        showToast(t('strongswan.validationPsk'), 'error');
         return;
     }
 
@@ -471,15 +472,15 @@ async function saveTunnel() {
     }
 
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvataggio...';
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('strongswan.tunnelSaving')}`;
 
     try {
         if (isEdit) {
             await apiPatch(`/modules/strongswan/tunnels/${currentTunnel.id}`, data);
-            showToast('Tunnel aggiornato', 'success');
+            showToast(t('strongswan.tunnelUpdated'), 'success');
         } else {
             await apiPost('/modules/strongswan/tunnels', data);
-            showToast('Tunnel creato', 'success');
+            showToast(t('strongswan.tunnelCreated'), 'success');
         }
 
         modal?.hide();
@@ -488,6 +489,6 @@ async function saveTunnel() {
     } catch (err) {
         showToast(err.message, 'error');
         btn.disabled = false;
-        btn.innerHTML = `<i class="ti ti-check me-1"></i>${isEdit ? 'Salva' : 'Crea Tunnel'}`;
+        btn.innerHTML = `<i class="ti ti-check me-1"></i>${isEdit ? t('strongswan.tunnelSave') : t('strongswan.tunnelCreate')}`;
     }
 }

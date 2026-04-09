@@ -1,10 +1,14 @@
 /**
  * StrongSwan Module - Dashboard Widgets
- * 
+ *
  * Uses existing API: GET /tunnels (includes child_sas with is_up)
  */
 
 import { apiGet } from '/assets/js/api.js';
+import { t, loadModuleTranslations } from '/static/js/i18n.js';
+
+// Load translations at module import time so render() can use t()
+await loadModuleTranslations('strongswan');
 
 export const widgets = {
     strongswan_tunnel_status: {
@@ -13,19 +17,19 @@ export const widgets = {
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
-                            <img src="https://www.svgrepo.com/show/306809/strongswan.svg" 
+                            <img src="https://www.svgrepo.com/show/306809/strongswan.svg"
                                  alt="" style="width: 20px; height: 20px; margin-right: 8px;">
                             IPsec VPN
                         </h3>
                         <div class="card-actions">
                             <a href="#strongswan" class="btn btn-sm btn-outline-primary">
-                                <i class="ti ti-external-link me-1"></i>Gestisci
+                                <i class="ti ti-external-link me-1"></i>${t('strongswan.manage')}
                             </a>
                         </div>
                     </div>
                     <div class="card-body p-0" id="ipsec-widget-body">
                         <div class="text-muted text-center py-4">
-                            <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                            <span class="spinner-border spinner-border-sm"></span> ${t('strongswan.loading')}
                         </div>
                     </div>
                 </div>
@@ -45,15 +49,15 @@ export const widgets = {
 
                 // Flatten tunnel + child SA data
                 const tunnelRows = [];
-                for (const t of tunnels) {
-                    const children = t.child_sas || [];
+                for (const tunnel of tunnels) {
+                    const children = tunnel.child_sas || [];
                     totalChildSas += children.length;
                     const childrenUp = children.filter(c => c.is_up);
                     upChildSas += childrenUp.length;
 
                     tunnelRows.push({
-                        name: t.name,
-                        remote: t.remote_addr,
+                        name: tunnel.name,
+                        remote: tunnel.remote_addr,
                         childCount: children.length,
                         childrenUp: childrenUp.length,
                         children: children,
@@ -71,7 +75,7 @@ export const widgets = {
                                     </span>
                                     <div>
                                         <div class="fw-bold">${totalTunnels}</div>
-                                        <div class="text-muted small">Tunnel</div>
+                                        <div class="text-muted small">${t('strongswan.title')}</div>
                                     </div>
                                 </div>
                             </div>
@@ -82,7 +86,7 @@ export const widgets = {
                                     </span>
                                     <div>
                                         <div class="fw-bold">${upChildSas}/${totalChildSas}</div>
-                                        <div class="text-muted small">Child SA attive</div>
+                                        <div class="text-muted small">${t('strongswan.wActiveChildSas')}</div>
                                     </div>
                                 </div>
                             </div>
@@ -94,22 +98,22 @@ export const widgets = {
                         <div class="list-group list-group-flush" style="max-height: 250px; overflow-y: auto;">
                             ${tunnelRows.length === 0 ? `
                                 <div class="text-muted text-center py-3 small">
-                                    <i class="ti ti-lock-off"></i> Nessun tunnel configurato
+                                    <i class="ti ti-lock-off"></i> ${t('strongswan.wNoTunnelsConfigured')}
                                 </div>
-                            ` : tunnelRows.map(t => `
+                            ` : tunnelRows.map(row => `
                                 <div class="list-group-item px-3 py-2">
                                     <div class="d-flex align-items-center justify-content-between mb-1">
                                         <div class="d-flex align-items-center">
-                                            <span class="status-dot ${t.childrenUp > 0 ? 'status-dot-active' : 'status-dot-inactive'} me-2"></span>
-                                            <span class="fw-bold small">${t.name}</span>
+                                            <span class="status-dot ${row.childrenUp > 0 ? 'status-dot-active' : 'status-dot-inactive'} me-2"></span>
+                                            <span class="fw-bold small">${row.name}</span>
                                         </div>
-                                        <span class="text-muted" style="font-size: 0.7rem;">${t.remote || '—'}</span>
+                                        <span class="text-muted" style="font-size: 0.7rem;">${row.remote || '—'}</span>
                                     </div>
-                                    ${t.children.length > 0 ? `
+                                    ${row.children.length > 0 ? `
                                         <div class="ms-3">
-                                            ${t.children.map(c => `
+                                            ${row.children.map(c => `
                                                 <div class="d-flex align-items-center py-1" style="font-size: 0.7rem;">
-                                                    <span class="badge ${c.is_up ? 'bg-green-lt' : 'bg-secondary-lt'} me-2" 
+                                                    <span class="badge ${c.is_up ? 'bg-green-lt' : 'bg-secondary-lt'} me-2"
                                                           style="width: 8px; height: 8px; padding: 0; border-radius: 50%;"></span>
                                                     <span class="text-muted">${c.name}</span>
                                                     <span class="ms-auto text-muted">
@@ -128,7 +132,7 @@ export const widgets = {
             } catch (e) {
                 container.innerHTML = `
                     <div class="text-muted text-center py-3 p-3">
-                        <i class="ti ti-alert-circle"></i> Impossibile caricare i dati
+                        <i class="ti ti-alert-circle"></i> ${t('strongswan.loadError')}
                     </div>
                 `;
             }

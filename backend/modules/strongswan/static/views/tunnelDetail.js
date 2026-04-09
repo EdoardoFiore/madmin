@@ -12,6 +12,7 @@ import {
 import { showTunnelForm } from '/static/modules/strongswan/views/tunnelForm.js';
 import { renderChildSaForm, setupChildSaFormEvents } from '/static/modules/strongswan/views/childSaForm.js';
 import { renderFirewallManagement } from '/static/modules/strongswan/views/firewallManagement.js';
+import { t } from '/static/js/i18n.js';
 
 let tunnel = null;
 let children = [];
@@ -35,7 +36,7 @@ export async function renderTunnelDetail(container, tunnelId, permissions) {
         container.innerHTML = `
             <div class="mb-3">
                 <a href="#strongswan" class="text-muted">
-                    <i class="ti ti-arrow-left me-1"></i>Torna ai Tunnels
+                    <i class="ti ti-arrow-left me-1"></i>${t('strongswan.backToTunnels')}
                 </a>
             </div>
             <div class="alert alert-danger">${escapeHtml(e.message)}</div>
@@ -164,7 +165,7 @@ function renderDetail(container, tunnelId) {
         <!-- Breadcrumb -->
         <div class="mb-3">
             <a href="#strongswan" class="text-muted">
-                <i class="ti ti-arrow-left me-1"></i>Torna ai Tunnels
+                <i class="ti ti-arrow-left me-1"></i>${t('strongswan.backToTunnels')}
             </a>
         </div>
         
@@ -198,7 +199,7 @@ function renderDetail(container, tunnelId) {
                                    </button>`
             }
                             <button class="btn btn-outline-primary" id="btn-edit-tunnel">
-                                <i class="ti ti-edit me-1"></i>Modifica
+                                <i class="ti ti-edit me-1"></i>${t('strongswan.edit')}
                             </button>
                             <button class="btn btn-outline-danger" id="btn-delete-tunnel">
                                 <i class="ti ti-trash"></i>
@@ -237,7 +238,7 @@ function renderDetail(container, tunnelId) {
                     </div>
                     <div class="card-body py-2">
                         <table class="table table-sm table-borderless mb-0">
-                            <tr><td class="text-muted" width="40%">Metodo</td>
+                            <tr><td class="text-muted" width="40%">${t('strongswan.authMethod')}</td>
                                 <td>${tunnel.auth_method === 'psk' ? 'Pre-Shared Key' : 'Certificate'}</td></tr>
                             <tr><td class="text-muted">IKE</td>
                                 <td><span class="badge bg-azure-lt">Version ${tunnel.ike_version}</span></td></tr>
@@ -273,7 +274,7 @@ function renderDetail(container, tunnelId) {
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0">
-                <i class="ti ti-route me-2"></i>Phase 2 Selectors
+                <i class="ti ti-route me-2"></i>${t('strongswan.phase2')} Selectors
                 </h5>
                 ${canManage ? `
                 <button class="btn btn-primary btn-sm" id="btn-add-phase2">
@@ -291,12 +292,12 @@ function renderDetail(container, tunnelId) {
         <div class="card mt-3">
             <div class="card-header">
                 <h5 class="card-title mb-0">
-                    <i class="ti ti-shield-lock me-2"></i>Regole Firewall
+                    <i class="ti ti-shield-lock me-2"></i>${t('strongswan.firewallRules')}
                 </h5>
             </div>
             <div class="card-body" id="firewall-container">
                 <div class="text-center py-3">
-                    <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                    <span class="spinner-border spinner-border-sm"></span> ${t('strongswan.loading')}
                 </div>
             </div>
         </div>
@@ -307,14 +308,14 @@ function renderDetail(container, tunnelId) {
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
-                            <i class="ti ti-chart-area me-2"></i>Traffico
+                            <i class="ti ti-chart-area me-2"></i>${t('strongswan.traffic')}
                         </h5>
                         <div class="d-flex align-items-center gap-2">
                             <select class="form-select form-select-sm" id="traffic-period" style="width: auto;">
-                                <option value="1h">Ultima ora</option>
-                                <option value="6h">Ultime 6 ore</option>
-                                <option value="24h" selected>Ultime 24 ore</option>
-                                <option value="7d">Ultimi 7 giorni</option>
+                                <option value="1h">${t('strongswan.lastHour')}</option>
+                                <option value="6h">${t('strongswan.last6Hours')}</option>
+                                <option value="24h" selected>${t('strongswan.last24Hours')}</option>
+                                <option value="7d">${t('strongswan.last7Days')}</option>
                             </select>
                             <span class="text-muted small" id="traffic-stats-label">--</span>
                         </div>
@@ -338,7 +339,7 @@ function renderDetail(container, tunnelId) {
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
-                            <i class="ti ti-file-text me-2"></i>Log e Diagnostica
+                            <i class="ti ti-file-text me-2"></i>${t('strongswan.logsAndDiagnostics')}
                         </h5>
                         <button class="btn btn-sm btn-outline-secondary" id="btn-refresh-logs">
                             <i class="ti ti-refresh"></i>
@@ -347,7 +348,7 @@ function renderDetail(container, tunnelId) {
                     <div class="card-body p-0">
                         <div id="log-errors"></div>
                         <div id="log-container" class="p-2" style="max-height: 250px; overflow-y: auto; font-family: monospace; font-size: 11px; background: #f8f9fa;">
-                            <div class="text-muted text-center py-3">Caricamento log...</div>
+                            <div class="text-muted text-center py-3">${t('strongswan.loadingLogs')}</div>
                         </div>
                     </div>
                 </div>
@@ -366,8 +367,8 @@ function renderPhase2Table() {
         return `
             <div class="text-center py-4 text-muted">
                 <i class="ti ti-route-off" style="font-size: 2rem;"></i>
-                <p class="mt-2 mb-0">Nessuna Phase 2 configurata</p>
-                <small>Aggiungi una Phase 2 per definire i traffic selectors</small>
+                <p class="mt-2 mb-0">${t('strongswan.noPhase2')}</p>
+                <small>${t('strongswan.noPhase2Hint')}</small>
             </div>
         `;
     }
@@ -378,12 +379,12 @@ function renderPhase2Table() {
                 <thead>
                     <tr>
                         <th style="width: 30px;"></th>
-                        <th>Nome</th>
+                        <th>${t('strongswan.phase2TableName')}</th>
                         <th>Local Subnet</th>
                         <th>Remote Subnet</th>
                         <th>ESP Proposal</th>
                         <th>Start</th>
-                        ${canManage ? '<th class="w-1">Azioni</th>' : ''}
+                        ${canManage ? `<th class="w-1">${t('strongswan.actions')}</th>` : ''}
                     </tr>
                 </thead>
                 <tbody>
@@ -391,7 +392,7 @@ function renderPhase2Table() {
                         <tr>
                             <td>
                                 <span id="status-dot-${c.name}" class="status-dot ${c.enabled ? 'bg-secondary' : 'bg-danger'}" 
-                                      title="${c.enabled ? 'Verifica in corso...' : 'Disabilitato'}"></span>
+                                      title="${c.enabled ? t('strongswan.phase2StatusChecking') : t('strongswan.phase2StatusDisabled')}"></span>
                             </td>
                             <td><strong>${escapeHtml(c.name)}</strong></td>
                             <td><code class="small">${escapeHtml(c.local_ts)}</code></td>
@@ -401,20 +402,20 @@ function renderPhase2Table() {
                             ${canManage ? `
                             <td>
                                 <div class="btn-list flex-nowrap">
-                                    <button class="btn btn-sm btn-ghost-success btn-start-child" 
-                                            data-id="${c.id}" title="Avvia">
+                                    <button class="btn btn-sm btn-ghost-success btn-start-child"
+                                            data-id="${c.id}" title="${t('strongswan.childSaStart')}">
                                         <i class="ti ti-player-play"></i>
                                     </button>
-                                    <button class="btn btn-sm btn-ghost-warning btn-stop-child" 
-                                            data-id="${c.id}" title="Ferma">
+                                    <button class="btn btn-sm btn-ghost-warning btn-stop-child"
+                                            data-id="${c.id}" title="${t('strongswan.childSaStop')}">
                                         <i class="ti ti-player-stop"></i>
                                     </button>
-                                    <button class="btn btn-sm btn-ghost-primary btn-edit-child" 
-                                            data-id="${c.id}" title="Modifica">
+                                    <button class="btn btn-sm btn-ghost-primary btn-edit-child"
+                                            data-id="${c.id}" title="${t('strongswan.childSaEdit')}">
                                         <i class="ti ti-edit"></i>
                                     </button>
-                                    <button class="btn btn-sm btn-ghost-danger btn-delete-child" 
-                                            data-id="${c.id}" data-name="${escapeHtml(c.name)}" title="Elimina">
+                                    <button class="btn btn-sm btn-ghost-danger btn-delete-child"
+                                            data-id="${c.id}" data-name="${escapeHtml(c.name)}" title="${t('strongswan.childSaDelete')}">
                                         <i class="ti ti-trash"></i>
                                     </button>
                                 </div>
@@ -441,7 +442,7 @@ function setupDetailEvents(tunnelId) {
 
             try {
                 await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/start`);
-                showToast('Child SA avviata', 'success');
+                showToast(t('strongswan.childSaStarted'), 'success');
             } catch (e) {
                 showToast(e.message, 'error');
             } finally {
@@ -463,7 +464,7 @@ function setupDetailEvents(tunnelId) {
 
             try {
                 await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/stop`);
-                showToast('Child SA fermata', 'success');
+                showToast(t('strongswan.childSaStopped'), 'success');
             } catch (e) {
                 showToast(e.message, 'error');
             } finally {
@@ -480,7 +481,7 @@ function setupDetailEvents(tunnelId) {
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Starting...';
         try {
             await apiPost(`/modules/strongswan/tunnels/${tunnelId}/start`);
-            showToast('Tunnel avviato', 'success');
+            showToast(t('strongswan.tunnelStarted'), 'success');
             tunnel.status = 'connecting';
             location.reload();
         } catch (e) {
@@ -496,7 +497,7 @@ function setupDetailEvents(tunnelId) {
         btn.disabled = true;
         try {
             await apiPost(`/modules/strongswan/tunnels/${tunnelId}/stop`);
-            showToast('Tunnel fermato', 'success');
+            showToast(t('strongswan.tunnelStopped'), 'success');
             tunnel.status = 'disconnected';
             location.reload();
         } catch (e) {
@@ -515,17 +516,16 @@ function setupDetailEvents(tunnelId) {
     // Delete tunnel
     document.getElementById('btn-delete-tunnel')?.addEventListener('click', async () => {
         const confirmed = await confirmDialog(
-            'Elimina Tunnel',
-            `<p>Eliminare <strong>${escapeHtml(tunnel.name)}</strong>?</p>
-            <p class="text-muted small">Verranno eliminate anche tutte le Phase 2.</p>`,
-            'Elimina',
+            t('strongswan.confirmDeleteTunnelTitle'),
+            t('strongswan.confirmDeleteTunnelBody').replace('{name}', escapeHtml(tunnel.name)),
+            t('strongswan.confirmDeleteBtn'),
             'btn-danger',
             true
         );
         if (confirmed) {
             try {
                 await apiDelete(`/modules/strongswan/tunnels/${tunnelId}`);
-                showToast('Tunnel eliminato', 'success');
+                showToast(t('strongswan.tunnelDeleted'), 'success');
                 window.location.hash = '#strongswan';
             } catch (e) {
                 showToast(e.message, 'error');
@@ -548,9 +548,9 @@ function setupDetailEvents(tunnelId) {
             const childName = btn.dataset.name;
 
             const confirmed = await confirmDialog(
-                'Elimina Phase 2',
-                `Eliminare <strong>${escapeHtml(childName)}</strong>?`,
-                'Elimina',
+                t('strongswan.confirmDeletePhase2Title'),
+                t('strongswan.confirmDeletePhase2Body').replace('{name}', escapeHtml(childName)),
+                t('strongswan.confirmDeleteBtn'),
                 'btn-danger',
                 true  // Enable HTML content
             );
@@ -558,7 +558,7 @@ function setupDetailEvents(tunnelId) {
             if (confirmed) {
                 try {
                     await apiDelete(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}`);
-                    showToast('Phase 2 eliminata', 'success');
+                    showToast(t('strongswan.phase2Deleted'), 'success');
                     location.reload();
                 } catch (e) {
                     showToast(e.message, 'error');
@@ -653,7 +653,7 @@ async function loadTrafficStats(tunnelId, period = null) {
         document.getElementById('traffic-in').textContent = formatBytes(totalIn);
         document.getElementById('traffic-out').textContent = formatBytes(totalOut);
         document.getElementById('traffic-stats-label').textContent =
-            `${response.data_points || 0} punti`;
+            t('strongswan.dataPoints').replace('{n}', response.data_points || 0);
 
         // Render chart
         renderTrafficChart(selectedPeriod);
@@ -662,7 +662,7 @@ async function loadTrafficStats(tunnelId, period = null) {
         console.error('Failed to load traffic stats', e);
         document.getElementById('traffic-in').textContent = '--';
         document.getElementById('traffic-out').textContent = '--';
-        document.getElementById('traffic-stats-label').textContent = 'Errore';
+        document.getElementById('traffic-stats-label').textContent = t('strongswan.statsError');
     }
 }
 
@@ -752,7 +752,7 @@ function renderTrafficChart(period = '24h') {
         trafficChart.render();
     } else {
         // Fallback if ApexCharts not loaded
-        chartEl.innerHTML = '<div class="text-center text-muted py-4"><i class="ti ti-chart-line" style="font-size: 2rem;"></i><br>Grafici non disponibili</div>';
+        chartEl.innerHTML = `<div class="text-center text-muted py-4"><i class="ti ti-chart-line" style="font-size: 2rem;"></i><br>${t('strongswan.chartsUnavailable')}</div>`;
     }
 }
 
@@ -789,12 +789,12 @@ async function loadLogs(tunnelId) {
             // Scroll to bottom
             container.scrollTop = container.scrollHeight;
         } else {
-            container.innerHTML = '<div class="text-center text-muted py-3">Nessun log recente per questo tunnel</div>';
+            container.innerHTML = `<div class="text-center text-muted py-3">${t('strongswan.noRecentLogs')}</div>`;
         }
 
     } catch (e) {
         console.error('Failed to load logs', e);
-        container.innerHTML = `<div class="text-danger text-center py-3">Errore: ${escapeHtml(e.message)}</div>`;
+        container.innerHTML = `<div class="text-danger text-center py-3">${t('strongswan.logError').replace('{msg}', escapeHtml(e.message))}</div>`;
     }
 }
 
@@ -807,7 +807,7 @@ async function loadFirewallManagement(tunnelId) {
         container.innerHTML = `
             <div class="alert alert-danger">
                 <i class="ti ti-alert-circle me-2"></i>
-                Errore nel caricamento del firewall: ${escapeHtml(e.message)}
+                ${t('strongswan.firewallLoadError').replace('{msg}', escapeHtml(e.message))}
             </div>
         `;
     }

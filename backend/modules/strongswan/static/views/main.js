@@ -5,6 +5,7 @@
  */
 
 import { checkPermission } from '/static/js/app.js';
+import { loadModuleTranslations } from '/static/js/i18n.js';
 import { renderTunnelList } from '/static/modules/strongswan/views/tunnelList.js';
 import { renderTunnelDetail } from '/static/modules/strongswan/views/tunnelDetail.js';
 
@@ -15,6 +16,9 @@ let permissions = {
 };
 
 export async function render(container, params) {
+    // Load translations first
+    await loadModuleTranslations('strongswan');
+
     // Check permissions
     permissions = {
         view: checkPermission('ipsec.view'),

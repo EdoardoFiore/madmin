@@ -1,6 +1,6 @@
 /**
  * IPsec VPN Module - Tunnel List View
- * 
+ *
  * Displays table of all IPsec tunnels with actions.
  */
 
@@ -10,6 +10,7 @@ import {
     statusBadge, loadingSpinner, emptyState
 } from '/static/modules/strongswan/views/utils.js';
 import { showTunnelForm } from '/static/modules/strongswan/views/tunnelForm.js';
+import { t } from '/static/js/i18n.js';
 
 let tunnels = [];
 let canManage = false;
@@ -21,11 +22,11 @@ export async function renderTunnelList(container, permissions) {
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h3 class="card-title mb-0">
-                    <i class="ti ti-shield-lock me-2"></i>IPsec Tunnels
+                    <i class="ti ti-shield-lock me-2"></i>${t('strongswan.title')}
                 </h3>
                 ${canManage ? `
                 <button class="btn btn-primary" id="btn-new-tunnel">
-                    <i class="ti ti-plus me-1"></i>Nuovo Tunnel
+                    <i class="ti ti-plus me-1"></i>${t('strongswan.newTunnel')}
                 </button>` : ''}
             </div>
             <div class="card-body p-0" id="tunnels-container">
@@ -61,8 +62,8 @@ function renderTable() {
     if (tunnels.length === 0) {
         container.innerHTML = emptyState(
             'shield-off',
-            'Nessun tunnel IPsec configurato',
-            canManage ? 'Clicca "Nuovo Tunnel" per crearne uno' : ''
+            t('strongswan.noTunnels'),
+            canManage ? t('strongswan.noTunnelsHint') : ''
         );
         return;
     }
@@ -73,38 +74,38 @@ function renderTable() {
                 <thead>
                     <tr>
                         <th style="width: 30px;"></th>
-                        <th>Nome</th>
-                        <th>Remote Gateway</th>
+                        <th>${t('strongswan.name')}</th>
+                        <th>${t('strongswan.remoteGateway')}</th>
                         <th>IKE</th>
-                        <th>Phase 2</th>
-                        <th class="w-1">Azioni</th>
+                        <th>${t('strongswan.phase2')}</th>
+                        <th class="w-1">${t('strongswan.actions')}</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${tunnels.map(t => `
-                        <tr class="tunnel-row" data-id="${t.id}" style="cursor: pointer;">
+                    ${tunnels.map(tunnel => `
+                        <tr class="tunnel-row" data-id="${tunnel.id}" style="cursor: pointer;">
                             <td>
-                                <span class="status-dot ${t.status === 'established' ? 'status-dot-animated bg-success' : t.status === 'connecting' ? 'status-dot-animated bg-warning' : 'bg-secondary'}" 
-                                      title="${t.status === 'established' ? 'UP' : t.status === 'connecting' ? 'Connecting' : 'DOWN'}"></span>
+                                <span class="status-dot ${tunnel.status === 'established' ? 'status-dot-animated bg-success' : tunnel.status === 'connecting' ? 'status-dot-animated bg-warning' : 'bg-secondary'}"
+                                      title="${tunnel.status === 'established' ? 'UP' : tunnel.status === 'connecting' ? 'Connecting' : 'DOWN'}"></span>
                             </td>
                             <td>
-                                <a href="#strongswan/${t.id}" class="text-reset">
-                                    <strong>${escapeHtml(t.name)}</strong>
+                                <a href="#strongswan/${tunnel.id}" class="text-reset">
+                                    <strong>${escapeHtml(tunnel.name)}</strong>
                                 </a>
                                 <div class="small text-muted">
-                                    ${t.status === 'established'
+                                    ${tunnel.status === 'established'
             ? '<span class="text-success">UP</span>'
-            : t.status === 'connecting'
+            : tunnel.status === 'connecting'
                 ? '<span class="text-warning">Connecting...</span>'
                 : '<span class="text-secondary">Down</span>'}
                                 </div>
                             </td>
-                            <td><code>${escapeHtml(t.remote_address)}</code></td>
-                            <td><span class="badge bg-azure-lt">v${t.ike_version}</span></td>
+                            <td><code>${escapeHtml(tunnel.remote_address)}</code></td>
+                            <td><span class="badge bg-azure-lt">v${tunnel.ike_version}</span></td>
                             <td>
                                 <div class="d-flex flex-wrap gap-1">
-                                ${t.child_sa_count > 0 ? (() => {
-            const childSas = t.child_sas || [];
+                                ${tunnel.child_sa_count > 0 ? (() => {
+            const childSas = tunnel.child_sas || [];
             const upSas = childSas.filter(c => c.is_up);
             const downSas = childSas.filter(c => !c.is_up);
             let content = '';
@@ -113,11 +114,11 @@ function renderTable() {
                 const popoverUp = upSas.map(c =>
                     `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
                 ).join('');
-                content += `<span class="badge bg-success-lt text-success cursor-help" 
-                                                      data-bs-toggle="popover" 
+                content += `<span class="badge bg-success-lt text-success cursor-help"
+                                                      data-bs-toggle="popover"
                                                       data-bs-trigger="hover focus"
-                                                      data-bs-html="true" 
-                                                      data-bs-title="Fasi 2 ATTIVE" 
+                                                      data-bs-html="true"
+                                                      data-bs-title="${t('strongswan.phase2ActivePopover')}"
                                                       data-bs-content="${popoverUp.replace(/"/g, '&quot;')}">
                                                       ${upSas.length} UP
                                                 </span>`;
@@ -127,11 +128,11 @@ function renderTable() {
                 const popoverDown = downSas.map(c =>
                     `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
                 ).join('');
-                content += `<span class="badge bg-secondary-lt cursor-help" 
-                                                      data-bs-toggle="popover" 
+                content += `<span class="badge bg-secondary-lt cursor-help"
+                                                      data-bs-toggle="popover"
                                                       data-bs-trigger="hover focus"
-                                                      data-bs-html="true" 
-                                                      data-bs-title="Fasi 2 INATTIVE" 
+                                                      data-bs-html="true"
+                                                      data-bs-title="${t('strongswan.phase2InactivePopover')}"
                                                       data-bs-content="${popoverDown.replace(/"/g, '&quot;')}">
                                                       ${downSas.length} DOWN
                                                 </span>`;
@@ -143,18 +144,18 @@ function renderTable() {
                             <td>
                                 <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
                                     ${canManage ? `
-                                    ${t.status === 'established' || t.status === 'connecting'
-                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${t.id}" title="Stop">
+                                    ${tunnel.status === 'established' || tunnel.status === 'connecting'
+                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${tunnel.id}" title="Stop">
                                             <i class="ti ti-player-stop"></i>
                                            </button>`
-                : `<button class="btn btn-ghost-success btn-start" data-id="${t.id}" title="Start">
+                : `<button class="btn btn-ghost-success btn-start" data-id="${tunnel.id}" title="Start">
                                             <i class="ti ti-player-play"></i>
                                            </button>`
             }
-                                    <button class="btn btn-ghost-primary btn-edit" data-id="${t.id}" title="Modifica">
+                                    <button class="btn btn-ghost-primary btn-edit" data-id="${tunnel.id}" title="${t('strongswan.edit')}">
                                         <i class="ti ti-edit"></i>
                                     </button>
-                                    <button class="btn btn-ghost-danger btn-delete" data-id="${t.id}" title="Elimina">
+                                    <button class="btn btn-ghost-danger btn-delete" data-id="${tunnel.id}" title="${t('strongswan.delete')}">
                                         <i class="ti ti-trash"></i>
                                     </button>
                                     ` : ''}
@@ -194,7 +195,7 @@ function setupRowActions() {
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
             try {
                 await apiPost(`/modules/strongswan/tunnels/${id}/start`);
-                showToast('Tunnel avviato', 'success');
+                showToast(t('strongswan.tunnelStarted'), 'success');
                 await loadTunnels();
             } catch (err) {
                 showToast(err.message, 'error');
@@ -212,7 +213,7 @@ function setupRowActions() {
             btn.disabled = true;
             try {
                 await apiPost(`/modules/strongswan/tunnels/${id}/stop`);
-                showToast('Tunnel fermato', 'success');
+                showToast(t('strongswan.tunnelStopped'), 'success');
                 await loadTunnels();
             } catch (err) {
                 showToast(err.message, 'error');
@@ -242,13 +243,12 @@ function setupRowActions() {
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             const id = btn.dataset.id;
-            const tunnel = tunnels.find(t => t.id === id);
+            const tunnel = tunnels.find(tun => tun.id === id);
 
             const confirmed = await confirmDialog(
-                'Elimina Tunnel',
-                `<p>Eliminare il tunnel <strong>${escapeHtml(tunnel?.name || id)}</strong>?</p>
-                <p class="text-muted small">Verranno eliminate anche tutte le Phase 2 associate.</p>`,
-                'Elimina',
+                t('strongswan.confirmDeleteTunnelTitle'),
+                t('strongswan.confirmDeleteTunnelBody').replace('{name}', escapeHtml(tunnel?.name || id)),
+                t('strongswan.confirmDeleteBtn'),
                 'btn-danger',
                 true
             );
@@ -256,7 +256,7 @@ function setupRowActions() {
             if (confirmed) {
                 try {
                     await apiDelete(`/modules/strongswan/tunnels/${id}`);
-                    showToast('Tunnel eliminato', 'success');
+                    showToast(t('strongswan.tunnelDeleted'), 'success');
                     await loadTunnels();
                 } catch (err) {
                     showToast(err.message, 'error');
