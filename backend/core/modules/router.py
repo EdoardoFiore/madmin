@@ -26,6 +26,40 @@ settings = get_settings()
 router = APIRouter(prefix="/api/modules", tags=["Modules"])
 
 
+# ── Response Models ────────────────────────────────────────────────────
+
+class ModuleActionResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+
+class ModuleReadmeResponse(BaseModel):
+    content: str
+
+
+class ChainPriorityItem(BaseModel):
+    chain_name: str
+    priority: int
+
+
+class ChainPriorityResponse(BaseModel):
+    chain_name: str
+    module_id: str
+    parent_chain: str
+    priority: int
+    table_name: Optional[str] = None
+
+
+class ChainPriorityUpdate(BaseModel):
+    chains: List[ChainPriorityItem]
+
+
+class ChainPriorityUpdateResponse(BaseModel):
+    status: str
+    message: str
+
+
 # ============== MODULE MANAGEMENT ==============
 
 
@@ -152,40 +186,6 @@ async def get_module_readme(
 
 
 # ============== FIREWALL CHAIN PRIORITY ==============
-
-
-# ── Response Models ────────────────────────────────────────────────────
-
-class ModuleActionResponse(BaseModel):
-    success: bool
-    error: Optional[str] = None
-    message: Optional[str] = None
-
-
-class ModuleReadmeResponse(BaseModel):
-    content: str
-
-
-class ChainPriorityItem(BaseModel):
-    chain_name: str
-    priority: int
-
-
-class ChainPriorityResponse(BaseModel):
-    chain_name: str
-    module_id: str
-    parent_chain: str
-    priority: int
-    table_name: Optional[str] = None
-
-
-class ChainPriorityUpdate(BaseModel):
-    chains: List[ChainPriorityItem]
-
-
-class ChainPriorityUpdateResponse(BaseModel):
-    status: str
-    message: str
 
 
 @router.get("/chains/priority", response_model=List[ChainPriorityResponse])
