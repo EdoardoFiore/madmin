@@ -123,7 +123,7 @@ async def init_first_user(
         )
 
 
-@router.post("/token")
+@router.post("/token", response_model=Token)
 async def login(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),

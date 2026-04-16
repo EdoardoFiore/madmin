@@ -109,7 +109,8 @@ PUBLIC_RESPONSES = {k: v for k, v in COMMON_RESPONSES.items() if k in (422, 500)
 
 # ── Paths excluded from global JWT security requirement ────────────────
 
-_PUBLIC_PATH_FRAGMENTS = ("/auth/token", "/health", "/auth/init", "/docs", "/redoc", "/openapi.json")
+_PUBLIC_PATHS = {"/api/auth/token", "/api/health", "/api/auth/init"}
+_PUBLIC_PATH_FRAGMENTS = ("/docs", "/redoc", "/openapi.json")
 
 
 def setup_openapi(app: FastAPI) -> None:
@@ -131,24 +132,26 @@ def setup_openapi(app: FastAPI) -> None:
             tags=app.openapi_tags,
         )
 
-        # Inject security scheme
+        # Inject BearerAuth and remove the OAuth2PasswordBearer scheme FastAPI auto-generates
         schema.setdefault("components", {})
-        schema["components"]["securitySchemes"] = {
-            "BearerAuth": {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT",
-                "description": "Enter your JWT token obtained from POST /api/auth/token",
-            }
+        schema["components"].setdefault("securitySchemes", {}).pop("OAuth2PasswordBearer", None)
+        schema["components"]["securitySchemes"]["BearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Enter your JWT token obtained from POST /api/auth/token",
         }
 
-        # Apply security globally except to public paths
+        # Apply BearerAuth globally, replacing any OAuth2PasswordBearer references
         for path, methods in schema.get("paths", {}).items():
-            if any(frag in path for frag in _PUBLIC_PATH_FRAGMENTS):
+            if path in _PUBLIC_PATHS or any(frag in path for frag in _PUBLIC_PATH_FRAGMENTS):
                 continue
             for method_detail in methods.values():
                 if isinstance(method_detail, dict) and "summary" in method_detail:
-                    method_detail.setdefault("security", [{"BearerAuth": []}])
+                    if method_detail.get("security") == [{"OAuth2PasswordBearer": []}]:
+                        method_detail["security"] = [{"BearerAuth": []}]
+                    else:
+                        method_detail.setdefault("security", [{"BearerAuth": []}])
 
         app.openapi_schema = schema
         return schema

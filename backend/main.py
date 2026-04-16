@@ -303,7 +303,7 @@ def create_app() -> FastAPI:
     from core.auth.dependencies import get_current_user
     from core.auth.models import User
 
-    @app.get("/api/ui/menu")
+    @app.get("/api/ui/menu", tags=["System"], include_in_schema=False)
     async def get_full_menu(current_user: User = Depends(get_current_user)):
         """Get complete menu structure for frontend sidebar."""
         from core.modules.loader import module_loader
@@ -329,13 +329,13 @@ def create_app() -> FastAPI:
         }
     
     # Health check endpoint
-    @app.get("/api/health")
+    @app.get("/api/health", tags=["System"])
     async def health_check():
         """Health check endpoint."""
         from core.database import check_db_connection
-        
+
         db_healthy = await check_db_connection()
-        
+
         return {
             "status": "healthy" if db_healthy else "degraded",
             "database": "connected" if db_healthy else "disconnected",
@@ -356,14 +356,12 @@ def create_app() -> FastAPI:
         # Note: Static assets (/static/*) are served directly by Nginx
         # Module static files are mounted at /static/modules/{module_id} by module_loader
         
-        @app.get("/")
+        @app.get("/", include_in_schema=False)
         async def serve_index():
-            """Serve the main SPA index."""
             return FileResponse(os.path.join(frontend_dir, "index.html"))
-        
-        @app.get("/login")
+
+        @app.get("/login", include_in_schema=False)
         async def serve_login():
-            """Serve the login page."""
             return FileResponse(os.path.join(frontend_dir, "login.html"))
     
     return app
