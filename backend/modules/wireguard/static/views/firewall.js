@@ -15,9 +15,11 @@ let groups = [];
 let clients = [];
 let instance = null;
 let canManageGroups = false;
+let firewallContainer = null;
 
 export async function init(container, instanceId) {
     currentInstanceId = instanceId;
+    firewallContainer = container;
     canManageGroups = checkPermission('wireguard.groups');
     container.innerHTML = loadingSpinner();
 
@@ -389,6 +391,8 @@ function setupEventHandlers(container) {
             bootstrap.Modal.getInstance(document.getElementById('modal-new-group'))?.hide();
             groups = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/groups`);
             render(container);
+            setupGroupOrdering();
+            if (currentGroupId) loadGroupDetails();
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -403,6 +407,7 @@ function setupEventHandlers(container) {
                 currentGroupId = null;
                 groups = await apiGet(`/modules/wireguard/instances/${currentInstanceId}/groups`);
                 render(container);
+                setupGroupOrdering();
             } catch (err) {
                 showToast(err.message, 'error');
             }
@@ -552,8 +557,11 @@ window.editRule = async (ruleId) => {
 
 window.selectGroup = (groupId) => {
     currentGroupId = groupId;
+    if (firewallContainer) {
+        render(firewallContainer);
+        setupGroupOrdering();
+    }
     loadGroupDetails();
-    refreshGroupsList();
 };
 
 function setupGroupOrdering() {

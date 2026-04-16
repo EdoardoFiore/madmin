@@ -18,12 +18,14 @@ let groups = [];
 let clients = [];
 let instance = null;  // Current instance data including firewall_default_policy
 let canManageGroups = false;  // openvpn.groups permission
+let firewallContainer = null;
 
 /**
  * Initialize the firewall view for an instance
  */
 export async function init(container, instanceId) {
     currentInstanceId = instanceId;
+    firewallContainer = container;
     canManageGroups = checkPermission('openvpn.groups');
     container.innerHTML = loadingSpinner();
 
@@ -378,16 +380,6 @@ function renderRules(rules) {
 }
 
 function setupEventHandlers(container) {
-    // Group selection
-    container.querySelectorAll('[data-group-id]').forEach(el => {
-        el.addEventListener('click', (e) => {
-            e.preventDefault();
-            currentGroupId = e.currentTarget.dataset.groupId;
-            render(container);
-            loadGroupDetails();
-        });
-    });
-
     // New group button
     document.getElementById('btn-new-group')?.addEventListener('click', () => {
         new bootstrap.Modal(document.getElementById('modal-new-group')).show();
@@ -410,6 +402,8 @@ function setupEventHandlers(container) {
 
             groups = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/groups`);
             render(container);
+            setupGroupOrdering();
+            if (currentGroupId) loadGroupDetails();
         } catch (err) {
             showToast(err.message, 'error');
         }
@@ -424,6 +418,7 @@ function setupEventHandlers(container) {
                 currentGroupId = null;
                 groups = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/groups`);
                 render(container);
+                setupGroupOrdering();
             } catch (err) {
                 showToast(err.message, 'error');
             }
@@ -582,8 +577,11 @@ window.editRule = async (ruleId) => {
 
 window.selectGroup = (groupId) => {
     currentGroupId = groupId;
+    if (firewallContainer) {
+        render(firewallContainer);
+        setupGroupOrdering();
+    }
     loadGroupDetails();
-    refreshGroupsList(); // To update active state
 };
 
 function setupGroupOrdering() {
