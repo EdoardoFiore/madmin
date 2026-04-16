@@ -298,6 +298,16 @@ class ModuleLoader:
                 tags=[manifest.name]
             )
             logger.info(f"Mounted router for module {module_id}")
+
+            # Register OpenAPI tag description from manifest
+            tag_desc = manifest.openapi_tag_description or manifest.description
+            if tag_desc and hasattr(app, "openapi_tags") and app.openapi_tags is not None:
+                app.openapi_tags.append({
+                    "name": manifest.name,
+                    "description": tag_desc,
+                })
+                # Reset cached schema so new tags are picked up
+                app.openapi_schema = None
         
         # Mount static files
         static_path = module_path / manifest.static_dir

@@ -129,6 +129,9 @@ class ModuleManifest(SQLModel):
     # Dashboard widgets this module provides
     dashboard_widgets: List[ModuleDashboardWidget] = []
 
+    # OpenAPI tag description (shown in Swagger UI under the module tag)
+    openapi_tag_description: Optional[str] = None
+
 
 
 

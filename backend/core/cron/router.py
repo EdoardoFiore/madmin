@@ -3,7 +3,7 @@ MADMIN Crontab Router
 
 API endpoints for crontab management.
 """
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from core.auth.dependencies import require_permission
@@ -11,8 +11,10 @@ from core.auth.models import User
 
 from .service import cron_service
 
-router = APIRouter(prefix="/api/cron", tags=["cron"])
+router = APIRouter(prefix="/api/cron", tags=["Cron"])
 
+
+# ── Request/Response Models ────────────────────────────────────────────
 
 class CronEntryCreate(BaseModel):
     schedule: str
@@ -23,7 +25,37 @@ class CronEntryToggle(BaseModel):
     enabled: bool
 
 
-@router.get("/entries")
+class CronEntryItem(BaseModel):
+    id: int
+    schedule: str
+    command: str
+    enabled: bool
+    description: Optional[str] = None
+
+
+class CronPreset(BaseModel):
+    label: str
+    value: str
+
+
+class CronListResponse(BaseModel):
+    user: str
+    entries: List[CronEntryItem]
+    presets: List[CronPreset]
+
+
+class CronActionResponse(BaseModel):
+    success: bool
+    message: str
+
+
+class CronValidateResponse(BaseModel):
+    schedule: str
+    valid: bool
+    description: Optional[str] = None
+
+
+@router.get("/entries", response_model=CronListResponse)
 async def list_cron_entries(
     user: str = "root",
     _user: User = Depends(require_permission("settings.view"))
@@ -47,7 +79,7 @@ async def list_cron_entries(
     }
 
 
-@router.post("/entries")
+@router.post("/entries", response_model=CronActionResponse)
 async def add_cron_entry(
     data: CronEntryCreate,
     user: str = "root",
@@ -66,7 +98,7 @@ async def add_cron_entry(
     return {"success": True, "message": message}
 
 
-@router.delete("/entries/{entry_id}")
+@router.delete("/entries/{entry_id}", response_model=CronActionResponse)
 async def delete_cron_entry(
     entry_id: int,
     user: str = "root",
@@ -82,7 +114,7 @@ async def delete_cron_entry(
     return {"success": True, "message": message}
 
 
-@router.patch("/entries/{entry_id}/toggle")
+@router.patch("/entries/{entry_id}/toggle", response_model=CronActionResponse)
 async def toggle_cron_entry(
     entry_id: int,
     user: str = "root",
@@ -98,7 +130,7 @@ async def toggle_cron_entry(
     return {"success": True, "message": message}
 
 
-@router.get("/validate")
+@router.get("/validate", response_model=CronValidateResponse)
 async def validate_schedule(
     schedule: str,
     _user: User = Depends(require_permission("settings.view"))

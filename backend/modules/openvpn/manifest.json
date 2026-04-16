@@ -4,6 +4,7 @@
     "version": "1.2.0",
     "description": "OpenVPN server and client management with PKI, certificate generation, and multi-instance support",
     "author": "MADMIN Team",
+    "openapi_tag_description": "OpenVPN server — multi-instance management, PKI/easy-rsa certificates, client profiles and groups.",
     "system_dependencies": {
         "apt": [
             "openvpn",

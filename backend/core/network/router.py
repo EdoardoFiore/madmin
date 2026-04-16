@@ -18,7 +18,7 @@ from .service import network_service, netplan_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/network", tags=["network"])
+router = APIRouter(prefix="/api/network", tags=["Network"])
 
 # Interfaces managed externally (e.g. cloud-init) — read-only via API
 PROTECTED_INTERFACES = {"eth0"}
@@ -83,6 +83,13 @@ class NetplanConfig(BaseModel):
         return v
 
 
+# ── Response Models ────────────────────────────────────────────────────
+
+class NetworkActionResponse(BaseModel):
+    success: bool
+    message: str
+
+
 @router.get("/interfaces")
 async def get_network_interfaces(
     _user: User = Depends(require_permission("network.view"))
@@ -114,7 +121,7 @@ async def get_interface_config(
     }
 
 
-@router.post("/interfaces/{interface}/config")
+@router.post("/interfaces/{interface}/config", response_model=NetworkActionResponse)
 async def set_interface_config(
     interface: str,
     config: NetplanConfig,
@@ -146,7 +153,7 @@ async def set_interface_config(
     return {"success": True, "message": message}
 
 
-@router.delete("/interfaces/{interface}/config")
+@router.delete("/interfaces/{interface}/config", response_model=NetworkActionResponse)
 async def delete_interface_config(
     interface: str,
     _user: User = Depends(require_permission("network.manage"))
@@ -170,7 +177,7 @@ async def delete_interface_config(
     return {"success": True, "message": message}
 
 
-@router.post("/netplan/apply")
+@router.post("/netplan/apply", response_model=NetworkActionResponse)
 async def apply_netplan(
     session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("network.manage"))

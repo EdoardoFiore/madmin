@@ -132,7 +132,7 @@ async def deactivate_module(
         raise HTTPException(status_code=500, detail="Errore interno del server")
 
 
-@router.get("/{module_id}/readme")
+@router.get("/{module_id}/readme", response_model=ModuleReadmeResponse)
 async def get_module_readme(
     module_id: str,
     current_user: User = Depends(require_permission("modules.view"))
@@ -154,16 +154,41 @@ async def get_module_readme(
 # ============== FIREWALL CHAIN PRIORITY ==============
 
 
+# ── Response Models ────────────────────────────────────────────────────
+
+class ModuleActionResponse(BaseModel):
+    success: bool
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+
+class ModuleReadmeResponse(BaseModel):
+    content: str
+
+
 class ChainPriorityItem(BaseModel):
     chain_name: str
     priority: int
+
+
+class ChainPriorityResponse(BaseModel):
+    chain_name: str
+    module_id: str
+    parent_chain: str
+    priority: int
+    table_name: Optional[str] = None
 
 
 class ChainPriorityUpdate(BaseModel):
     chains: List[ChainPriorityItem]
 
 
-@router.get("/chains/priority")
+class ChainPriorityUpdateResponse(BaseModel):
+    status: str
+    message: str
+
+
+@router.get("/chains/priority", response_model=List[ChainPriorityResponse])
 async def get_chain_priorities(
     current_user: User = Depends(require_permission("modules.view")),
     session: AsyncSession = Depends(get_session)
@@ -188,7 +213,7 @@ async def get_chain_priorities(
     ]
 
 
-@router.put("/chains/priority")
+@router.put("/chains/priority", response_model=ChainPriorityUpdateResponse)
 async def update_chain_priorities(
     update: ChainPriorityUpdate,
     current_user: User = Depends(require_permission("modules.manage")),

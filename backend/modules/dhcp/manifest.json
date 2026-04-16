@@ -4,6 +4,7 @@
     "version": "1.1.0",
     "description": "ISC DHCP server management with multi-interface subnets, pools, static reservations and live lease monitoring",
     "author": "MADMIN Team",
+    "openapi_tag_description": "ISC DHCP server — subnets, pools, static reservations and live lease monitoring.",
     "system_dependencies": {
         "apt": [
             "isc-dhcp-server"

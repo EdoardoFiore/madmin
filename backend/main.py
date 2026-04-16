@@ -242,12 +242,24 @@ def create_app() -> FastAPI:
     Application factory.
     Creates and configures the FastAPI application.
     """
+    from core.openapi import CORE_TAGS, setup_openapi
+
     app = FastAPI(
         title="MADMIN",
-        description="Modular Admin System - Manage your server with ease",
+        description="Modular Admin System — Manage your Ubuntu server with ease.\n\n"
+                    "Provides core system management (firewall, network, services, cron) "
+                    "and a dynamic module system (DHCP, DNS, OpenVPN, WireGuard, IPsec).",
         version=MADMIN_VERSION,
-        lifespan=lifespan
+        lifespan=lifespan,
+        openapi_tags=list(CORE_TAGS),
+        docs_url="/api/docs" if settings.debug else None,
+        redoc_url="/api/redoc" if settings.debug else None,
+        openapi_url="/api/openapi.json" if settings.debug else None,
+        contact={"name": "MADMIN", "url": "https://github.com/edoardo-f/madmin"},
     )
+
+    # Custom OpenAPI schema with JWT security
+    setup_openapi(app)
     
     # CORS middleware
     app.add_middleware(

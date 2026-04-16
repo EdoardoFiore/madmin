@@ -6,12 +6,20 @@ API endpoints for systemd service management.
 import threading
 import time
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from core.auth.dependencies import get_current_user, require_permission
 from core.auth.models import User
 
 from .service import systemd_service
 
-router = APIRouter(prefix="/api/services", tags=["services"])
+router = APIRouter(prefix="/api/services", tags=["Services"])
+
+
+# ── Response Models ────────────────────────────────────────────────────
+
+class ServiceActionResponse(BaseModel):
+    success: bool
+    message: str
 
 
 def _delayed_restart(service_name: str, delay: float = 0.5):
@@ -39,7 +47,7 @@ async def get_service_status(
     return systemd_service.get_status(service_name)
 
 
-@router.post("/{service_name}/restart")
+@router.post("/{service_name}/restart", response_model=ServiceActionResponse)
 async def restart_service(
     service_name: str,
     _user: User = Depends(require_permission("settings.manage"))
@@ -67,18 +75,18 @@ async def restart_service(
         thread = threading.Thread(target=_delayed_restart, args=(service_name, 0.5))
         thread.daemon = True
         thread.start()
-        return {"success": True, "message": "Riavvio in corso..."}
-    
+        return ServiceActionResponse(success=True, message="Riavvio in corso...")
+
     # Normal restart for other services
     success, message = systemd_service.restart(service_name)
-    
+
     if not success:
         raise HTTPException(status_code=500, detail=message)
-    
-    return {"success": True, "message": message}
+
+    return ServiceActionResponse(success=True, message=message)
 
 
-@router.post("/{service_name}/start")
+@router.post("/{service_name}/start", response_model=ServiceActionResponse)
 async def start_service(
     service_name: str,
     _user: User = Depends(require_permission("settings.manage"))
@@ -95,14 +103,14 @@ async def start_service(
         )
     
     success, message = systemd_service.start(service_name)
-    
+
     if not success:
         raise HTTPException(status_code=500, detail=message)
-    
-    return {"success": True, "message": message}
+
+    return ServiceActionResponse(success=True, message=message)
 
 
-@router.post("/{service_name}/stop")
+@router.post("/{service_name}/stop", response_model=ServiceActionResponse)
 async def stop_service(
     service_name: str,
     _user: User = Depends(require_permission("settings.manage"))
@@ -119,8 +127,8 @@ async def stop_service(
         )
     
     success, message = systemd_service.stop(service_name)
-    
+
     if not success:
         raise HTTPException(status_code=500, detail=message)
-    
-    return {"success": True, "message": message}
+
+    return ServiceActionResponse(success=True, message=message)

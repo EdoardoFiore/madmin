@@ -4,6 +4,7 @@
     "version": "1.1.0",
     "description": "Site-to-Site IPsec VPN management with strongSwan, IKEv1/IKEv2 support, and FortiGate-style configuration",
     "author": "MADMIN Team",
+    "openapi_tag_description": "strongSwan IPsec VPN — site-to-site tunnels, IKEv1/IKEv2, FortiGate-compatible configuration.",
     "system_dependencies": {
         "apt": [
             "strongswan-swanctl",

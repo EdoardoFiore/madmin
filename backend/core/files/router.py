@@ -7,14 +7,29 @@ Files are stored in /opt/madmin/uploads/ and served via Nginx.
 import os
 import uuid
 import aiofiles
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 
 router = APIRouter(prefix="/api/files", tags=["Files"])
+
+
+# ── Response Models ────────────────────────────────────────────────────
+
+class FileUploadResponse(BaseModel):
+    url: str
+    filename: str
+    original_name: Optional[str] = None
+    size: int
+
+
+class FileDeleteResponse(BaseModel):
+    status: str
+    message: str
 
 # Upload directory configuration
 UPLOAD_DIR = os.environ.get("MADMIN_UPLOAD_DIR", "/opt/madmin/uploads")
@@ -39,7 +54,7 @@ def validate_file(file: UploadFile) -> None:
         )
 
 
-@router.post("/upload")
+@router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
     file: UploadFile = File(...),
     current_user: User = Depends(require_permission("settings.manage"))
@@ -80,7 +95,7 @@ async def upload_file(
     }
 
 
-@router.delete("/upload/{filename}")
+@router.delete("/upload/{filename}", response_model=FileDeleteResponse)
 async def delete_file(
     filename: str,
     current_user: User = Depends(require_permission("settings.manage"))

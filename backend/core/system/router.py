@@ -3,8 +3,9 @@ MADMIN System Router
 
 API endpoints for system statistics.
 """
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_session
@@ -16,7 +17,64 @@ from .service import (
     get_network_traffic_history, get_system_alerts
 )
 
-router = APIRouter(prefix="/api/system", tags=["system"])
+router = APIRouter(prefix="/api/system", tags=["System"])
+
+
+# ── Response Models ────────────────────────────────────────────────────
+
+class CpuStats(BaseModel):
+    percent: float
+    count: int
+
+class MemoryStats(BaseModel):
+    percent: float
+    used: int
+    total: int
+
+class DiskStats(BaseModel):
+    percent: float
+    used: int
+    total: int
+
+class SystemStatsResponse(BaseModel):
+    available: bool
+    cpu: Optional[CpuStats] = None
+    memory: Optional[MemoryStats] = None
+    disk: Optional[DiskStats] = None
+    hostname: Optional[str] = None
+    os_info: Optional[str] = None
+    uptime: Optional[str] = None
+
+class ServiceStatusItem(BaseModel):
+    name: str
+    status: str
+    active: bool
+
+class StatsHistoryItem(BaseModel):
+    timestamp: str
+    cpu: Optional[float] = None
+    ram: Optional[float] = None
+    disk: Optional[float] = None
+    ram_used: Optional[int] = None
+    ram_total: Optional[int] = None
+    disk_used: Optional[int] = None
+    disk_total: Optional[int] = None
+
+class UptimeResponse(BaseModel):
+    uptime: str
+    since: Optional[str] = None
+
+class NetworkTrafficInterface(BaseModel):
+    interface: str
+    bytes_sent: int
+    bytes_recv: int
+    packets_sent: int
+    packets_recv: int
+
+class AlertItem(BaseModel):
+    type: str
+    level: str
+    message: str
 
 
 @router.get("/stats")

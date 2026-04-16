@@ -6,9 +6,10 @@ API endpoints for viewing audit logs and system logs.
 import csv
 import io
 import math
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +19,43 @@ from core.auth.models import User
 
 from .service import query_audit_logs, get_distinct_users, get_system_logs
 
-router = APIRouter(prefix="/api/logs", tags=["logs"])
+router = APIRouter(prefix="/api/logs", tags=["Audit Logs"])
 
 
-@router.get("/audit")
+# ── Response Models ────────────────────────────────────────────────────
+
+class AuditLogItem(BaseModel):
+    id: str
+    timestamp: str
+    username: Optional[str] = None
+    method: str
+    path: str
+    status_code: int
+    duration_ms: Optional[float] = None
+    client_ip: Optional[str] = None
+    category: Optional[str] = None
+    request_body: Optional[str] = None
+    response_summary: Optional[str] = None
+
+
+class AuditLogListResponse(BaseModel):
+    items: List[AuditLogItem]
+    total: int
+    page: int
+    pages: int
+    per_page: int
+
+
+class AuditUsersResponse(BaseModel):
+    users: List[str]
+
+
+class SystemLogResponse(BaseModel):
+    lines: List[str]
+    count: int
+
+
+@router.get("/audit", response_model=AuditLogListResponse)
 async def list_audit_logs(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=10, le=200),
@@ -94,7 +128,7 @@ async def list_audit_logs(
     }
 
 
-@router.get("/audit/users")
+@router.get("/audit/users", response_model=AuditUsersResponse)
 async def list_audit_users(
     current_user: User = Depends(require_permission("logs.view")),
     session: AsyncSession = Depends(get_session),
@@ -185,7 +219,7 @@ async def export_audit_csv(
     )
 
 
-@router.get("/system")
+@router.get("/system", response_model=SystemLogResponse)
 async def get_system_log(
     lines: int = Query(default=200, ge=10, le=1000),
     search: Optional[str] = Query(default=None, description="Filter text (grep)"),
