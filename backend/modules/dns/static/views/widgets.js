@@ -4,7 +4,7 @@
  * Shows DNS server status, zone count, record count on the dashboard.
  */
 
-import { apiGet } from '/assets/js/api.js';
+import { apiGet } from '/static/js/api.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
 
 // Load translations at module import time so render() can use t()

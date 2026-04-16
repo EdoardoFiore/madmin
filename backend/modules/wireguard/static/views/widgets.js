@@ -5,7 +5,7 @@
  * Uses existing API endpoints (no dedicated widget endpoints).
  */
 
-import { apiGet } from '/assets/js/api.js';
+import { apiGet } from '/static/js/api.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
 
 // Load translations at module import time so render() can use t()

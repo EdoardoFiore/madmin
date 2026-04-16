@@ -4,7 +4,7 @@
  * Uses existing API: GET /tunnels (includes child_sas with is_up)
  */
 
-import { apiGet } from '/assets/js/api.js';
+import { apiGet } from '/static/js/api.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
 
 // Load translations at module import time so render() can use t()
