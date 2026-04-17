@@ -336,16 +336,18 @@ Swagger UI available at `/api/docs` when `DEBUG=true`.
 ## Firewall Architecture
 
 ```
-iptables chain hierarchy:
+INPUT
+  └── MADMIN_GW_EXCEPTS   (whitelist — bypass gateway protection)
+  └── MADMIN_GW_PROTECT   (per-interface ipset DROP)
+  └── MOD_*_INPUT         (module chains, e.g. MOD_WG_INPUT)
+  └── MADMIN_INPUT        (host firewall rules)
 
-INPUT / FORWARD / POSTROUTING
-  └── MOD_IPSEC_*      (priority 40)
-  └── MOD_DNS_INPUT    (priority 45)
-  └── MOD_OVPN_*       (priority 50)
-  └── MOD_WG_*         (priority 50)
-  └── MADMIN_GW_PROTECT (per-interface ipset DROP)
-  └── MADMIN_INPUT     (host firewall rules)
-  └── MADMIN_FORWARD   (inter-LAN isolation, LAN→WAN)
+FORWARD
+  └── MOD_*_FORWARD       (module chains, e.g. MOD_WG_FORWARD)
+  └── MADMIN_FORWARD      (inter-LAN isolation, LAN→WAN policy)
+
+OUTPUT
+  └── MADMIN_OUTPUT       (outbound host rules)
 ```
 
 - Module chains use `MOD_` prefix; priority controls jump order from parent chain
