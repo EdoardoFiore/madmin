@@ -75,7 +75,7 @@ async def list_cron_entries(
     return {
         "user": user,
         "entries": entries,
-        "presets": cron_service.PRESETS
+        "presets": [{"label": k, "value": v} for k, v in cron_service.PRESETS.items()]
     }
 
 
