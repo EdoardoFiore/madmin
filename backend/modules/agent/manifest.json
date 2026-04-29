@@ -1,0 +1,50 @@
+{
+    "id": "agent",
+    "name": "Hub Agent",
+    "version": "1.0.0",
+    "description": "Connetti questa istanza a un MADMIN Hub centralizzato per monitoring, supporto remoto e gestione fleet",
+    "author": "MADMIN Team",
+    "openapi_tag_description": "Hub Agent — enrollment, stato connessione e log dell'agent WebSocket verso MADMIN Hub.",
+    "system_dependencies": {
+        "apt": [],
+        "pip": ["websockets>=12.0"]
+    },
+    "database_migrations": [
+        "migrations/001_initial.py"
+    ],
+    "install_hooks": {
+        "post_install": "hooks/post_install.py",
+        "on_disable": "hooks/on_disable.py"
+    },
+    "backend_router": "router.py",
+    "static_dir": "static",
+    "frontend_entry": "views/main.js",
+    "permissions": [
+        {
+            "slug": "agent.view",
+            "description": "Visualizza configurazione e stato Hub Agent"
+        },
+        {
+            "slug": "agent.manage",
+            "description": "Configura connessione Hub, enrollment e disconnessione"
+        }
+    ],
+    "menu": [
+        {
+            "label": "Hub Agent",
+            "icon": "ti-cloud-network",
+            "route": "#agent"
+        }
+    ],
+    "firewall_chains": [
+        {
+            "name": "MOD_AGENT_INPUT",
+            "parent": "INPUT",
+            "priority": 30
+        }
+    ],
+    "dashboard_widgets": [],
+    "dependencies": [],
+    "default_enabled": true,
+    "disable_warning": "Disattivare l'agent rimuove: monitoring centralizzato, alert remoti, accesso supporto via SSH key push, gestione fleet e backup centralizzati. L'istanza diventa isolata dall'Hub."
+}

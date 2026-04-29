@@ -132,6 +132,12 @@ class ModuleManifest(SQLModel):
     # OpenAPI tag description (shown in Swagger UI under the module tag)
     openapi_tag_description: Optional[str] = None
 
+    # If true: module is auto-activated on first install via setup-madmin.sh
+    default_enabled: bool = False
+
+    # Shown in confirmation modal when user tries to disable this module
+    disable_warning: Optional[str] = None
+
 
 
 

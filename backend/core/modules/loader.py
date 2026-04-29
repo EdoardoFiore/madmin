@@ -703,7 +703,9 @@ class ModuleLoader:
                 "system_dependencies": {
                     "apt": manifest.system_dependencies.apt,
                     "pip": manifest.system_dependencies.pip
-                }
+                },
+                "default_enabled": manifest.default_enabled,
+                "disable_warning": manifest.disable_warning,
             })
         
         return available

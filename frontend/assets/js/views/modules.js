@@ -103,7 +103,10 @@ function renderModuleCards() {
                         <div class="flex-fill min-width-0">
                             <div class="d-flex align-items-center justify-content-between">
                                 <h3 class="card-title mb-0 text-truncate">${escapeHtml(m.name)}</h3>
-                                <span class="badge ${statusInfo.class} ms-2">${statusInfo.label}</span>
+                                <div class="d-flex gap-1 ms-2">
+                                    ${m.default_enabled ? `<span class="badge bg-teal-lt" title="Modulo consigliato, attivo di default"><i class="ti ti-star-filled me-1"></i>Raccomandato</span>` : ''}
+                                    <span class="badge ${statusInfo.class}">${statusInfo.label}</span>
+                                </div>
                             </div>
                             <div class="text-muted small mt-1">v${escapeHtml(m.version)} ${m.author ? '· ' + escapeHtml(m.author) : ''}</div>
                         </div>
@@ -193,26 +196,37 @@ window._confirmActivate = async (moduleId, moduleName) => {
 };
 
 window._confirmDeactivate = async (moduleId, moduleName) => {
+    const mod = availableModules.find(m => m.id === moduleId);
+    const customWarning = mod?.disable_warning;
+
+    const warningBody = customWarning
+        ? `<div class="alert alert-danger mb-3">
+               <div class="d-flex">
+                   <div><i class="ti ti-alert-triangle icon me-2 text-danger"></i></div>
+                   <div><h4 class="alert-title">Attenzione</h4><div>${escapeHtml(customWarning)}</div></div>
+               </div>
+           </div>`
+        : `<div class="alert alert-warning">
+               <div class="d-flex">
+                   <div><i class="ti ti-alert-triangle icon me-2"></i></div>
+                   <div>
+                       <h4 class="alert-title">${t('modules.deactivateWarning')}</h4>
+                       <div class="text-secondary">
+                           ${t('modules.deactivateDetails', { name: `<strong>${moduleName}</strong>` })}
+                           <ul class="mt-2 mb-0">
+                               <li>${t('modules.deactivateList1')}</li>
+                               <li>${t('modules.deactivateList2')}</li>
+                               <li>${t('modules.deactivateList3')}</li>
+                               <li>${t('modules.deactivateList4')}</li>
+                           </ul>
+                       </div>
+                   </div>
+               </div>
+           </div>`;
+
     const confirmed = await confirmDialog(
         t('modules.deactivateConfirmTitle', { name: moduleName }),
-        `<div class="alert alert-warning">
-            <div class="d-flex">
-                <div><i class="ti ti-alert-triangle icon me-2"></i></div>
-                <div>
-                    <h4 class="alert-title">${t('modules.deactivateWarning')}</h4>
-                    <div class="text-secondary">
-                        ${t('modules.deactivateDetails', { name: `<strong>${moduleName}</strong>` })}
-                        <ul class="mt-2 mb-0">
-                            <li>${t('modules.deactivateList1')}</li>
-                            <li>${t('modules.deactivateList2')}</li>
-                            <li>${t('modules.deactivateList3')}</li>
-                            <li>${t('modules.deactivateList4')}</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <p class="text-muted small">${t('modules.deactivateNote')}</p>`,
+        `${warningBody}<p class="text-muted small">${t('modules.deactivateNote')}</p>`,
         t('modules.deactivateAndRemove'),
         'btn-danger',
         true

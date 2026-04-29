@@ -76,6 +76,17 @@ async def lifespan(app: FastAPI):
             await firewall_orchestrator.apply_rules(session)
         except Exception as e:
             logger.error(f"Firewall apply_rules failed on startup: {e}", exc_info=True)
+
+    # Start Hub Agent background tasks if agent module is active
+    agent_tasks_started = False
+    if "agent" in module_loader.loaded_modules:
+        try:
+            from modules.agent.tasks import start_agent_tasks
+            await start_agent_tasks()
+            agent_tasks_started = True
+            logger.info("Hub Agent tasks started")
+        except Exception as e:
+            logger.error(f"Failed to start agent tasks: {e}", exc_info=True)
     
     # Start background stats collection task
     import asyncio
@@ -217,6 +228,12 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("MADMIN shutting down...")
+    if agent_tasks_started:
+        try:
+            from modules.agent.tasks import stop_agent_tasks
+            await stop_agent_tasks()
+        except Exception:
+            pass
     stats_task_running = False
     backup_task_running = False
     audit_cleanup_running = False

@@ -460,6 +460,20 @@ else
     log_warning "JWT non disponibile o file regole mancante. Import firewall saltato."
 fi
 
+# --- Attivazione modulo agent (default_enabled) ---
+if [ -n "$JWT_TOKEN" ]; then
+    AGENT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "http://localhost:8000/api/modules/agent/activate" \
+        -H "Authorization: Bearer $JWT_TOKEN")
+    if [ "$AGENT_HTTP" = "200" ] || [ "$AGENT_HTTP" = "201" ]; then
+        log_success "Modulo Hub Agent attivato automaticamente."
+    else
+        log_warning "Attivazione modulo agent fallita (HTTP $AGENT_HTTP). Attivare manualmente dalla UI → Moduli."
+    fi
+else
+    log_warning "JWT non disponibile: attivare il modulo Hub Agent manualmente dalla UI → Moduli."
+fi
+
 # --- Completato ---
 echo ""
 log_success "=========================================="
