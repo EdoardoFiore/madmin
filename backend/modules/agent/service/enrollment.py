@@ -76,6 +76,10 @@ async def _save_enrollment(hub_url: str, instance_id: str, instance_name: str, a
                 enrollment_status="enrolled",
                 enrolled_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
+                # Clear setup defaults — one-time token consumed
+                setup_hub_url=None,
+                setup_enrollment_token_enc=None,
+                setup_instance_name=None,
             )
         )
         await session.commit()

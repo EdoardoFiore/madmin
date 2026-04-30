@@ -79,10 +79,19 @@ function _renderCard(container, status) {
   });
 }
 
-function _showEnrollModal() {
+async function _showEnrollModal() {
+  let defaults = {};
+  try {
+    const s = await _get(`${BASE}/status`);
+    defaults = s.setup_defaults || {};
+  } catch { }
+
   // Reuse existing bootstrap modal if present, else build inline
   const existingModal = document.getElementById('agent-enroll-modal');
   if (existingModal) {
+    if (defaults.hub_url) existingModal.querySelector('#ae-url').value = defaults.hub_url;
+    if (defaults.enrollment_token) existingModal.querySelector('#ae-token').value = defaults.enrollment_token;
+    if (defaults.instance_name) existingModal.querySelector('#ae-name').value = defaults.instance_name;
     bootstrap.Modal.getOrCreateInstance(existingModal).show();
     return;
   }
@@ -101,15 +110,15 @@ function _showEnrollModal() {
         <div class="modal-body">
           <div class="mb-2">
             <label class="form-label form-label-sm">URL Hub</label>
-            <input id="ae-url" type="url" class="form-control form-control-sm" placeholder="https://hub.example.com:7444" />
+            <input id="ae-url" type="url" class="form-control form-control-sm" placeholder="https://hub.example.com:7444" value="${defaults.hub_url || ''}" />
           </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">Token enrollment</label>
-            <input id="ae-token" type="text" class="form-control form-control-sm font-monospace" placeholder="enr_…" />
+            <input id="ae-token" type="text" class="form-control form-control-sm font-monospace" placeholder="enr_…" value="${defaults.enrollment_token || ''}" />
           </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">Nome istanza <span class="text-muted">(opzionale)</span></label>
-            <input id="ae-name" type="text" class="form-control form-control-sm" />
+            <input id="ae-name" type="text" class="form-control form-control-sm" value="${defaults.instance_name || ''}" />
           </div>
           <div id="ae-error" class="text-danger small d-none"></div>
         </div>

@@ -62,7 +62,7 @@ function _buildPage(status) {
 
           <!-- Enrollment / config card -->
           <div class="col-lg-6">
-            ${enrolled ? _connectedCard(status) : _enrollCard()}
+            ${enrolled ? _connectedCard(status) : _enrollCard(status.setup_defaults || {})}
           </div>
 
           <!-- Active SSH keys -->
@@ -134,7 +134,7 @@ function _statusBody(status) {
     </dl>`;
 }
 
-function _enrollCard() {
+function _enrollCard(defaults = {}) {
   return `
     <div class="card">
       <div class="card-header"><h3 class="card-title">Enrollment Hub</h3></div>
@@ -145,15 +145,15 @@ function _enrollCard() {
         </p>
         <div class="mb-2">
           <label class="form-label">URL Hub <span class="text-danger">*</span></label>
-          <input id="enroll-url" type="url" class="form-control" placeholder="https://hub.example.com:7444" />
+          <input id="enroll-url" type="url" class="form-control" placeholder="https://hub.example.com:7444" value="${defaults.hub_url || ''}" />
         </div>
         <div class="mb-2">
           <label class="form-label">Token enrollment (one-time) <span class="text-danger">*</span></label>
-          <input id="enroll-token" type="text" class="form-control font-monospace" placeholder="enr_…" />
+          <input id="enroll-token" type="text" class="form-control font-monospace" placeholder="enr_…" value="${defaults.enrollment_token || ''}" />
         </div>
         <div class="mb-3">
           <label class="form-label">Nome istanza</label>
-          <input id="enroll-name" type="text" class="form-control" placeholder="Lascia vuoto per hostname automatico" />
+          <input id="enroll-name" type="text" class="form-control" placeholder="Lascia vuoto per hostname automatico" value="${defaults.instance_name || ''}" />
         </div>
         <button id="btn-enroll" class="btn btn-primary">
           <i class="ti ti-cloud-upload me-1"></i>Connetti all'Hub

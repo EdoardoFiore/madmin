@@ -84,11 +84,17 @@ EOF
 # --- Argomenti ---
 ADMIN_USERNAME="admin"
 ADMIN_PASSWORD="admin"
+AGENT_HUB_URL=""
+AGENT_ENROLLMENT_TOKEN=""
+AGENT_INSTANCE_NAME=""
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        -u|--username) ADMIN_USERNAME="$2"; shift ;;
-        -p|--password) ADMIN_PASSWORD="$2"; shift ;;
+        -u|--username)           ADMIN_USERNAME="$2"; shift ;;
+        -p|--password)           ADMIN_PASSWORD="$2"; shift ;;
+        --agent-hub-url)         AGENT_HUB_URL="$2"; shift ;;
+        --agent-token)           AGENT_ENROLLMENT_TOKEN="$2"; shift ;;
+        --agent-name)            AGENT_INSTANCE_NAME="$2"; shift ;;
     esac
     shift
 done
@@ -470,6 +476,28 @@ if [ -n "$JWT_TOKEN" ]; then
     else
         log_warning "Attivazione modulo agent fallita (HTTP $AGENT_HTTP). Attivare manualmente dalla UI → Moduli."
     fi
+
+    # Salva parametri enrollment Hub Agent in DB (pre-compilano il wizard)
+    if [ -n "$AGENT_HUB_URL" ] || [ -n "$AGENT_ENROLLMENT_TOKEN" ] || [ -n "$AGENT_INSTANCE_NAME" ]; then
+        SETUP_BODY=$(python3 -c "
+import json, sys
+d = {}
+if sys.argv[1]: d['hub_url'] = sys.argv[1]
+if sys.argv[2]: d['enrollment_token'] = sys.argv[2]
+if sys.argv[3]: d['instance_name'] = sys.argv[3]
+print(json.dumps(d))
+" "$AGENT_HUB_URL" "$AGENT_ENROLLMENT_TOKEN" "$AGENT_INSTANCE_NAME")
+        SETUP_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            "http://localhost:8000/api/modules/agent/setup-defaults" \
+            -H "Authorization: Bearer $JWT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$SETUP_BODY")
+        if [ "$SETUP_HTTP" = "200" ]; then
+            log_success "Parametri enrollment Hub Agent salvati nel DB."
+        else
+            log_warning "Salvataggio parametri enrollment fallito (HTTP $SETUP_HTTP)."
+        fi
+    fi
 else
     log_warning "JWT non disponibile: attivare il modulo Hub Agent manualmente dalla UI → Moduli."
 fi
@@ -485,6 +513,12 @@ echo ""
 echo "Credenziali Amministratore:"
 echo "  Username: $ADMIN_USERNAME"
 echo "  Password: (quella specificata al momento dell'installazione)"
+if [ -n "$AGENT_HUB_URL" ]; then
+echo ""
+echo "Hub Agent:"
+echo "  URL Hub pre-configurato: $AGENT_HUB_URL"
+echo "  Apri la UI → Moduli → Hub Agent per completare l'enrollment."
+fi
 echo ""
 echo "Database:"
 echo "  Nome: $DB_NAME"

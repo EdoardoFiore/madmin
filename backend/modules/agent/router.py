@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth.dependencies import require_permission
@@ -26,6 +26,12 @@ router = APIRouter(tags=["Hub Agent"])
 class EnrollRequest(BaseModel):
     hub_url: str
     enrollment_token: str
+    instance_name: Optional[str] = None
+
+
+class SetupDefaultsRequest(BaseModel):
+    hub_url: Optional[str] = None
+    enrollment_token: Optional[str] = None
     instance_name: Optional[str] = None
 
 
@@ -53,6 +59,21 @@ async def get_status(
     from .ws.client import get_state
     ws_state = get_state()
 
+    # Decrypt setup token for form pre-fill (empty string if absent/error)
+    setup_token = ""
+    if config and config.setup_enrollment_token_enc:
+        try:
+            from .service.crypto import decrypt_value
+            setup_token = decrypt_value(config.setup_enrollment_token_enc, "setup_token")
+        except Exception:
+            setup_token = ""
+
+    setup_defaults = {
+        "hub_url": (config.setup_hub_url if config else None) or "",
+        "enrollment_token": setup_token,
+        "instance_name": (config.setup_instance_name if config else None) or "",
+    }
+
     return {
         "enrollment_status": config.enrollment_status if config else "not_enrolled",
         "hub_url": config.hub_url if config else None,
@@ -63,6 +84,7 @@ async def get_status(
         "reconnect_attempt": ws_state["reconnect_attempt"],
         "last_connected_at": ws_state.get("last_connected_at"),
         "last_disconnected_at": ws_state.get("last_disconnected_at"),
+        "setup_defaults": setup_defaults,
     }
 
 
@@ -110,6 +132,32 @@ async def disconnect(
 
     await stop_agent_tasks()
     await revoke_local(notify_hub=True)
+
+    return {"success": True}
+
+
+@router.post("/setup-defaults")
+async def set_setup_defaults(
+    body: SetupDefaultsRequest,
+    _: User = Depends(require_permission("agent.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Save enrollment pre-fill defaults to DB (encrypted where sensitive)."""
+    values = {}
+    if body.hub_url is not None:
+        values["setup_hub_url"] = body.hub_url or None
+    if body.enrollment_token is not None:
+        if body.enrollment_token:
+            from .service.crypto import encrypt_value
+            values["setup_enrollment_token_enc"] = encrypt_value(body.enrollment_token, "setup_token")
+        else:
+            values["setup_enrollment_token_enc"] = None
+    if body.instance_name is not None:
+        values["setup_instance_name"] = body.instance_name or None
+
+    if values:
+        await session.execute(update(HubConfig).where(HubConfig.id == 1).values(**values))
+        await session.commit()
 
     return {"success": True}
 

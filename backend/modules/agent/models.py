@@ -33,6 +33,11 @@ class HubConfig(SQLModel, table=True):
     # TLS
     hub_ca_fingerprint: Optional[str] = Field(default=None, max_length=128)
 
+    # Setup defaults — pre-fill enrollment form (cleared after successful enrollment)
+    setup_hub_url: Optional[str] = Field(default=None, max_length=512)
+    setup_enrollment_token_enc: Optional[str] = Field(default=None)  # Fernet-encrypted
+    setup_instance_name: Optional[str] = Field(default=None, max_length=255)
+
     enrolled_at: Optional[datetime] = Field(default=None)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

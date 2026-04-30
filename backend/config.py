@@ -64,7 +64,7 @@ class Settings(BaseSettings):
         default=False,
         description="Mock iptables commands (for development)"
     )
-    
+
     @property
     def cors_origins(self) -> List[str]:
         """Parse CORS origins from comma-separated string."""
