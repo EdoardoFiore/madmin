@@ -60,9 +60,25 @@ async function loadModules() {
     try {
         availableModules = await apiGet('/modules/available');
         renderModuleCards();
+        await loadCardConfigs();
     } catch (e) {
         document.getElementById('modules-grid').innerHTML =
             `<div class="col-12">${emptyState('ti-alert-circle', t('modules.errorLoadingModules'), e.message)}</div>`;
+    }
+}
+
+async function loadCardConfigs() {
+    for (const m of availableModules) {
+        if (!m.enabled || !m.card_config_view) continue;
+        const el = document.getElementById(`card-config-${m.id}`);
+        if (!el) continue;
+        try {
+            const mod = await import(m.card_config_view);
+            await mod.render(el, m.id);
+        } catch (e) {
+            console.error(`card_config_view load failed for ${m.id}:`, e);
+            el.innerHTML = `<div class="border-top pt-1 mt-1 text-danger small">Config non disponibile</div>`;
+        }
     }
 }
 
@@ -134,6 +150,11 @@ function renderModuleCards() {
                         </div>
                         ${canManage ? getActionButton(m) : ''}
                     </div>
+
+                    ${m.enabled && m.card_config_view ? `
+                    <div id="card-config-${m.id}" data-agent-card-config
+                         onclick="event.stopPropagation()">
+                    </div>` : ''}
                 </div>
             </div>
         </div>`;

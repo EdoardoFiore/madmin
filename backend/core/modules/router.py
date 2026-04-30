@@ -7,7 +7,7 @@ Modules are pre-installed (monolithic). Only activation/deactivation is supporte
 import logging
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -121,19 +121,32 @@ def currentUser_has_perm(user: User, permission: str) -> bool:
 @router.post("/{module_id}/activate")
 async def activate_module(
     module_id: str,
+    request: Request,
     current_user: User = Depends(require_permission("modules.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """
     Activate a module.
-    Runs database migrations and post_install hook.
+    Runs database migrations, post_install hook, and loads module into running app.
     """
     try:
         result = await module_loader.activate_module(session, module_id)
-        
+
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("error", "Attivazione fallita"))
-        
+
+        # Load module into the running app so menu + routes are immediately available
+        if module_id not in module_loader.loaded_modules:
+            await module_loader.load_module(request.app, session, module_id)
+            # Start Hub Agent tasks if that's the module being activated
+            if module_id == "agent":
+                try:
+                    from modules.agent.tasks import start_agent_tasks
+                    await start_agent_tasks()
+                except Exception as e:
+                    logger.warning(f"Failed to start agent tasks on activation: {e}")
+
+        result["message"] = result.get("message", "").replace(" Riavvio richiesto.", "")
         return result
     except HTTPException:
         raise

@@ -694,7 +694,7 @@ class ModuleLoader:
                 "version": manifest.version,
                 "description": manifest.description or "",
                 "author": manifest.author or "",
-                "icon": manifest.menu[0].icon if manifest.menu else "puzzle",
+                "icon": manifest.icon or (manifest.menu[0].icon if manifest.menu else "puzzle"),
                 "enabled": db_module.enabled if db_module else False,
                 "has_readme": has_readme,
                 "permissions": perm_details,
@@ -706,6 +706,10 @@ class ModuleLoader:
                 },
                 "default_enabled": manifest.default_enabled,
                 "disable_warning": manifest.disable_warning,
+                "card_config_view": (
+                    f"/static/modules/{manifest.id}/{manifest.card_config_view}"
+                    if manifest.card_config_view else None
+                ),
             })
         
         return available

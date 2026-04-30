@@ -92,6 +92,7 @@ class ModuleManifest(SQLModel):
     version: str
     description: Optional[str] = None
     author: Optional[str] = None
+    icon: Optional[str] = None  # URL or Tabler icon name; fallback: menu[0].icon
     
     # Permissions this module provides
     permissions: List[ModulePermission] = []
@@ -137,6 +138,11 @@ class ModuleManifest(SQLModel):
 
     # Shown in confirmation modal when user tries to disable this module
     disable_warning: Optional[str] = None
+
+    # If set: path to a JS view (relative to static/) rendered inline in the module card.
+    # Replaces the need for a menu entry — config lives directly in the modules page.
+    # The JS file must export: async function render(container, moduleId)
+    card_config_view: Optional[str] = None
 
 
 

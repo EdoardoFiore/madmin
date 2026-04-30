@@ -29,13 +29,8 @@
             "description": "Configura connessione Hub, enrollment e disconnessione"
         }
     ],
-    "menu": [
-        {
-            "label": "Hub Agent",
-            "icon": "ti-cloud-network",
-            "route": "#agent"
-        }
-    ],
+    "icon": "https://www.svgrepo.com/show/532856/cloud-wired.svg",
+    "menu": [],
     "firewall_chains": [
         {
             "name": "MOD_AGENT_INPUT",
@@ -46,5 +41,6 @@
     "dashboard_widgets": [],
     "dependencies": [],
     "default_enabled": true,
-    "disable_warning": "Disattivare l'agent rimuove: monitoring centralizzato, alert remoti, accesso supporto via SSH key push, gestione fleet e backup centralizzati. L'istanza diventa isolata dall'Hub."
+    "disable_warning": "Disattivare l'agent rimuove: monitoring centralizzato, alert remoti, accesso supporto via SSH key push, gestione fleet e backup centralizzati. L'istanza diventa isolata dall'Hub.",
+    "card_config_view": "views/card.js"
 }
