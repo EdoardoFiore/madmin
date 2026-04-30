@@ -4,7 +4,7 @@
 import { apiGet, apiPost } from '/assets/js/api.js';
 import { showToast, showSpinner } from '/assets/js/utils.js';
 
-const BASE = '/api/agent';
+const BASE = '/api/modules/agent';
 let _pollHandle = null;
 
 export async function render(container) {

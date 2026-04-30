@@ -4,7 +4,7 @@
  * Exports: async function render(container, moduleId)
  */
 
-const BASE = '/api/agent';
+const BASE = '/api/modules/agent';
 let _cardPoll = null;
 
 export async function render(container, moduleId) {

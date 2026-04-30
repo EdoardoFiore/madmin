@@ -18,7 +18,7 @@ from .models import AgentLog, HubConfig, PushedSSHKey
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/agent", tags=["Hub Agent"])
+router = APIRouter(tags=["Hub Agent"])
 
 
 # --- Schemas ---
