@@ -40,6 +40,7 @@ class HubConfig(SQLModel, table=True):
 
     enrolled_at: Optional[datetime] = Field(default=None)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_telemetry_ts: Optional[datetime] = Field(default=None)
 
 
 class AgentLog(SQLModel, table=True):

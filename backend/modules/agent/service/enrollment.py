@@ -12,15 +12,35 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def _machine_fingerprint() -> str:
+    """Stable per-machine identifier derived from /etc/machine-id + hostname."""
+    import socket
+    try:
+        with open("/etc/machine-id") as f:
+            machine_id = f.read().strip()
+    except OSError:
+        machine_id = "unknown"
+    raw = f"{machine_id}:{socket.gethostname()}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 async def enroll(hub_url: str, enrollment_token: str, instance_name: str) -> dict:
     """
     Call Hub enrollment endpoint with the one-time token.
     Returns dict with keys: success, error, instance_id.
     """
+    import platform
     url = hub_url.rstrip("/") + "/api/agents/enroll"
     payload = {
         "enrollment_token": enrollment_token,
         "name": instance_name,
+        "fingerprint": _machine_fingerprint(),
+        "version": "1.0.0",
+        "os_info": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
     }
 
     try:
