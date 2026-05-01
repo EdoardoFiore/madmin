@@ -2,7 +2,7 @@
  * Hub Agent — enrollment wizard + live connection status.
  */
 import { apiGet, apiPost } from '/assets/js/api.js';
-import { showToast, showSpinner } from '/assets/js/utils.js';
+import { showToast, showSpinner, confirmDialog } from '/assets/js/utils.js';
 
 const BASE = '/api/modules/agent';
 let _pollHandle = null;
@@ -211,7 +211,7 @@ function _bindEvents(container, status) {
   const btnDisconnect = container.querySelector('#btn-disconnect');
   if (btnDisconnect) {
     btnDisconnect.addEventListener('click', async () => {
-      if (!confirm('Disconnettere questa istanza dall\'Hub?\nTutte le chiavi SSH installate dall\'Hub verranno rimosse.')) return;
+      if (!await confirmDialog('Disconnettere questa istanza?', 'Tutte le chiavi SSH installate dall\'Hub verranno rimosse.', { okLabel: 'Disconnetti', okClass: 'btn-danger' })) return;
       btnDisconnect.disabled = true;
       try {
         await apiPost(`${BASE}/disconnect`, {});

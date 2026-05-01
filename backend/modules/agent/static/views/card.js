@@ -66,7 +66,8 @@ function _renderCard(container, status) {
 
   container.querySelector('#card-disconnect-btn').addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (!confirm('Disconnettere dall\'Hub? Tutte le chiavi SSH installate verranno rimosse.')) return;
+    const ok = await _confirm('Disconnettere dall\'Hub?', 'Tutte le chiavi SSH installate verranno rimosse.');
+    if (!ok) return;
     try {
       await _post(`${BASE}/disconnect`, {});
       _stopPoll();
@@ -74,7 +75,7 @@ function _renderCard(container, status) {
       _renderCard(container, s);
       _startPoll(container);
     } catch (err) {
-      alert('Errore: ' + (err.detail || err));
+      _toast('Errore: ' + (err.detail || err), 'error');
     }
   });
 }
@@ -194,4 +195,43 @@ async function _post(url, body) {
   });
   if (!r.ok) { const d = await r.json().catch(() => ({})); throw d; }
   return r.json();
+}
+
+function _confirm(title, body = '') {
+  return new Promise(resolve => {
+    if (window.bootstrap?.Modal) {
+      const el = document.createElement('div');
+      el.className = 'modal modal-blur fade';
+      el.tabIndex = -1;
+      el.innerHTML = `<div class="modal-dialog modal-sm modal-dialog-centered"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">${title}</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        ${body ? `<div class="modal-body">${body}</div>` : ''}
+        <div class="modal-footer">
+          <button class="btn btn-link link-secondary me-auto" data-bs-dismiss="modal">Annulla</button>
+          <button class="btn btn-danger" id="_conf-ok">Disconnetti</button>
+        </div></div></div>`;
+      document.body.appendChild(el);
+      const m = window.bootstrap.Modal.getOrCreateInstance(el);
+      let ok = false;
+      el.querySelector('#_conf-ok').onclick = () => { ok = true; m.hide(); };
+      el.addEventListener('hidden.bs.modal', () => { el.remove(); resolve(ok); }, { once: true });
+      m.show();
+    } else {
+      resolve(window.confirm(title + (body ? '\n' + body : '')));
+    }
+  });
+}
+
+function _toast(msg, type = 'info') {
+  if (window.showToast) { window.showToast(msg, type); return; }
+  const colorMap = { success: 'bg-success', error: 'bg-danger', warning: 'bg-warning', info: 'bg-info' };
+  const bg = colorMap[type] || colorMap.info;
+  let tc = document.querySelector('.toast-container');
+  if (!tc) { tc = document.createElement('div'); tc.className = 'toast-container position-fixed bottom-0 end-0 p-3'; tc.style.zIndex = '1090'; document.body.appendChild(tc); }
+  const el = document.createElement('div');
+  el.className = `toast align-items-center text-white ${bg} border-0 show`;
+  el.setAttribute('role', 'alert');
+  el.innerHTML = `<div class="d-flex"><div class="toast-body">${msg}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+  tc.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
 }
