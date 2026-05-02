@@ -54,9 +54,12 @@ async def run_ws_client():
             await asyncio.sleep(30)
             continue
 
-        ws_url = config.hub_url.rstrip("/") + "/api/agents/ws"
-        # Convert https:// → wss://, http:// → ws://
-        ws_url = ws_url.replace("https://", "wss://").replace("http://", "ws://")
+        # Prefer the ws_url returned by Hub on enrollment (correct even behind proxies)
+        if config.hub_ws_url:
+            ws_url = config.hub_ws_url
+        else:
+            ws_url = config.hub_url.rstrip("/") + "/api/agents/ws"
+            ws_url = ws_url.replace("https://", "wss://").replace("http://", "ws://")
 
         ssl_ctx = _build_ssl_context(config.hub_ca_fingerprint)
 

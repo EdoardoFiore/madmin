@@ -140,16 +140,27 @@ function _enrollCard(defaults = {}) {
       <div class="card-header"><h3 class="card-title">Enrollment Hub</h3></div>
       <div class="card-body">
         <p class="text-muted mb-3">
-          Genera un token di enrollment su MADMIN Hub, poi incollalo qui
-          per connettere questa istanza.
+          Genera un token di enrollment su MADMIN Hub e incollalo qui,
+          oppure incolla direttamente il comando di installazione per compilare i campi automaticamente.
         </p>
+        <div class="mb-2">
+          <label class="form-label text-muted small">Incolla comando di installazione (opzionale)</label>
+          <div class="input-group input-group-sm">
+            <input id="install-cmd-input" type="text" class="form-control font-monospace"
+              placeholder="curl -fsSL https://hub.example.com/install.sh | sudo bash -s -- --token …" />
+            <button id="btn-parse-cmd" class="btn btn-outline-secondary" type="button">
+              <i class="ti ti-arrow-down-circle me-1"></i>Analizza
+            </button>
+          </div>
+        </div>
+        <hr class="my-3" />
         <div class="mb-2">
           <label class="form-label">URL Hub <span class="text-danger">*</span></label>
           <input id="enroll-url" type="url" class="form-control" placeholder="https://hub.example.com:7444" value="${defaults.hub_url || ''}" />
         </div>
         <div class="mb-2">
-          <label class="form-label">Token enrollment (one-time) <span class="text-danger">*</span></label>
-          <input id="enroll-token" type="text" class="form-control font-monospace" placeholder="enr_…" value="${defaults.enrollment_token || ''}" />
+          <label class="form-label">Token enrollment <span class="text-danger">*</span></label>
+          <input id="enroll-token" type="text" class="form-control font-monospace" placeholder="Token monouso o riutilizzabile generato dall'Hub" value="${defaults.enrollment_token || ''}" />
         </div>
         <div class="mb-3">
           <label class="form-label">Nome istanza</label>
@@ -181,6 +192,21 @@ function _connectedCard(status) {
 }
 
 function _bindEvents(container, status) {
+  // Parse install command → auto-fill URL + token
+  const btnParseCmd = container.querySelector('#btn-parse-cmd');
+  if (btnParseCmd) {
+    btnParseCmd.addEventListener('click', () => {
+      const raw = container.querySelector('#install-cmd-input').value.trim();
+      const urlMatch = raw.match(/https?:\/\/[^\s/]+/);
+      const tokenMatch = raw.match(/--token\s+(\S+)/);
+      if (!urlMatch) { showToast('URL Hub non trovato nel comando', 'error'); return; }
+      const hubUrl = urlMatch[0];
+      container.querySelector('#enroll-url').value = hubUrl;
+      if (tokenMatch) container.querySelector('#enroll-token').value = tokenMatch[1];
+      showToast('Campi compilati', 'success');
+    });
+  }
+
   // Enroll
   const btnEnroll = container.querySelector('#btn-enroll');
   if (btnEnroll) {

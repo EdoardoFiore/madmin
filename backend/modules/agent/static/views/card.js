@@ -90,9 +90,11 @@ async function _showEnrollModal() {
   // Reuse existing bootstrap modal if present, else build inline
   const existingModal = document.getElementById('agent-enroll-modal');
   if (existingModal) {
+    existingModal.querySelector('#ae-cmd').value = '';
     if (defaults.hub_url) existingModal.querySelector('#ae-url').value = defaults.hub_url;
     if (defaults.enrollment_token) existingModal.querySelector('#ae-token').value = defaults.enrollment_token;
     if (defaults.instance_name) existingModal.querySelector('#ae-name').value = defaults.instance_name;
+    existingModal.querySelector('#ae-error').classList.add('d-none');
     bootstrap.Modal.getOrCreateInstance(existingModal).show();
     return;
   }
@@ -109,13 +111,23 @@ async function _showEnrollModal() {
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label form-label-sm text-muted">Incolla il comando di installazione <span class="text-muted">(opzionale)</span></label>
+            <div class="input-group input-group-sm">
+              <input id="ae-cmd" type="text" class="form-control form-control-sm font-monospace"
+                placeholder="curl … | sudo bash -s -- --token …" />
+              <button class="btn btn-outline-secondary btn-sm" type="button" id="ae-parse-cmd">
+                <i class="ti ti-arrow-down-circle"></i>
+              </button>
+            </div>
+          </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">URL Hub</label>
             <input id="ae-url" type="url" class="form-control form-control-sm" placeholder="https://hub.example.com:7444" value="${defaults.hub_url || ''}" />
           </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">Token enrollment</label>
-            <input id="ae-token" type="text" class="form-control form-control-sm font-monospace" placeholder="enr_…" value="${defaults.enrollment_token || ''}" />
+            <input id="ae-token" type="text" class="form-control form-control-sm font-monospace" placeholder="Token generato dall'Hub" value="${defaults.enrollment_token || ''}" />
           </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">Nome istanza <span class="text-muted">(opzionale)</span></label>
@@ -132,6 +144,16 @@ async function _showEnrollModal() {
 
   document.body.appendChild(div);
   const modal = bootstrap.Modal.getOrCreateInstance(div);
+
+  div.querySelector('#ae-parse-cmd').addEventListener('click', () => {
+    const raw = div.querySelector('#ae-cmd').value.trim();
+    const urlMatch = raw.match(/https?:\/\/[^\s/]+/);
+    const tokenMatch = raw.match(/--token\s+(\S+)/);
+    if (!urlMatch) { div.querySelector('#ae-error').textContent = 'URL Hub non trovato nel comando'; div.querySelector('#ae-error').classList.remove('d-none'); return; }
+    div.querySelector('#ae-url').value = urlMatch[0];
+    if (tokenMatch) div.querySelector('#ae-token').value = tokenMatch[1];
+    div.querySelector('#ae-error').classList.add('d-none');
+  });
 
   div.querySelector('#ae-submit').addEventListener('click', async () => {
     const url = div.querySelector('#ae-url').value.trim();

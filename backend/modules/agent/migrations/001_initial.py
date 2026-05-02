@@ -58,11 +58,12 @@ async def upgrade(session: AsyncSession):
 
     # Add missing columns to existing tables (for upgrades)
     await session.execute(text("""
-        ALTER TABLE agent_hub_config 
+        ALTER TABLE agent_hub_config
         ADD COLUMN IF NOT EXISTS setup_hub_url VARCHAR(512),
         ADD COLUMN IF NOT EXISTS setup_enrollment_token_enc TEXT,
         ADD COLUMN IF NOT EXISTS setup_instance_name VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS last_telemetry_ts TIMESTAMP
+        ADD COLUMN IF NOT EXISTS last_telemetry_ts TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS hub_ws_url VARCHAR(512)
     """))
 
     # Seed singleton config row

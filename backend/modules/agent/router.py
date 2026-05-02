@@ -35,6 +35,13 @@ class SetupDefaultsRequest(BaseModel):
     instance_name: Optional[str] = None
 
 
+class BootstrapRequest(BaseModel):
+    hub_url: str
+    enrollment_token: str
+    instance_name: Optional[str] = None
+    auto_enroll: bool = False  # if True, attempt enrollment immediately (no user interaction)
+
+
 class StatusResponse(BaseModel):
     enrollment_status: str
     hub_url: Optional[str]
@@ -160,6 +167,57 @@ async def set_setup_defaults(
         await session.commit()
 
     return {"success": True}
+
+
+@router.post("/bootstrap")
+async def bootstrap(
+    body: BootstrapRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Unauthenticated endpoint for the Hub install script.
+    Stores enrollment pre-fill defaults and optionally auto-enrolls.
+
+    Security: only works when enrollment_status == 'not_enrolled'.
+    Install scripts call this from localhost immediately after MADMIN install.
+    """
+    result = await session.execute(select(HubConfig).where(HubConfig.id == 1))
+    config = result.scalar_one_or_none()
+
+    if config and config.enrollment_status == "enrolled":
+        return {"success": False, "reason": "already_enrolled"}
+
+    # Store setup defaults
+    from .service.crypto import encrypt_value
+    enc_token = encrypt_value(body.enrollment_token, "setup_token") if body.enrollment_token else None
+
+    from sqlalchemy import update
+    await session.execute(
+        update(HubConfig).where(HubConfig.id == 1).values(
+            setup_hub_url=body.hub_url,
+            setup_enrollment_token_enc=enc_token,
+            setup_instance_name=body.instance_name or None,
+        )
+    )
+    await session.commit()
+
+    if body.auto_enroll:
+        from .service.enrollment import enroll as do_enroll
+        instance_name = body.instance_name or _get_hostname()
+        res = await do_enroll(
+            hub_url=body.hub_url,
+            enrollment_token=body.enrollment_token,
+            instance_name=instance_name,
+        )
+        if res["success"]:
+            from .tasks import stop_agent_tasks, start_agent_tasks
+            await stop_agent_tasks()
+            await start_agent_tasks()
+            return {"success": True, "auto_enrolled": True, "instance_id": res["instance_id"]}
+        else:
+            return {"success": True, "auto_enrolled": False, "enroll_error": res["error"]}
+
+    return {"success": True, "auto_enrolled": False}
 
 
 @router.get("/logs")
