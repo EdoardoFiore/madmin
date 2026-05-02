@@ -4,12 +4,33 @@ Also collects services_status, modules_status, os_info from live sources.
 """
 import logging
 import platform
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from config import MADMIN_VERSION
 
 logger = logging.getLogger(__name__)
+
+# Cache public IP for 10 minutes to avoid hitting external services every heartbeat
+_public_ip_cache: Optional[str] = None
+_public_ip_cached_at: Optional[datetime] = None
+_PUBLIC_IP_TTL = timedelta(minutes=10)
+
+
+def _get_public_ip_cached() -> Optional[str]:
+    global _public_ip_cache, _public_ip_cached_at
+    now = datetime.utcnow()
+    if _public_ip_cache and _public_ip_cached_at and (now - _public_ip_cached_at) < _PUBLIC_IP_TTL:
+        return _public_ip_cache
+    try:
+        from core.network.utils import get_public_ip
+        ip = get_public_ip()
+        if ip:
+            _public_ip_cache = ip
+            _public_ip_cached_at = now
+        return ip
+    except Exception:
+        return _public_ip_cache  # return stale on failure
 
 
 async def collect_telemetry_batch() -> dict:
@@ -70,6 +91,7 @@ async def collect_telemetry_batch() -> dict:
         "modules_status": _get_modules_status(),
         "version": MADMIN_VERSION,
         "os_info": _get_os_info(),
+        "public_ip": _get_public_ip_cached(),
         "last_ts": last_ts.isoformat() if last_ts else None,
     }
 
