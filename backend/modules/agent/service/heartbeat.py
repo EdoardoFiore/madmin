@@ -33,6 +33,65 @@ def _get_public_ip_cached() -> Optional[str]:
         return _public_ip_cache  # return stale on failure
 
 
+async def _get_iface_bps_map(session, timestamps: list) -> dict:
+    """
+    Returns {datetime -> {iface -> {in_bps, out_bps}}} for each timestamp.
+    Computes BPS from consecutive NetworkTrafficHistory rows per interface.
+    """
+    if not timestamps:
+        return {}
+    from collections import defaultdict
+    from datetime import timedelta
+    from sqlalchemy import select
+    from core.settings.models import NetworkTrafficHistory
+
+    min_ts = min(timestamps)
+    max_ts = max(timestamps)
+    try:
+        res = await session.execute(
+            select(NetworkTrafficHistory)
+            .where(
+                NetworkTrafficHistory.timestamp >= min_ts - timedelta(seconds=70),
+                NetworkTrafficHistory.timestamp <= max_ts + timedelta(seconds=10),
+            )
+            .order_by(NetworkTrafficHistory.interface, NetworkTrafficHistory.timestamp)
+        )
+        rows = res.scalars().all()
+    except Exception:
+        return {}
+
+    by_iface: dict = defaultdict(list)
+    for r in rows:
+        by_iface[r.interface].append(r)
+
+    ts_set = set(timestamps)
+    result: dict = {ts: {} for ts in ts_set}
+
+    for iface, iface_rows in by_iface.items():
+        for i in range(1, len(iface_rows)):
+            prev = iface_rows[i - 1]
+            curr = iface_rows[i]
+            dt = (curr.timestamp - prev.timestamp).total_seconds()
+            if dt <= 0:
+                continue
+            in_bps = max(0, int((curr.bytes_recv - prev.bytes_recv) / dt))
+            out_bps = max(0, int((curr.bytes_sent - prev.bytes_sent) / dt))
+            closest = min(ts_set, key=lambda t: abs((t - curr.timestamp).total_seconds()))
+            if abs((closest - curr.timestamp).total_seconds()) < 70:
+                result[closest][iface] = {"in_bps": in_bps, "out_bps": out_bps}
+
+    return result
+
+
+def _get_uptime_seconds() -> int:
+    try:
+        import time
+        import psutil
+        return int(time.time() - psutil.boot_time())
+    except Exception:
+        return 0
+
+
 async def collect_telemetry_batch() -> dict:
     """
     Query SystemStatsHistory rows since last_telemetry_ts cursor stored in HubConfig.
@@ -70,6 +129,8 @@ async def collect_telemetry_batch() -> dict:
         rows_result = await session.execute(stmt)
         rows = rows_result.scalars().all()
 
+        iface_bps_map = await _get_iface_bps_map(session, [r.timestamp for r in rows])
+        uptime_seconds = _get_uptime_seconds()
         for r in rows:
             snapshots.append({
                 "ts": r.timestamp.isoformat(),
@@ -82,6 +143,8 @@ async def collect_telemetry_batch() -> dict:
                 "disk_total": r.disk_total,
                 "net_in_bps": r.net_in_bps,
                 "net_out_bps": r.net_out_bps,
+                "net_interfaces": iface_bps_map.get(r.timestamp, {}),
+                "uptime_seconds": uptime_seconds,
             })
             last_ts = r.timestamp
 
