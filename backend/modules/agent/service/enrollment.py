@@ -12,15 +12,35 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def _machine_fingerprint() -> str:
+    """Stable per-machine identifier derived from /etc/machine-id + hostname."""
+    import socket
+    try:
+        with open("/etc/machine-id") as f:
+            machine_id = f.read().strip()
+    except OSError:
+        machine_id = "unknown"
+    raw = f"{machine_id}:{socket.gethostname()}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 async def enroll(hub_url: str, enrollment_token: str, instance_name: str) -> dict:
     """
-    Call Hub enrollment endpoint with the one-time token.
+    Call Hub enrollment endpoint with the token.
     Returns dict with keys: success, error, instance_id.
     """
+    import platform
     url = hub_url.rstrip("/") + "/api/agents/enroll"
     payload = {
         "enrollment_token": enrollment_token,
         "name": instance_name,
+        "fingerprint": _machine_fingerprint(),
+        "version": "1.0.0",
+        "os_info": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+        },
     }
 
     try:
@@ -44,6 +64,8 @@ async def enroll(hub_url: str, enrollment_token: str, instance_name: str) -> dic
     data = resp.json()
     agent_token = data.get("agent_token")
     instance_id = data.get("instance_id")
+    # Use the ws_url returned by Hub (may differ from hub_url if behind a proxy)
+    ws_url = data.get("ws_url") or (hub_url.rstrip("/").replace("https://", "wss://").replace("http://", "ws://") + "/api/agents/ws")
 
     if not agent_token or not instance_id:
         return {"success": False, "error": "Risposta Hub incompleta (mancano agent_token o instance_id)"}
@@ -54,12 +76,13 @@ async def enroll(hub_url: str, enrollment_token: str, instance_name: str) -> dic
         instance_id=instance_id,
         instance_name=instance_name,
         agent_token=agent_token,
+        ws_url=ws_url,
     )
 
     return {"success": True, "instance_id": instance_id}
 
 
-async def _save_enrollment(hub_url: str, instance_id: str, instance_name: str, agent_token: str):
+async def _save_enrollment(hub_url: str, instance_id: str, instance_name: str, agent_token: str, ws_url: str = ""):
     from core.database import async_session_maker
     from sqlalchemy import update
     from modules.agent.models import HubConfig
@@ -70,20 +93,21 @@ async def _save_enrollment(hub_url: str, instance_id: str, instance_name: str, a
         await session.execute(
             update(HubConfig).where(HubConfig.id == 1).values(
                 hub_url=hub_url,
+                hub_ws_url=ws_url or None,
                 instance_id=instance_id,
                 instance_name=instance_name,
                 agent_token_enc=enc,
                 enrollment_status="enrolled",
                 enrolled_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
-                # Clear setup defaults — one-time token consumed
+                # Clear setup defaults after successful enrollment
                 setup_hub_url=None,
                 setup_enrollment_token_enc=None,
                 setup_instance_name=None,
             )
         )
         await session.commit()
-    logger.info(f"Enrolled as instance {instance_id} on {hub_url}")
+    logger.info(f"Enrolled as instance {instance_id} on {hub_url} (ws: {ws_url})")
 
 
 async def revoke_local(notify_hub: bool = True):

@@ -28,6 +28,8 @@ class SystemStatsHistory(SQLModel, table=True):
     disk_percent: float = Field(default=0.0)
     disk_used: int = Field(default=0, sa_column=Column(BigInteger))
     disk_total: int = Field(default=0, sa_column=Column(BigInteger))
+    net_in_bps: int = Field(default=0, sa_column=Column(BigInteger))
+    net_out_bps: int = Field(default=0, sa_column=Column(BigInteger))
 
 
 class NetworkTrafficHistory(SQLModel, table=True):

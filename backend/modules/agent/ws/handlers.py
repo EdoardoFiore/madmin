@@ -119,8 +119,6 @@ async def _handle_firewall_reload(params: dict):
 
 
 async def _handle_info(params: dict):
-    from modules.agent.service.heartbeat import collect_heartbeat_payload
-    import asyncio
-    loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, collect_heartbeat_payload)
+    from modules.agent.service.heartbeat import collect_telemetry_batch
+    data = await collect_telemetry_batch()
     return True, data, None

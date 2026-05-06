@@ -30,6 +30,9 @@ class HubConfig(SQLModel, table=True):
     ws_connected: bool = Field(default=False)
     last_heartbeat_at: Optional[datetime] = Field(default=None)
 
+    # WS URL returned by Hub on enroll (may differ from hub_url if Hub is behind a proxy)
+    hub_ws_url: Optional[str] = Field(default=None, max_length=512)
+
     # TLS
     hub_ca_fingerprint: Optional[str] = Field(default=None, max_length=128)
 
@@ -40,6 +43,7 @@ class HubConfig(SQLModel, table=True):
 
     enrolled_at: Optional[datetime] = Field(default=None)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_telemetry_ts: Optional[datetime] = Field(default=None)
 
 
 class AgentLog(SQLModel, table=True):

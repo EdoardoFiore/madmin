@@ -66,7 +66,8 @@ function _renderCard(container, status) {
 
   container.querySelector('#card-disconnect-btn').addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (!confirm('Disconnettere dall\'Hub? Tutte le chiavi SSH installate verranno rimosse.')) return;
+    const ok = await _confirm('Disconnettere dall\'Hub?', 'Tutte le chiavi SSH installate verranno rimosse.');
+    if (!ok) return;
     try {
       await _post(`${BASE}/disconnect`, {});
       _stopPoll();
@@ -74,7 +75,7 @@ function _renderCard(container, status) {
       _renderCard(container, s);
       _startPoll(container);
     } catch (err) {
-      alert('Errore: ' + (err.detail || err));
+      _toast('Errore: ' + (err.detail || err), 'error');
     }
   });
 }
@@ -89,9 +90,11 @@ async function _showEnrollModal() {
   // Reuse existing bootstrap modal if present, else build inline
   const existingModal = document.getElementById('agent-enroll-modal');
   if (existingModal) {
+    existingModal.querySelector('#ae-cmd').value = '';
     if (defaults.hub_url) existingModal.querySelector('#ae-url').value = defaults.hub_url;
     if (defaults.enrollment_token) existingModal.querySelector('#ae-token').value = defaults.enrollment_token;
     if (defaults.instance_name) existingModal.querySelector('#ae-name').value = defaults.instance_name;
+    existingModal.querySelector('#ae-error').classList.add('d-none');
     bootstrap.Modal.getOrCreateInstance(existingModal).show();
     return;
   }
@@ -108,13 +111,23 @@ async function _showEnrollModal() {
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
         <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label form-label-sm text-muted">Incolla il comando di installazione <span class="text-muted">(opzionale)</span></label>
+            <div class="input-group input-group-sm">
+              <input id="ae-cmd" type="text" class="form-control form-control-sm font-monospace"
+                placeholder="curl … | sudo bash -s -- --token …" />
+              <button class="btn btn-outline-secondary btn-sm" type="button" id="ae-parse-cmd">
+                <i class="ti ti-arrow-down-circle"></i>
+              </button>
+            </div>
+          </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">URL Hub</label>
             <input id="ae-url" type="url" class="form-control form-control-sm" placeholder="https://hub.example.com:7444" value="${defaults.hub_url || ''}" />
           </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">Token enrollment</label>
-            <input id="ae-token" type="text" class="form-control form-control-sm font-monospace" placeholder="enr_…" value="${defaults.enrollment_token || ''}" />
+            <input id="ae-token" type="text" class="form-control form-control-sm font-monospace" placeholder="Token generato dall'Hub" value="${defaults.enrollment_token || ''}" />
           </div>
           <div class="mb-2">
             <label class="form-label form-label-sm">Nome istanza <span class="text-muted">(opzionale)</span></label>
@@ -131,6 +144,16 @@ async function _showEnrollModal() {
 
   document.body.appendChild(div);
   const modal = bootstrap.Modal.getOrCreateInstance(div);
+
+  div.querySelector('#ae-parse-cmd').addEventListener('click', () => {
+    const raw = div.querySelector('#ae-cmd').value.trim();
+    const urlMatch = raw.match(/https?:\/\/[^\s/]+/);
+    const tokenMatch = raw.match(/--token\s+(\S+)/);
+    if (!urlMatch) { div.querySelector('#ae-error').textContent = 'URL Hub non trovato nel comando'; div.querySelector('#ae-error').classList.remove('d-none'); return; }
+    div.querySelector('#ae-url').value = urlMatch[0];
+    if (tokenMatch) div.querySelector('#ae-token').value = tokenMatch[1];
+    div.querySelector('#ae-error').classList.add('d-none');
+  });
 
   div.querySelector('#ae-submit').addEventListener('click', async () => {
     const url = div.querySelector('#ae-url').value.trim();
@@ -194,4 +217,43 @@ async function _post(url, body) {
   });
   if (!r.ok) { const d = await r.json().catch(() => ({})); throw d; }
   return r.json();
+}
+
+function _confirm(title, body = '') {
+  return new Promise(resolve => {
+    if (window.bootstrap?.Modal) {
+      const el = document.createElement('div');
+      el.className = 'modal modal-blur fade';
+      el.tabIndex = -1;
+      el.innerHTML = `<div class="modal-dialog modal-sm modal-dialog-centered"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">${title}</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        ${body ? `<div class="modal-body">${body}</div>` : ''}
+        <div class="modal-footer">
+          <button class="btn btn-link link-secondary me-auto" data-bs-dismiss="modal">Annulla</button>
+          <button class="btn btn-danger" id="_conf-ok">Disconnetti</button>
+        </div></div></div>`;
+      document.body.appendChild(el);
+      const m = window.bootstrap.Modal.getOrCreateInstance(el);
+      let ok = false;
+      el.querySelector('#_conf-ok').onclick = () => { ok = true; m.hide(); };
+      el.addEventListener('hidden.bs.modal', () => { el.remove(); resolve(ok); }, { once: true });
+      m.show();
+    } else {
+      resolve(window.confirm(title + (body ? '\n' + body : '')));
+    }
+  });
+}
+
+function _toast(msg, type = 'info') {
+  if (window.showToast) { window.showToast(msg, type); return; }
+  const colorMap = { success: 'bg-success', error: 'bg-danger', warning: 'bg-warning', info: 'bg-info' };
+  const bg = colorMap[type] || colorMap.info;
+  let tc = document.querySelector('.toast-container');
+  if (!tc) { tc = document.createElement('div'); tc.className = 'toast-container position-fixed bottom-0 end-0 p-3'; tc.style.zIndex = '1090'; document.body.appendChild(tc); }
+  const el = document.createElement('div');
+  el.className = `toast align-items-center text-white ${bg} border-0 show`;
+  el.setAttribute('role', 'alert');
+  el.innerHTML = `<div class="d-flex"><div class="toast-body">${msg}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+  tc.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
 }

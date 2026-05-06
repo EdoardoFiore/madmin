@@ -36,7 +36,7 @@ async def run_ws_client():
     Main loop: connect → serve → disconnect → backoff → repeat.
     Cancelled on module disable / app shutdown.
     """
-    from modules.agent.service.heartbeat import collect_heartbeat_payload
+    from modules.agent.service.heartbeat import advance_telemetry_cursor, collect_telemetry_batch
     from modules.agent.ws.handlers import dispatch_command
 
     delay = _RECONNECT_MIN
@@ -54,9 +54,12 @@ async def run_ws_client():
             await asyncio.sleep(30)
             continue
 
-        ws_url = config.hub_url.rstrip("/") + "/api/agents/ws"
-        # Convert https:// → wss://, http:// → ws://
-        ws_url = ws_url.replace("https://", "wss://").replace("http://", "ws://")
+        # Prefer the ws_url returned by Hub on enrollment (correct even behind proxies)
+        if config.hub_ws_url:
+            ws_url = config.hub_ws_url
+        else:
+            ws_url = config.hub_url.rstrip("/") + "/api/agents/ws"
+            ws_url = ws_url.replace("https://", "wss://").replace("http://", "ws://")
 
         ssl_ctx = _build_ssl_context(config.hub_ca_fingerprint)
 
@@ -81,7 +84,7 @@ async def run_ws_client():
                 logger.info("Hub WS connected")
 
                 heartbeat_task = asyncio.create_task(
-                    _heartbeat_loop(ws, collect_heartbeat_payload)
+                    _heartbeat_loop(ws, collect_telemetry_batch, advance_telemetry_cursor)
                 )
 
                 try:
@@ -127,16 +130,17 @@ async def run_ws_client():
         delay = min(delay * 2, _RECONNECT_MAX)
 
 
-async def _heartbeat_loop(ws, collect_fn):
-    """Send heartbeat every 60s (overridable via config_update)."""
+async def _heartbeat_loop(ws, collect_fn, advance_cursor_fn):
+    """Send telemetry_batch every 60s."""
     interval = 60
     while True:
         await asyncio.sleep(interval)
         try:
-            payload = await asyncio.get_event_loop().run_in_executor(None, collect_fn)
-            await ws.send(json.dumps({"type": "heartbeat", "payload": payload}))
+            payload = await collect_fn()
+            await ws.send(json.dumps({"type": "telemetry_batch", "payload": payload}))
+            await advance_cursor_fn(payload.get("last_ts"))
             await _update_last_heartbeat()
-            logger.debug("Heartbeat sent")
+            logger.debug(f"Telemetry batch sent ({len(payload.get('snapshots', []))} snapshots)")
         except Exception as e:
             logger.warning(f"Heartbeat send failed: {e}")
             break
