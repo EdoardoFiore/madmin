@@ -17,6 +17,7 @@ ACTION_SERVICE_START = "service.start"
 ACTION_SERVICE_STOP = "service.stop"
 ACTION_SERVICE_RESTART = "service.restart"
 ACTION_BACKUP_RUN = "backup.run"
+ACTION_BACKUP_RESTORE = "backup.restore"
 ACTION_FIREWALL_RELOAD = "firewall.reload"
 ACTION_INFO = "info"
 

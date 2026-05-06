@@ -457,20 +457,27 @@ async def run_backup(
         result["archive"] = archive_path
         
         # Upload to remote if configured
-        if remote_protocol and remote_host and remote_user:
-            if remote_protocol == "sftp":
+        if remote_protocol and remote_host:
+            if remote_protocol == "sftp" and remote_user:
                 uploaded = await upload_sftp(
                     archive_path, remote_host, remote_port,
                     remote_user, remote_password or "", remote_path
                 )
-            elif remote_protocol == "ftp":
+            elif remote_protocol == "ftp" and remote_user:
                 uploaded = await upload_ftp(
                     archive_path, remote_host, remote_port or 21,
                     remote_user, remote_password or "", remote_path
                 )
+            elif remote_protocol == "scp" and remote_user:
+                uploaded = await upload_scp(
+                    archive_path, remote_host, remote_port or 22,
+                    remote_user, remote_password or "", remote_path
+                )
+            elif remote_protocol == "http":
+                uploaded = await upload_http(archive_path, remote_host, remote_password or "")
             else:
                 uploaded = False
-            
+
             result["remote_uploaded"] = uploaded
             if not uploaded:
                 result["errors"].append("Upload remoto fallito")
@@ -632,6 +639,61 @@ async def upload_ftp(
         
     except Exception as e:
         logger.error(f"FTP upload failed: {e}")
+        return False
+
+
+async def upload_scp(
+    archive_path: str,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    remote_path: str
+) -> bool:
+    """Upload backup archive via SCP (SSH)."""
+    try:
+        import asyncssh
+
+        filename = os.path.basename(archive_path)
+        remote_dest = f"{remote_path}/{filename}".replace("\\", "/")
+
+        async with asyncssh.connect(
+            host, port=port, username=username, password=password, known_hosts=None
+        ) as conn:
+            await asyncssh.scp(archive_path, (conn, remote_dest))
+
+        logger.info(f"Uploaded via SCP: {remote_dest}")
+        return True
+
+    except Exception as e:
+        logger.error(f"SCP upload failed: {e}")
+        return False
+
+
+async def upload_http(archive_path: str, url: str, token: str) -> bool:
+    """Upload backup archive via HTTP multipart POST to hub."""
+    try:
+        import httpx
+
+        filename = os.path.basename(archive_path)
+        with open(archive_path, "rb") as f:
+            content = f.read()
+
+        async with httpx.AsyncClient(verify=False, timeout=120) as client:
+            resp = await client.post(
+                url,
+                files={"file": (filename, content, "application/gzip")},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        if resp.status_code == 200:
+            logger.info(f"Uploaded via HTTP to hub: {filename}")
+            return True
+        logger.error(f"HTTP upload failed: HTTP {resp.status_code} — {resp.text[:200]}")
+        return False
+
+    except Exception as e:
+        logger.error(f"HTTP upload failed: {e}")
         return False
 
 
