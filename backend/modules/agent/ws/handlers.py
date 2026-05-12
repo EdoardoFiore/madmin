@@ -8,7 +8,8 @@ import logging
 from .protocol import (
     ACTION_SSH_PUSH, ACTION_SSH_REVOKE,
     ACTION_SERVICE_START, ACTION_SERVICE_STOP, ACTION_SERVICE_RESTART,
-    ACTION_BACKUP_RUN, ACTION_BACKUP_RESTORE, ACTION_FIREWALL_RELOAD, ACTION_INFO,
+    ACTION_BACKUP_RUN, ACTION_BACKUP_RESTORE, ACTION_BACKUP_LIST,
+    ACTION_FIREWALL_RELOAD, ACTION_INFO,
     make_result,
 )
 
@@ -34,6 +35,8 @@ async def dispatch_command(ws, payload: dict):
             success, result, error = await _handle_backup(params)
         elif action == ACTION_BACKUP_RESTORE:
             success, result, error = await _handle_backup_restore(params)
+        elif action == ACTION_BACKUP_LIST:
+            success, result, error = await _handle_backup_list(params)
         elif action == ACTION_FIREWALL_RELOAD:
             success, result, error = await _handle_firewall_reload(params)
         elif action == ACTION_INFO:
@@ -109,6 +112,12 @@ async def _handle_backup(params: dict):
 async def _handle_backup_restore(params: dict):
     from modules.agent.service.ops import run_restore
     ok, result = await run_restore(params)
+    return ok, result, None if ok else result.get("error")
+
+
+async def _handle_backup_list(params: dict):
+    from modules.agent.service.ops import run_backup_list
+    ok, result = await run_backup_list(params)
     return ok, result, None if ok else result.get("error")
 
 

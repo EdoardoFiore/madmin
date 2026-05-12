@@ -177,6 +177,16 @@ async def run_restore(params: dict) -> Tuple[bool, dict]:
         return False, {"error": str(e)}
 
 
+async def run_backup_list(params: dict) -> Tuple[bool, dict]:
+    """List local backup archives on this instance."""
+    try:
+        from core.backup.service import list_local_backups
+        return True, {"backups": list_local_backups()}
+    except Exception as e:
+        logger.exception(f"Backup list failed: {e}")
+        return False, {"error": str(e)}
+
+
 async def reload_firewall() -> Tuple[bool, str]:
     """Re-apply firewall rules from DB."""
     try:
