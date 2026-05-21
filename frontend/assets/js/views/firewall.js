@@ -280,12 +280,11 @@ export async function render(container) {
                                     <input type="text" class="form-control" id="rule-comment"
                                            placeholder="${t('firewall.commentPlaceholder')}">
                                 </div>
-                                <!-- iptables Preview -->
+                                <!-- nft Preview -->
                                 <div class="col-12">
                                     <label class="form-label">${t('firewall.iptablesPreview')}</label>
-                                    <pre class="bg-dark text-success p-3 rounded" id="iptables-preview" 
-                                         style="font-family: monospace; font-size: 0.85rem; overflow-x: auto;">
-iptables -t filter -A INPUT -j ACCEPT
+                                    <pre class="bg-dark text-success p-3 rounded" id="iptables-preview"
+                                         style="font-family: monospace; font-size: 0.85rem; overflow-x: auto;">add rule ip madmin MADMIN_INPUT accept
                                     </pre>
                                 </div>
                             </div>
@@ -725,7 +724,7 @@ function toggleActionFields() {
 }
 
 /**
- * Update iptables command preview
+ * Update nft rule preview
  */
 function updateIptablesPreview() {
     const preview = document.getElementById('iptables-preview');
@@ -733,8 +732,8 @@ function updateIptablesPreview() {
 
     const table = document.getElementById('rule-table')?.value || 'filter';
     const chain = document.getElementById('rule-chain')?.value || 'INPUT';
-    const action = document.getElementById('rule-action')?.value || 'ACCEPT';
-    const protocol = document.getElementById('rule-protocol')?.value;
+    const action = (document.getElementById('rule-action')?.value || 'ACCEPT').toUpperCase();
+    const protocol = (document.getElementById('rule-protocol')?.value || '').toLowerCase();
     const port = document.getElementById('rule-port')?.value;
     const source = document.getElementById('rule-source')?.value;
     const destination = document.getElementById('rule-destination')?.value;
@@ -743,8 +742,6 @@ function updateIptablesPreview() {
     const state = document.getElementById('rule-state')?.value;
     const limitRate = document.getElementById('rule-limit-rate')?.value;
     const limitBurst = document.getElementById('rule-limit-burst')?.value;
-
-    // New fields
     const toDest = document.getElementById('rule-to-destination')?.value;
     const toSource = document.getElementById('rule-to-source')?.value;
     const toPorts = document.getElementById('rule-to-ports')?.value;
@@ -752,38 +749,64 @@ function updateIptablesPreview() {
     const logLevel = document.getElementById('rule-log-level')?.value;
     const rejectWith = document.getElementById('rule-reject-with')?.value;
 
-    let cmd = `iptables -t ${table} -A ${chain}`;
+    // Derive MADMIN chain name (mirrors backend CHAIN_MAP)
+    const chainMap = {
+        filter:  { INPUT: 'MADMIN_INPUT', OUTPUT: 'MADMIN_OUTPUT', FORWARD: 'MADMIN_FORWARD' },
+        nat:     { PREROUTING: 'MADMIN_PREROUTING', POSTROUTING: 'MADMIN_POSTROUTING', OUTPUT: 'MADMIN_NAT_OUTPUT' },
+        mangle:  { PREROUTING: 'MADMIN_PREROUTING_MANGLE', INPUT: 'MADMIN_INPUT_MANGLE',
+                   FORWARD: 'MADMIN_FORWARD_MANGLE', OUTPUT: 'MADMIN_OUTPUT_MANGLE', POSTROUTING: 'MADMIN_POSTROUTING_MANGLE' },
+        raw:     { PREROUTING: 'MADMIN_PREROUTING_RAW', OUTPUT: 'MADMIN_OUTPUT_RAW' },
+    };
+    const madminChain = (chainMap[table] || {})[chain] || `MADMIN_${chain}`;
 
-    if (protocol) cmd += ` -p ${protocol}`;
-    if (source) cmd += ` -s ${source}`;
-    if (destination) cmd += ` -d ${destination}`;
-    if (inIface) cmd += ` -i ${inIface}`;
-    if (outIface) cmd += ` -o ${outIface}`;
-    if (state) cmd += ` -m state --state ${state}`;
-    if (port && (protocol === 'tcp' || protocol === 'udp')) {
-        if (port.includes(',')) {
-            cmd += ` -m multiport --dports ${port}`;
-        } else {
-            cmd += ` --dport ${port}`;
-        }
+    const hasPort = port && (protocol === 'tcp' || protocol === 'udp');
+    const parts = [];
+
+    // 1. meta
+    if (inIface)  parts.push(`iifname "${inIface}"`);
+    if (outIface) parts.push(`oifname "${outIface}"`);
+    // 2. network
+    if (source)      parts.push(`ip saddr ${source}`);
+    if (destination) parts.push(`ip daddr ${destination}`);
+    // 3. protocol (only when no port)
+    if (protocol && protocol !== 'all' && !hasPort) {
+        if (protocol === 'icmp') parts.push('ip protocol icmp');
+        else if (protocol === 'tcp' || protocol === 'udp') parts.push(`ip protocol ${protocol}`);
     }
+    // 4. state
+    if (state) {
+        const states = state.split(',').map(s => s.trim().toLowerCase()).join(',');
+        parts.push(`ct state {${states}}`);
+    }
+    // 5. port
+    if (hasPort) {
+        const ps = port.trim();
+        if (ps.includes(',')) parts.push(`${protocol} dport {${ps.split(',').map(p=>p.trim()).join(',')}}`);
+        else if (ps.includes(':')) { const [lo, hi] = ps.split(':'); parts.push(`${protocol} dport ${lo}-${hi}`); }
+        else parts.push(`${protocol} dport ${ps}`);
+    }
+    // 6. rate limit
     if (limitRate) {
-        cmd += ` -m limit --limit ${limitRate}`;
-        if (limitBurst) cmd += ` --limit-burst ${limitBurst}`;
+        parts.push(`limit rate ${limitRate}${limitBurst ? ` burst ${limitBurst} packets` : ''}`);
     }
-    cmd += ` -j ${action}`;
+    // 7. action
+    const NFT_REJECT_MAP = {
+        'icmp-port-unreachable': 'icmp type port-unreachable', 'icmp-net-unreachable': 'icmp type net-unreachable',
+        'icmp-host-unreachable': 'icmp type host-unreachable', 'tcp-reset': 'tcp reset',
+        'icmp-admin-prohibited': 'icmp type admin-prohibited',
+    };
+    if (action === 'ACCEPT') parts.push('accept');
+    else if (action === 'DROP') parts.push('drop');
+    else if (action === 'RETURN') parts.push('return');
+    else if (action === 'REJECT') parts.push(`reject with ${NFT_REJECT_MAP[rejectWith] || 'icmp type port-unreachable'}`);
+    else if (action === 'MASQUERADE') parts.push(`masquerade${toPorts ? ` to :${toPorts}` : ''}`);
+    else if (action === 'DNAT' && toDest) parts.push(`dnat to ${toDest}`);
+    else if (action === 'SNAT' && toSource) parts.push(`snat to ${toSource}`);
+    else if (action === 'REDIRECT') parts.push(`redirect${toPorts ? ` to :${toPorts}` : ''}`);
+    else if (action === 'LOG') parts.push(`log prefix "${logPrefix || ''} " level ${logLevel || 'info'}`);
+    else parts.push(action.toLowerCase());
 
-    // Append action arguments
-    if (action === 'DNAT' && toDest) cmd += ` --to-destination ${toDest}`;
-    if (action === 'SNAT' && toSource) cmd += ` --to-source ${toSource}`;
-    if (['REDIRECT', 'MASQUERADE'].includes(action) && toPorts) cmd += ` --to-ports ${toPorts}`;
-    if (action === 'LOG') {
-        if (logPrefix) cmd += ` --log-prefix "${logPrefix}"`;
-        if (logLevel) cmd += ` --log-level ${logLevel}`;
-    }
-    if (action === 'REJECT' && rejectWith) cmd += ` --reject-with ${rejectWith}`;
-
-    preview.textContent = cmd;
+    preview.textContent = `add rule ip madmin ${madminChain} ${parts.join(' ')}`;
 }
 
 /**

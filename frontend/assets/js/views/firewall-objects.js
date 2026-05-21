@@ -310,7 +310,8 @@ function openModal(id = null) {
         }
     }
 
-    const modal = bootstrap.Modal.getOrCreate(document.getElementById('objectModal'));
+    const el = document.getElementById('objectModal');
+    const modal = bootstrap.Modal.getInstance(el) || new bootstrap.Modal(el);
     modal.show();
 }
 
