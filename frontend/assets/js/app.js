@@ -14,6 +14,7 @@ const views = {
     'dashboard': () => import('./views/dashboard.js'),
     'users': () => import('./views/users.js'),
     'firewall': () => import('./views/firewall.js'),
+    'firewall-objects': () => import('./views/firewall-objects.js'),
     'network': () => import('./views/network.js'),
     'crontab': () => import('./views/crontab.js'),
     'settings': () => import('./views/settings.js'),

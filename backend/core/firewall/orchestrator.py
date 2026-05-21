@@ -16,8 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
 import uuid
 
-from .models import MachineFirewallRule, ModuleChain
+from .models import MachineFirewallRule, ModuleChain, FirewallObjectType
 from .base import FirewallBackend
+from .objects import FirewallObjectService, nft_set_name, _is_multi_value
 
 logger = logging.getLogger(__name__)
 
@@ -394,8 +395,11 @@ class FirewallOrchestrator:
         Apply all rules from database to the firewall backend atomically.
 
         Uses backend.restore_chains() for atomic flush + repopulate per table.
-        Also rebuilds gateway protection sets and chain jump ordering.
+        Also rebuilds gateway protection sets, firewall object sets, and chain
+        jump ordering.
         """
+        import uuid as _uuid
+
         success = True
 
         lan_interfaces = await self._get_lan_interfaces()
@@ -408,6 +412,23 @@ class FirewallOrchestrator:
         )
         rules = result.scalars().all()
 
+        # --- Batch-load all referenced FirewallObjects ---
+        obj_ids: set = set()
+        for rule in rules:
+            for fk in (
+                rule.source_object_id,
+                rule.destination_object_id,
+                rule.service_object_id,
+            ):
+                if fk:
+                    obj_ids.add(fk)
+
+        objects_cache = await FirewallObjectService.get_by_ids(session, obj_ids)
+
+        # --- Create/refresh nft sets for multi-value objects ---
+        await self._rebuild_object_sets(session, objects_cache)
+
+        # --- Build per-table chain rules ---
         chain_rules: Dict[str, Dict[str, List[str]]] = {}
         for table, chains in self._backend.chain_map.items():
             chain_rules[table] = {}
@@ -434,8 +455,9 @@ class FirewallOrchestrator:
                     f"for rule {rule.id}"
                 )
                 continue
+            effective = _resolve_rule(rule, objects_cache)
             chain_rules[rule.table_name][madmin_chain].append(
-                self._backend.rule_to_restore_line(madmin_chain, rule)
+                self._backend.rule_to_restore_line(madmin_chain, effective)
             )
 
         for table, chains in chain_rules.items():
@@ -453,6 +475,79 @@ class FirewallOrchestrator:
             )
 
         return success
+
+    async def _rebuild_object_sets(self, session, objects_cache: dict) -> None:
+        """Create/refresh nft sets for GROUP, RANGE, and FQDN objects."""
+        for obj in objects_cache.values():
+            if not _is_multi_value(obj):
+                continue
+            values = await FirewallObjectService.resolve_address(
+                session, obj, objects_cache
+            )
+            if not values:
+                continue
+            setname = nft_set_name(obj)
+            if self._backend.set_exists(setname):
+                self._backend.set_flush(setname)
+            else:
+                self._backend.set_create(setname)
+            for v in values:
+                self._backend.set_add(setname, v)
+
+
+class _RuleProxy:
+    """
+    Wraps a MachineFirewallRule and overrides source/destination/protocol/port
+    after resolving FirewallObject references.
+    """
+    __slots__ = (
+        "chain", "action", "protocol", "source", "destination", "port",
+        "in_interface", "out_interface", "state", "limit_rate", "limit_burst",
+        "to_destination", "to_source", "to_ports", "log_prefix", "log_level",
+        "reject_with", "comment", "table_name", "id",
+    )
+
+    def __init__(self, rule, **overrides):
+        for attr in self.__slots__:
+            setattr(self, attr, overrides.get(attr, getattr(rule, attr, None)))
+
+
+def _resolve_rule(rule, objects_cache: dict) -> "_RuleProxy":
+    """
+    Resolve FirewallObject FK references on a rule and return a _RuleProxy
+    with concrete source/destination/protocol/port values ready for rendering.
+
+    Single-value objects (HOST, NETWORK, SERVICE) → inline string.
+    Multi-value objects (GROUP, RANGE, FQDN, SERVICE_GROUP) → "@FWOBJ_{name}" set ref.
+    """
+    overrides: dict = {}
+
+    src_obj = objects_cache.get(rule.source_object_id) if rule.source_object_id else None
+    dst_obj = objects_cache.get(rule.destination_object_id) if rule.destination_object_id else None
+    svc_obj = objects_cache.get(rule.service_object_id) if rule.service_object_id else None
+
+    if src_obj is not None:
+        if _is_multi_value(src_obj):
+            overrides["source"] = f"@{nft_set_name(src_obj)}"
+        else:
+            overrides["source"] = src_obj.value or rule.source
+
+    if dst_obj is not None:
+        if _is_multi_value(dst_obj):
+            overrides["destination"] = f"@{nft_set_name(dst_obj)}"
+        else:
+            overrides["destination"] = dst_obj.value or rule.destination
+
+    if svc_obj is not None:
+        if svc_obj.value:
+            parts = svc_obj.value.split("/", 1)
+            if len(parts) == 2:
+                overrides["protocol"] = parts[0].lower()
+                overrides["port"] = parts[1]
+            else:
+                overrides["port"] = svc_obj.value
+
+    return _RuleProxy(rule, **overrides)
 
 
 class _EstablishedRelatedRule:

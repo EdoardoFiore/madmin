@@ -21,10 +21,14 @@ from .models import (
     MachineFirewallRuleUpdate,
     MachineFirewallRuleResponse,
     RuleOrderUpdate,
-    ModuleChainResponse
+    ModuleChainResponse,
+    FirewallObjectCreate,
+    FirewallObjectUpdate,
+    FirewallObjectResponse,
 )
+from .objects import FirewallObjectService
 from .orchestrator import firewall_orchestrator
-from .iptables import IptablesError, flush_conntrack_for_rule
+from .base import FirewallError
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +60,25 @@ def _rule_to_response(rule) -> MachineFirewallRuleResponse:
         table_name=rule.table_name,
         order=rule.order,
         enabled=rule.enabled,
+        source_object_id=str(rule.source_object_id) if rule.source_object_id else None,
+        destination_object_id=str(rule.destination_object_id) if rule.destination_object_id else None,
+        service_object_id=str(rule.service_object_id) if rule.service_object_id else None,
         created_at=rule.created_at,
         updated_at=rule.updated_at
+    )
+
+
+def _obj_to_response(obj) -> FirewallObjectResponse:
+    return FirewallObjectResponse(
+        id=str(obj.id),
+        name=obj.name,
+        type=obj.type,
+        value=obj.value,
+        members=obj.members,
+        comment=obj.comment,
+        color=obj.color,
+        created_at=obj.created_at,
+        updated_at=obj.updated_at,
     )
 
 
@@ -134,7 +155,7 @@ async def create_rule(
         rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
         await session.commit()
         return _rule_to_response(rule)
-    except IptablesError as e:
+    except FirewallError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -170,7 +191,7 @@ async def update_rule(
         await session.commit()
 
         return _rule_to_response(rule)
-    except IptablesError as e:
+    except FirewallError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -200,7 +221,7 @@ async def delete_rule(
             raise HTTPException(status_code=404, detail="Rule not found")
 
         await session.commit()
-    except IptablesError as e:
+    except FirewallError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -235,7 +256,7 @@ async def flush_rule_conntrack(
     if rule.action not in ("DROP", "REJECT"):
         raise HTTPException(status_code=400, detail="Flush conntrack is only applicable to DROP or REJECT rules")
 
-    flushed = flush_conntrack_for_rule(
+    flushed = firewall_orchestrator._backend.flush_conntrack_for_rule(
         protocol=rule.protocol,
         source=rule.source,
         destination=rule.destination,
@@ -257,7 +278,7 @@ async def update_rule_order(
         await firewall_orchestrator.reorder_rules(session, order_list)
         await session.commit()
         return {"status": "ok", "message": f"Updated order for {len(orders)} rules"}
-    except IptablesError as e:
+    except FirewallError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -326,7 +347,7 @@ async def reorder_single_rule(
         await firewall_orchestrator.apply_rules(session)
         
         return {"status": "ok", "message": f"Rule moved to position {new_order}"}
-    except IptablesError as e:
+    except FirewallError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
@@ -354,7 +375,7 @@ async def apply_rules(
             )
         
         return {"status": "ok", "message": "Rules applied successfully"}
-    except IptablesError as e:
+    except FirewallError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -522,4 +543,85 @@ async def update_chain_order(
             rebuilt.add(key)
     
     return {"status": "ok", "message": f"Updated priority for {len(orders)} chains"}
+
+
+# =============================================================================
+# FIREWALL OBJECTS ENDPOINTS
+# =============================================================================
+
+@router.get("/objects", response_model=List[FirewallObjectResponse])
+async def list_objects(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """List all firewall objects."""
+    objs = await FirewallObjectService.get_all(session)
+    return [_obj_to_response(o) for o in objs]
+
+
+@router.get("/objects/{obj_id}", response_model=FirewallObjectResponse)
+async def get_object(
+    obj_id: str,
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    obj = await FirewallObjectService.get_by_id(session, uuid.UUID(obj_id))
+    if not obj:
+        raise HTTPException(status_code=404, detail="Object not found")
+    return _obj_to_response(obj)
+
+
+@router.post("/objects", response_model=FirewallObjectResponse, status_code=status.HTTP_201_CREATED)
+async def create_object(
+    data: FirewallObjectCreate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Create a new firewall object."""
+    try:
+        obj = await FirewallObjectService.create(session, data.model_dump())
+        await session.commit()
+        return _obj_to_response(obj)
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error creating firewall object: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/objects/{obj_id}", response_model=FirewallObjectResponse)
+async def update_object(
+    obj_id: str,
+    data: FirewallObjectUpdate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Update a firewall object."""
+    update_data = data.model_dump(exclude_unset=True)
+    try:
+        obj = await FirewallObjectService.update(session, uuid.UUID(obj_id), update_data)
+        if not obj:
+            raise HTTPException(status_code=404, detail="Object not found")
+        await session.commit()
+        # Re-apply rules so nft sets reflect the updated object
+        await firewall_orchestrator.apply_rules(session)
+        return _obj_to_response(obj)
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error updating firewall object: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/objects/{obj_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_object(
+    obj_id: str,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a firewall object. Rules referencing it will fall back to inline values."""
+    ok = await FirewallObjectService.delete(session, uuid.UUID(obj_id))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Object not found")
+    await session.commit()
 

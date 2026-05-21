@@ -1,15 +1,95 @@
 """
 MADMIN Firewall Models
 
-Database models for machine firewall rules and module chain registration.
+Database models for machine firewall rules, module chain registration,
+and firewall objects (reusable address/service aliases).
 """
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, JSON
 from pydantic import field_validator
-from typing import Optional
+from typing import Optional, List, Any
 from datetime import datetime
 import uuid
 import re
+import enum
 
+
+# ---------------------------------------------------------------------------
+# Firewall Objects
+# ---------------------------------------------------------------------------
+
+class FirewallObjectType(str, enum.Enum):
+    HOST = "host"               # single IP address
+    NETWORK = "network"         # CIDR block
+    RANGE = "range"             # IP range  e.g. 192.168.1.10-192.168.1.50
+    FQDN = "fqdn"               # domain name (resolved at apply time)
+    GROUP = "group"             # group of address objects
+    SERVICE = "service"         # proto/port  e.g. "tcp/443" or "tcp/80-8080"
+    SERVICE_GROUP = "service_group"  # group of service objects
+
+
+class FirewallObject(SQLModel, table=True):
+    """
+    Reusable firewall alias / object.
+
+    Address objects (host/network/range/fqdn/group) can be referenced in
+    MachineFirewallRule.source_object_id and destination_object_id.
+    Service objects (service/service_group) can be referenced in
+    MachineFirewallRule.service_object_id.
+
+    At apply_rules() time the orchestrator resolves each reference to
+    concrete IPs/ports and creates nft sets for multi-value objects.
+    """
+    __tablename__ = "firewall_object"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str = Field(unique=True, index=True, max_length=64)
+    type: FirewallObjectType
+    value: Optional[str] = Field(default=None, max_length=256)
+    members: Optional[List[Any]] = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True)
+    )
+    comment: Optional[str] = Field(default=None, max_length=255)
+    color: Optional[str] = Field(default=None, max_length=16)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FirewallObjectCreate(SQLModel):
+    name: str
+    type: FirewallObjectType
+    value: Optional[str] = None
+    members: Optional[List[str]] = None
+    comment: Optional[str] = None
+    color: Optional[str] = None
+
+
+class FirewallObjectUpdate(SQLModel):
+    name: Optional[str] = None
+    type: Optional[FirewallObjectType] = None
+    value: Optional[str] = None
+    members: Optional[List[str]] = None
+    comment: Optional[str] = None
+    color: Optional[str] = None
+
+
+class FirewallObjectResponse(SQLModel):
+    id: str
+    name: str
+    type: FirewallObjectType
+    value: Optional[str]
+    members: Optional[List[str]]
+    comment: Optional[str]
+    color: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Machine Firewall Rules
+# ---------------------------------------------------------------------------
 
 class MachineFirewallRule(SQLModel, table=True):
     """
@@ -59,12 +139,24 @@ class MachineFirewallRule(SQLModel, table=True):
     log_level: Optional[str] = Field(default=None, max_length=20)       # LOG
     reject_with: Optional[str] = Field(default=None, max_length=50)     # REJECT
     
+    # Firewall Object references (optional — inline source/destination take precedence
+    # when both are set, but object refs are preferred if present)
+    source_object_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_object.id", nullable=True
+    )
+    destination_object_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_object.id", nullable=True
+    )
+    service_object_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_object.id", nullable=True
+    )
+
     # Metadata
     comment: Optional[str] = Field(default=None, max_length=255)
     table_name: str = Field(default="filter", max_length=20)  # filter, nat, mangle, raw
     order: int = Field(default=0, index=True)  # Lower = applied first
     enabled: bool = Field(default=True)
-    
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -148,6 +240,9 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: str = "filter"
     enabled: bool = True
+    source_object_id: Optional[str] = None
+    destination_object_id: Optional[str] = None
+    service_object_id: Optional[str] = None
 
 
 class MachineFirewallRuleUpdate(_FirewallRuleValidators):
@@ -172,6 +267,9 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: Optional[str] = None
     enabled: Optional[bool] = None
+    source_object_id: Optional[str] = None
+    destination_object_id: Optional[str] = None
+    service_object_id: Optional[str] = None
 
 
 class MachineFirewallRuleResponse(SQLModel):
@@ -198,6 +296,9 @@ class MachineFirewallRuleResponse(SQLModel):
     table_name: str
     order: int
     enabled: bool
+    source_object_id: Optional[str] = None
+    destination_object_id: Optional[str] = None
+    service_object_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

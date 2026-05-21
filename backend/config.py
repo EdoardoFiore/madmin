@@ -65,8 +65,8 @@ class Settings(BaseSettings):
         description="Mock firewall commands (iptables/nftables) for development"
     )
     firewall_backend: str = Field(
-        default="iptables",
-        description="Firewall backend to use: 'iptables' (default) or 'nftables'"
+        default="nftables",
+        description="Firewall backend: 'nftables' (default) or 'iptables' (legacy)"
     )
     
     @property
