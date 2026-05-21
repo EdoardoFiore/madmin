@@ -62,7 +62,11 @@ class Settings(BaseSettings):
     # Feature flags
     mock_iptables: bool = Field(
         default=False,
-        description="Mock iptables commands (for development)"
+        description="Mock firewall commands (iptables/nftables) for development"
+    )
+    firewall_backend: str = Field(
+        default="iptables",
+        description="Firewall backend to use: 'iptables' (default) or 'nftables'"
     )
     
     @property

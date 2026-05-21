@@ -10,87 +10,43 @@ import logging
 import re
 from typing import List, Optional, Tuple, Dict
 from config import get_settings
+from .base import (
+    FirewallBackend,
+    FirewallError,
+    CHAIN_MAP,
+    MADMIN_INPUT_CHAIN,
+    MADMIN_OUTPUT_CHAIN,
+    MADMIN_FORWARD_CHAIN,
+    MADMIN_GW_EXCEPTS_CHAIN,
+    MADMIN_GW_PROTECT_CHAIN,
+    MADMIN_PREROUTING_NAT_CHAIN,
+    MADMIN_POSTROUTING_NAT_CHAIN,
+    MADMIN_OUTPUT_NAT_CHAIN,
+    MADMIN_PREROUTING_MANGLE_CHAIN,
+    MADMIN_INPUT_MANGLE_CHAIN,
+    MADMIN_FORWARD_MANGLE_CHAIN,
+    MADMIN_OUTPUT_MANGLE_CHAIN,
+    MADMIN_POSTROUTING_MANGLE_CHAIN,
+    MADMIN_PREROUTING_RAW_CHAIN,
+    MADMIN_OUTPUT_RAW_CHAIN,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# =============================================================================
-# CHAIN CONSTANTS
-# =============================================================================
-
-# Filter table chains
-MADMIN_INPUT_CHAIN = "MADMIN_INPUT"
-MADMIN_OUTPUT_CHAIN = "MADMIN_OUTPUT"
-MADMIN_FORWARD_CHAIN = "MADMIN_FORWARD"
-
-# Gateway protection chains (filter only, not jumped from built-in INPUT directly)
-MADMIN_GW_EXCEPTS_CHAIN = "MADMIN_GW_EXCEPTS"   # user-managed ACCEPT exceptions
-MADMIN_GW_PROTECT_CHAIN = "MADMIN_GW_PROTECT"   # auto-generated ipset DROP
-
-# NAT table chains
-MADMIN_PREROUTING_NAT_CHAIN = "MADMIN_PREROUTING"
-MADMIN_POSTROUTING_NAT_CHAIN = "MADMIN_POSTROUTING"
-MADMIN_OUTPUT_NAT_CHAIN = "MADMIN_OUTPUT_NAT"
-
-# Mangle table chains
-MADMIN_PREROUTING_MANGLE_CHAIN = "MADMIN_PREROUTING_MANGLE"
-MADMIN_INPUT_MANGLE_CHAIN = "MADMIN_INPUT_MANGLE"
-MADMIN_FORWARD_MANGLE_CHAIN = "MADMIN_FORWARD_MANGLE"
-MADMIN_OUTPUT_MANGLE_CHAIN = "MADMIN_OUTPUT_MANGLE"
-MADMIN_POSTROUTING_MANGLE_CHAIN = "MADMIN_POSTROUTING_MANGLE"
-
-# Raw table chains
-MADMIN_PREROUTING_RAW_CHAIN = "MADMIN_PREROUTING_RAW"
-MADMIN_OUTPUT_RAW_CHAIN = "MADMIN_OUTPUT_RAW"
-
-
-# =============================================================================
-# CHAIN MAPPING
-# =============================================================================
-
-# Extended mapping: (logical_chain, table) -> MADMIN chain name
-# This allows rules to specify table_name and chain, and we route to correct MADMIN chain
-CHAIN_MAP: Dict[str, Dict[str, str]] = {
-    "filter": {
-        "INPUT": MADMIN_INPUT_CHAIN,
-        "OUTPUT": MADMIN_OUTPUT_CHAIN,
-        "FORWARD": MADMIN_FORWARD_CHAIN,
-        # GW_EXCEPTIONS is a virtual key (not a real iptables parent chain).
-        # Rules with chain="GW_EXCEPTIONS" are routed to MADMIN_GW_EXCEPTS by apply_rules().
-        # The jump from INPUT is managed by rebuild_chain_jumps(), not initialize_core_chains().
-        "GW_EXCEPTIONS": MADMIN_GW_EXCEPTS_CHAIN,
-    },
-    "nat": {
-        "PREROUTING": MADMIN_PREROUTING_NAT_CHAIN,
-        "OUTPUT": MADMIN_OUTPUT_NAT_CHAIN,
-        "POSTROUTING": MADMIN_POSTROUTING_NAT_CHAIN,
-    },
-    "mangle": {
-        "PREROUTING": MADMIN_PREROUTING_MANGLE_CHAIN,
-        "INPUT": MADMIN_INPUT_MANGLE_CHAIN,
-        "FORWARD": MADMIN_FORWARD_MANGLE_CHAIN,
-        "OUTPUT": MADMIN_OUTPUT_MANGLE_CHAIN,
-        "POSTROUTING": MADMIN_POSTROUTING_MANGLE_CHAIN,
-    },
-    "raw": {
-        "PREROUTING": MADMIN_PREROUTING_RAW_CHAIN,
-        "OUTPUT": MADMIN_OUTPUT_RAW_CHAIN,
-    },
-}
 
 # Helper function to get MADMIN chain for a given table and parent
 def get_madmin_chain(table: str, parent_chain: str) -> Optional[str]:
     """Get the MADMIN chain name for a given table and parent chain."""
-    table_map = CHAIN_MAP.get(table, {})
-    return table_map.get(parent_chain)
+    return CHAIN_MAP.get(table, {}).get(parent_chain)
 
 
 # =============================================================================
 # LOW-LEVEL IPTABLES OPERATIONS
 # =============================================================================
 
-class IptablesError(Exception):
-    """Custom exception for iptables errors."""
+class IptablesError(FirewallError):
+    """Iptables-specific firewall error."""
     pass
 
 
@@ -1000,6 +956,83 @@ def initialize_core_chains() -> bool:
         logger.info(f"  raw: {list(CHAIN_MAP['raw'].values())}")
     else:
         logger.warning("Some MADMIN chains failed to initialize")
-    
+
     return success
+
+
+# =============================================================================
+# BACKEND CLASS (implements FirewallBackend via module-level functions)
+# =============================================================================
+
+class IptablesBackend(FirewallBackend):
+    """
+    FirewallBackend implementation backed by iptables + ipset.
+    All methods delegate to the module-level functions above so that existing
+    module code (which imports this module directly) keeps working unchanged.
+    """
+
+    def initialize_core_chains(self) -> bool:
+        return initialize_core_chains()
+
+    def chain_exists(self, chain_name: str, table: str = "filter") -> bool:
+        return chain_exists(chain_name, table)
+
+    def create_chain(self, chain_name: str, table: str = "filter") -> bool:
+        return create_chain(chain_name, table)
+
+    def create_or_flush_chain(self, chain_name: str, table: str = "filter") -> bool:
+        return create_or_flush_chain(chain_name, table)
+
+    def delete_chain(self, chain_name: str, table: str = "filter") -> bool:
+        return delete_chain(chain_name, table)
+
+    def remove_jump_rule(
+        self, source_chain: str, target_chain: str, table: str = "filter"
+    ) -> bool:
+        return remove_jump_rule(source_chain, target_chain, table)
+
+    def restore_chains(
+        self, table: str, chain_rules: Dict[str, List[str]]
+    ) -> bool:
+        return restore_chains(table, chain_rules)
+
+    def restore_parent_chain_jumps(
+        self, table: str, parent_chain: str, target_chains: List[str]
+    ) -> bool:
+        return restore_parent_chain_jumps(table, parent_chain, target_chains)
+
+    def rule_to_restore_line(self, madmin_chain: str, rule) -> str:
+        return rule_to_restore_line(madmin_chain, rule)
+
+    def build_gateway_protect_lines(
+        self, lan_interfaces: List[Tuple[str, List[str]]]
+    ) -> List[str]:
+        return build_gateway_protect_lines(lan_interfaces)
+
+    def set_name_for_iface(self, iface_name: str) -> str:
+        return ipset_name_for_iface(iface_name)
+
+    def set_exists(self, setname: str) -> bool:
+        return ipset_exists(setname)
+
+    def set_create(self, setname: str) -> bool:
+        return ipset_create(setname)
+
+    def set_flush(self, setname: str) -> bool:
+        return ipset_flush(setname)
+
+    def set_add(self, setname: str, ip: str) -> bool:
+        return ipset_add(setname, ip)
+
+    def set_destroy(self, setname: str) -> bool:
+        return ipset_destroy(setname)
+
+    def flush_conntrack_for_rule(
+        self,
+        protocol: Optional[str] = None,
+        source: Optional[str] = None,
+        destination: Optional[str] = None,
+        port: Optional[str] = None,
+    ) -> int:
+        return flush_conntrack_for_rule(protocol, source, destination, port)
 
