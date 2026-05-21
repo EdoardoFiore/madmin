@@ -198,30 +198,36 @@ def _rule_to_nft(madmin_chain: str, rule) -> str:
 
     proto = (rule.protocol or "").lower()
     action = (rule.action or "ACCEPT").upper()
+    has_port = bool(rule.port and proto in ("tcp", "udp"))
 
-    if proto and proto != "all":
-        if proto == "icmp":
-            parts.append("ip protocol icmp")
-        elif proto in ("tcp", "udp"):
-            parts.append(proto)
-
-    if rule.source:
-        parts.append(f"ip saddr {rule.source}")
-    if rule.destination:
-        parts.append(f"ip daddr {rule.destination}")
+    # 1. Meta matches first (interface)
     if rule.in_interface:
         parts.append(f"iifname \"{rule.in_interface}\"")
     if rule.out_interface:
         parts.append(f"oifname \"{rule.out_interface}\"")
 
+    # 2. Network layer
+    if rule.source:
+        parts.append(f"ip saddr {rule.source}")
+    if rule.destination:
+        parts.append(f"ip daddr {rule.destination}")
+
+    # 3. Protocol (only when no port — tcp dport X already implies the proto)
+    if proto and proto != "all" and not has_port:
+        if proto == "icmp":
+            parts.append("ip protocol icmp")
+        elif proto in ("tcp", "udp"):
+            parts.append(f"ip protocol {proto}")
+
+    # 4. Connection state
     if rule.state:
         states = ",".join(s.lower().strip() for s in rule.state.split(","))
         parts.append(f"ct state {{{states}}}")
 
-    if rule.port and proto in ("tcp", "udp"):
+    # 5. Transport layer (port)
+    if has_port:
         port_str = str(rule.port).strip()
         if "," in port_str:
-            # multiport
             ports = ",".join(p.strip() for p in port_str.split(","))
             parts.append(f"{proto} dport {{{ports}}}")
         elif ":" in port_str:
