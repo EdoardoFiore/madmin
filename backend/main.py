@@ -62,7 +62,10 @@ async def lifespan(app: FastAPI):
     
     # Initialize firewall chains
     logger.info("Initializing firewall chains...")
-    await firewall_orchestrator.initialize()
+    try:
+        await firewall_orchestrator.initialize()
+    except Exception as e:
+        logger.error(f"Firewall initialization failed: {e}", exc_info=True)
     
     # Load installed modules
     logger.info("Loading modules...")
