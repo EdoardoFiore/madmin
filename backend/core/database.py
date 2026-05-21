@@ -6,7 +6,6 @@ Handles session management and database initialization.
 """
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import text
-from sqlalchemy.orm import DeclarativeBase
 from sqlmodel import SQLModel
 from typing import AsyncGenerator
 import logging
@@ -52,13 +51,8 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """
-    Initialize database tables.
-    Creates all tables defined in SQLModel metadata, then applies incremental
-    column migrations for tables that may already exist.
-    """
+    """Initialize database tables on fresh install via SQLModel metadata."""
     async with engine.begin() as conn:
-        # Import all models to ensure they're registered in SQLModel metadata
         from core.auth.models import User, Permission, UserPermission, RevokedToken, LoginAttempt
         from core.firewall.models import MachineFirewallRule, ModuleChain, FirewallObject
         from core.modules.models import InstalledModule
@@ -67,27 +61,6 @@ async def init_db() -> None:
 
         await conn.run_sync(SQLModel.metadata.create_all)
         logger.info("Database tables created successfully")
-
-        # Incremental migrations: add columns to existing tables that predate this feature.
-        # Uses ADD COLUMN IF NOT EXISTS so safe to run on fresh and existing DBs.
-        await _migrate_firewall_object_columns(conn)
-
-
-async def _migrate_firewall_object_columns(conn) -> None:
-    """Add FirewallObject FK columns to machine_firewall_rule (step 1.1 migration)."""
-    migrations = [
-        "ALTER TABLE machine_firewall_rule ADD COLUMN IF NOT EXISTS "
-        "source_object_id UUID REFERENCES firewall_object(id) ON DELETE SET NULL",
-        "ALTER TABLE machine_firewall_rule ADD COLUMN IF NOT EXISTS "
-        "destination_object_id UUID REFERENCES firewall_object(id) ON DELETE SET NULL",
-        "ALTER TABLE machine_firewall_rule ADD COLUMN IF NOT EXISTS "
-        "service_object_id UUID REFERENCES firewall_object(id) ON DELETE SET NULL",
-    ]
-    for stmt in migrations:
-        try:
-            await conn.execute(text(stmt))
-        except Exception as e:
-            logger.warning(f"Migration skipped (already applied?): {e}")
 
 
 async def check_db_connection() -> bool:

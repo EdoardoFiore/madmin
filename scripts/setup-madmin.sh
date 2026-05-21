@@ -150,14 +150,12 @@ apt-get install -y python3-pip python3-venv python3-dev python3-full
 log_info "Installazione Nginx..."
 apt-get install -y nginx
 
-# Pre-configurazione iptables-persistent (silent install)
-echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
-echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-
 # Firewall
-apt-get install -y iptables iptables-persistent ipset conntrack
+apt-get install -y nftables conntrack
 
-# Abilita e avvia cron daemon
+# Abilita nftables e cron
+systemctl enable nftables
+systemctl start nftables
 systemctl enable cron
 systemctl start cron
 
@@ -209,6 +207,7 @@ ALLOWED_ORIGINS=*
 DATA_DIR=$INSTALL_DIR/data
 MODULES_DIR=$INSTALL_DIR/backend/modules
 MOCK_IPTABLES=false
+FIREWALL_BACKEND=nftables
 EOF
 
 chmod 600 $INSTALL_DIR/backend/.env
