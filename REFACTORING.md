@@ -117,4 +117,9 @@ Endpoint `/api/firewall/portforward` + wizard frontend.
 - [ ] Golden file test su orchestrator rendering
 
 ## Note sessioni
-<!-- Aggiornare con: data, cosa fatto, cosa manca, link commit -->
+
+### 2026-05-21 — Step 1.4 completato
+- **Commit**: `d8613e0` — "refactor(firewall): add pluggable backend abstraction (iptables/nftables)"
+- **Fatto**: base.py, IptablesBackend, NftablesBackend, orchestrator refactored, config.py, .env.example
+- **Prossimo step**: Step 1.1 — Firewall Objects (tabella `firewall_object`, ref da rules, view frontend)
+- **Branch**: `feature/firewall-utm-refactor` (da `vdc`)
