@@ -29,10 +29,61 @@ const TYPE_VALUE_HINT = {
     network:       'e.g. 10.0.0.0/24',
     range:         'e.g. 10.0.0.1-10.0.0.50',
     fqdn:          'e.g. example.com',
-    service:       'e.g. tcp/443  or  tcp/80-8080',
+    service:       'e.g. tcp/443  or  tcp/80-8080  or  udp/53',
     group:         null,
     service_group: null,
 };
+
+const TYPE_DESCRIPTIONS = {
+    host:          'Single IPv4/IPv6 address. Used inline in rules.',
+    network:       'CIDR block (e.g. 10.0.0.0/24). Used inline in rules.',
+    range:         'Contiguous IP range. Stored as nft set at apply time.',
+    fqdn:          'Domain name — resolved via DNS at every rule apply.',
+    group:         'Union of address objects. Stored as nft set (supports host/network/range/fqdn/group).',
+    service:       'Protocol + port pair. Overrides rule protocol and port at apply time.',
+    service_group: 'Union of service objects. Expands to multiple proto/port combinations.',
+};
+
+function validateObjectValue(type, value) {
+    if (!value) return 'Value is required';
+    const v = value.trim();
+    switch (type) {
+        case 'host':
+            if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(v) && !/^[0-9a-fA-F:]+$/.test(v))
+                return 'Invalid IP address (e.g. 192.168.1.10)';
+            break;
+        case 'network':
+            if (!/^[\d.a-fA-F:]+\/\d{1,3}$/.test(v))
+                return 'Invalid CIDR (e.g. 10.0.0.0/24)';
+            break;
+        case 'range': {
+            const parts = v.split('-');
+            if (parts.length !== 2 || !/^(\d{1,3}\.){3}\d{1,3}$/.test(parts[0]) || !/^(\d{1,3}\.){3}\d{1,3}$/.test(parts[1]))
+                return 'Invalid range (e.g. 10.0.0.1-10.0.0.50)';
+            break;
+        }
+        case 'fqdn':
+            if (!/^(\*\.)?([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$/.test(v))
+                return 'Invalid domain name (e.g. example.com)';
+            break;
+        case 'service': {
+            const parts = v.split('/');
+            const proto = parts[0].toLowerCase();
+            if (!['tcp', 'udp', 'icmp'].includes(proto))
+                return 'Protocol must be tcp, udp or icmp';
+            if (proto !== 'icmp' && parts.length < 2)
+                return 'Port required for tcp/udp (e.g. tcp/443)';
+            if (parts.length > 1) {
+                for (const p of parts[1].split(/[,\-]/)) {
+                    if (!/^\d+$/.test(p.trim()) || +p < 1 || +p > 65535)
+                        return `Invalid port: ${p.trim()} (1–65535)`;
+                }
+            }
+            break;
+        }
+    }
+    return null;
+}
 
 let objects = [];
 let editingId = null;
@@ -101,6 +152,10 @@ export async function render(container) {
               <select id="obj-type" class="form-select">
                 ${OBJECT_TYPES.map(t => `<option value="${t}">${TYPE_LABELS[t]}</option>`).join('')}
               </select>
+              <div id="type-info" class="form-hint mt-1 d-flex align-items-start gap-1" style="display:none!important">
+                <i class="ti ti-info-circle text-muted mt-px" style="flex-shrink:0"></i>
+                <span id="type-info-text"></span>
+              </div>
             </div>
             <div class="mb-3" id="value-group">
               <label class="form-label required">Value</label>
@@ -235,6 +290,17 @@ function onTypeChange() {
     document.getElementById('value-hint').textContent = hint || '';
     document.getElementById('obj-value').placeholder = hint || '';
 
+    const infoEl = document.getElementById('type-info');
+    const infoText = document.getElementById('type-info-text');
+    const desc = TYPE_DESCRIPTIONS[type];
+    if (desc) {
+        infoText.textContent = desc;
+        infoEl.style.removeProperty('display');
+        infoEl.classList.remove('d-none');
+    } else {
+        infoEl.style.display = 'none';
+    }
+
     if (isGroup) populateMemberSelect(type);
 }
 
@@ -289,6 +355,7 @@ function openModal(id = null) {
     document.getElementById('obj-value').value = '';
     document.getElementById('obj-comment').value = '';
     document.querySelectorAll('.color-swatch').forEach(s => s.style.borderColor = 'transparent');
+    currentMembers = [];
     renderMembersList();
     onTypeChange();
 
@@ -326,6 +393,10 @@ async function saveObject() {
 
     if (!name) { showToast('Name is required', 'warning'); return; }
     if (!isGroup && !value) { showToast('Value is required', 'warning'); return; }
+    if (!isGroup && value) {
+        const err = validateObjectValue(type, value);
+        if (err) { showToast(err, 'warning'); return; }
+    }
     if (isGroup && !currentMembers.length) { showToast('Add at least one member', 'warning'); return; }
 
     const payload = {

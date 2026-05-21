@@ -12,6 +12,7 @@ import { t } from '../i18n.js';
 
 let rules = [];
 let editingRule = null;
+let fwObjects = [];
 let currentTable = 'filter';
 let currentChain = 'INPUT';
 let userPreferences = {};
@@ -168,14 +169,34 @@ export async function render(container) {
                                     <small class="form-hint">${t('firewall.portHint')}</small>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">${t('firewall.source')}</label>
-                                    <input type="text" class="form-control" id="rule-source"
-                                           placeholder="es. 192.168.1.0/24">
+                                    <label class="form-label d-flex justify-content-between align-items-center">
+                                        ${t('firewall.source')}
+                                        <button type="button" class="btn btn-sm py-0 px-1 btn-ghost-secondary obj-field-toggle" data-field="source" title="Use Firewall Object">
+                                            <i class="ti ti-tag"></i> <small>Object</small>
+                                        </button>
+                                    </label>
+                                    <input type="text" class="form-control" id="rule-source" placeholder="es. 192.168.1.0/24">
+                                    <select class="form-select d-none" id="rule-source-obj">
+                                        <option value="">— select address object —</option>
+                                    </select>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">${t('firewall.destination')}</label>
-                                    <input type="text" class="form-control" id="rule-destination"
-                                           placeholder="es. 10.0.0.0/8">
+                                    <label class="form-label d-flex justify-content-between align-items-center">
+                                        ${t('firewall.destination')}
+                                        <button type="button" class="btn btn-sm py-0 px-1 btn-ghost-secondary obj-field-toggle" data-field="destination" title="Use Firewall Object">
+                                            <i class="ti ti-tag"></i> <small>Object</small>
+                                        </button>
+                                    </label>
+                                    <input type="text" class="form-control" id="rule-destination" placeholder="es. 10.0.0.0/8">
+                                    <select class="form-select d-none" id="rule-destination-obj">
+                                        <option value="">— select address object —</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Service Object <span class="text-muted small">(overrides proto+port)</span></label>
+                                    <select class="form-select" id="rule-service-obj">
+                                        <option value="">— none —</option>
+                                    </select>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">${t('firewall.inInterface')}</label>
@@ -639,11 +660,17 @@ function setupEventListeners() {
     ['rule-chain', 'rule-action', 'rule-protocol', 'rule-port', 'rule-source',
         'rule-destination', 'rule-in-interface', 'rule-out-interface', 'rule-state',
         'rule-limit-rate', 'rule-limit-burst', 'rule-to-destination', 'rule-to-source',
-        'rule-to-ports', 'rule-log-prefix', 'rule-log-level', 'rule-reject-with']
+        'rule-to-ports', 'rule-log-prefix', 'rule-log-level', 'rule-reject-with',
+        'rule-source-obj', 'rule-destination-obj', 'rule-service-obj']
         .forEach(id => {
             document.getElementById(id)?.addEventListener('change', updateIptablesPreview);
             document.getElementById(id)?.addEventListener('input', updateIptablesPreview);
         });
+
+    // Object field toggles
+    document.querySelectorAll('.obj-field-toggle').forEach(btn =>
+        btn.addEventListener('click', () => toggleObjField(btn.dataset.field))
+    );
 }
 
 /**
@@ -806,7 +833,75 @@ function updateIptablesPreview() {
     else if (action === 'LOG') parts.push(`log prefix "${logPrefix || ''} " level ${logLevel || 'info'}`);
     else parts.push(action.toLowerCase());
 
+    // Reflect object selection in preview
+    const srcObjSel = document.getElementById('rule-source-obj');
+    const dstObjSel = document.getElementById('rule-destination-obj');
+    if (srcObjSel && !srcObjSel.classList.contains('d-none') && srcObjSel.value) {
+        const name = srcObjSel.options[srcObjSel.selectedIndex]?.text || srcObjSel.value;
+        parts.unshift(`/* src:${name} */`);
+    }
+    if (dstObjSel && !dstObjSel.classList.contains('d-none') && dstObjSel.value) {
+        const name = dstObjSel.options[dstObjSel.selectedIndex]?.text || dstObjSel.value;
+        parts.unshift(`/* dst:${name} */`);
+    }
+
     preview.textContent = `add rule ip madmin ${madminChain} ${parts.join(' ')}`;
+}
+
+/**
+ * Load firewall objects for the rule modal pickers
+ */
+async function loadFwObjects() {
+    try {
+        const data = await apiGet('/firewall/objects');
+        fwObjects = Array.isArray(data) ? data : (data.objects || []);
+    } catch { fwObjects = []; }
+    _populateObjSelects();
+}
+
+function _populateObjSelects() {
+    const addrTypes = ['host', 'network', 'range', 'fqdn', 'group'];
+    const svcTypes  = ['service', 'service_group'];
+    const TYPE_LABELS_SHORT = { host: 'HOST', network: 'NET', range: 'RANGE', fqdn: 'FQDN', group: 'GROUP', service: 'SVC', service_group: 'SVC-GRP' };
+
+    const addrObjs = fwObjects.filter(o => addrTypes.includes(o.type));
+    const svcObjs  = fwObjects.filter(o => svcTypes.includes(o.type));
+
+    for (const field of ['source', 'destination']) {
+        const sel = document.getElementById(`rule-${field}-obj`);
+        if (!sel) continue;
+        const prev = sel.value;
+        sel.innerHTML = '<option value="">— select address object —</option>' +
+            addrObjs.map(o => `<option value="${o.id}">[${TYPE_LABELS_SHORT[o.type]}] ${escapeHtml(o.name)}</option>`).join('');
+        if (prev) sel.value = prev;
+    }
+
+    const svcSel = document.getElementById('rule-service-obj');
+    if (svcSel) {
+        const prev = svcSel.value;
+        svcSel.innerHTML = '<option value="">— none —</option>' +
+            svcObjs.map(o => `<option value="${o.id}">[${TYPE_LABELS_SHORT[o.type]}] ${escapeHtml(o.name)}</option>`).join('');
+        if (prev) svcSel.value = prev;
+    }
+}
+
+function toggleObjField(field) {
+    const input  = document.getElementById(`rule-${field}`);
+    const select = document.getElementById(`rule-${field}-obj`);
+    const btn    = document.querySelector(`.obj-field-toggle[data-field="${field}"]`);
+    const isObj  = !select.classList.contains('d-none');
+
+    if (isObj) {
+        select.classList.add('d-none');
+        input.classList.remove('d-none');
+        select.value = '';
+        btn.classList.replace('btn-primary', 'btn-ghost-secondary');
+    } else {
+        input.classList.add('d-none');
+        select.classList.remove('d-none');
+        btn.classList.replace('btn-ghost-secondary', 'btn-primary');
+    }
+    updateIptablesPreview();
 }
 
 /**
@@ -1075,7 +1170,7 @@ function setupRowEvents(container) {
 /**
  * Open rule modal for create/edit
  */
-function openRuleModal(rule = null) {
+async function openRuleModal(rule = null) {
     editingRule = rule;
 
     const title = document.getElementById('rule-modal-title');
@@ -1092,6 +1187,18 @@ function openRuleModal(rule = null) {
     document.getElementById('rule-action').value = rule?.action || TABLE_ACTIONS[tableSelect.value][0];
     document.getElementById('rule-protocol').value = rule?.protocol || '';
     document.getElementById('rule-port').value = rule?.port || '';
+    // Reset object pickers to manual mode first
+    for (const field of ['source', 'destination']) {
+        const input  = document.getElementById(`rule-${field}`);
+        const select = document.getElementById(`rule-${field}-obj`);
+        const btn    = document.querySelector(`.obj-field-toggle[data-field="${field}"]`);
+        if (select) { select.classList.add('d-none'); select.value = ''; }
+        if (input)  input.classList.remove('d-none');
+        if (btn)    { btn.classList.remove('btn-primary'); btn.classList.add('btn-ghost-secondary'); }
+    }
+    const svcSel = document.getElementById('rule-service-obj');
+    if (svcSel) svcSel.value = '';
+
     document.getElementById('rule-source').value = rule?.source || '';
     document.getElementById('rule-destination').value = rule?.destination || '';
     document.getElementById('rule-in-interface').value = rule?.in_interface || '';
@@ -1109,6 +1216,21 @@ function openRuleModal(rule = null) {
     document.getElementById('rule-log-prefix').value = rule?.log_prefix || '';
     document.getElementById('rule-log-level').value = rule?.log_level || '';
     document.getElementById('rule-reject-with').value = rule?.reject_with || '';
+
+    // Load objects and restore object modes if rule has object IDs
+    await loadFwObjects();
+    for (const field of ['source', 'destination']) {
+        const objId = rule?.[`${field}_object_id`];
+        if (objId) {
+            const input  = document.getElementById(`rule-${field}`);
+            const select = document.getElementById(`rule-${field}-obj`);
+            const btn    = document.querySelector(`.obj-field-toggle[data-field="${field}"]`);
+            if (select) { select.classList.remove('d-none'); select.value = objId; }
+            if (input)  input.classList.add('d-none');
+            if (btn)    { btn.classList.remove('btn-ghost-secondary'); btn.classList.add('btn-primary'); }
+        }
+    }
+    if (svcSel && rule?.service_object_id) svcSel.value = rule.service_object_id;
 
     // Trigger visibility update (handles action-specific fields and drop info banner)
     toggleActionFields();
@@ -1129,14 +1251,24 @@ function openRuleModal(rule = null) {
 async function handleRuleSubmit(e) {
     e.preventDefault();
 
+    // Resolve source/destination: object mode or manual text
+    const srcObjSel = document.getElementById('rule-source-obj');
+    const dstObjSel = document.getElementById('rule-destination-obj');
+    const svcObjSel = document.getElementById('rule-service-obj');
+    const srcIsObj = srcObjSel && !srcObjSel.classList.contains('d-none') && srcObjSel.value;
+    const dstIsObj = dstObjSel && !dstObjSel.classList.contains('d-none') && dstObjSel.value;
+
     const data = {
         table_name: document.getElementById('rule-table').value,
         chain: document.getElementById('rule-chain').value,
         action: document.getElementById('rule-action').value,
         protocol: document.getElementById('rule-protocol').value || null,
         port: document.getElementById('rule-port').value || null,
-        source: document.getElementById('rule-source').value || null,
-        destination: document.getElementById('rule-destination').value || null,
+        source: srcIsObj ? null : (document.getElementById('rule-source').value || null),
+        source_object_id: srcIsObj ? parseInt(srcObjSel.value) : null,
+        destination: dstIsObj ? null : (document.getElementById('rule-destination').value || null),
+        destination_object_id: dstIsObj ? parseInt(dstObjSel.value) : null,
+        service_object_id: (svcObjSel?.value) ? parseInt(svcObjSel.value) : null,
         in_interface: document.getElementById('rule-in-interface').value || null,
         out_interface: document.getElementById('rule-out-interface').value || null,
         state: document.getElementById('rule-state').value || null,
