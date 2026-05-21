@@ -76,8 +76,35 @@ class FirewallBackend(ABC):
 
 ---
 
-### Step 1.1 — Firewall Objects [TODO]
-Tabella `firewall_object` + ref da rules + view frontend.
+### Step 1.1 — Firewall Objects ✅ 2026-05-21
+
+**Files creati/modificati:**
+| File | Stato | Descrizione |
+|------|-------|-------------|
+| `backend/core/firewall/models.py` | ✅ MODIFICATO | `FirewallObject` model + `FirewallObjectType` enum; FK fields `source/destination/service_object_id` su `MachineFirewallRule`; Pydantic schemas CRUD |
+| `backend/core/firewall/objects.py` | ✅ NUOVO | `FirewallObjectService` CRUD + `resolve_address()` + `resolve_service()` ricorsivi |
+| `backend/core/firewall/orchestrator.py` | ✅ MODIFICATO | `_RuleProxy` + `_resolve_rule()`: risolve FK refs a runtime; `_rebuild_object_sets()` crea nft set per multi-value; `apply_rules()` batch-load objects |
+| `backend/core/firewall/router.py` | ✅ MODIFICATO | 5 endpoints `/firewall/objects`; `FirewallError` invece di `IptablesError` |
+| `backend/core/database.py` | ✅ MODIFICATO | Import `FirewallObject`; `ADD COLUMN IF NOT EXISTS` migration per 3 FK columns |
+| `backend/config.py` | ✅ MODIFICATO | `FIREWALL_BACKEND` default cambiato a `nftables` |
+| `backend/.env.example` | ✅ MODIFICATO | `FIREWALL_BACKEND=nftables` |
+| `backend/main.py` | ✅ MODIFICATO | Menu entry `firewall-objects` |
+| `frontend/assets/js/app.js` | ✅ MODIFICATO | Route `firewall-objects` → `firewall-objects.js` |
+| `frontend/assets/js/views/firewall-objects.js` | ✅ NUOVO | View CRUD con table, search/filter, modal create/edit, member picker per groups |
+
+**Commit**: `bb9e6ff`
+
+**Cosa funziona:**
+- HOST/NETWORK/RANGE/FQDN/GROUP/SERVICE/SERVICE_GROUP fully supported
+- Multi-value objects → nft sets (`FWOBJ_*`) creati/aggiornati ad ogni `apply_rules()`
+- GROUP resolution ricorsiva (max depth 8) con cache
+- FQDN → DNS lookup runtime
+- SERVICE → proto/port override su regola
+- DB migration safe (ADD COLUMN IF NOT EXISTS) per installazioni esistenti
+
+**Note:**
+- `resolve_address` per SERVICE_GROUP non expande il set (solo GROUP per indirizzi). Supporto SERVICE_GROUP multi-port in nft set è futuro work.
+- Color picker in modal usa detection bordo colore — CSS specificity può variare su dark mode.
 
 ### Step 1.2 — Security Zones [TODO]
 Tabella `firewall_zone` + inter-zone matrix + ZONE_* chains + view frontend.
@@ -121,5 +148,9 @@ Endpoint `/api/firewall/portforward` + wizard frontend.
 ### 2026-05-21 — Step 1.4 completato
 - **Commit**: `d8613e0` — "refactor(firewall): add pluggable backend abstraction (iptables/nftables)"
 - **Fatto**: base.py, IptablesBackend, NftablesBackend, orchestrator refactored, config.py, .env.example
-- **Prossimo step**: Step 1.1 — Firewall Objects (tabella `firewall_object`, ref da rules, view frontend)
 - **Branch**: `feature/firewall-utm-refactor` (da `vdc`)
+
+### 2026-05-21 — Step 1.1 completato
+- **Commit**: `bb9e6ff` — "feat(firewall): implement Firewall Objects (Step 1.1)"
+- **Fatto**: FirewallObject model, objects.py service, orchestrator resolve, router endpoints, DB migration, frontend view
+- **Prossimo step**: Step 1.2 — Security Zones
