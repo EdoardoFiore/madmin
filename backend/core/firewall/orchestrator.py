@@ -20,6 +20,25 @@ from . import iptables
 logger = logging.getLogger(__name__)
 
 
+def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
+    """
+    Compute the FORWARD ACCEPT match for a DNAT rule's companion forward.
+
+    The DNAT rewrites the destination to an internal host; the forwarded packet
+    must be accepted toward that translated destination. Refined by the DNAT's
+    incoming interface and source when present. Shared by apply_rules (iptables
+    generation) and the API listing (read-only synthetic row) so they stay in sync.
+    """
+    dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+    return {
+        "protocol": rule.protocol,
+        "source": rule.source,
+        "destination": dest_ip,
+        "port": dest_port or rule.port,
+        "in_interface": rule.in_interface,
+    }
+
+
 class FirewallOrchestrator:
     """
     Orchestrates firewall chain management and rule application.
@@ -223,7 +242,22 @@ class FirewallOrchestrator:
         
         result = await session.execute(query)
         return result.scalars().all()
-    
+
+    async def get_enabled_dnat_rules(
+        self,
+        session: AsyncSession
+    ) -> List[MachineFirewallRule]:
+        """Get enabled DNAT rules — source of the auto-generated FORWARD companions."""
+        result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "nat")
+            .where(MachineFirewallRule.action == "DNAT")
+            .where(MachineFirewallRule.enabled == True)
+            .where(MachineFirewallRule.to_destination.is_not(None))
+            .order_by(MachineFirewallRule.order)
+        )
+        return result.scalars().all()
+
     async def get_rule_by_id(
         self,
         session: AsyncSession,
@@ -483,6 +517,31 @@ class FirewallOrchestrator:
             chain_rules[rule.table_name][madmin_chain].append(
                 iptables.rule_to_restore_line(madmin_chain, rule)
             )
+
+        # --- Auto-generate FORWARD ACCEPT for DNAT rules ---
+        # A DNAT in PREROUTING/OUTPUT rewrites the destination to an internal host;
+        # the translated packet then traverses FORWARD and would hit the default DROP.
+        # Emit a companion ACCEPT toward the translated destination, refined by the
+        # DNAT's incoming interface and source when present, inserted right after the
+        # built-in ESTABLISHED line so it precedes the FORWARD DROP catch-all.
+        auto_forward_lines: List[str] = []
+        for rule in rules:
+            if rule.table_name != "nat" or rule.action != "DNAT" or not rule.to_destination:
+                continue
+            auto_forward_lines.append(
+                " ".join(iptables.build_rule_args(
+                    chain=iptables.MADMIN_FORWARD_CHAIN,
+                    action="ACCEPT",
+                    comment=f"MADMIN_AUTO_DNAT_{rule.id}",
+                    operation="-A",
+                    **dnat_forward_fields(rule),
+                ))
+            )
+        if auto_forward_lines:
+            fwd = chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN]
+            # Index 1 = after the built-in ESTABLISHED/RELATED line, before DB rules (incl. DROP)
+            insert_at = 1 if fwd else 0
+            fwd[insert_at:insert_at] = auto_forward_lines
 
         # --- Apply atomically per table ---
         for table, chains in chain_rules.items():

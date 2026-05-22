@@ -198,6 +198,7 @@ class MachineFirewallRuleResponse(SQLModel):
     table_name: str
     order: int
     enabled: bool
+    auto_generated: bool = False  # synthetic read-only row (e.g. DNAT forward companion)
     created_at: datetime
     updated_at: datetime
 

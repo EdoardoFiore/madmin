@@ -23,12 +23,48 @@ from .models import (
     RuleOrderUpdate,
     ModuleChainResponse
 )
-from .orchestrator import firewall_orchestrator
+from .orchestrator import firewall_orchestrator, dnat_forward_fields
 from .iptables import IptablesError, flush_conntrack_for_rule
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
+
+
+# Hook (chain) in cui ciascun match/azione è valido per netfilter.
+# Denylist applicata DOPO la validazione table/chain/action: blocca solo le
+# combinazioni note-incompatibili, lasciando passare quelle non elencate.
+_IN_IFACE_VALID = {"PREROUTING", "INPUT", "FORWARD"}
+_OUT_IFACE_VALID = {"POSTROUTING", "OUTPUT", "FORWARD"}
+_NAT_TARGET_HOOK = {
+    "DNAT": {"PREROUTING", "OUTPUT"},
+    "REDIRECT": {"PREROUTING", "OUTPUT"},
+    "SNAT": {"POSTROUTING"},
+    "MASQUERADE": {"POSTROUTING"},
+}
+
+
+def _validate_rule_constraints(chain: str, action: str,
+                               in_interface: Optional[str],
+                               out_interface: Optional[str]) -> None:
+    """Reject rules whose fields are incompatible with the chain's netfilter hook."""
+    if in_interface and chain not in _IN_IFACE_VALID:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Interfaccia di ingresso (-i) non valida nella catena {chain}: "
+                   f"disponibile solo in PREROUTING, INPUT, FORWARD."
+        )
+    if out_interface and chain not in _OUT_IFACE_VALID:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Interfaccia di uscita (-o) non valida nella catena {chain}: "
+                   f"disponibile solo in POSTROUTING, OUTPUT, FORWARD."
+        )
+    if action in _NAT_TARGET_HOOK and chain not in _NAT_TARGET_HOOK[action]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Azione {action} non valida nella catena {chain}."
+        )
 
 
 def _rule_to_response(rule) -> MachineFirewallRuleResponse:
@@ -61,6 +97,38 @@ def _rule_to_response(rule) -> MachineFirewallRuleResponse:
     )
 
 
+def _auto_forward_response(dnat) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT companion."""
+    fields = dnat_forward_fields(dnat)
+    return MachineFirewallRuleResponse(
+        id=f"auto-dnat-{dnat.id}",
+        chain="FORWARD",
+        action="ACCEPT",
+        protocol=fields["protocol"],
+        source=fields["source"],
+        destination=fields["destination"],
+        port=fields["port"],
+        in_interface=fields["in_interface"],
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=f"→ DNAT {dnat.to_destination}",
+        table_name="filter",
+        order=-1,  # sorts above user FORWARD rules
+        enabled=True,
+        auto_generated=True,
+        created_at=dnat.created_at,
+        updated_at=dnat.updated_at,
+    )
+
+
 @router.get("/rules", response_model=List[MachineFirewallRuleResponse])
 async def list_rules(
     chain: Optional[str] = None,
@@ -69,7 +137,12 @@ async def list_rules(
 ):
     """List all firewall rules, optionally filtered by chain."""
     rules = await firewall_orchestrator.get_all_rules(session, chain)
-    return [_rule_to_response(r) for r in rules]
+    responses = [_rule_to_response(r) for r in rules]
+    # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
+    if chain in (None, "FORWARD"):
+        dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
+        responses.extend(_auto_forward_response(d) for d in dnat_rules)
+    return responses
 
 
 @router.get("/rules/{rule_id}", response_model=MachineFirewallRuleResponse)
@@ -129,7 +202,12 @@ async def create_rule(
             status_code=400,
             detail=f"Action for table {table} must be one of: {', '.join(table_actions[table])}"
         )
-    
+
+    _validate_rule_constraints(
+        rule_data.chain, rule_data.action,
+        rule_data.in_interface, rule_data.out_interface
+    )
+
     try:
         rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
         await session.commit()
@@ -161,6 +239,17 @@ async def update_rule(
 
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Validate the resulting state (merge existing rule with the partial update)
+    existing = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    _validate_rule_constraints(
+        update_data.get("chain", existing.chain),
+        update_data.get("action", existing.action),
+        update_data.get("in_interface", existing.in_interface),
+        update_data.get("out_interface", existing.out_interface),
+    )
 
     try:
         rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)

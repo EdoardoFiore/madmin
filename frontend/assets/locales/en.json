@@ -245,6 +245,13 @@
         }
     },
     "firewall": {
+        "validation": {
+            "inIfaceHook": "Input interface (-i) is not valid in chain {chain}: only available in PREROUTING, INPUT, FORWARD.",
+            "outIfaceHook": "Output interface (-o) is not valid in chain {chain}: only available in POSTROUTING, OUTPUT, FORWARD.",
+            "natActionHook": "Action {action} is not valid in chain {chain}."
+        },
+        "autoRule": "Auto",
+        "autoRuleHint": "Auto-generated rule that allows the DNAT forward. It updates and is removed together with the matching DNAT rule.",
         "newRule": "New Rule",
         "exportBtn": "Export",
         "importBtn": "Import",

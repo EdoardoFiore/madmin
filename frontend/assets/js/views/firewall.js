@@ -860,6 +860,20 @@ function renderRuleRow(rule, orderedColumns) {
     // If orderedColumns not provided (legacy call?), fallback
     const columns = orderedColumns || getOrderedVisibleColumns();
 
+    // Auto-generated companion rules (e.g. DNAT forward): read-only, no drag/edit/delete
+    if (rule.auto_generated) {
+        return `
+            <tr class="auto-rule" data-id="${rule.id}">
+                <td class="rule-order">
+                    <span class="text-muted"><i class="ti ti-lock"></i></span>
+                </td>
+                <td>${actionBadge(rule.action)} <span class="badge bg-azure-lt" title="${t('firewall.autoRuleHint')}">${t('firewall.autoRule')}</span></td>
+                ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
+                <td class="rule-actions"></td>
+            </tr>
+        `;
+    }
+
     return `
         <tr class="${disabledClass} draggable-row" data-id="${rule.id}" draggable="${canManage}">
             <td class="rule-order">
@@ -1131,6 +1145,12 @@ async function handleRuleSubmit(e) {
         reject_with: document.getElementById('rule-reject-with').value || null,
     };
 
+    const constraintError = validateRuleConstraints(data);
+    if (constraintError) {
+        showToast(constraintError, 'error');
+        return;
+    }
+
     try {
         if (editingRule) {
             await apiPatch(`/firewall/rules/${editingRule.id}`, data);
@@ -1146,6 +1166,35 @@ async function handleRuleSubmit(e) {
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');
     }
+}
+
+// Hook (chain) in cui ciascun match/azione è valido per netfilter.
+const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD'];
+const OUT_IFACE_VALID_CHAINS = ['POSTROUTING', 'OUTPUT', 'FORWARD'];
+const NAT_ACTION_VALID_CHAINS = {
+    DNAT: ['PREROUTING', 'OUTPUT'],
+    REDIRECT: ['PREROUTING', 'OUTPUT'],
+    SNAT: ['POSTROUTING'],
+    MASQUERADE: ['POSTROUTING'],
+};
+
+/**
+ * Validate rule field/chain (hook) compatibility client-side, mirroring the
+ * backend denylist. Returns a translated error string, or null if valid.
+ */
+function validateRuleConstraints(data) {
+    const chain = data.chain;
+    if (data.in_interface && !IN_IFACE_VALID_CHAINS.includes(chain)) {
+        return t('firewall.validation.inIfaceHook', { chain });
+    }
+    if (data.out_interface && !OUT_IFACE_VALID_CHAINS.includes(chain)) {
+        return t('firewall.validation.outIfaceHook', { chain });
+    }
+    const validChains = NAT_ACTION_VALID_CHAINS[data.action];
+    if (validChains && !validChains.includes(chain)) {
+        return t('firewall.validation.natActionHook', { action: data.action, chain });
+    }
+    return null;
 }
 
 /**

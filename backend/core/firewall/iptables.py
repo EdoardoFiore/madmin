@@ -218,6 +218,22 @@ def create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:
         return create_chain(chain_name, table)
 
 
+def split_ip_port(value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Split an iptables IP[:port] target (e.g. DNAT to-destination) into (ip, port).
+
+    Splits on the last ':' so it tolerates plain IPs ("10.0.0.1" -> ("10.0.0.1", None))
+    and IP:port ("10.0.0.1:8080" -> ("10.0.0.1", "8080")). The port part may be a
+    range ("8000-8080"); it is returned verbatim.
+    """
+    if not value:
+        return None, None
+    if ":" in value:
+        ip, _, port = value.rpartition(":")
+        return ip, (port or None)
+    return value, None
+
+
 def rule_to_restore_line(madmin_chain: str, rule) -> str:
     """Convert a MachineFirewallRule to an iptables-restore format line (-A ...)."""
     args = build_rule_args(
@@ -602,7 +618,8 @@ def build_rule_args(
         args.extend(["-m", "limit", "--limit", limit_rate])
         if limit_burst:
             args.extend(["--limit-burst", str(limit_burst)])
-    
+
+    if comment:
         safe_comment = re.sub(r'[^a-zA-Z0-9_\-\. ]', '', comment)[:255]
         args.extend(["-m", "comment", "--comment", safe_comment])
     
