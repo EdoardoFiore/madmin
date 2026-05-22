@@ -982,7 +982,12 @@ connections {{
             ]
             if not core_iptables.run_safe('filter', ['-C', self.IPSEC_FORWARD_CHAIN] + rule_in_args, suppress_errors=True):
                 core_iptables.run_safe('filter', ['-A', self.IPSEC_FORWARD_CHAIN] + rule_in_args)
-            
+
+            # NAT exemption: keep the original LAN source for tunnel traffic so it
+            # matches the IPsec traffic selector instead of being SNAT/MASQUERADE'd
+            # by the host POSTROUTING rules (MOD_IPSEC_NAT runs before them).
+            success &= self._setup_nat_exemption(comment, child_sa.local_ts, child_sa.remote_ts)
+
             result = await db.execute(
                 select(IpsecChildSa)
                 .where(IpsecChildSa.id == child_sa.id)
@@ -1035,7 +1040,52 @@ connections {{
         
         cmd.extend(['-j', rule.action])
         return cmd
-    
+
+    @staticmethod
+    def _split_ts(ts: str) -> list:
+        """Split a traffic-selector string into individual subnets (comma/space separated)."""
+        if not ts:
+            return []
+        return [p for p in ts.replace(',', ' ').split() if p]
+
+    def _setup_nat_exemption(self, comment: str, local_ts: str, remote_ts: str) -> bool:
+        """
+        Add NAT-exemption ACCEPT rules in MOD_IPSEC_NAT for every local/remote
+        subnet pair. ACCEPT is terminating in the nat table, so it short-circuits
+        the host SNAT/MASQUERADE in MADMIN_POSTROUTING and preserves the original
+        source — required for the packet to match the IPsec traffic selector.
+        """
+        success = True
+        for local in self._split_ts(local_ts):
+            for remote in self._split_ts(remote_ts):
+                args = [
+                    '-s', local, '-d', remote,
+                    '-m', 'comment', '--comment', comment,
+                    '-j', 'ACCEPT'
+                ]
+                if not core_iptables.run_safe('nat', ['-C', self.IPSEC_NAT_CHAIN] + args, suppress_errors=True):
+                    success &= core_iptables.run_safe('nat', ['-A', self.IPSEC_NAT_CHAIN] + args)
+        return success
+
+    def _remove_nat_exemption(self, comment: str) -> None:
+        """Remove NAT-exemption rules in MOD_IPSEC_NAT matching the given comment."""
+        try:
+            result = subprocess.run(
+                ['iptables', '-t', 'nat', '-S', self.IPSEC_NAT_CHAIN],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                return
+            for rule in result.stdout.strip().split('\n'):
+                tokens = rule.split()
+                if tokens[:1] != ['-A'] or '--comment' not in tokens:
+                    continue
+                ci = tokens.index('--comment')
+                if ci + 1 < len(tokens) and tokens[ci + 1] == comment:
+                    core_iptables.run_safe('nat', rule.replace('-A ', '-D ', 1).split(), suppress_errors=True)
+        except Exception as e:
+            logger.error(f"Failed to remove NAT exemption for {comment}: {e}")
+
     async def remove_tunnel_firewall_chains(self, tunnel, child_sas) -> bool:
         """Remove all firewall chains for a tunnel."""
         success = True
@@ -1062,12 +1112,14 @@ connections {{
             except Exception as e:
                 logger.error(f"Failed to remove jump rules: {e}")
                 success = False
-            
+
+            self._remove_nat_exemption(f"IPSEC_{tunnel.name}_{idx}")
+
             core_iptables.run_safe('filter', ['-F', chain_out], suppress_errors=True)
             core_iptables.run_safe('filter', ['-X', chain_out], suppress_errors=True)
             core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
             core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
-        
+
         return success
 
     async def remove_specific_firewall_chain(self, tunnel_name: str, index: int):
@@ -1093,7 +1145,9 @@ connections {{
                         core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
         except Exception as e:
             logger.error(f"Failed to remove jump rules: {e}")
-            
+
+        self._remove_nat_exemption(f"IPSEC_{tunnel_name}_{index}")
+
         # Flush and delete chains
         core_iptables.run_safe('filter', ['-F', chain_out], suppress_errors=True)
         core_iptables.run_safe('filter', ['-X', chain_out], suppress_errors=True)
