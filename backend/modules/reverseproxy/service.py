@@ -412,7 +412,7 @@ def write_htpasswd(acl_id, users: List[Tuple[str, str]]) -> None:
     path = _htpasswd_path(acl_id)
     lines = [f"{u}:{h}" for u, h in users]
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
-    os.chmod(path, 0o640)
+    os.chmod(path, 0o644)
 
 
 def hash_password(plain: str) -> str:

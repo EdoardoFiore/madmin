@@ -15,7 +15,7 @@ let _acls = [];
 export async function renderHostsTab(container, perms) {
     _perms = perms;
     container.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center mb-3">
+        <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-3">
             <div class="input-icon" style="max-width: 320px;">
                 <span class="input-icon-addon"><i class="ti ti-search"></i></span>
                 <input type="text" id="revproxy-host-search" class="form-control"
@@ -26,12 +26,12 @@ export async function renderHostsTab(container, perms) {
                     <i class="ti ti-plus me-1"></i>${t('reverseproxy.addProxyHost')}
                 </button>` : ''}
         </div>
-        <div id="revproxy-hosts-table">${loadingSpinner()}</div>
+        <div id="revproxy-hosts-table"><div class="px-3 pb-3">${loadingSpinner()}</div></div>
     `;
 
     if (perms.manage) {
         document.getElementById('revproxy-btn-new-host').addEventListener('click', () => {
-            openHostForm({ acls: _acls, onSaved: reloadHosts });
+            openHostForm({ onSaved: reloadHosts, perms: _perms });
         });
     }
     document.getElementById('revproxy-host-search').addEventListener('input', renderTable);
@@ -49,7 +49,10 @@ async function loadAcls() {
 
 async function reloadHosts() {
     try {
-        _hosts = await apiGet(`${MODULE_API}/hosts`);
+        [_hosts, _acls] = await Promise.all([
+            apiGet(`${MODULE_API}/hosts`),
+            apiGet(`${MODULE_API}/access_lists`).catch(() => _acls),
+        ]);
         renderTable();
     } catch (err) {
         document.getElementById('revproxy-hosts-table').innerHTML =
@@ -69,12 +72,11 @@ function renderTable() {
     });
 
     if (!rows.length) {
-        root.innerHTML = emptyState('ti-server-off', t('reverseproxy.noHosts'), t('reverseproxy.noHostsHint'));
+        root.innerHTML = `<div class="p-3">${emptyState('ti-server-off', t('reverseproxy.noHosts'), t('reverseproxy.noHostsHint'))}</div>`;
         return;
     }
 
-    root.innerHTML = `<div class="table-responsive">
-        <table class="table table-vcenter card-table table-hover">
+    root.innerHTML = `<table class="table table-vcenter card-table table-hover">
             <thead><tr>
                 <th>${t('reverseproxy.source')}</th>
                 <th>${t('reverseproxy.destination')}</th>
@@ -84,17 +86,17 @@ function renderTable() {
                 <th class="w-1"></th>
             </tr></thead>
             <tbody>${rows.map(renderRow).join('')}</tbody>
-        </table>
-    </div>`;
+        </table>`;
 
     root.querySelectorAll('[data-action]').forEach(btn => {
         btn.addEventListener('click', (e) => {
+            e.preventDefault();
             e.stopPropagation();
             const id = btn.dataset.id;
             const action = btn.dataset.action;
             const host = _hosts.find(h => h.id === id);
             if (!host) return;
-            if (action === 'edit') openHostForm({ host, acls: _acls, onSaved: reloadHosts });
+            if (action === 'edit') openHostForm({ host, onSaved: reloadHosts, perms: _perms });
             else if (action === 'delete') deleteHost(host);
             else if (action === 'enable') toggleHost(host, true);
             else if (action === 'disable') toggleHost(host, false);
@@ -128,7 +130,7 @@ function renderRow(h) {
     const canCerts = _perms.certs;
     const actions = `
         <div class="dropdown">
-            <button type="button" class="btn btn-ghost-secondary btn-icon" data-bs-toggle="dropdown" aria-expanded="false">
+            <button type="button" class="btn btn-ghost-secondary btn-icon" data-bs-toggle="dropdown" data-bs-strategy="fixed" aria-expanded="false">
                 <i class="ti ti-dots-vertical"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
@@ -148,7 +150,7 @@ function renderRow(h) {
         </div>`;
 
     return `
-        <tr>
+        <tr data-host-id="${h.id}">
             <td>
                 <div class="d-flex align-items-center">
                     <span class="avatar avatar-rounded bg-green-lt me-2">${escapeHtml(initial)}</span>
@@ -194,14 +196,23 @@ async function toggleHost(host, enable) {
 }
 
 async function issueCert(host) {
+    const root = document.getElementById('revproxy-hosts-table');
+    const row = root?.querySelector(`tr[data-host-id="${host.id}"]`);
+    if (row) {
+        row.cells[2].innerHTML =
+            `<span class="badge bg-secondary-lt">` +
+            `<span class="spinner-border spinner-border-sm me-1" role="status" ` +
+            `style="width:.65rem;height:.65rem;border-width:2px;"></span>` +
+            `${t('reverseproxy.loading')}</span>`;
+        row.querySelectorAll('[data-action]').forEach(b => { b.closest('li, div').style.pointerEvents = 'none'; });
+    }
     try {
-        showToast(t('reverseproxy.loading'), 'info');
         await apiPost(`${MODULE_API}/hosts/${host.id}/certificate`, {});
         showToast(t('reverseproxy.certRequested'), 'success');
-        await reloadHosts();
     } catch (err) {
         showToast(err.message, 'error');
     }
+    await reloadHosts();
 }
 
 async function revokeCert(host) {

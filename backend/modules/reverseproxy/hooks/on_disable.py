@@ -83,21 +83,16 @@ async def run():
     except Exception as e:
         logger.warning("nginx reload error during on_disable: %s", e)
 
-    # 6) Drop firewall rules on MOD_REVPROXY_INPUT (the chain itself is removed
-    # by the loader through firewall_orchestrator)
+    # 6) Remove MOD_REVPROXY_INPUT chain and its rules
     try:
-        from core.firewall import iptables as fw
-        for port in (80, 443):
-            fw.delete_rule_by_spec(
-                table="filter",
-                chain="MOD_REVPROXY_INPUT",
-                action="ACCEPT",
-                protocol="tcp",
-                port=str(port),
-                comment=f"madmin-revproxy:{port}",
-            )
+        from core.firewall import iptables as core_iptables
+        chain = "MOD_REVPROXY_INPUT"
+        core_iptables.remove_jump_rule("INPUT", chain, "filter")
+        core_iptables.flush_chain(chain, "filter")
+        core_iptables.delete_chain(chain, "filter")
+        logger.info("Reverse Proxy on_disable: firewall chain %s removed", chain)
     except Exception as e:
-        logger.warning("firewall cleanup error: %s", e)
+        logger.warning("Reverse Proxy on_disable: firewall cleanup error: %s", e)
 
     logger.info("Reverse Proxy on_disable: complete")
     return True

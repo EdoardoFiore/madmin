@@ -4,6 +4,7 @@ Reverse Proxy Module - API Router
 CRUD for hosts and access lists, certificate issuance, preflight check
 and nginx service status.
 """
+import asyncio
 import logging
 import uuid
 from typing import List, Optional
@@ -367,7 +368,12 @@ async def issue_host_certificate(
 
     primary = host.domains[0].domain
     sans = [d.domain for d in host.domains[1:]]
-    ok, msg, info = svc.issue_certificate(host.id, primary, sans)
+    # certbot is a blocking subprocess (up to ~180s) — run in thread pool
+    # to avoid blocking the entire FastAPI event loop
+    loop = asyncio.get_event_loop()
+    ok, msg, info = await loop.run_in_executor(
+        None, lambda: svc.issue_certificate(host.id, primary, sans)
+    )
     if not ok:
         raise HTTPException(status_code=500, detail=f"certbot ha fallito: {msg}")
 

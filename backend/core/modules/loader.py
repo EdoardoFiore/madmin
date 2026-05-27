@@ -324,7 +324,7 @@ class ModuleLoader:
         
         # Register firewall chains
         await self.register_module_chains(session, module_id, manifest)
-        
+
         # Store in loaded modules
         self.loaded_modules[module_id] = {
             "manifest": manifest,

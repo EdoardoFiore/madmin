@@ -99,5 +99,17 @@
   "saving": "Saving...",
   "fillRequiredFields": "Please fill the required fields",
   "domainInvalid": "Invalid domain",
-  "cidrInvalid": "Invalid IP or CIDR"
+  "cidrInvalid": "Invalid IP or CIDR",
+  "tabCerts": "SSL/TLS",
+  "noCertificates": "No certificates issued",
+  "noCertificatesHint": "SSL certificates appear here once issued via Request SSL on a proxy host",
+  "sslSaveFirst": "Save the host first to manage SSL certificates",
+  "requiresCert": "Requires certificate",
+  "sslNocert": "No certificate issued yet — request one below",
+  "certExpired": "Expired",
+  "certExpiringSoon": "Expiring soon",
+  "certValid": "Valid",
+  "certIssuedAt": "Issued",
+  "certExpiresAt": "Expires",
+  "certRenew": "Renew"
 }

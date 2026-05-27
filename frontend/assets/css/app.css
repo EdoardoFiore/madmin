@@ -1,7 +1,12 @@
-/* 
+/*
  * MADMIN - Custom Application Styles
  * Extends and customizes Tabler UI
  */
+
+/* Prevent layout shift when Bootstrap modals lock body scroll */
+html {
+    scrollbar-gutter: stable;
+}
 
 :root {
     --madmin-primary: #206bc4;

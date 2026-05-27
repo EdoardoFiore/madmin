@@ -15,13 +15,13 @@ let _acls = [];
 export async function renderAccessListsTab(container, perms) {
     _perms = perms;
     container.innerHTML = `
-        <div class="d-flex justify-content-end mb-3">
+        <div class="d-flex justify-content-end px-3 pt-3 pb-3">
             ${perms.accessLists ? `
                 <button class="btn btn-primary" id="revproxy-btn-new-acl">
                     <i class="ti ti-plus me-1"></i>${t('reverseproxy.addAccessList')}
                 </button>` : ''}
         </div>
-        <div id="revproxy-acls-table">${loadingSpinner()}</div>
+        <div id="revproxy-acls-table"><div class="px-3 pb-3">${loadingSpinner()}</div></div>
     `;
     if (perms.accessLists) {
         document.getElementById('revproxy-btn-new-acl').addEventListener('click', () => openAclForm({}));
@@ -42,10 +42,10 @@ async function reloadAcls() {
 function renderTable() {
     const root = document.getElementById('revproxy-acls-table');
     if (!_acls.length) {
-        root.innerHTML = emptyState('ti-lock', t('reverseproxy.noAccessLists'), t('reverseproxy.noAccessListsHint'));
+        root.innerHTML = `<div class="p-3">${emptyState('ti-lock', t('reverseproxy.noAccessLists'), t('reverseproxy.noAccessListsHint'))}</div>`;
         return;
     }
-    root.innerHTML = `<div class="table-responsive"><table class="table table-vcenter card-table table-hover">
+    root.innerHTML = `<table class="table table-vcenter card-table table-hover">
         <thead><tr>
             <th>${t('reverseproxy.name')}</th>
             <th>${t('reverseproxy.users')}</th>
@@ -61,7 +61,7 @@ function renderTable() {
                 <td>${a.hosts_count || 0}</td>
                 <td>
                     <div class="dropdown">
-                        <button class="btn btn-ghost-secondary btn-icon" data-bs-toggle="dropdown"><i class="ti ti-dots-vertical"></i></button>
+                        <button class="btn btn-ghost-secondary btn-icon" data-bs-toggle="dropdown" data-bs-strategy="fixed"><i class="ti ti-dots-vertical"></i></button>
                         <ul class="dropdown-menu dropdown-menu-end">
                             ${_perms.accessLists ? `
                             <li><a class="dropdown-item" href="#" data-action="edit" data-id="${a.id}">
@@ -72,11 +72,12 @@ function renderTable() {
                     </div>
                 </td>
             </tr>`).join('')}</tbody>
-    </table></div>`;
+    </table>`;
 
     root.querySelectorAll('[data-action]').forEach(b => {
         b.addEventListener('click', (e) => {
             e.preventDefault();
+            e.stopPropagation();
             const id = b.dataset.id;
             const acl = _acls.find(a => a.id === id);
             if (!acl) return;

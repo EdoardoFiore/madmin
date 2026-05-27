@@ -99,5 +99,17 @@
   "saving": "Salvataggio...",
   "fillRequiredFields": "Compila i campi richiesti",
   "domainInvalid": "Dominio non valido",
-  "cidrInvalid": "IP o CIDR non valido"
+  "cidrInvalid": "IP o CIDR non valido",
+  "tabCerts": "SSL/TLS",
+  "noCertificates": "Nessun certificato rilasciato",
+  "noCertificatesHint": "I certificati SSL appaiono qui dopo essere stati rilasciati tramite Richiedi SSL su un proxy host",
+  "sslSaveFirst": "Salva l'host prima di gestire i certificati SSL",
+  "requiresCert": "Richiede certificato",
+  "sslNocert": "Nessun certificato rilasciato — richiedine uno qui sotto",
+  "certExpired": "Scaduto",
+  "certExpiringSoon": "In scadenza",
+  "certValid": "Valido",
+  "certIssuedAt": "Rilasciato",
+  "certExpiresAt": "Scade",
+  "certRenew": "Rinnova"
 }

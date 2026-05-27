@@ -26,7 +26,7 @@ async def run():
     from modules.reverseproxy import service as svc
     from core.database import async_session_maker
     from core.services.service import SystemdService
-    from core.firewall import iptables as fw
+    from sqlalchemy import select
 
     # 1) Preflight: port conflicts
     async with async_session_maker() as session:
@@ -50,7 +50,7 @@ async def run():
         svc.SENTINEL_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)
-    os.chmod(svc.HTPASSWD_DIR, 0o750)
+    os.chmod(svc.HTPASSWD_DIR, 0o755)
     logger.info("Reverse Proxy post-install: directories ready")
 
     # 3) Install ACME catch-all vhost (idempotent)
@@ -69,20 +69,24 @@ async def run():
     if "nginx.service" not in SystemdService.ALLOWED_SERVICES:
         SystemdService.ALLOWED_SERVICES.append("nginx.service")
 
-    # 5) Open 80/443 on MOD_REVPROXY_INPUT (the chain itself is created by the
-    #    module loader from manifest.firewall_chains).
+    # 5) Open ports 80/443 in MOD_REVPROXY_INPUT.
+    #    Idempotent: flush the chain first, then re-add the two ACCEPT rules.
     try:
-        for port in (80, 443):
-            fw.add_rule(
-                table="filter",
-                chain="MOD_REVPROXY_INPUT",
-                action="ACCEPT",
-                protocol="tcp",
-                port=str(port),
-                comment=f"madmin-revproxy:{port}",
-            )
+        from core.firewall import iptables as core_iptables
+        chain = "MOD_REVPROXY_INPUT"
+        core_iptables.create_or_flush_chain(chain, "filter")
+        core_iptables.run_safe("filter", [
+            "-A", chain, "-p", "tcp", "--dport", "80",
+            "-j", "ACCEPT", "-m", "comment", "--comment", "madmin-revproxy:80",
+        ])
+        core_iptables.run_safe("filter", [
+            "-A", chain, "-p", "tcp", "--dport", "443",
+            "-j", "ACCEPT", "-m", "comment", "--comment", "madmin-revproxy:443",
+        ])
+        logger.info("Reverse Proxy post-install: firewall rules added to %s (80, 443)", chain)
     except Exception as e:
-        logger.warning("Reverse Proxy post-install: firewall rules error: %s", e)
+        logger.error("Reverse Proxy post-install: firewall rules failed: %s", e)
+        return False
 
     # 6) Install certbot deploy-hook so nginx reloads after every renewal
     try:
