@@ -7,34 +7,56 @@ import re
 from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
+from sqlalchemy import Text
 from pydantic import field_validator
 import uuid
 
 
 class WgInstance(SQLModel, table=True):
-    """WireGuard VPN server instance."""
+    """WireGuard VPN server/client instance."""
     __tablename__ = "wg_instance"
-    
+
     id: str = Field(primary_key=True)
     name: str = Field(max_length=100)
-    port: int = Field(unique=True)
-    subnet: str = Field(max_length=50)
+    # Server-only: listen port (Optional for client instances). Uniqueness enforced
+    # only for direction='server' via partial unique index in migration.
+    port: Optional[int] = Field(default=None)
+    # Server-only: VPN subnet (Optional for client instances).
+    subnet: Optional[str] = Field(default=None, max_length=50)
     interface: str = Field(unique=True, max_length=20)
-    
+
+    # Direction: 'server' (default, legacy) or 'client' (LAN gateway to upstream peer)
+    direction: str = Field(default="server", max_length=10)
+
     private_key: str
     public_key: str
-    
+
     tunnel_mode: str = Field(default="full")
     routes: List[Dict] = Field(default=[], sa_column=Column(JSON))
     dns_servers: List[str] = Field(default=["8.8.8.8", "1.1.1.1"], sa_column=Column(JSON))
     default_allowed_ips: str = Field(default="0.0.0.0/0, ::/0")  # Default routes for clients
     firewall_default_policy: str = Field(default="ACCEPT")
+    # Server-only: enable bidirectional LAN<->VPN routing without MASQUERADE
+    site_to_site: bool = Field(default=False)
+    site_to_site_lans: List[str] = Field(default=[], sa_column=Column(JSON))
     status: str = Field(default="stopped")
-    
+
     # Public endpoint for client configs (IP or domain)
     # If empty, will auto-detect public IP
     endpoint: Optional[str] = Field(default=None, max_length=255)
-    
+
+    # Client-mode fields (direction='client')
+    upstream_endpoint: Optional[str] = Field(default=None, max_length=255)
+    upstream_public_key: Optional[str] = Field(default=None, max_length=255)
+    upstream_preshared_key: Optional[str] = Field(default=None, max_length=255)
+    upstream_allowed_ips: Optional[str] = Field(default=None, max_length=500)
+    persistent_keepalive: int = Field(default=25)
+    imported_config: Optional[str] = Field(default=None, sa_column=Column(Text))
+    client_lan_interfaces: List[str] = Field(default=[], sa_column=Column(JSON))
+    upstream_status: str = Field(default="unknown", max_length=20)
+    upstream_last_handshake: Optional[datetime] = None
+    auto_restart: bool = Field(default=True)
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     
@@ -64,10 +86,13 @@ class WgClient(SQLModel, table=True):
     # Per-client overrides (NULL = use instance defaults)
     allowed_ips: Optional[str] = Field(default=None, max_length=500)
     dns: Optional[str] = Field(default=None, max_length=255)
-    
+
+    # Site-to-site: LANs reachable behind this specific client
+    remote_lans: List[str] = Field(default=[], sa_column=Column(JSON))
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_handshake: Optional[datetime] = None
-    
+
     instance: "WgInstance" = Relationship(back_populates="clients")
     group_links: List["WgGroupMember"] = Relationship(
         back_populates="client",
@@ -151,25 +176,54 @@ class WgInstanceCreate(SQLModel):
 class WgInstanceRead(SQLModel):
     id: str
     name: str
-    port: int
-    subnet: str
+    port: Optional[int] = None
+    subnet: Optional[str] = None
     interface: str
     public_key: str
+    direction: str = "server"
     tunnel_mode: str
     routes: List[Dict]
     dns_servers: List[str]
     default_allowed_ips: Optional[str] = None
     firewall_default_policy: str
+    site_to_site: bool = False
+    site_to_site_lans: List[str] = []
     status: str
     endpoint: Optional[str] = None
     client_count: int = 0
+    # Client-mode fields
+    upstream_endpoint: Optional[str] = None
+    upstream_public_key: Optional[str] = None
+    upstream_allowed_ips: Optional[str] = None
+    persistent_keepalive: int = 25
+    client_lan_interfaces: List[str] = []
+    upstream_status: str = "unknown"
+    upstream_last_handshake: Optional[datetime] = None
+    auto_restart: bool = True
+
+
+class WgSiteToSiteUpdate(SQLModel):
+    """Toggle and configure server-mode site-to-site (NAT-exempt) routing."""
+    enabled: bool
+    lans: List[str] = []  # LAN CIDRs participating in site-to-site
+
+
+class WgImportRequest(SQLModel):
+    """Import an upstream wg .conf as a CLIENT-mode instance."""
+    id: str
+    name: str
+    config_text: str  # raw wg .conf contents
+    client_lan_interfaces: List[str] = []
+    tunnel_mode: str = "full"  # 'full' or 'split'
+    auto_restart: bool = True
 
 
 class WgClientCreate(SQLModel):
     name: str
-    allowed_ips: Optional[str] = None  # Override for routes (NULL = use instance default)
-    dns: Optional[str] = None  # Override for DNS (NULL = use instance default)
-    group_id: Optional[str] = None  # Optional: assign client to a group during creation
+    allowed_ips: Optional[str] = None
+    dns: Optional[str] = None
+    group_id: Optional[str] = None
+    remote_lans: List[str] = []
 
     @field_validator('name')
     @classmethod
@@ -191,6 +245,7 @@ class WgClientRead(SQLModel):
     # Per-client overrides
     allowed_ips: Optional[str] = None
     dns: Optional[str] = None
+    remote_lans: List[str] = []
     # Computed effective values (client override ?? instance default)
     effective_allowed_ips: Optional[str] = None
     effective_dns: Optional[str] = None

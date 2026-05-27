@@ -53,6 +53,12 @@ function formatTimeAgo(isoString) {
 async function renderInstanceDetail(container, canManage, canClients) {
     try {
         const instance = await apiGet(`${MODULE_API}/instances/${currentInstanceId}`);
+
+        if (instance.direction === 'client') {
+            await renderClientModeDetail(container, instance, canManage);
+            return;
+        }
+
         const clients = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/clients`);
 
         container.innerHTML = `
@@ -446,6 +452,14 @@ async function renderInstanceDetail(container, canManage, canClients) {
         </div>
         `;
 
+        // Inject site-to-site panel before tabs (server mode)
+        const tabsEl = container.querySelector('.nav.nav-tabs');
+        if (tabsEl) {
+            const s2sPanel = createS2SPanel(instance, canManage);
+            tabsEl.parentNode.insertBefore(s2sPanel, tabsEl);
+            setupS2SHandlers(instance, canManage, canClients);
+        }
+
         // Initialize Bootstrap tooltips
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => new bootstrap.Tooltip(el));
 
@@ -743,3 +757,244 @@ document.addEventListener('click', async (e) => {
         }
     }
 });
+
+// ============================================================
+//  CLIENT MODE DETAIL VIEW
+// ============================================================
+
+async function renderClientModeDetail(container, instance, canManage) {
+    const isRunning = instance.status === 'running';
+
+    container.innerHTML = `
+        <div class="mb-3">
+            <a href="#wireguard" class="text-muted">
+                <i class="ti ti-arrow-left me-1"></i>${t('wireguard.backToInstances')}
+            </a>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <div class="d-flex justify-content-between align-items-center w-100">
+                    <div>
+                        <h3 class="card-title mb-0">
+                            <span class="badge bg-orange-lt me-2">Client</span>${escapeHtml(instance.name)}
+                        </h3>
+                        <small class="text-muted">${t('wireguard.interface')}: ${instance.interface}</small>
+                    </div>
+                    <div class="btn-group">
+                        ${canManage ? `
+                        <button class="btn ${isRunning ? 'btn-warning' : 'btn-success'}"
+                                onclick="${isRunning ? 'stopInstance' : 'startInstance'}('${instance.id}')">
+                            <i class="ti ti-player-${isRunning ? 'stop' : 'play'} me-1"></i>
+                            ${isRunning ? t('wireguard.stop') : t('wireguard.start')}
+                        </button>
+                        <button class="btn btn-outline-secondary" id="btn-reconnect" title="Riconnetti">
+                            <i class="ti ti-refresh me-1"></i>Riconnetti
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="deleteInstance('${instance.id}')">
+                            <i class="ti ti-trash"></i>
+                        </button>` : ''}
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row mb-3">
+                    <div class="col-md-3">
+                        <span class="text-muted">${t('wireguard.status')}</span><br>
+                        <span class="badge ${isRunning ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6">
+                            ${isRunning ? t('wireguard.statusRunning') : t('wireguard.statusStopped')}
+                        </span>
+                    </div>
+                    <div class="col-md-3">
+                        <span class="text-muted">Tunnel upstream</span><br>
+                        <span id="upstream-status-badge" class="badge ${instance.upstream_status === 'connected' ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6">
+                            ${escapeHtml(instance.upstream_status || 'sconosciuto')}
+                        </span>
+                    </div>
+                    <div class="col-md-3">
+                        <span class="text-muted">Endpoint peer</span><br>
+                        <code>${escapeHtml(instance.upstream_endpoint || '–')}</code>
+                    </div>
+                    <div class="col-md-3">
+                        <span class="text-muted">Ultimo handshake</span><br>
+                        <span id="upstream-last-handshake" class="text-muted small">
+                            ${instance.upstream_last_handshake ? formatTimeAgo(instance.upstream_last_handshake) : '–'}
+                        </span>
+                    </div>
+                </div>
+                <hr>
+                <div class="row">
+                    <div class="col-md-6">
+                        <span class="text-muted">LAN interfaces nel tunnel</span><br>
+                        ${(instance.client_lan_interfaces || []).length
+                            ? instance.client_lan_interfaces.map(i => `<code class="badge bg-azure-lt me-1">${escapeHtml(i)}</code>`).join('')
+                            : '<span class="text-muted small">Nessuna (solo traffico locale)</span>'}
+                    </div>
+                    <div class="col-md-3">
+                        <span class="text-muted">Tunnel mode</span><br>
+                        <span class="badge ${instance.tunnel_mode === 'full' ? 'bg-blue' : 'bg-purple'}-lt">
+                            ${instance.tunnel_mode === 'full' ? t('wireguard.fullTunnel') : t('wireguard.splitTunnel')}
+                        </span>
+                    </div>
+                    <div class="col-md-3">
+                        <span class="text-muted">Auto-restart</span><br>
+                        <span class="badge ${instance.auto_restart ? 'bg-success-lt' : 'bg-secondary-lt'}">
+                            ${instance.auto_restart ? 'Attivo' : 'Disattivo'}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3" id="upstream-live-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h4 class="card-title mb-0"><i class="ti ti-activity me-2"></i>Stato connessione</h4>
+                <button class="btn btn-sm btn-outline-secondary" id="btn-refresh-status">
+                    <i class="ti ti-refresh"></i>
+                </button>
+            </div>
+            <div class="card-body" id="upstream-live-content">
+                <div class="text-muted text-center py-3">Clicca aggiorna per verificare lo stato</div>
+            </div>
+        </div>
+    `;
+
+    document.getElementById('btn-reconnect')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btn-reconnect');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Riconnessione...';
+        try {
+            await apiPost(`${MODULE_API}/instances/${instance.id}/reconnect`);
+            showToast('Riconnessione avviata', 'success');
+            setTimeout(() => renderClientModeDetail(container, { ...instance }, canManage), 2000);
+        } catch (err) {
+            showToast(err.message, 'error');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ti ti-refresh me-1"></i>Riconnetti';
+        }
+    });
+
+    document.getElementById('btn-refresh-status')?.addEventListener('click', async () => {
+        const liveContent = document.getElementById('upstream-live-content');
+        liveContent.innerHTML = '<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span></div>';
+        try {
+            const status = await apiGet(`${MODULE_API}/instances/${instance.id}/upstream-status`);
+            document.getElementById('upstream-status-badge').textContent = status.state || 'sconosciuto';
+            document.getElementById('upstream-status-badge').className =
+                `badge ${status.connected ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6`;
+            liveContent.innerHTML = `
+                <div class="row">
+                    <div class="col-md-3">
+                        <span class="text-muted">Stato</span><br>
+                        <span class="badge ${status.connected ? 'bg-success-lt' : 'bg-secondary-lt'}">
+                            ${escapeHtml(status.state || '–')}
+                        </span>
+                    </div>
+                    ${status.endpoint ? `<div class="col-md-3">
+                        <span class="text-muted">Endpoint</span><br><code>${escapeHtml(status.endpoint)}</code>
+                    </div>` : ''}
+                    ${status.rx_bytes != null ? `<div class="col-md-3">
+                        <span class="text-muted">Traffic in</span><br>
+                        <span class="text-success"><i class="ti ti-arrow-down me-1"></i>${formatBytes(status.rx_bytes)}</span>
+                    </div>
+                    <div class="col-md-3">
+                        <span class="text-muted">Traffic out</span><br>
+                        <span class="text-primary"><i class="ti ti-arrow-up me-1"></i>${formatBytes(status.tx_bytes || 0)}</span>
+                    </div>` : ''}
+                </div>
+            `;
+        } catch (err) {
+            liveContent.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+        }
+    });
+
+    window.startInstance = async (id) => {
+        try {
+            await apiPost(`${MODULE_API}/instances/${id}/start`);
+            showToast(t('wireguard.instanceStarted'), 'success');
+            renderClientModeDetail(container, { ...instance, status: 'running' }, canManage);
+        } catch (err) { showToast(err.message, 'error'); }
+    };
+    window.stopInstance = async (id) => {
+        try {
+            await apiPost(`${MODULE_API}/instances/${id}/stop`);
+            showToast(t('wireguard.instanceStopped'), 'success');
+            renderClientModeDetail(container, { ...instance, status: 'stopped' }, canManage);
+        } catch (err) { showToast(err.message, 'error'); }
+    };
+    window.deleteInstance = async (id) => {
+        if (!await confirmDialog(t('wireguard.confirmDeleteInstance'))) return;
+        try {
+            await apiDelete(`${MODULE_API}/instances/${id}`);
+            showToast(t('wireguard.instanceDeleted'), 'success');
+            window.location.hash = '#wireguard';
+        } catch (err) { showToast(err.message, 'error'); }
+    };
+}
+
+// ============================================================
+//  SITE-TO-SITE PANEL (server mode)
+// ============================================================
+
+function createS2SPanel(instance, canManage) {
+    const panel = document.createElement('div');
+    panel.className = 'card mb-3';
+    panel.id = 'site-to-site-panel';
+    const isEnabled = !!instance.site_to_site;
+    const lans = (instance.site_to_site_lans || []).join('\n');
+    panel.innerHTML = `
+        <div class="card-header">
+            <h4 class="card-title mb-0"><i class="ti ti-network me-2"></i>Site-to-Site (routing bidirezionale)</h4>
+        </div>
+        <div class="card-body">
+            <div class="d-flex align-items-start mb-3">
+                <div class="form-check form-switch me-3 mt-1">
+                    <input class="form-check-input" type="checkbox" id="s2s-enabled" ${isEnabled ? 'checked' : ''} ${!canManage ? 'disabled' : ''}>
+                </div>
+                <div>
+                    <strong>NAT-exempt: LAN ↔ VPN senza MASQUERADE</strong><br>
+                    <small class="text-muted">I dispositivi sulla LAN locale possono comunicare con i peer VPN in modo bidirezionale.</small>
+                </div>
+            </div>
+            <div id="s2s-config" ${!isEnabled ? 'style="display:none;"' : ''}>
+                <div class="mb-3">
+                    <label class="form-label">LAN CIDR partecipanti (una per riga)</label>
+                    <textarea class="form-control" id="s2s-lans" rows="3" placeholder="192.168.10.0/24" ${!canManage ? 'readonly' : ''}>${escapeHtml(lans)}</textarea>
+                    <small class="form-hint">Subnet locali che devono raggiungere i peer VPN in modo bidirezionale</small>
+                </div>
+            </div>
+            ${canManage ? `<button class="btn btn-primary mt-2" id="btn-save-s2s">
+                <i class="ti ti-device-floppy me-1"></i>Salva configurazione
+            </button>` : ''}
+        </div>
+    `;
+    return panel;
+}
+
+function setupS2SHandlers(instance, canManage, canClients) {
+    const checkbox = document.getElementById('s2s-enabled');
+    const config = document.getElementById('s2s-config');
+    if (!checkbox || !config) return;
+
+    checkbox.addEventListener('change', () => {
+        config.style.display = checkbox.checked ? '' : 'none';
+    });
+
+    document.getElementById('btn-save-s2s')?.addEventListener('click', async () => {
+        const enabled = document.getElementById('s2s-enabled').checked;
+        const lans = document.getElementById('s2s-lans').value
+            .split('\n').map(s => s.trim()).filter(s => s);
+        const btn = document.getElementById('btn-save-s2s');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvataggio...';
+        try {
+            await apiPatch(`${MODULE_API}/instances/${instance.id}/site-to-site`, { enabled, lans });
+            showToast('Site-to-site aggiornato', 'success');
+            if (currentContainer) renderInstanceDetail(currentContainer, canManage, canClients);
+        } catch (err) {
+            showToast(err.message, 'error');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ti ti-device-floppy me-1"></i>Salva configurazione';
+        }
+    });
+}

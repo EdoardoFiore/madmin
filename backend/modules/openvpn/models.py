@@ -7,43 +7,65 @@ Includes PKI certificate tracking and CCD for static IP assignment.
 from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
+from sqlalchemy import Text
 import uuid
 
 
 class OvpnInstance(SQLModel, table=True):
-    """OpenVPN server instance with PKI."""
+    """OpenVPN server/client instance with PKI."""
     __tablename__ = "ovpn_instance"
-    
+
     id: str = Field(primary_key=True)  # e.g., "office", "remote"
     name: str = Field(max_length=100)
-    port: int = Field(unique=True)
+    # Server-only: listen port (Optional for client instances). Uniqueness enforced
+    # only for direction='server' via partial unique index in migration.
+    port: Optional[int] = Field(default=None)
     protocol: str = Field(default="udp", max_length=10)  # "udp" or "tcp"
-    subnet: str = Field(max_length=50)  # e.g., "10.8.0.0/24"
+    # Server-only: VPN subnet (Optional for client instances).
+    subnet: Optional[str] = Field(default=None, max_length=50)  # e.g., "10.8.0.0/24"
     interface: str = Field(unique=True, max_length=20)  # e.g., "tun0"
-    
+
+    # Direction: 'server' (default, legacy) or 'client' (LAN gateway to upstream)
+    direction: str = Field(default="server", max_length=10)
+
     # Configuration
     tunnel_mode: str = Field(default="full")  # "full" or "split"
     routes: List[Dict] = Field(default=[], sa_column=Column(JSON))
     dns_servers: List[str] = Field(default=["8.8.8.8", "1.1.1.1"], sa_column=Column(JSON))
-    
+
     # Encryption settings
     cipher: str = Field(default="AES-256-GCM", max_length=50)
     auth: str = Field(default="SHA256", max_length=20)  # HMAC algorithm
     tls_version_min: str = Field(default="1.2", max_length=10)
-    
+
     # PKI - stored paths, actual certs on filesystem
     # /etc/openvpn/server/{id}/easy-rsa/pki/
     ca_cert_expiry: Optional[datetime] = None
     server_cert_expiry: Optional[datetime] = None
     cert_duration_days: int = Field(default=3650)  # Default 10 years
-    
+
     # Firewall
     firewall_default_policy: str = Field(default="ACCEPT")
-    
+    # Server-only: enable bidirectional LAN<->VPN routing without MASQUERADE
+    site_to_site: bool = Field(default=False)
+    site_to_site_lans: List[str] = Field(default=[], sa_column=Column(JSON))
+
     # Status
     status: str = Field(default="stopped")  # "stopped", "running"
     endpoint: Optional[str] = Field(default=None, max_length=255)
-    
+
+    # Client-mode fields (direction='client')
+    upstream_endpoint: Optional[str] = Field(default=None, max_length=255)
+    upstream_protocol: Optional[str] = Field(default=None, max_length=10)
+    imported_config: Optional[str] = Field(default=None, sa_column=Column(Text))
+    client_lan_interfaces: List[str] = Field(default=[], sa_column=Column(JSON))
+    upstream_status: str = Field(default="unknown", max_length=20)
+    upstream_last_handshake: Optional[datetime] = None
+    auto_restart: bool = Field(default=True)
+    auth_user_pass_required: bool = Field(default=False)
+    auth_username: Optional[str] = Field(default=None, max_length=255)
+    auth_password: Optional[str] = Field(default=None, max_length=255)
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     
@@ -73,13 +95,16 @@ class OvpnClient(SQLModel, table=True):
     cert_expiry: Optional[datetime] = None
     cert_fingerprint: Optional[str] = Field(default=None, max_length=100)
     
+    # Site-to-site: LANs reachable behind this specific client
+    remote_lans: List[str] = Field(default=[], sa_column=Column(JSON))
+
     # Status
     revoked: bool = Field(default=False)
     revoked_at: Optional[datetime] = None
-    
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_connection: Optional[datetime] = None
-    
+
     # Relationships
     instance: "OvpnInstance" = Relationship(back_populates="clients")
     group_links: List["OvpnGroupMember"] = Relationship(
@@ -167,27 +192,57 @@ class OvpnInstanceCreate(SQLModel):
 class OvpnInstanceRead(SQLModel):
     id: str
     name: str
-    port: int
+    port: Optional[int] = None
     protocol: str
-    subnet: str
+    subnet: Optional[str] = None
     interface: str
+    direction: str = "server"
     tunnel_mode: str
     routes: List[Dict]
     dns_servers: List[str]
     cipher: str
     auth: str
     firewall_default_policy: str
+    site_to_site: bool = False
+    site_to_site_lans: List[str] = []
     status: str
     endpoint: Optional[str] = None
     ca_cert_expiry: Optional[datetime] = None
     server_cert_expiry: Optional[datetime] = None
     client_count: int = 0
+    # Client-mode fields
+    upstream_endpoint: Optional[str] = None
+    upstream_protocol: Optional[str] = None
+    client_lan_interfaces: List[str] = []
+    upstream_status: str = "unknown"
+    upstream_last_handshake: Optional[datetime] = None
+    auto_restart: bool = True
+    auth_user_pass_required: bool = False
+
+
+class OvpnSiteToSiteUpdate(SQLModel):
+    """Toggle and configure server-mode site-to-site (NAT-exempt) routing."""
+    enabled: bool
+    lans: List[str] = []  # LAN CIDRs participating in site-to-site
+
+
+class OvpnImportRequest(SQLModel):
+    """Import an upstream .ovpn as a CLIENT-mode instance."""
+    id: str  # short slug, primary key
+    name: str
+    config_text: str  # raw .ovpn contents
+    client_lan_interfaces: List[str] = []
+    tunnel_mode: str = "full"  # 'full' or 'split'
+    auth_username: Optional[str] = None
+    auth_password: Optional[str] = None
+    auto_restart: bool = True
 
 
 class OvpnClientCreate(SQLModel):
     name: str
-    cert_duration_days: Optional[int] = None  # Use instance default if not specified
-    group_id: Optional[str] = None  # Optional: assign client to group during creation
+    cert_duration_days: Optional[int] = None
+    group_id: Optional[str] = None
+    remote_lans: List[str] = []
 
 
 class OvpnClientRead(SQLModel):
@@ -199,6 +254,7 @@ class OvpnClientRead(SQLModel):
     revoked: bool
     created_at: datetime
     last_connection: Optional[datetime]
+    remote_lans: List[str] = []
     # Live status fields (from management interface)
     is_connected: Optional[bool] = None
     bytes_received: Optional[int] = None

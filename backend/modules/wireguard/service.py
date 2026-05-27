@@ -219,6 +219,133 @@ AllowedIPs = {allowed_ips}
         
         return peers
     
+    # =========================================================================
+    # CLIENT MODE — import, materialize, upstream status
+    # =========================================================================
+
+    @staticmethod
+    def parse_imported_wg(text: str) -> dict:
+        """Parse a WireGuard .conf file. Returns structured dict + warnings list."""
+        result: dict = {
+            "private_key": None,
+            "address": None,
+            "dns": None,
+            "peer_public_key": None,
+            "peer_psk": None,
+            "peer_endpoint": None,
+            "peer_allowed_ips": None,
+            "persistent_keepalive": None,
+            "warnings": [],
+        }
+
+        section = None
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line == "[Interface]":
+                section = "interface"
+                continue
+            if line == "[Peer]":
+                section = "peer"
+                continue
+            if "=" not in line:
+                continue
+
+            key, _, val = line.partition("=")
+            key = key.strip().lower()
+            val = val.strip()
+
+            if section == "interface":
+                if key == "privatekey":
+                    result["private_key"] = val
+                elif key == "address":
+                    result["address"] = val.split(",")[0].strip()
+                elif key == "dns":
+                    result["dns"] = val
+            elif section == "peer":
+                if key == "publickey":
+                    result["peer_public_key"] = val
+                elif key == "presharedkey":
+                    result["peer_psk"] = val
+                elif key == "endpoint":
+                    result["peer_endpoint"] = val
+                elif key == "allowedips":
+                    result["peer_allowed_ips"] = val
+                elif key == "persistentkeepalive":
+                    try:
+                        result["persistent_keepalive"] = int(val)
+                    except ValueError:
+                        pass
+
+        if not result["private_key"]:
+            result["warnings"].append("PrivateKey not found in [Interface]")
+        if not result["peer_public_key"]:
+            result["warnings"].append("No [Peer] section or PublicKey missing")
+        if not result["peer_endpoint"]:
+            result["warnings"].append("Peer Endpoint not specified")
+
+        return result
+
+    @staticmethod
+    def materialize_wg_client_instance(instance, parsed: dict) -> bool:
+        """Write WireGuard client config to /etc/wireguard/{interface}.conf."""
+        config_path = WIREGUARD_CONFIG_DIR / f"{instance.interface}.conf"
+
+        lines = [
+            "[Interface]",
+            f"PrivateKey = {parsed['private_key']}",
+        ]
+        if parsed.get("address"):
+            lines.append(f"Address = {parsed['address']}")
+        if parsed.get("dns"):
+            lines.append(f"DNS = {parsed['dns']}")
+
+        lines += ["", "[Peer]", f"PublicKey = {parsed['peer_public_key']}"]
+        if parsed.get("peer_psk"):
+            lines.append(f"PresharedKey = {parsed['peer_psk']}")
+        if parsed.get("peer_allowed_ips"):
+            lines.append(f"AllowedIPs = {parsed['peer_allowed_ips']}")
+        if parsed.get("peer_endpoint"):
+            lines.append(f"Endpoint = {parsed['peer_endpoint']}")
+        keepalive = parsed.get("persistent_keepalive") or instance.persistent_keepalive or 25
+        lines.append(f"PersistentKeepalive = {keepalive}")
+
+        config_path.write_text("\n".join(lines) + "\n")
+        config_path.chmod(0o600)
+        logger.info(f"Materialized WG client instance {instance.id} at {config_path}")
+        return True
+
+    @staticmethod
+    def get_wg_client_upstream_status(interface: str) -> dict:
+        """Get WireGuard client upstream connection status via wg show dump."""
+        import time
+
+        try:
+            result = subprocess.run(
+                ["wg", "show", interface, "dump"],
+                capture_output=True, text=True, check=True,
+            )
+            lines = result.stdout.strip().splitlines()
+            for line in lines[1:]:  # skip interface line
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    ts = int(parts[4]) if parts[4].isdigit() else 0
+                    now = int(time.time())
+                    connected = ts > 0 and (now - ts) < 180
+                    return {
+                        "state": "connected" if connected else "disconnected",
+                        "connected": connected,
+                        "endpoint": parts[2] if parts[2] != "(none)" else None,
+                        "last_handshake": ts,
+                        "rx_bytes": int(parts[5]) if parts[5].isdigit() else 0,
+                        "tx_bytes": int(parts[6]) if parts[6].isdigit() else 0,
+                    }
+        except Exception:
+            pass
+        return {"state": "unknown", "connected": False, "endpoint": None,
+                "last_handshake": 0, "rx_bytes": 0, "tx_bytes": 0}
+
     @staticmethod
     async def allocate_client_ip(session: AsyncSession, instance: WgInstance) -> str:
         """Allocate next available IP for client."""
@@ -256,6 +383,19 @@ AllowedIPs = {allowed_ips}
         else:
             # Full tunnel or no routes defined
             allowed_ips = "0.0.0.0/0, ::/0"
+
+        # Site-to-site: append MADMIN-side LANs to AllowedIPs so clients route
+        # LAN-bound traffic through the tunnel. Skip when full-tunnel (0.0.0.0/0
+        # already covers them) and dedupe.
+        if getattr(instance, "site_to_site", False) and getattr(instance, "site_to_site_lans", None):
+            existing = {a.strip() for a in allowed_ips.split(",") if a.strip()}
+            covers_all = "0.0.0.0/0" in existing
+            if not covers_all:
+                for lan in instance.site_to_site_lans:
+                    lan = lan.strip()
+                    if lan and lan not in existing:
+                        existing.add(lan)
+                allowed_ips = ", ".join(sorted(existing))
         
         # Per-client DNS override or instance default
         if client.dns:
@@ -398,47 +538,91 @@ PersistentKeepalive = 25
     
     @staticmethod
     def apply_instance_firewall_rules(
-        instance_id: str, 
-        port: int, 
-        interface: str, 
-        subnet: str,
+        instance_id: str,
+        port: Optional[int],
+        interface: str,
+        subnet: Optional[str],
         tunnel_mode: str = "full",
         routes: list = None,
-        firewall_default_policy: str = "ACCEPT"
+        firewall_default_policy: str = "ACCEPT",
+        site_to_site: bool = False,
+        site_to_site_lans: list = None,
+        direction: str = "server",
+        client_lan_interfaces: list = None,
     ) -> bool:
+        """Apply firewall rules for a WireGuard instance.
+
+        direction='client': LAN-gateway rules (MASQUERADE LAN→tun).
+        direction='server' (default): server rules with optional s2s NAT-exempt.
         """
-        Apply firewall rules for a WireGuard instance.
-        
-        Creates instance-specific chains:
-        - WG_{id}_INPUT: Allows UDP port and interface traffic
-        - WG_{id}_FWD: Allows forwarding to/from VPN interface
-        - WG_{id}_NAT: Masquerades traffic from VPN subnet
-        
-        For split tunnel mode, FORWARD rules are restricted to only allow
-        traffic to the specified routes. For full tunnel, all traffic is allowed.
-        
-        And links them to the module main chains (WG_INPUT, WG_FORWARD, WG_NAT).
-        """
-        # Ensure module chains are initialized first
         WireGuardService.initialize_module_firewall_chains()
-        
-        # Instance chain names - strip wg_ prefix if present to avoid WG_wg_name redundancy
+
         chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
         input_chain = f"WG_{chain_id}_INPUT"
         forward_chain = f"WG_{chain_id}_FWD"
         nat_chain = f"WG_{chain_id}_NAT"
-        
-        wan_interface = get_default_interface() or "eth0"
-        
-        logger.info(f"Applying firewall rules for WireGuard instance {instance_id} (mode: {tunnel_mode})")
-        
+
+        logger.info(
+            f"Applying firewall rules for WireGuard instance {instance_id} "
+            f"(direction: {direction}, mode: {tunnel_mode})"
+        )
+
         # 1. Create/flush instance chains
         core_iptables.create_or_flush_chain(input_chain, "filter")
         core_iptables.create_or_flush_chain(forward_chain, "filter")
         core_iptables.create_or_flush_chain(nat_chain, "nat")
-        
-        # 2. Add rules to INPUT chain
-        # Allow UDP traffic on WireGuard port
+
+        # ---- CLIENT MODE ----
+        if direction == "client":
+            lan_ifaces = [l for l in (client_lan_interfaces or []) if l]
+
+            core_iptables.run_safe("filter", [
+                "-A", input_chain, "-i", interface,
+                "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT",
+            ])
+            core_iptables.run_safe("filter", ["-A", input_chain, "-j", "RETURN"])
+
+            for lan in lan_ifaces:
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-i", lan, "-o", interface, "-j", "ACCEPT",
+                ])
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-i", interface, "-o", lan,
+                    "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT",
+                ])
+            core_iptables.run_safe("filter", ["-A", forward_chain, "-j", "RETURN"])
+
+            if tunnel_mode == "split" and routes:
+                for route in routes:
+                    network = route.get('network') if isinstance(route, dict) else route
+                    if network:
+                        core_iptables.run_safe("nat", [
+                            "-A", nat_chain, "-d", network, "-o", interface, "-j", "MASQUERADE",
+                        ])
+            else:
+                core_iptables.run_safe("nat", [
+                    "-A", nat_chain, "-o", interface, "-j", "MASQUERADE",
+                ])
+            core_iptables.run_safe("nat", ["-A", nat_chain, "-j", "RETURN"])
+
+            core_iptables.ensure_jump_rule(WireGuardService.WG_INPUT_CHAIN, input_chain, "filter")
+            for lan in lan_ifaces:
+                core_iptables.ensure_interface_jump_rule(
+                    WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter",
+                    input_interface=lan,
+                )
+            core_iptables.ensure_interface_jump_rule(
+                WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter",
+                input_interface=interface,
+            )
+            core_iptables.ensure_jump_rule(WireGuardService.WG_NAT_CHAIN, nat_chain, "nat")
+            return True
+
+        # ---- SERVER MODE ----
+        wan_interface = get_default_interface() or "eth0"
+        s2s_lans = [l for l in (site_to_site_lans or []) if l]
+
+        # 2. INPUT: allow UDP port
         core_iptables.run_safe("filter", [
             "-A", input_chain, "-p", "udp", "--dport", str(port), "-j", "ACCEPT"
         ])
@@ -450,9 +634,25 @@ PersistentKeepalive = 25
         core_iptables.run_safe("filter", [
             "-A", input_chain, "-j", "RETURN"
         ])
-        
+
         # 3. Add rules to FORWARD chain
         # Note: Traffic TO VPN clients (responses) is handled at module level, not here
+
+        # Site-to-site: explicit bidirectional ACCEPT for each LAN<->VPN subnet pair.
+        # Required because the module forward jump filters by -i {vpn_iface} and
+        # would otherwise miss LAN->VPN packets that enter via a different iface.
+        if site_to_site and s2s_lans and subnet:
+            for lan in s2s_lans:
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-s", lan, "-d", subnet,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-s", subnet, "-d", lan,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
 
         if tunnel_mode == "split" and routes and firewall_default_policy == "ACCEPT":
             # Split tunnel + ACCEPT: restrict traffic to defined routes only
@@ -471,13 +671,29 @@ PersistentKeepalive = 25
                 "-A", forward_chain, "-i", interface, "-j", firewall_default_policy
             ])
             logger.info(f"  Traffic from VPN policy: {firewall_default_policy}")
-        
+
         # 4. Add rules to NAT chain
+        if site_to_site and s2s_lans and subnet:
+            # NAT-exempt: terminating ACCEPT for LAN<->VPN pairs. These are specific
+            # src/dst matches so internet-bound traffic falls through to MASQUERADE below.
+            for lan in s2s_lans:
+                core_iptables.run_safe("nat", [
+                    "-A", nat_chain, "-s", lan, "-d", subnet,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
+                core_iptables.run_safe("nat", [
+                    "-A", nat_chain, "-s", subnet, "-d", lan,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
+            logger.info(f"  Site-to-site NAT-exempt for LANs: {s2s_lans} <-> {subnet}")
+
+        # MASQUERADE for non-exempt traffic (internet in full tunnel; split routes; or
+        # traffic that didn't match any S2S ACCEPT above).
         if tunnel_mode == "split" and routes:
-            # Split tunnel: Only masquerade traffic to specified networks
             for route in routes:
                 network = route.get('network') if isinstance(route, dict) else route
-                # Use route-specific interface if specified, otherwise use default WAN
                 out_interface = route.get('interface') if isinstance(route, dict) and route.get('interface') else wan_interface
                 if network:
                     core_iptables.run_safe("nat", [
@@ -485,7 +701,8 @@ PersistentKeepalive = 25
                     ])
                     logger.info(f"    Added NAT rule: {subnet} -> {network} via {out_interface}")
         else:
-            # Full tunnel: Masquerade all traffic from VPN subnet
+            # Full tunnel: masquerade remaining traffic (internet-bound; LAN traffic was
+            # already handled by S2S ACCEPT rules above if site_to_site is set).
             core_iptables.run_safe("nat", [
                 "-A", nat_chain, "-s", subnet, "-o", wan_interface, "-j", "MASQUERADE"
             ])
@@ -516,15 +733,9 @@ PersistentKeepalive = 25
         return True
     
     @staticmethod
-    def remove_instance_firewall_rules(instance_id: str, interface: str = None) -> bool:
-        """
-        Remove firewall rules for a WireGuard instance.
-        
-        Args:
-            instance_id: The instance ID
-            interface: The VPN interface name (e.g., wg_casa). If not provided,
-                      falls back to non-interface-filtered removal.
-        """
+    def remove_instance_firewall_rules(instance_id: str, interface: str = None,
+                                        client_lan_interfaces: list = None) -> bool:
+        """Remove firewall rules for a WireGuard instance."""
         # Instance chain names - strip wg_ prefix if present
         chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
         input_chain = f"WG_{chain_id}_INPUT"
@@ -554,9 +765,15 @@ PersistentKeepalive = 25
                 "-o", interface, 
                 "-j", "ACCEPT"
             ], suppress_errors=True)
-        # Also try removing non-filtered jump (for legacy cleanup)
+        # Client-mode LAN interface jumps
+        for lan in (client_lan_interfaces or []):
+            core_iptables.remove_interface_jump_rule(
+                WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter",
+                input_interface=lan,
+            )
+        # Fallback: non-filtered jump
         core_iptables.remove_jump_rule(WireGuardService.WG_FORWARD_CHAIN, forward_chain, "filter")
-        
+
         core_iptables.remove_jump_rule(WireGuardService.WG_NAT_CHAIN, nat_chain, "nat")
         
         # Delete instance chains
@@ -832,7 +1049,8 @@ PersistentKeepalive = 25
         client_name: str,
         allowed_ips: str,
         instance_subnet: str = None,
-        has_overrides: bool = False
+        has_overrides: bool = False,
+        remote_lans: list = None
     ) -> bool:
         """Apply per-client firewall enforcement.
         
@@ -897,16 +1115,22 @@ PersistentKeepalive = 25
             ])
             logger.info(f"  Final rule: -j DROP (enforce allowed routes)")
         
-        # Remove any existing jump rule for this client
+        # Remove any existing jump rule and remote_lan ACCEPT rules for this client
         client_ip_clean = client_ip.split('/')[0]
         core_iptables.run_safe("filter", [
             "-D", instance_fwd, "-s", client_ip_clean, "-j", client_chain
         ], suppress_errors=True)
-        
+        for lan in (remote_lans or []):
+            core_iptables.run_safe("filter", [
+                "-D", instance_fwd, "-s", lan,
+                "-m", "comment", "--comment", f"rl_{client_name}",
+                "-j", "ACCEPT",
+            ], suppress_errors=True)
+
         # Insert jump rule in instance FORWARD chain.
         # Order in chain should be:
         # 1. Group jumps (-s client_ip -j WG_GRP_*)
-        # 2. Client jumps (-s client_ip -j WG_CLI_*)
+        # 2. Client jumps (-s client_ip -j WG_CLI_*) + remote_lan ACCEPTs
         # 3. Split tunnel -d route rules
         # 4. Default policy (-j ACCEPT or -j DROP)
         #
@@ -915,7 +1139,7 @@ PersistentKeepalive = 25
         success, output = core_iptables.run_safe_with_output(
             "filter", ["-S", instance_fwd], suppress_errors=True
         )
-        
+
         insert_pos = None
         if success and output:
             lines = output.strip().split('\n')
@@ -928,19 +1152,35 @@ PersistentKeepalive = 25
                 if i > 0 and (line.endswith('-j DROP') or line.endswith('-j ACCEPT')) and ' -d ' not in line and ' -s ' not in line:
                     insert_pos = i
                     break
-        
+
         if insert_pos:
             core_iptables.run_safe("filter", [
                 "-I", instance_fwd, str(insert_pos), "-s", client_ip_clean, "-j", client_chain
             ])
             logger.info(f"  Jump rule inserted at position {insert_pos}: -s {client_ip_clean} -j {client_chain}")
+            # remote_lan ACCEPTs inserted right after the client jump
+            for offset, lan in enumerate(remote_lans or []):
+                core_iptables.run_safe("filter", [
+                    "-I", instance_fwd, str(insert_pos + 1 + offset),
+                    "-s", lan,
+                    "-m", "comment", "--comment", f"rl_{client_name}",
+                    "-j", "ACCEPT",
+                ])
+                logger.info(f"  Remote LAN rule inserted: -s {lan} -j ACCEPT (rl_{client_name})")
         else:
             # Fallback to append
             core_iptables.run_safe("filter", [
                 "-A", instance_fwd, "-s", client_ip_clean, "-j", client_chain
             ])
             logger.info(f"  Jump rule appended: -s {client_ip_clean} -j {client_chain}")
-        
+            for lan in (remote_lans or []):
+                core_iptables.run_safe("filter", [
+                    "-A", instance_fwd, "-s", lan,
+                    "-m", "comment", "--comment", f"rl_{client_name}",
+                    "-j", "ACCEPT",
+                ])
+                logger.info(f"  Remote LAN rule appended: -s {lan} -j ACCEPT (rl_{client_name})")
+
         return True
     
     @staticmethod
@@ -989,23 +1229,32 @@ PersistentKeepalive = 25
         }
     
     @staticmethod
-    def remove_client_firewall_rules(instance_id: str, client_ip: str, client_name: str) -> bool:
-        """Remove client firewall chain and jump rule."""
+    def remove_client_firewall_rules(instance_id: str, client_ip: str, client_name: str,
+                                      remote_lans: list = None) -> bool:
+        """Remove client firewall chain, jump rule, and remote_lan ACCEPT rules."""
         chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
         client_chain = WireGuardService._get_client_chain_name(instance_id, client_name)
         instance_fwd = f"WG_{chain_id}_FWD"
-        
+
         logger.info(f"Removing client firewall for {client_name} (chain: {client_chain})")
-        
+
         # Remove jump rule
         client_ip_clean = client_ip.split('/')[0]
         core_iptables.run_safe("filter", [
             "-D", instance_fwd, "-s", client_ip_clean, "-j", client_chain
         ], suppress_errors=True)
 
+        # Remove per-client remote_lan ACCEPT rules
+        for lan in (remote_lans or []):
+            core_iptables.run_safe("filter", [
+                "-D", instance_fwd, "-s", lan,
+                "-m", "comment", "--comment", f"rl_{client_name}",
+                "-j", "ACCEPT",
+            ], suppress_errors=True)
+
         # Delete chain
         core_iptables.delete_chain(client_chain, "filter")
-        
+
         return True
     
     @staticmethod
@@ -1041,7 +1290,8 @@ PersistentKeepalive = 25
                 client.name,
                 effective["effective_allowed_ips"],
                 instance_subnet=instance.subnet,
-                has_overrides=effective["has_overrides"]
+                has_overrides=effective["has_overrides"],
+                remote_lans=client.remote_lans or []
             )
         
         logger.info(f"Applied firewall rules for {len(clients)} clients")

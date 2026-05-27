@@ -27,9 +27,13 @@ from .models import (
     OvpnGroupMember, OvpnGroupMemberRead,
     OvpnGroupRule, OvpnGroupRuleCreate, OvpnGroupRuleRead, OvpnGroupRuleUpdate,
     RuleOrderUpdate, FirewallPolicyUpdate, OvpnRoutingUpdate,
+    OvpnSiteToSiteUpdate,
     OvpnMagicToken, SendConfigRequest, PKIStatusRead, CertRenewRequest
 )
-from .service import openvpn_service, OPENVPN_BASE_DIR
+import ipaddress
+import json
+from fastapi import UploadFile, File, Form, Query
+from .service import openvpn_service, OPENVPN_BASE_DIR, OPENVPN_CLIENT_DIR
 from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
@@ -238,41 +242,53 @@ async def delete_instance(
     if not instance:
         raise HTTPException(404, "Instance not found")
     
-    # Stop instance
-    openvpn_service.stop_instance(instance_id)
-    
-    # Remove group chains first (needs DB access)
-    from .service import OpenVPNService
-    await OpenVPNService.remove_all_group_chains(instance.id, db)
-    
-    # Remove instance firewall rules
-    openvpn_service.remove_instance_firewall_rules(instance_id, instance.interface)
-    
-    # Delete config file
-    config_path = OPENVPN_BASE_DIR / f"{instance_id}.conf"
-    if config_path.exists():
-        config_path.unlink()
-    
-    # Delete magic tokens (no cascade configured on DB)
-    from .models import OvpnMagicToken, OvpnClient
-    await db.execute(
-        delete(OvpnMagicToken).where(
-            OvpnMagicToken.client_id.in_(
-                select(OvpnClient.id).where(OvpnClient.instance_id == instance_id)
+    import shutil
+
+    if instance.direction == "client":
+        # Stop the systemd client unit
+        openvpn_service.stop_client_instance(instance_id)
+        # Remove client-mode firewall rules
+        openvpn_service.remove_instance_firewall_rules(
+            instance_id, instance.interface,
+            client_lan_interfaces=instance.client_lan_interfaces,
+        )
+        # Delete /etc/openvpn/client/{id}.conf
+        client_conf = OPENVPN_CLIENT_DIR / f"{instance_id}.conf"
+        if client_conf.exists():
+            client_conf.unlink()
+        # Delete /etc/openvpn/client/{id}/ credentials dir
+        client_dir = OPENVPN_CLIENT_DIR / instance_id
+        if client_dir.exists():
+            shutil.rmtree(client_dir)
+    else:
+        # Stop instance
+        openvpn_service.stop_instance(instance_id)
+        # Remove group chains first (needs DB access)
+        from .service import OpenVPNService
+        await OpenVPNService.remove_all_group_chains(instance.id, db)
+        # Remove instance firewall rules
+        openvpn_service.remove_instance_firewall_rules(instance_id, instance.interface)
+        # Delete server config file
+        config_path = OPENVPN_BASE_DIR / f"{instance_id}.conf"
+        if config_path.exists():
+            config_path.unlink()
+        # Delete magic tokens (no cascade configured on DB)
+        from .models import OvpnMagicToken, OvpnClient
+        await db.execute(
+            delete(OvpnMagicToken).where(
+                OvpnMagicToken.client_id.in_(
+                    select(OvpnClient.id).where(OvpnClient.instance_id == instance_id)
+                )
             )
         )
-    )
+        # Delete instance directory (PKI, CCD, etc.)
+        instance_dir = openvpn_service.get_instance_dir(instance_id)
+        if instance_dir.exists():
+            shutil.rmtree(instance_dir)
 
     # Delete from database (cascades to clients, groups, etc.)
     await db.delete(instance)
     await db.commit()
-    
-    # Delete instance directory (PKI, CCD, etc.)
-    import shutil
-    instance_dir = openvpn_service.get_instance_dir(instance_id)
-    if instance_dir.exists():
-        shutil.rmtree(instance_dir)
-    
     logger.info(f"Deleted instance {instance_id} and all related files")
 
 
@@ -288,13 +304,28 @@ async def start_instance(
     if not instance:
         raise HTTPException(404, "Instance not found")
     
+    if instance.direction == "client":
+        if openvpn_service.start_client_instance(instance_id):
+            openvpn_service.apply_instance_firewall_rules(
+                instance_id, instance.port, instance.protocol,
+                instance.interface, instance.subnet,
+                instance.tunnel_mode, instance.routes,
+                instance.firewall_default_policy,
+                direction="client",
+                client_lan_interfaces=instance.client_lan_interfaces,
+            )
+            return {"status": "running"}
+        raise HTTPException(500, "Failed to start client instance")
+
     if openvpn_service.start_instance(instance_id):
         # Apply firewall rules
         openvpn_service.apply_instance_firewall_rules(
             instance_id, instance.port, instance.protocol,
             instance.interface, instance.subnet,
             instance.tunnel_mode, instance.routes,
-            instance.firewall_default_policy
+            instance.firewall_default_policy,
+            site_to_site=instance.site_to_site,
+            site_to_site_lans=instance.site_to_site_lans,
         )
         # Also apply group rules (member jumps, default policy)
         from .service import OpenVPNService
@@ -315,6 +346,15 @@ async def stop_instance(
     if not instance:
         raise HTTPException(404, "Instance not found")
     
+    if instance.direction == "client":
+        if openvpn_service.stop_client_instance(instance_id):
+            openvpn_service.remove_instance_firewall_rules(
+                instance_id, instance.interface,
+                client_lan_interfaces=instance.client_lan_interfaces,
+            )
+            return {"status": "stopped"}
+        raise HTTPException(500, "Failed to stop client instance")
+
     if openvpn_service.stop_instance(instance_id):
         # Remove firewall rules when interface stops
         from .service import OpenVPNService
@@ -364,7 +404,9 @@ async def update_instance_routing(
             instance_id, instance.port, instance.protocol,
             instance.interface, instance.subnet,
             instance.tunnel_mode, instance.routes,
-            instance.firewall_default_policy
+            instance.firewall_default_policy,
+            site_to_site=instance.site_to_site,
+            site_to_site_lans=instance.site_to_site_lans,
         )
     
     return {
@@ -373,6 +415,253 @@ async def update_instance_routing(
         "tunnel_mode": instance.tunnel_mode,
         "routes": instance.routes
     }
+
+
+@router.patch("/instances/{instance_id}/site-to-site")
+async def update_instance_site_to_site(
+    instance_id: str,
+    data: OvpnSiteToSiteUpdate,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("openvpn.manage"))
+):
+    """Enable/disable server-mode site-to-site (NAT-exempt) routing."""
+    result = await db.execute(select(OvpnInstance).where(OvpnInstance.id == instance_id))
+    instance = result.scalar_one_or_none()
+    if not instance:
+        raise HTTPException(404, "Instance not found")
+
+    if instance.direction != "server":
+        raise HTTPException(400, "Site-to-site valido solo per istanze in modalità server")
+
+    validated_lans: list[str] = []
+    if data.enabled:
+        if not data.lans:
+            raise HTTPException(400, "Site-to-site richiede almeno un LAN CIDR")
+        for cidr in data.lans:
+            try:
+                net = ipaddress.ip_network(cidr.strip(), strict=False)
+            except ValueError:
+                raise HTTPException(400, f"CIDR non valido: {cidr}")
+            validated_lans.append(str(net))
+
+    instance.site_to_site = data.enabled
+    instance.site_to_site_lans = validated_lans
+    instance.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(instance)
+
+    # Regenerate server config so site-to-site LAN pushes reach connecting clients
+    config = openvpn_service.create_server_config(instance)
+    config_path = OPENVPN_BASE_DIR / f"{instance_id}.conf"
+    config_path.write_text(config)
+
+    # Reapply firewall if running so the new NAT-exempt / MASQUERADE branch takes effect
+    if openvpn_service.get_instance_status(instance_id):
+        openvpn_service.apply_instance_firewall_rules(
+            instance_id, instance.port, instance.protocol,
+            instance.interface, instance.subnet,
+            instance.tunnel_mode, instance.routes,
+            instance.firewall_default_policy,
+            site_to_site=instance.site_to_site,
+            site_to_site_lans=instance.site_to_site_lans,
+        )
+
+    return {
+        "success": True,
+        "site_to_site": instance.site_to_site,
+        "site_to_site_lans": instance.site_to_site_lans,
+    }
+
+
+# =========================================================================
+# CLIENT MODE — import, upstream-status, reconnect
+# =========================================================================
+
+@router.post("/instances/import")
+async def import_client_instance(
+    config: UploadFile = File(...),
+    name: str = Form(...),
+    client_lan_interfaces: str = Form(default="[]"),
+    tunnel_mode: str = Form(default="full"),
+    auth_username: Optional[str] = Form(default=None),
+    auth_password: Optional[str] = Form(default=None),
+    dry_run: bool = Query(default=False),
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("openvpn.manage")),
+):
+    """Import a .ovpn client config and run MADMIN as a VPN client (LAN gateway).
+
+    Pass ?dry_run=true to get a parsed preview without persisting anything.
+    """
+    from .service import OpenVPNService
+
+    config_text = (await config.read()).decode("utf-8", errors="replace")
+    parsed = openvpn_service.parse_imported_ovpn(config_text)
+
+    if dry_run:
+        return {
+            "endpoint": f"{parsed['remote_host']}:{parsed['remote_port']}" if parsed["remote_host"] else None,
+            "proto": parsed["proto"],
+            "auth_required": parsed["auth_user_pass_required"],
+            "has_ca": bool(parsed["ca"]),
+            "has_cert": bool(parsed["cert"]),
+            "has_key": bool(parsed["key"]),
+            "has_tls": bool(parsed["tls_crypt"] or parsed["tls_crypt_v2"] or parsed["tls_auth"]),
+            "warnings": parsed["warnings"],
+        }
+
+    if not parsed["remote_host"]:
+        raise HTTPException(400, "Configurazione non valida: direttiva 'remote' non trovata")
+    if not parsed["ca"]:
+        raise HTTPException(400, "CA certificate mancante (blocco inline <ca> richiesto)")
+    if parsed["auth_user_pass_required"] and not (auth_username and auth_password):
+        raise HTTPException(400, "Il server richiede credenziali (auth_username e auth_password obbligatori)")
+
+    try:
+        lan_ifaces = json.loads(client_lan_interfaces)
+        if not isinstance(lan_ifaces, list):
+            raise ValueError
+    except Exception:
+        raise HTTPException(400, "client_lan_interfaces deve essere un JSON array")
+
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', name.lower())[:20]
+    instance_id = f"cli_{sanitized}"
+    iface_name = f"tcli{re.sub(r'[^a-zA-Z0-9]', '', sanitized)[:11]}"[:15]
+
+    existing = await db.execute(select(OvpnInstance).where(OvpnInstance.id == instance_id))
+    if existing.scalar_one_or_none():
+        raise HTTPException(400, f"Istanza '{instance_id}' già esistente")
+
+    upstream_endpoint = f"{parsed['remote_host']}:{parsed['remote_port']}"
+    dup = await db.execute(
+        select(OvpnInstance).where(
+            (OvpnInstance.direction == "client") &
+            (OvpnInstance.upstream_endpoint == upstream_endpoint)
+        )
+    )
+    if dup.scalar_one_or_none():
+        raise HTTPException(400, f"Esiste già un'istanza client verso {upstream_endpoint}")
+
+    instance = OvpnInstance(
+        id=instance_id,
+        name=name,
+        port=None,
+        subnet=None,
+        interface=iface_name,
+        protocol=parsed.get("proto", "udp"),
+        direction="client",
+        upstream_endpoint=upstream_endpoint,
+        upstream_protocol=parsed.get("proto", "udp"),
+        imported_config=config_text,
+        client_lan_interfaces=lan_ifaces,
+        tunnel_mode=tunnel_mode,
+        auth_user_pass_required=parsed["auth_user_pass_required"],
+        auth_username=auth_username,
+        auth_password=auth_password,
+        auto_restart=True,
+        upstream_status="unknown",
+    )
+    db.add(instance)
+    await db.commit()
+    await db.refresh(instance)
+
+    try:
+        openvpn_service.materialize_client_instance(instance, parsed)
+    except Exception as e:
+        await db.delete(instance)
+        await db.commit()
+        raise HTTPException(500, f"Errore scrittura file di configurazione: {e}")
+
+    started = OpenVPNService.start_client_instance(instance.id)
+    if started:
+        OpenVPNService.apply_instance_firewall_rules(
+            instance.id, None, instance.protocol, instance.interface, None,
+            instance.tunnel_mode, instance.routes,
+            direction="client",
+            client_lan_interfaces=instance.client_lan_interfaces,
+        )
+
+    return {
+        "id": instance.id,
+        "status": "running" if started else "stopped",
+        "upstream": upstream_endpoint,
+        "interface": iface_name,
+        "warnings": parsed["warnings"],
+    }
+
+
+@router.get("/instances/{instance_id}/upstream-status")
+async def get_upstream_status(
+    instance_id: str,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("openvpn.view")),
+):
+    """Return current upstream connection state for a client-mode instance."""
+    from .service import OpenVPNService
+
+    result = await db.execute(select(OvpnInstance).where(OvpnInstance.id == instance_id))
+    instance = result.scalar_one_or_none()
+    if not instance:
+        raise HTTPException(404, "Istanza non trovata")
+    if instance.direction != "client":
+        raise HTTPException(400, "Endpoint disponibile solo per istanze client")
+
+    status = OpenVPNService.get_client_upstream_status(instance.id)
+
+    # Persist state
+    instance.upstream_status = status["state"].lower()
+    if status["connected"]:
+        instance.upstream_last_handshake = datetime.utcnow()
+    await db.commit()
+
+    return {
+        "instance_id": instance_id,
+        "upstream_endpoint": instance.upstream_endpoint,
+        "systemd_active": OpenVPNService.get_client_instance_status(instance.id),
+        **status,
+    }
+
+
+@router.post("/instances/{instance_id}/reconnect")
+async def reconnect_instance(
+    instance_id: str,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("openvpn.manage")),
+):
+    """Restart a client-mode instance (stop + re-materialize + start)."""
+    from .service import OpenVPNService
+
+    result = await db.execute(select(OvpnInstance).where(OvpnInstance.id == instance_id))
+    instance = result.scalar_one_or_none()
+    if not instance:
+        raise HTTPException(404, "Istanza non trovata")
+    if instance.direction != "client":
+        raise HTTPException(400, "Endpoint disponibile solo per istanze client")
+
+    OpenVPNService.stop_client_instance(instance.id)
+    OpenVPNService.remove_instance_firewall_rules(
+        instance.id, instance.interface, instance.client_lan_interfaces
+    )
+
+    # Re-materialize from stored config
+    if instance.imported_config:
+        parsed = openvpn_service.parse_imported_ovpn(instance.imported_config)
+        openvpn_service.materialize_client_instance(instance, parsed)
+
+    started = OpenVPNService.start_client_instance(instance.id)
+    if started:
+        OpenVPNService.apply_instance_firewall_rules(
+            instance.id, None, instance.protocol, instance.interface, None,
+            instance.tunnel_mode, instance.routes,
+            direction="client",
+            client_lan_interfaces=instance.client_lan_interfaces,
+        )
+
+    instance.upstream_status = "unknown"
+    await db.commit()
+
+    return {"status": "running" if started else "stopped"}
 
 
 # =========================================================================
@@ -530,16 +819,25 @@ async def create_client(
     
     # Allocate IP
     allocated_ip = await openvpn_service.allocate_client_ip(db, instance)
-    
+
     # Generate certificate
     days = data.cert_duration_days if data.cert_duration_days else instance.cert_duration_days
     cert_result = openvpn_service.generate_client_cert(instance_id, data.name, days)
     if not cert_result.get("success"):
         raise HTTPException(500, f"Failed to generate certificate: {cert_result.get('error')}")
-    
-    # Create CCD file for static IP
-    openvpn_service.create_ccd_file(instance_id, data.name, allocated_ip)
-    
+
+    # Validate remote_lans CIDRs
+    remote_lans = []
+    for cidr in (data.remote_lans or []):
+        try:
+            ipaddress.ip_network(cidr, strict=False)
+            remote_lans.append(cidr)
+        except ValueError:
+            raise HTTPException(400, f"Invalid CIDR in remote_lans: {cidr}")
+
+    # Create CCD file (ifconfig-push + iroute for each remote_lan)
+    openvpn_service.create_ccd_file(instance_id, data.name, allocated_ip, remote_lans)
+
     # Create client record
     client = OvpnClient(
         instance_id=instance_id,
@@ -547,10 +845,33 @@ async def create_client(
         allocated_ip=allocated_ip,
         cert_expiry=cert_result.get("expiry"),
         cert_fingerprint=cert_result.get("fingerprint"),
+        remote_lans=remote_lans,
     )
     db.add(client)
     await db.commit()
     await db.refresh(client)
+
+    # Regenerate server config so global `route` directives include all client remote_lans
+    if remote_lans and instance.site_to_site:
+        all_clients_result = await db.execute(
+            select(OvpnClient).where(OvpnClient.instance_id == instance_id)
+        )
+        all_clients = all_clients_result.scalars().all()
+        aggregated_routes = list({
+            cidr
+            for c in all_clients
+            for cidr in (c.remote_lans or [])
+        })
+        config_text = openvpn_service.create_server_config(instance, remote_routes=aggregated_routes)
+        config_path = OPENVPN_BASE_DIR / instance_id / f"{instance_id}.conf"
+        if config_path.parent.exists():
+            config_path.write_text(config_text)
+            logger.info(f"Regenerated server config with remote routes: {aggregated_routes}")
+
+    # Add FORWARD chain ACCEPT rules for remote_lans so split-tunnel doesn't drop their traffic
+    if remote_lans and openvpn_service.get_instance_status(instance_id):
+        from .service import OpenVPNService
+        OpenVPNService.apply_client_remote_lan_rules(instance_id, data.name, remote_lans)
     
     # If group_id is provided, assign client to group
     if data.group_id:
@@ -582,6 +903,7 @@ async def create_client(
         revoked=False,
         created_at=client.created_at,
         last_connection=None,
+        remote_lans=client.remote_lans or [],
         is_connected=False
     )
 
@@ -606,20 +928,25 @@ async def revoke_client(
     
     # Revoke certificate
     openvpn_service.revoke_client_cert(instance_id, client_name)
-    
+
     # Delete CCD file
     openvpn_service.delete_ccd_file(instance_id, client_name)
-    
+
+    # Remove remote_lan ACCEPT rules from FORWARD chain
+    if client.remote_lans:
+        from .service import OpenVPNService
+        OpenVPNService.remove_client_remote_lan_rules(instance_id, client_name, client.remote_lans)
+
     # Remove from any group memberships (revoked clients shouldn't have firewall rules)
     await db.execute(
         OvpnGroupMember.__table__.delete().where(OvpnGroupMember.client_id == client.id)
     )
-    
+
     # Mark as revoked
     client.revoked = True
     client.revoked_at = datetime.utcnow()
     await db.commit()
-    
+
     # Reapply firewall rules (removes this client's jump rules)
     await openvpn_service.apply_group_firewall_rules(instance_id, db)
 

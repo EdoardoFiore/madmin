@@ -1,7 +1,7 @@
 {
     "id": "wireguard",
     "name": "WireGuard VPN",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "description": "WireGuard VPN instance and client management with firewall groups and multi-instance support",
     "author": "MADMIN Team",
     "openapi_tag_description": "WireGuard VPN — multi-instance management, client provisioning, QR codes, firewall groups and rules.",

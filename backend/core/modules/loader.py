@@ -287,7 +287,7 @@ class ModuleLoader:
         manifest = self._parse_manifest(manifest_path)
         if not manifest:
             return False
-        
+
         # Load router
         router = self.load_module_router(module_id, manifest)
         if router:

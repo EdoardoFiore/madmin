@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Paths
 OPENVPN_BASE_DIR = Path("/etc/openvpn/server")
+OPENVPN_CLIENT_DIR = Path("/etc/openvpn/client")
 EASYRSA_SOURCE = Path("/usr/share/easy-rsa")
 
 
@@ -364,20 +365,29 @@ class OpenVPNService:
     # =========================================================================
     
     @staticmethod
-    def create_ccd_file(instance_id: str, client_name: str, static_ip: str) -> bool:
-        """Create CCD file for static IP assignment."""
+    def create_ccd_file(instance_id: str, client_name: str, static_ip: str,
+                        remote_lans: list = None) -> bool:
+        """Create CCD file for static IP assignment and optional site-to-site iroutes."""
         ccd_dir = OpenVPNService.get_ccd_dir(instance_id)
         ccd_file = ccd_dir / client_name
-        
+
         try:
-            # Extract IP without mask
             ip_only = static_ip.split('/')[0]
-            
-            # Write CCD file
-            ccd_file.write_text(f"ifconfig-push {ip_only} 255.255.255.0\n")
+            lines = [f"ifconfig-push {ip_only} 255.255.255.0\n"]
+
+            # iroute tells the OpenVPN daemon to route these subnets through
+            # this specific client's tunnel (required for server-side s2s routing).
+            for lan in (remote_lans or []):
+                try:
+                    net = IPv4Network(lan, strict=False)
+                    lines.append(f"iroute {net.network_address} {net.netmask}\n")
+                except Exception:
+                    logger.warning(f"Skipping invalid remote_lan in CCD: {lan}")
+
+            ccd_file.write_text("".join(lines))
             ccd_file.chmod(0o644)
-            
-            logger.info(f"CCD file created: {client_name} -> {ip_only}")
+
+            logger.info(f"CCD file created: {client_name} -> {ip_only}, iroutes: {remote_lans or []}")
             return True
         except Exception as e:
             logger.error(f"Failed to create CCD file: {e}")
@@ -402,8 +412,15 @@ class OpenVPNService:
     # =========================================================================
     
     @staticmethod
-    def create_server_config(instance: OvpnInstance) -> str:
-        """Generate server configuration file."""
+    def create_server_config(instance: OvpnInstance, remote_routes: list = None) -> str:
+        """Generate server configuration file.
+
+        remote_routes: aggregated list of remote LAN CIDRs from all clients with
+        remote_lans set. Each CIDR emits a ``route`` directive so the OS on MADMIN
+        routes traffic for that subnet through the tun interface. Pairing with the
+        per-client ``iroute`` in the CCD file lets OpenVPN dispatch packets to the
+        correct tunnel peer.
+        """
         instance_dir = OpenVPNService.get_instance_dir(instance.id)
         
         # Parse subnet
@@ -468,7 +485,33 @@ class OpenVPNService:
                         config_lines.append(f'push "route {net.network_address} {net.netmask}"')
                     except:
                         pass
-        
+
+        # Site-to-site: push each MADMIN-side LAN to connecting clients.
+        # Deduplicate against split-tunnel routes already pushed above.
+        if getattr(instance, "site_to_site", False) and getattr(instance, "site_to_site_lans", None):
+            already_pushed = {
+                str(IPv4Network(r.get('network', r) if isinstance(r, dict) else r, strict=False).network_address)
+                for r in (instance.routes or [])
+                if (r.get('network', r) if isinstance(r, dict) else r)
+            }
+            for lan in instance.site_to_site_lans:
+                try:
+                    net = IPv4Network(lan, strict=False)
+                except Exception:
+                    continue
+                if str(net.network_address) not in already_pushed:
+                    config_lines.append(f'push "route {net.network_address} {net.netmask}"')
+
+        # Remote-side client LANs: emit a kernel `route` for each so the OS on
+        # MADMIN knows to forward traffic destined for those networks through the
+        # tun interface. The OpenVPN daemon then dispatches via the CCD iroute.
+        for cidr in (remote_routes or []):
+            try:
+                net = IPv4Network(cidr, strict=False)
+                config_lines.append(f"route {net.network_address} {net.netmask}")
+            except Exception:
+                pass
+
         return "\n".join(config_lines)
     
     @staticmethod
@@ -654,7 +697,237 @@ class OpenVPNService:
         logger.info(f"Killing client {client_name} on instance {instance_id}")
         response = OpenVPNService.send_management_command(instance_id, f"kill {client_name}")
         return "SUCCESS" in response
-    
+
+    # =========================================================================
+    # CLIENT MODE — import, materialize, start/stop, upstream status
+    # =========================================================================
+
+    @staticmethod
+    def get_client_dir(instance_id: str) -> Path:
+        return OPENVPN_CLIENT_DIR / instance_id
+
+    @staticmethod
+    def parse_imported_ovpn(text: str) -> dict:
+        """Parse a .ovpn client config. Returns dict + warnings list.
+
+        Supports inline certificate blocks (<ca>, <cert>, <key>,
+        <tls-crypt>, <tls-crypt-v2>, <tls-auth>).
+        """
+        result: dict = {
+            "remote_host": None,
+            "remote_port": 1194,
+            "proto": "udp",
+            "dev": "tun",
+            "auth_user_pass_required": False,
+            "ca": None,
+            "cert": None,
+            "key": None,
+            "tls_crypt": None,
+            "tls_crypt_v2": None,
+            "tls_auth": None,
+            "tls_auth_direction": None,
+            "warnings": [],
+        }
+
+        # Extract inline blocks
+        inline_re = re.compile(
+            r'<(ca|cert|key|tls-crypt|tls-crypt-v2|tls-auth)>\s*(.*?)\s*</\1>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        for m in inline_re.finditer(text):
+            tag = m.group(1).lower().replace("-", "_")
+            content = m.group(2).strip()
+            result[tag] = content
+
+        stripped = inline_re.sub("", text)
+
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            parts = line.split()
+            d = parts[0].lower()
+
+            if d == "remote" and len(parts) >= 2 and result["remote_host"] is None:
+                result["remote_host"] = parts[1]
+                if len(parts) >= 3:
+                    try:
+                        result["remote_port"] = int(parts[2])
+                    except ValueError:
+                        pass
+            elif d == "proto" and len(parts) >= 2:
+                proto = parts[1].lower()
+                # normalise tcp4/tcp6 → tcp, udp4/udp6 → udp
+                result["proto"] = proto.rstrip("46")
+            elif d == "dev" and len(parts) >= 2:
+                result["dev"] = parts[1]
+            elif d == "auth-user-pass":
+                result["auth_user_pass_required"] = True
+            elif d == "key-direction" and len(parts) >= 2:
+                result["tls_auth_direction"] = parts[1]
+            elif d == "tls-auth" and len(parts) >= 3:
+                result["tls_auth_direction"] = parts[2]
+
+        # Warnings
+        if not result["remote_host"]:
+            result["warnings"].append("'remote' directive not found")
+        if not result["ca"]:
+            result["warnings"].append("CA certificate missing (inline <ca> block required)")
+        if not result["cert"]:
+            result["warnings"].append("Client certificate missing (inline <cert> block required)")
+        if not result["key"]:
+            result["warnings"].append("Client key missing (inline <key> block required)")
+        if not (result["tls_crypt"] or result["tls_crypt_v2"] or result["tls_auth"]):
+            result["warnings"].append("No TLS auth/crypt key found (connection less secure)")
+        if result["auth_user_pass_required"]:
+            result["warnings"].append("Server requires username/password authentication")
+
+        return result
+
+    @staticmethod
+    def materialize_client_instance(instance, parsed: dict) -> bool:
+        """Write all client config files and /etc/openvpn/client/{id}.conf."""
+        client_dir = OpenVPNService.get_client_dir(instance.id)
+        client_dir.mkdir(parents=True, exist_ok=True)
+
+        if parsed.get("ca"):
+            (client_dir / "ca.crt").write_text(parsed["ca"])
+        if parsed.get("cert"):
+            (client_dir / "client.crt").write_text(parsed["cert"])
+        if parsed.get("key"):
+            key_path = client_dir / "client.key"
+            key_path.write_text(parsed["key"])
+            key_path.chmod(0o600)
+
+        tls_directive = None
+        if parsed.get("tls_crypt_v2"):
+            tls_path = client_dir / "tls.key"
+            tls_path.write_text(parsed["tls_crypt_v2"])
+            tls_directive = f"tls-crypt-v2 {tls_path}"
+        elif parsed.get("tls_crypt"):
+            tls_path = client_dir / "tls.key"
+            tls_path.write_text(parsed["tls_crypt"])
+            tls_directive = f"tls-crypt {tls_path}"
+        elif parsed.get("tls_auth"):
+            tls_path = client_dir / "tls.key"
+            tls_path.write_text(parsed["tls_auth"])
+            direction = parsed.get("tls_auth_direction") or "1"
+            tls_directive = f"tls-auth {tls_path} {direction}"
+
+        auth_line = None
+        if instance.auth_username and instance.auth_password:
+            auth_txt = client_dir / "auth.txt"
+            auth_txt.write_text(f"{instance.auth_username}\n{instance.auth_password}\n")
+            auth_txt.chmod(0o600)
+            auth_line = f"auth-user-pass {auth_txt}"
+
+        # Named tun interface: strip 'cli_' prefix, truncate to fit IFNAMSIZ (max 15)
+        short = re.sub(r'[^a-zA-Z0-9]', '', instance.id)[:11]
+        tun_iface = f"tcli{short}"[:15]
+
+        sock_path = OpenVPNService.get_management_socket(instance.id)
+
+        lines = [
+            "client",
+            f"dev {tun_iface}",
+            "dev-type tun",
+            f"proto {parsed.get('proto', 'udp')}",
+            f"remote {parsed['remote_host']} {parsed.get('remote_port', 1194)}",
+            "resolv-retry infinite",
+            "nobind",
+            "persist-key",
+            "persist-tun",
+            "remote-cert-tls server",
+            "verb 3",
+            f"management {sock_path} unix",
+            "",
+            f"ca {client_dir}/ca.crt",
+        ]
+        if parsed.get("cert"):
+            lines.append(f"cert {client_dir}/client.crt")
+        if parsed.get("key"):
+            lines.append(f"key {client_dir}/client.key")
+        if tls_directive:
+            lines.append(tls_directive)
+        if auth_line:
+            lines.append(auth_line)
+
+        conf_path = OPENVPN_CLIENT_DIR / f"{instance.id}.conf"
+        conf_path.write_text("\n".join(lines) + "\n")
+        conf_path.chmod(0o600)
+
+        logger.info(f"Materialized OVPN client instance {instance.id} at {conf_path}")
+        return True
+
+    @staticmethod
+    def start_client_instance(instance_id: str) -> bool:
+        try:
+            subprocess.run(
+                ["systemctl", "start", f"openvpn-client@{instance_id}"],
+                check=True, capture_output=True,
+            )
+            logger.info(f"Started OVPN client instance: {instance_id}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to start client instance {instance_id}: {e.stderr}")
+            return False
+
+    @staticmethod
+    def stop_client_instance(instance_id: str) -> bool:
+        try:
+            subprocess.run(
+                ["systemctl", "stop", f"openvpn-client@{instance_id}"],
+                check=True, capture_output=True,
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    @staticmethod
+    def get_client_instance_status(instance_id: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", f"openvpn-client@{instance_id}"],
+                capture_output=True, text=True,
+            )
+            return result.stdout.strip() == "active"
+        except Exception:
+            return False
+
+    @staticmethod
+    def get_client_upstream_status(instance_id: str) -> dict:
+        """Query management socket for VPN client connection state."""
+        state_resp = OpenVPNService.send_management_command(instance_id, "state")
+        stats_resp = OpenVPNService.send_management_command(instance_id, "load-stats")
+
+        status = {
+            "state": "unknown",
+            "connected": False,
+            "tunnel_ip": None,
+            "bytes_in": 0,
+            "bytes_out": 0,
+        }
+
+        for line in state_resp.splitlines():
+            # Format: timestamp,STATE,desc,local_ip,...
+            line = line.lstrip(">STATE:").strip()
+            if "," in line:
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    state_name = parts[1].upper()
+                    status["state"] = state_name
+                    status["connected"] = (state_name == "CONNECTED")
+                    if len(parts) >= 4 and parts[3]:
+                        status["tunnel_ip"] = parts[3]
+                break
+
+        m = re.search(r'bytesin=(\d+),bytesout=(\d+)', stats_resp)
+        if m:
+            status["bytes_in"] = int(m.group(1))
+            status["bytes_out"] = int(m.group(2))
+
+        return status
+
     @staticmethod
     def stop_instance(instance_id: str) -> bool:
         """Stop OpenVPN instance."""
@@ -822,32 +1095,93 @@ class OpenVPNService:
     @staticmethod
     def apply_instance_firewall_rules(
         instance_id: str,
-        port: int,
+        port: Optional[int],
         protocol: str,
         interface: str,
-        subnet: str,
+        subnet: Optional[str],
         tunnel_mode: str = "full",
         routes: list = None,
-        firewall_default_policy: str = "ACCEPT"
+        firewall_default_policy: str = "ACCEPT",
+        site_to_site: bool = False,
+        site_to_site_lans: list = None,
+        direction: str = "server",
+        client_lan_interfaces: list = None,
     ) -> bool:
-        """Apply firewall rules for an OpenVPN instance."""
-        # Note: Module chains (MOD_OVPN_*) are created by core via manifest.json
-        # We only create instance-specific chains here
-        
+        """Apply firewall rules for an OpenVPN instance.
+
+        direction='client': LAN-gateway rules (MASQUERADE LAN→tun, FORWARD per
+        client_lan_interfaces). direction='server' (default): server rules with
+        optional site_to_site NAT-exempt mode.
+        """
         chain_id = instance_id.replace('tun', '') if instance_id.startswith('tun') else instance_id
         input_chain = f"OVPN_{chain_id}_INPUT"
         forward_chain = f"OVPN_{chain_id}_FWD"
         nat_chain = f"OVPN_{chain_id}_NAT"
-        
-        wan_interface = OpenVPNService._get_default_interface()
-        
-        logger.info(f"Applying firewall rules for OpenVPN instance {instance_id} (mode: {tunnel_mode})")
-        
-        # Create/flush instance chains
+
+        logger.info(
+            f"Applying firewall rules for OpenVPN instance {instance_id} "
+            f"(direction: {direction}, mode: {tunnel_mode})"
+        )
+
+        # Create/flush instance chains (both modes)
         core_iptables.create_or_flush_chain(input_chain, "filter")
         core_iptables.create_or_flush_chain(forward_chain, "filter")
         core_iptables.create_or_flush_chain(nat_chain, "nat")
-        
+
+        # ---- CLIENT MODE ----
+        if direction == "client":
+            lan_ifaces = [l for l in (client_lan_interfaces or []) if l]
+
+            # INPUT: allow return traffic from the upstream VPN
+            core_iptables.run_safe("filter", [
+                "-A", input_chain, "-i", interface,
+                "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT",
+            ])
+            core_iptables.run_safe("filter", ["-A", input_chain, "-j", "RETURN"])
+
+            # FORWARD: LAN → tunnel + established return
+            for lan in lan_ifaces:
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-i", lan, "-o", interface, "-j", "ACCEPT",
+                ])
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-i", interface, "-o", lan,
+                    "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT",
+                ])
+            core_iptables.run_safe("filter", ["-A", forward_chain, "-j", "RETURN"])
+
+            # NAT: MASQUERADE LAN traffic into tunnel
+            if tunnel_mode == "split" and routes:
+                for route in routes:
+                    network = route.get('network') if isinstance(route, dict) else route
+                    if network:
+                        core_iptables.run_safe("nat", [
+                            "-A", nat_chain, "-d", network, "-o", interface, "-j", "MASQUERADE",
+                        ])
+            else:
+                core_iptables.run_safe("nat", [
+                    "-A", nat_chain, "-o", interface, "-j", "MASQUERADE",
+                ])
+            core_iptables.run_safe("nat", ["-A", nat_chain, "-j", "RETURN"])
+
+            # Link to module chains
+            core_iptables.ensure_jump_rule(OpenVPNService.OVPN_INPUT_CHAIN, input_chain, "filter")
+            for lan in lan_ifaces:
+                core_iptables.ensure_interface_jump_rule(
+                    OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
+                    input_interface=lan,
+                )
+            core_iptables.ensure_interface_jump_rule(
+                OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
+                input_interface=interface,
+            )
+            core_iptables.ensure_jump_rule(OpenVPNService.OVPN_NAT_CHAIN, nat_chain, "nat")
+            return True
+
+        # ---- SERVER MODE ----
+        wan_interface = OpenVPNService._get_default_interface()
+        s2s_lans = [l for l in (site_to_site_lans or []) if l]
+
         # INPUT rules
         core_iptables.run_safe("filter", [
             "-A", input_chain, "-p", protocol, "--dport", str(port), "-j", "ACCEPT"
@@ -858,14 +1192,30 @@ class OpenVPNService:
         core_iptables.run_safe("filter", [
             "-A", input_chain, "-j", "RETURN"
         ])
-        
+
         # FORWARD rules for response traffic - DIRECT accept in module chain
         # This ensures traffic TO the VPN interface is accepted without going through instance chain
         core_iptables.ensure_interface_rule(
             OpenVPNService.OVPN_FORWARD_CHAIN, "ACCEPT", "filter",
             output_interface=interface
         )
-        
+
+        # Site-to-site: bidirectional ACCEPT for each LAN<->VPN subnet pair so the
+        # forward chain explicitly permits LAN->VPN traffic regardless of the
+        # interface-jump filter (which only matches -i {vpn_iface}).
+        if site_to_site and s2s_lans and subnet:
+            for lan in s2s_lans:
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-s", lan, "-d", subnet,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
+                core_iptables.run_safe("filter", [
+                    "-A", forward_chain, "-s", subnet, "-d", lan,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
+
         # FORWARD: Apply default policy / route enforcement
         if tunnel_mode == "split" and routes and firewall_default_policy == "ACCEPT":
             # Split tunnel + ACCEPT: restrict traffic to defined routes only
@@ -884,8 +1234,26 @@ class OpenVPNService:
                 "-A", forward_chain, "-i", interface, "-j", firewall_default_policy
             ])
             logger.info(f"  Traffic from VPN policy: {firewall_default_policy}")
-        
-        # NAT rules (still use routes for MASQUERADE targeting)
+
+        # NAT rules
+        if site_to_site and s2s_lans and subnet:
+            # NAT-exempt: terminating ACCEPT for LAN<->VPN pairs. These are specific
+            # src/dst matches so internet-bound traffic falls through to MASQUERADE below.
+            for lan in s2s_lans:
+                core_iptables.run_safe("nat", [
+                    "-A", nat_chain, "-s", lan, "-d", subnet,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
+                core_iptables.run_safe("nat", [
+                    "-A", nat_chain, "-s", subnet, "-d", lan,
+                    "-m", "comment", "--comment", f"s2s_{instance_id}",
+                    "-j", "ACCEPT",
+                ])
+            logger.info(f"  Site-to-site NAT-exempt for LANs: {s2s_lans} <-> {subnet}")
+
+        # MASQUERADE for non-exempt traffic (internet in full tunnel; split routes; or
+        # traffic that didn't match any S2S ACCEPT above).
         if tunnel_mode == "split" and routes:
             for route in routes:
                 network = route.get('network') if isinstance(route, dict) else route
@@ -895,10 +1263,12 @@ class OpenVPNService:
                         "-A", nat_chain, "-s", subnet, "-d", network, "-o", out_iface, "-j", "MASQUERADE"
                     ])
         else:
+            # Full tunnel: masquerade remaining traffic (internet-bound; LAN traffic was
+            # already handled by S2S ACCEPT rules above if site_to_site is set).
             core_iptables.run_safe("nat", [
                 "-A", nat_chain, "-s", subnet, "-o", wan_interface, "-j", "MASQUERADE"
             ])
-        
+
         # Ensure only one RETURN at end of NAT chain
         core_iptables.run_safe("nat", ["-D", nat_chain, "-j", "RETURN"], suppress_errors=True)
         core_iptables.run_safe("nat", ["-A", nat_chain, "-j", "RETURN"])
@@ -916,35 +1286,73 @@ class OpenVPNService:
         return True
     
     @staticmethod
-    def remove_instance_firewall_rules(instance_id: str, interface: str = None) -> bool:
-        """Remove firewall rules for an instance.
-        
-        Args:
-            instance_id: The instance ID
-            interface: The VPN interface name (e.g., tun0). If not provided,
-                      falls back to non-interface-filtered removal.
+    def apply_client_remote_lan_rules(instance_id: str, client_name: str, remote_lans: list) -> None:
+        """Add ACCEPT rules in the instance FORWARD chain for each remote_lan CIDR.
+
+        Needed for split-tunnel: traffic from behind-client networks arrives with a
+        source IP outside the VPN subnet, so the generic drop-at-end-of-chain would
+        block it. These rules are inserted before the final DROP.
         """
+        chain_id = instance_id.replace('ovpn_', '') if instance_id.startswith('ovpn_') else instance_id
+        forward_chain = f"OVPN_{chain_id}_FWD"
+        for lan in (remote_lans or []):
+            # Idempotent: remove first, then re-add
+            core_iptables.run_safe("filter", [
+                "-D", forward_chain, "-s", lan,
+                "-m", "comment", "--comment", f"rl_{client_name}",
+                "-j", "ACCEPT",
+            ], suppress_errors=True)
+            core_iptables.run_safe("filter", [
+                "-I", forward_chain, "1",
+                "-s", lan,
+                "-m", "comment", "--comment", f"rl_{client_name}",
+                "-j", "ACCEPT",
+            ])
+            logger.info(f"  Remote LAN rule: -s {lan} -j ACCEPT (rl_{client_name})")
+
+    @staticmethod
+    def remove_client_remote_lan_rules(instance_id: str, client_name: str, remote_lans: list) -> None:
+        """Remove per-client remote_lan ACCEPT rules from the instance FORWARD chain."""
+        chain_id = instance_id.replace('ovpn_', '') if instance_id.startswith('ovpn_') else instance_id
+        forward_chain = f"OVPN_{chain_id}_FWD"
+        for lan in (remote_lans or []):
+            core_iptables.run_safe("filter", [
+                "-D", forward_chain, "-s", lan,
+                "-m", "comment", "--comment", f"rl_{client_name}",
+                "-j", "ACCEPT",
+            ], suppress_errors=True)
+
+    @staticmethod
+    def remove_instance_firewall_rules(instance_id: str, interface: str = None,
+                                        client_lan_interfaces: list = None) -> bool:
+        """Remove firewall rules for an instance."""
         chain_id = instance_id.replace('tun', '') if instance_id.startswith('tun') else instance_id
         input_chain = f"OVPN_{chain_id}_INPUT"
         forward_chain = f"OVPN_{chain_id}_FWD"
         nat_chain = f"OVPN_{chain_id}_NAT"
-        
+
         # Remove INPUT jump
         core_iptables.run_safe("filter", [
             "-D", OpenVPNService.OVPN_INPUT_CHAIN, "-j", input_chain
         ], suppress_errors=True)
-        
-        # Remove FORWARD jumps - try both interface-filtered and non-filtered for compatibility
+
+        # Remove FORWARD jumps
         if interface:
             core_iptables.remove_interface_jump_rule(
                 OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
-                input_interface=interface
+                input_interface=interface,
             )
             core_iptables.remove_interface_jump_rule(
                 OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
-                output_interface=interface
+                output_interface=interface,
             )
-        # Also try removing non-filtered jump (for legacy cleanup)
+        # Client-mode LAN interface jumps
+        for lan in (client_lan_interfaces or []):
+            core_iptables.remove_interface_jump_rule(
+                OpenVPNService.OVPN_FORWARD_CHAIN, forward_chain, "filter",
+                input_interface=lan,
+            )
+        # Fallback: non-filtered jump (legacy / server mode)
         core_iptables.run_safe("filter", [
             "-D", OpenVPNService.OVPN_FORWARD_CHAIN, "-j", forward_chain
         ], suppress_errors=True)
