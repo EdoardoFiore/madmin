@@ -1,0 +1,85 @@
+{
+    "id": "reverseproxy",
+    "name": "Reverse Proxy",
+    "version": "1.0.0",
+    "description": "Reverse proxy manager (nginx) con access list HTTP basic + IP allow/deny e certificati Let's Encrypt",
+    "author": "MADMIN Team",
+    "openapi_tag_description": "Reverse Proxy — gestione proxy host nginx, access list (auth + IP) e certificati Let's Encrypt.",
+    "system_dependencies": {
+        "apt": [
+            "nginx",
+            "certbot",
+            "apache2-utils"
+        ],
+        "pip": [
+            "jinja2>=3.0"
+        ]
+    },
+    "database_migrations": [
+        "migrations/001_initial.py"
+    ],
+    "install_hooks": {
+        "post_install": "hooks/post_install.py",
+        "on_disable": "hooks/on_disable.py"
+    },
+    "backend_router": "router.py",
+    "static_dir": "static",
+    "frontend_entry": "views/main.js",
+    "permissions": [
+        {
+            "slug": "reverseproxy.view",
+            "description": "Visualizza proxy host, access list e certificati"
+        },
+        {
+            "slug": "reverseproxy.manage",
+            "description": "Crea, modifica ed elimina proxy host"
+        },
+        {
+            "slug": "reverseproxy.access_lists",
+            "description": "Gestione access list (auth e IP rules)"
+        },
+        {
+            "slug": "reverseproxy.certs",
+            "description": "Emissione e revoca certificati Let's Encrypt"
+        }
+    ],
+    "menu": [
+        {
+            "label": "Reverse Proxy",
+            "icon": "https://www.svgrepo.com/show/340712/network-3.svg",
+            "route": "#reverseproxy"
+        }
+    ],
+    "firewall_chains": [
+        {
+            "name": "MOD_REVPROXY_INPUT",
+            "parent": "INPUT",
+            "priority": 40
+        }
+    ],
+    "config_export": {
+        "tables": [
+            "revproxy_host",
+            "revproxy_host_domain",
+            "revproxy_access_list",
+            "revproxy_access_list_auth",
+            "revproxy_access_list_rule",
+            "revproxy_certificate"
+        ],
+        "irrecoverable_files": [
+            "/etc/letsencrypt/live/madmin-*",
+            "/etc/letsencrypt/archive/madmin-*",
+            "/etc/nginx/madmin-revproxy/htpasswd/*"
+        ],
+        "post_restore": "hooks/post_restore.py"
+    },
+    "dashboard_widgets": [
+        {
+            "id": "revproxy_status",
+            "title": "Reverse Proxy",
+            "col": 6,
+            "permission": "reverseproxy.view"
+        }
+    ],
+    "dependencies": []
+}

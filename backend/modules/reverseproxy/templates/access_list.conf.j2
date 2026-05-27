@@ -1,0 +1,18 @@
+# Managed by MADMIN reverseproxy module - access list {{ acl.id }} ({{ acl.name }})
+# Included from proxy_host vhosts via `include`.
+
+{% if acl.auths %}
+auth_basic "Restricted - {{ acl.name }}";
+auth_basic_user_file /etc/nginx/madmin-revproxy/htpasswd/{{ acl.id }};
+{% endif %}
+
+{% if acl.rules %}
+{% for rule in acl.rules %}
+{{ rule.action }} {{ rule.subject }};
+{% endfor %}
+deny all;
+{% endif %}
+
+{% if acl.auths and acl.rules and acl.satisfy_any %}
+satisfy any;
+{% endif %}

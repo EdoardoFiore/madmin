@@ -1,0 +1,41 @@
+    # --- Proxy body (shared between :80 and :443) ---
+
+    {% if host.block_exploits %}
+    # Basic exploit blocking
+    if ($request_uri ~* "(\.\.\/|\.git|\.env|/wp-admin|/xmlrpc\.php)") {
+        return 444;
+    }
+    {% endif %}
+
+    {% if acl %}
+    include /etc/nginx/madmin-revproxy/snippets/acl-{{ acl.id }}.conf;
+    {% endif %}
+
+    location / {
+        {% if host.websockets_support %}
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        {% endif %}
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        {% if acl and acl.pass_auth_to_upstream %}
+        proxy_set_header Authorization $http_authorization;
+        proxy_pass_header Authorization;
+        {% endif %}
+
+        {% if host.caching_enabled %}
+        proxy_cache_bypass $http_upgrade;
+        {% endif %}
+
+        proxy_pass {{ host.forward_scheme }}://{{ host.forward_host }}:{{ host.forward_port }};
+    }
+
+    {% if host.custom_nginx_config %}
+    # --- Custom nginx configuration ---
+{{ host.custom_nginx_config }}
+    {% endif %}

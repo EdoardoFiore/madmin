@@ -1,0 +1,19 @@
+# Managed by MADMIN reverseproxy module - ACME catch-all
+# Serves .well-known/acme-challenge for any domain on :80 when no other
+# madmin-* vhost matches. Required for Let's Encrypt HTTP-01.
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/madmin-acme;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    location / {
+        return 404;
+    }
+}

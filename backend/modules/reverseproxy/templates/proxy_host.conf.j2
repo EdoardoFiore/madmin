@@ -1,0 +1,57 @@
+# Managed by MADMIN reverseproxy module - host {{ host.id }}
+# DO NOT EDIT MANUALLY: changes will be overwritten on next apply.
+
+{% set server_names = domains | join(' ') %}
+{% set has_cert = cert is not none %}
+
+{% if host.force_https and has_cert %}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ server_names }};
+
+    # ACME challenge always served over HTTP
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/madmin-acme;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+{% else %}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ server_names }};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/madmin-acme;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    {% if not has_cert %}
+{{ proxy_block }}
+    {% endif %}
+}
+{% endif %}
+
+{% if has_cert %}
+server {
+    listen 443 ssl{% if host.http2_support %} http2{% endif %};
+    listen [::]:443 ssl{% if host.http2_support %} http2{% endif %};
+    server_name {{ server_names }};
+
+    ssl_certificate {{ cert.cert_path }};
+    ssl_certificate_key {{ cert.key_path }};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:MADMIN_SSL:10m;
+    ssl_session_timeout 1d;
+
+{{ proxy_block }}
+}
+{% endif %}
