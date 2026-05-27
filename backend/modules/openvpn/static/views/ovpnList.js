@@ -42,7 +42,7 @@ export async function renderOvpnList(container, canManage) {
                     <button class="btn btn-primary" id="btn-new-instance">
                         <i class="ti ti-plus me-1"></i>${t('openvpn.newInstance')}
                     </button>
-                    <button type="button" class="btn btn-primary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false">
+                    <button type="button" class="btn btn-primary dropdown-toggle dropdown-toggle-split" id="btn-new-instance-toggle" aria-expanded="false">
                         <span class="visually-hidden">Toggle</span>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end">
@@ -191,25 +191,6 @@ export async function renderOvpnList(container, canManage) {
                                 <input type="file" class="form-control" id="import-file" accept=".ovpn,.conf">
                             </div>
                             <div class="mb-3">
-                                <label class="form-label">${t('openvpn.tunnelMode')}</label>
-                                <div class="row g-2">
-                                    <div class="col-6">
-                                        <input type="radio" class="btn-check" name="import-tunnel-mode" id="import-tunnel-full" value="full" checked>
-                                        <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="import-tunnel-full">
-                                            <i class="ti ti-world me-2"></i><strong>${t('openvpn.fullTunnel')}</strong><br>
-                                            <small class="opacity-75">${t('openvpn.fullTunnelDesc')}</small>
-                                        </label>
-                                    </div>
-                                    <div class="col-6">
-                                        <input type="radio" class="btn-check" name="import-tunnel-mode" id="import-tunnel-split" value="split">
-                                        <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="import-tunnel-split">
-                                            <i class="ti ti-route me-2"></i><strong>${t('openvpn.splitTunnel')}</strong><br>
-                                            <small class="opacity-75">${t('openvpn.importSplitTunnelDesc')}</small>
-                                        </label>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="mb-3">
                                 <label class="form-label">${t('openvpn.importLanLabel')}</label>
                                 <div id="import-lan-interfaces" class="d-flex flex-wrap gap-2">
                                     <span class="text-muted small">${t('openvpn.loading')}</span>
@@ -253,9 +234,12 @@ export async function renderOvpnList(container, canManage) {
         </div>
     `;
 
-    // Bootstrap 5 needs explicit init for dropdowns injected dynamically
-    const ddToggle = container.querySelector('[data-bs-toggle="dropdown"]');
-    if (ddToggle) new bootstrap.Dropdown(ddToggle);
+    // Bootstrap 5: init split dropdown manually (data-bs-toggle removed to prevent data-api double-toggle)
+    const ddToggle = container.querySelector('#btn-new-instance-toggle');
+    if (ddToggle) {
+        const dd = new bootstrap.Dropdown(ddToggle);
+        ddToggle.addEventListener('click', () => dd.toggle());
+    }
 
     await loadInstances();
     setupCreateForm();
@@ -547,14 +531,14 @@ async function runImportDryRun() {
         const fd = new FormData();
         fd.append('config', fileInput.files[0]);
         fd.append('name', name);
-        fd.append('tunnel_mode', document.querySelector('input[name="import-tunnel-mode"]:checked').value);
+        fd.append('tunnel_mode', 'split');
         fd.append('client_lan_interfaces', JSON.stringify([]));
 
         const preview = await apiPostForm(`${MODULE_API}/instances/import?dry_run=true`, fd);
 
         // Show credentials section if needed
         const credsSection = document.getElementById('import-credentials-section');
-        if (preview.auth_user_pass_required) {
+        if (preview.auth_required) {
             credsSection.style.display = '';
             credsSection.open = true;
         }
@@ -564,13 +548,13 @@ async function runImportDryRun() {
         infoEl.innerHTML = `
             <strong>${t('openvpn.importPreviewTitle')}</strong><br>
             <ul class="mb-0 mt-1">
-                <li>${t('openvpn.publicEndpointLabel')}: <code>${escapeHtml(preview.remote_host || '–')}:${preview.remote_port || '–'}</code></li>
+                <li>${t('openvpn.publicEndpointLabel')}: <code>${escapeHtml(preview.endpoint || '–')}</code></li>
                 <li>${t('openvpn.protocol')}: <code>${escapeHtml(preview.proto || '–')}</code></li>
                 <li>CA: ${preview.has_ca ? '<span class="text-success">✓</span>' : `<span class="text-danger">✗ ${t('openvpn.importPreviewMissing')}</span>`}</li>
                 <li>${t('openvpn.importPreviewClientCert')}: ${preview.has_cert ? '<span class="text-success">✓</span>' : '<span class="text-muted">–</span>'}</li>
                 <li>${t('openvpn.importPreviewPrivKey')}: ${preview.has_key ? '<span class="text-success">✓</span>' : '<span class="text-muted">–</span>'}</li>
                 <li>${t('openvpn.importPreviewTls')}: ${preview.has_tls ? '<span class="text-success">✓</span>' : '<span class="text-muted">–</span>'}</li>
-                ${preview.auth_user_pass_required ? `<li><span class="text-warning">${t('openvpn.importAuthRequired')}</span></li>` : ''}
+                ${preview.auth_required ? `<li><span class="text-warning">${t('openvpn.importAuthRequired')}</span></li>` : ''}
             </ul>
         `;
         document.getElementById('import-preview').style.display = 'block';
@@ -596,7 +580,7 @@ async function runImportDryRun() {
 async function runImport() {
     const name = document.getElementById('import-name').value.trim();
     const fileInput = document.getElementById('import-file');
-    const tunnelMode = document.querySelector('input[name="import-tunnel-mode"]:checked').value;
+    const tunnelMode = 'split';
     const selectedLans = [...document.querySelectorAll('.import-lan-iface:checked')].map(cb => cb.value);
     const authUser = document.getElementById('import-auth-user')?.value.trim();
     const authPass = document.getElementById('import-auth-pass')?.value;

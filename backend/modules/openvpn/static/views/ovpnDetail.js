@@ -866,8 +866,8 @@ async function renderClientModeDetail(container, instance, canManage) {
                             <i class="ti ti-player-${isRunning ? 'stop' : 'play'} me-1"></i>
                             ${isRunning ? t('openvpn.stop') : t('openvpn.start')}
                         </button>
-                        <button class="btn btn-outline-secondary" id="btn-reconnect" title="Riconnetti">
-                            <i class="ti ti-refresh me-1"></i>Riconnetti
+                        <button class="btn btn-outline-secondary" id="btn-reconnect" title="${t('openvpn.clientModeReconnect')}">
+                            <i class="ti ti-refresh me-1"></i>${t('openvpn.clientModeReconnect')}
                         </button>
                         <button class="btn btn-outline-danger" onclick="deleteInstance('${instance.id}')">
                             <i class="ti ti-trash"></i>
@@ -884,17 +884,17 @@ async function renderClientModeDetail(container, instance, canManage) {
                         </span>
                     </div>
                     <div class="col-md-3">
-                        <span class="text-muted">Tunnel upstream</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeUpstreamTunnel')}</span><br>
                         <span id="upstream-status-badge" class="badge ${instance.upstream_status === 'connected' ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6">
-                            ${escapeHtml(instance.upstream_status || 'sconosciuto')}
+                            ${escapeHtml(instance.upstream_status || t('openvpn.statusUnknown'))}
                         </span>
                     </div>
                     <div class="col-md-3">
-                        <span class="text-muted">Endpoint</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeEndpoint')}</span><br>
                         <code>${escapeHtml(instance.upstream_endpoint || '–')}</code>
                     </div>
                     <div class="col-md-3">
-                        <span class="text-muted">Ultimo handshake</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeLastHandshake')}</span><br>
                         <span id="upstream-last-handshake" class="text-muted small">
                             ${instance.upstream_last_handshake ? formatTimeAgo(instance.upstream_last_handshake) : '–'}
                         </span>
@@ -903,21 +903,21 @@ async function renderClientModeDetail(container, instance, canManage) {
                 <hr>
                 <div class="row">
                     <div class="col-md-6">
-                        <span class="text-muted">LAN interfaces nel tunnel</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeLanInterfaces')}</span><br>
                         ${(instance.client_lan_interfaces || []).length
                             ? instance.client_lan_interfaces.map(i => `<code class="badge bg-azure-lt me-1">${escapeHtml(i)}</code>`).join('')
-                            : '<span class="text-muted small">Nessuna (solo traffico locale)</span>'}
+                            : `<span class="text-muted small">${t('openvpn.clientModeNoLan')}</span>`}
                     </div>
                     <div class="col-md-3">
-                        <span class="text-muted">Tunnel mode</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeTunnelMode')}</span><br>
                         <span class="badge ${instance.tunnel_mode === 'full' ? 'bg-blue' : 'bg-purple'}-lt">
                             ${instance.tunnel_mode === 'full' ? t('openvpn.fullTunnel') : t('openvpn.splitTunnel')}
                         </span>
                     </div>
                     <div class="col-md-3">
-                        <span class="text-muted">Auto-restart</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeAutoRestart')}</span><br>
                         <span class="badge ${instance.auto_restart ? 'bg-success-lt' : 'bg-secondary-lt'}">
-                            ${instance.auto_restart ? 'Attivo' : 'Disattivo'}
+                            ${instance.auto_restart ? t('openvpn.clientModeActive') : t('openvpn.clientModeInactive')}
                         </span>
                     </div>
                 </div>
@@ -927,13 +927,13 @@ async function renderClientModeDetail(container, instance, canManage) {
         <!-- Live status card (refreshable) -->
         <div class="card mb-3" id="upstream-live-card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h4 class="card-title mb-0"><i class="ti ti-activity me-2"></i>Stato connessione</h4>
+                <h4 class="card-title mb-0"><i class="ti ti-activity me-2"></i>${t('openvpn.clientModeConnectionStatus')}</h4>
                 <button class="btn btn-sm btn-outline-secondary" id="btn-refresh-status">
                     <i class="ti ti-refresh"></i>
                 </button>
             </div>
             <div class="card-body" id="upstream-live-content">
-                <div class="text-muted text-center py-3">Clicca aggiorna per verificare lo stato</div>
+                <div class="text-muted text-center py-3">${t('openvpn.clientModeClickRefresh')}</div>
             </div>
         </div>
     `;
@@ -942,15 +942,15 @@ async function renderClientModeDetail(container, instance, canManage) {
     document.getElementById('btn-reconnect')?.addEventListener('click', async () => {
         const btn = document.getElementById('btn-reconnect');
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Riconnessione...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('openvpn.clientModeReconnecting')}`;
         try {
             await apiPost(`${MODULE_API}/instances/${instance.id}/reconnect`);
-            showToast('Riconnessione avviata', 'success');
+            showToast(t('openvpn.clientModeReconnectStarted'), 'success');
             setTimeout(() => renderClientModeDetail(container, { ...instance }, canManage), 2000);
         } catch (err) {
             showToast(err.message, 'error');
             btn.disabled = false;
-            btn.innerHTML = '<i class="ti ti-refresh me-1"></i>Riconnetti';
+            btn.innerHTML = `<i class="ti ti-refresh me-1"></i>${t('openvpn.clientModeReconnect')}`;
         }
     });
 
@@ -960,26 +960,26 @@ async function renderClientModeDetail(container, instance, canManage) {
         liveContent.innerHTML = '<div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span></div>';
         try {
             const status = await apiGet(`${MODULE_API}/instances/${instance.id}/upstream-status`);
-            document.getElementById('upstream-status-badge').textContent = status.state || 'sconosciuto';
+            document.getElementById('upstream-status-badge').textContent = status.state || t('openvpn.statusUnknown');
             document.getElementById('upstream-status-badge').className =
                 `badge ${status.connected ? 'bg-success-lt' : 'bg-secondary-lt'} fs-6`;
             liveContent.innerHTML = `
                 <div class="row">
                     <div class="col-md-3">
-                        <span class="text-muted">Stato</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeStatus')}</span><br>
                         <span class="badge ${status.connected ? 'bg-success-lt' : 'bg-secondary-lt'}">
                             ${escapeHtml(status.state || '–')}
                         </span>
                     </div>
                     ${status.tunnel_ip ? `<div class="col-md-3">
-                        <span class="text-muted">IP tunnel</span><br><code>${escapeHtml(status.tunnel_ip)}</code>
+                        <span class="text-muted">${t('openvpn.clientModeTunnelIp')}</span><br><code>${escapeHtml(status.tunnel_ip)}</code>
                     </div>` : ''}
                     ${status.bytes_in != null ? `<div class="col-md-3">
-                        <span class="text-muted">Traffic in</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeTrafficIn')}</span><br>
                         <span class="text-success"><i class="ti ti-arrow-down me-1"></i>${formatBytes(status.bytes_in)}</span>
                     </div>
                     <div class="col-md-3">
-                        <span class="text-muted">Traffic out</span><br>
+                        <span class="text-muted">${t('openvpn.clientModeTrafficOut')}</span><br>
                         <span class="text-primary"><i class="ti ti-arrow-up me-1"></i>${formatBytes(status.bytes_out || 0)}</span>
                     </div>` : ''}
                 </div>
@@ -1026,7 +1026,7 @@ function createS2SPanel(instance, canManage) {
     const lans = (instance.site_to_site_lans || []).join('\n');
     panel.innerHTML = `
         <div class="card-header">
-            <h4 class="card-title mb-0"><i class="ti ti-network me-2"></i>Site-to-Site (routing bidirezionale)</h4>
+            <h4 class="card-title mb-0"><i class="ti ti-network me-2"></i>${t('openvpn.s2sTitle')}</h4>
         </div>
         <div class="card-body">
             <div class="d-flex align-items-start mb-3">
@@ -1034,19 +1034,19 @@ function createS2SPanel(instance, canManage) {
                     <input class="form-check-input" type="checkbox" id="s2s-enabled" ${isEnabled ? 'checked' : ''} ${!canManage ? 'disabled' : ''}>
                 </div>
                 <div>
-                    <strong>NAT-exempt: LAN ↔ VPN senza MASQUERADE</strong><br>
-                    <small class="text-muted">I dispositivi sulla LAN locale possono comunicare direttamente con i client VPN (e viceversa).</small>
+                    <strong>${t('openvpn.s2sNatExemptLabel')}</strong><br>
+                    <small class="text-muted">${t('openvpn.s2sNatExemptDesc')}</small>
                 </div>
             </div>
             <div id="s2s-config" ${!isEnabled ? 'style="display:none;"' : ''}>
                 <div class="mb-3">
-                    <label class="form-label">LAN CIDR partecipanti (una per riga)</label>
-                    <textarea class="form-control" id="s2s-lans" rows="3" placeholder="192.168.10.0/24" ${!canManage ? 'readonly' : ''}>${escapeHtml(lans)}</textarea>
-                    <small class="form-hint">Subnet locali che devono raggiungere i client VPN in modo bidirezionale</small>
+                    <label class="form-label">${t('openvpn.s2sLanCidrLabel')}</label>
+                    <textarea class="form-control" id="s2s-lans" rows="3" placeholder="${t('openvpn.s2sLanCidrPlaceholder')}" ${!canManage ? 'readonly' : ''}>${escapeHtml(lans)}</textarea>
+                    <small class="form-hint">${t('openvpn.s2sLanCidrHint')}</small>
                 </div>
             </div>
             ${canManage ? `<button class="btn btn-primary mt-2" id="btn-save-s2s">
-                <i class="ti ti-device-floppy me-1"></i>Salva configurazione
+                <i class="ti ti-device-floppy me-1"></i>${t('openvpn.s2sSave')}
             </button>` : ''}
         </div>
     `;
@@ -1068,15 +1068,15 @@ function setupS2SHandlers(instance, canManage, canClients) {
             .split('\n').map(s => s.trim()).filter(s => s);
         const btn = document.getElementById('btn-save-s2s');
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvataggio...';
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('openvpn.s2sSaving')}`;
         try {
             await apiPatch(`${MODULE_API}/instances/${instance.id}/site-to-site`, { enabled, lans });
-            showToast('Site-to-site aggiornato', 'success');
+            showToast(t('openvpn.s2sUpdated'), 'success');
             if (currentContainer) renderInstanceDetail(currentContainer, canManage, canClients);
         } catch (err) {
             showToast(err.message, 'error');
             btn.disabled = false;
-            btn.innerHTML = '<i class="ti ti-device-floppy me-1"></i>Salva configurazione';
+            btn.innerHTML = `<i class="ti ti-device-floppy me-1"></i>${t('openvpn.s2sSave')}`;
         }
     });
 }

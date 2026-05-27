@@ -35,7 +35,7 @@ export async function renderWgList(container, canManage) {
                     <button class="btn btn-primary" id="btn-new-instance">
                         <i class="ti ti-plus me-1"></i>${t('wireguard.newInstance')}
                     </button>
-                    <button type="button" class="btn btn-primary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false">
+                    <button type="button" class="btn btn-primary dropdown-toggle dropdown-toggle-split" id="btn-new-instance-toggle" aria-expanded="false">
                         <span class="visually-hidden">Toggle</span>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end">
@@ -150,25 +150,6 @@ export async function renderWgList(container, canManage) {
                                 <input type="file" class="form-control" id="import-file" accept=".conf">
                             </div>
                             <div class="mb-3">
-                                <label class="form-label">${t('wireguard.tunnelMode')}</label>
-                                <div class="row g-2">
-                                    <div class="col-6">
-                                        <input type="radio" class="btn-check" name="import-tunnel-mode" id="import-tunnel-full" value="full" checked>
-                                        <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="import-tunnel-full">
-                                            <i class="ti ti-world me-2"></i><strong>${t('wireguard.fullTunnel')}</strong><br>
-                                            <small class="opacity-75">${t('wireguard.fullTunnelDesc')}</small>
-                                        </label>
-                                    </div>
-                                    <div class="col-6">
-                                        <input type="radio" class="btn-check" name="import-tunnel-mode" id="import-tunnel-split" value="split">
-                                        <label class="btn btn-outline-primary w-100 text-start py-2 d-block" for="import-tunnel-split">
-                                            <i class="ti ti-route me-2"></i><strong>${t('wireguard.splitTunnel')}</strong><br>
-                                            <small class="opacity-75">${t('wireguard.importSplitTunnelDesc')}</small>
-                                        </label>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="mb-3">
                                 <label class="form-label">${t('wireguard.importLanLabel')}</label>
                                 <div id="import-lan-interfaces" class="d-flex flex-wrap gap-2">
                                     <span class="text-muted small">${t('wireguard.loading')}</span>
@@ -197,9 +178,12 @@ export async function renderWgList(container, canManage) {
         </div>
     `;
 
-    // Bootstrap 5 needs explicit init for dropdowns injected dynamically
-    const ddToggle = container.querySelector('[data-bs-toggle="dropdown"]');
-    if (ddToggle) new bootstrap.Dropdown(ddToggle);
+    // Bootstrap 5: init split dropdown manually (data-bs-toggle removed to prevent data-api double-toggle)
+    const ddToggle = container.querySelector('#btn-new-instance-toggle');
+    if (ddToggle) {
+        const dd = new bootstrap.Dropdown(ddToggle);
+        ddToggle.addEventListener('click', () => dd.toggle());
+    }
 
     await loadInstances(canManage);
     setupCreateForm(canManage);
@@ -524,7 +508,7 @@ async function runImportDryRun() {
         const fd = new FormData();
         fd.append('config', fileInput.files[0]);
         fd.append('name', name);
-        fd.append('tunnel_mode', document.querySelector('input[name="import-tunnel-mode"]:checked').value);
+        fd.append('tunnel_mode', 'split');
         fd.append('client_lan_interfaces', JSON.stringify([]));
 
         const preview = await apiPostForm(`${MODULE_API}/instances/import?dry_run=true`, fd);
@@ -567,7 +551,7 @@ async function runImportDryRun() {
 async function runImport(canManage) {
     const name = document.getElementById('import-name').value.trim();
     const fileInput = document.getElementById('import-file');
-    const tunnelMode = document.querySelector('input[name="import-tunnel-mode"]:checked').value;
+    const tunnelMode = 'split';
     const selectedLans = [...document.querySelectorAll('.import-lan-iface:checked')].map(cb => cb.value);
 
     const btn = document.getElementById('btn-import-confirm');
