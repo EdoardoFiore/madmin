@@ -33,6 +33,33 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _apply_chain_rules() -> None:
+    """Apply port 80/443 ACCEPT rules to MOD_REVPROXY_INPUT.
+
+    Called at module import time so rules are re-applied on every app
+    startup — AFTER the orchestrator calls create_chain (which does NOT
+    flush an existing chain), preserving these rules.
+    """
+    try:
+        from core.firewall import iptables as core_iptables
+        chain = "MOD_REVPROXY_INPUT"
+        core_iptables.create_or_flush_chain(chain, "filter")
+        core_iptables.run_safe("filter", [
+            "-A", chain, "-p", "tcp", "--dport", "80",
+            "-j", "ACCEPT", "-m", "comment", "--comment", "madmin-revproxy:80",
+        ])
+        core_iptables.run_safe("filter", [
+            "-A", chain, "-p", "tcp", "--dport", "443",
+            "-j", "ACCEPT", "-m", "comment", "--comment", "madmin-revproxy:443",
+        ])
+        logger.info("Reverse Proxy: firewall rules applied to %s (80, 443)", chain)
+    except Exception as e:
+        logger.warning("Reverse Proxy: could not apply firewall rules at import: %s", e)
+
+
+_apply_chain_rules()
+
+
 # ============================================================================
 # Helpers
 # ============================================================================

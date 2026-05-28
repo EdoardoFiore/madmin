@@ -5,11 +5,10 @@ Reverse Proxy Module - Post Install Hook
 - Creates working dirs (madmin-revproxy, ACME webroot).
 - Installs the ACME catch-all vhost.
 - Whitelists nginx for systemd control.
-- Opens 80/443 on MOD_REVPROXY_INPUT.
 - Idempotent: regenerates all DB-tracked vhosts on re-enable.
+Note: firewall rules (80/443) are applied by router.py at import time.
 """
 import os
-import subprocess
 import logging
 from pathlib import Path
 
@@ -69,24 +68,9 @@ async def run():
     if "nginx.service" not in SystemdService.ALLOWED_SERVICES:
         SystemdService.ALLOWED_SERVICES.append("nginx.service")
 
-    # 5) Open ports 80/443 in MOD_REVPROXY_INPUT.
-    #    Idempotent: flush the chain first, then re-add the two ACCEPT rules.
-    try:
-        from core.firewall import iptables as core_iptables
-        chain = "MOD_REVPROXY_INPUT"
-        core_iptables.create_or_flush_chain(chain, "filter")
-        core_iptables.run_safe("filter", [
-            "-A", chain, "-p", "tcp", "--dport", "80",
-            "-j", "ACCEPT", "-m", "comment", "--comment", "madmin-revproxy:80",
-        ])
-        core_iptables.run_safe("filter", [
-            "-A", chain, "-p", "tcp", "--dport", "443",
-            "-j", "ACCEPT", "-m", "comment", "--comment", "madmin-revproxy:443",
-        ])
-        logger.info("Reverse Proxy post-install: firewall rules added to %s (80, 443)", chain)
-    except Exception as e:
-        logger.error("Reverse Proxy post-install: firewall rules failed: %s", e)
-        return False
+    # 5) Firewall rules (80/443) are applied by router.py at import time on
+    #    every startup. post_install runs before register_module_chains() which
+    #    would flush any rules added here, so rule setup belongs in the router.
 
     # 6) Install certbot deploy-hook so nginx reloads after every renewal
     try:
