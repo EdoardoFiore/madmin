@@ -17,6 +17,7 @@
    - [DHCP Server](#63-dhcp-server)
    - [DNS Server](#64-dns-server)
    - [IPsec VPN (StrongSwan)](#65-ipsec-vpn-strongswan)
+   - [Reverse Proxy](#66-reverse-proxy)
 7. [Crontab (Attività Pianificate)](#7-crontab-attività-pianificate)
 8. [Log e Audit](#8-log-e-audit)
 9. [Impostazioni](#9-impostazioni)
@@ -486,6 +487,116 @@ Le regole sono riordinabili con drag-and-drop: vengono valutate dall'alto verso 
 1. Policy Inbound → **ACCEPT**
 2. Regola: Direzione `Inbound`, Azione `DROP`, Protocollo `TCP`, Porta `22`
 3. Posizionare la regola DROP sopra qualsiasi regola ACCEPT più generica
+
+---
+
+### 6.6 Reverse Proxy
+
+Il modulo Reverse Proxy gestisce un server nginx come proxy inverso per esporre servizi interni su internet (o sulla rete locale) con supporto a SSL/TLS automatico (Let's Encrypt), autenticazione HTTP e controllo accessi per IP.
+
+> **Prerequisito:** il modulo occupa le porte **80** e **443** del sistema. Se un altro servizio (o regola DNAT) le usa già, l'attivazione viene bloccata e viene mostrato un avviso con i dettagli del conflitto.
+
+#### Concetti base
+
+| Termine | Descrizione |
+|---------|-------------|
+| **Proxy Host** | Regola di proxy: uno o più domini sorgente → un backend |
+| **Backend** | Servizio interno a cui il traffico viene inoltrato (IP:porta) |
+| **Lista di Accesso** | Policy riutilizzabile di autenticazione e/o regole IP |
+| **Certificato** | Certificato TLS Let's Encrypt associato a un Proxy Host |
+
+L'interfaccia è divisa in tre tab: **Proxy Hosts**, **Liste di Accesso**, **Certificati SSL/TLS**.
+
+#### Stato del servizio
+
+In cima alla pagina è visibile un badge con lo stato nginx (**Attivo** / **Inattivo**). Se il modulo è stato bloccato a causa di un conflitto su porta 80/443, appare un banner arancione con la spiegazione.
+
+---
+
+#### Proxy Hosts
+
+##### Creare un Proxy Host
+
+1. Premere **Nuovo Host**.
+2. Nel tab **Dettagli**:
+   - **Domini sorgente**: uno o più nomi di dominio (es. `app.esempio.com`). Inserire e premere Invio o virgola per aggiungerne più di uno.
+   - **Schema**: `http` o `https` (protocollo verso il backend).
+   - **Host/IP backend**: indirizzo del servizio interno.
+   - **Porta backend**: porta del servizio interno (1–65535).
+   - **Lista di Accesso**: selezionare una lista preconfigurata oppure lasciare "Pubblica".
+   - **HTTP/2**: abilita HTTP/2 sul listener HTTPS.
+   - **Blocca exploit**: blocca percorsi pericolosi (`../, .git, .env, /wp-admin, /xmlrpc.php`).
+   - **WebSocket**: aggiunge gli header necessari per connessioni WebSocket.
+   - **Cache**: abilita il bypass della cache Nginx.
+3. Nel tab **SSL**:
+   - Se non esiste ancora un certificato, premere **Richiedi certificato Let's Encrypt** per ottenerne uno automaticamente.
+   - Dopo l'emissione è possibile abilitare **Forza HTTPS** (redirect automatico da HTTP).
+4. Nel tab **Avanzate**: inserire configurazione nginx personalizzata (snippet libero, aggiunto in fondo al blocco `location /`).
+5. Premere **Salva**.
+
+##### Gestire i Proxy Host
+
+| Azione | Descrizione |
+|--------|-------------|
+| **Modifica** (matita) | Apre il form di modifica |
+| **Abilita / Disabilita** | Attiva o rimuove il vhost da nginx senza eliminarlo |
+| **Richiedi / Rinnova cert** | Emette o rinnova il certificato Let's Encrypt |
+| **Revoca cert** | Revoca il certificato e lo rimuove dall'host |
+| **Elimina** | Rimuove host e vhost nginx (il certificato viene revocato se presente) |
+
+La colonna **TLS** mostra se il certificato è valido, in scadenza (< 30 giorni) o assente. La colonna **Accesso** mostra il nome della lista di accesso o "Pubblica".
+
+---
+
+#### Liste di Accesso
+
+Le liste di accesso sono policy riutilizzabili che combinano autenticazione HTTP Basic e regole IP allow/deny. Possono essere assegnate a uno o più Proxy Host.
+
+##### Creare una Lista di Accesso
+
+1. Premere **Nuova Lista**.
+2. Nel tab **Dettagli**:
+   - **Nome**: identificatore della lista.
+   - **Satisfy Any**: se attivo, basta soddisfare autenticazione *oppure* regola IP (nginx `satisfy any`); se disattivo, devono essere soddisfatte entrambe.
+   - **Passa auth al backend**: se attivo, l'header `Authorization` viene inoltrato al servizio interno.
+3. Nel tab **Autorizzazioni**: aggiungere coppie username/password per l'autenticazione HTTP Basic. Alla modifica, lasciare la password vuota per mantenerla invariata.
+4. Nel tab **Regole**: aggiungere regole IP.
+
+| Campo | Opzioni | Esempio |
+|-------|---------|---------|
+| **Azione** | `allow` / `deny` | `allow` |
+| **Indirizzo** | IP singolo o CIDR | `192.168.1.0/24` |
+| **Ordine** | Numero intero | `1` |
+
+> Se esistono regole IP, nginx aggiunge automaticamente `deny all` in fondo. Mettere prima le regole `allow` specifiche, poi eventuali `deny`.
+
+5. Premere **Salva**.
+
+Una lista può essere eliminata anche se è assegnata a degli host — verrà automaticamente dissociata.
+
+---
+
+#### Certificati SSL/TLS
+
+Il tab **Certificati** mostra tutti i certificati emessi con:
+- Domini coperti
+- Provider (`Let's Encrypt` o `Custom`)
+- Data di emissione e scadenza
+- Stato: **Valido** / **In scadenza** (< 30 giorni) / **Scaduto**
+
+Azioni disponibili: **Rinnova** (rilancia certbot) e **Revoca**.
+
+> Il rinnovo automatico è gestito da certbot tramite un hook installato in `/etc/letsencrypt/renewal-hooks/deploy/`. Non è necessario rinnovare manualmente se il dominio è raggiungibile dall'esterno sulla porta 80.
+
+---
+
+#### Come funziona internamente
+
+- nginx viene configurato con file in `/etc/nginx/madmin-revproxy/`.
+- Ogni Proxy Host genera un file `madmin-proxy-{id}.conf` in `/etc/nginx/sites-available/` con symlink in `sites-enabled/`.
+- Un vhost catch-all (`madmin-acme.conf`) serve le challenge ACME HTTP-01 su porta 80 per tutti i domini, anche prima che il certificato esista.
+- Le liste di accesso generano file htpasswd in `/etc/nginx/madmin-revproxy/htpasswd/` e snippet di configurazione in `/etc/nginx/madmin-revproxy/snippets/`.
+- Dopo ogni modifica nginx viene ricaricato automaticamente (`systemctl reload nginx`).
 
 ---
 
