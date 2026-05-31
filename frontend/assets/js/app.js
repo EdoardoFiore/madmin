@@ -273,18 +273,15 @@ async function loadSystemSettings() {
             document.head.appendChild(style);
         }
 
-        // Apply logo if set - show img and hide default icon
+        // Apply logo - use custom URL if set, otherwise default logo.png is already in src
+        const logoImg = document.getElementById('navbar-logo-img');
+        const mobileLogoImg = document.getElementById('mobile-logo-img');
         if (settings.logo_url && isSafeUrl(settings.logo_url)) {
-            const logoImg = document.getElementById('navbar-logo-img');
-            const logoDefault = document.getElementById('navbar-logo-default');
-            if (logoImg && logoDefault) {
-                logoImg.src = settings.logo_url;
-                logoImg.classList.remove('d-none');
-                logoDefault.classList.add('d-none');
-            }
+            if (logoImg) logoImg.src = settings.logo_url;
+            if (mobileLogoImg) mobileLogoImg.src = settings.logo_url;
         }
 
-        // Apply favicon if set (override default)
+        // Apply favicon if set (override default favicon.ico)
         if (settings.favicon_url && isSafeUrl(settings.favicon_url)) {
             const faviconLink = document.getElementById('favicon-link');
             if (faviconLink) {

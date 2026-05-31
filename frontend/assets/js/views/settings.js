@@ -77,11 +77,7 @@ export async function render(container) {
                                 <div class="d-flex align-items-center gap-3">
                                     <div id="logo-preview-container" class="border rounded p-2 d-flex align-items-center justify-content-center bg-dark"
                                          style="min-height: 50px; min-width: 120px;">
-                                        <img id="logo-preview-img" src="" class="d-none" style="max-height: 50px; max-width: 100%; object-fit: contain;">
-                                        <div id="logo-preview-default" class="text-primary d-flex align-items-center">
-                                            <i class="ti ti-server-cog" style="font-size: 1.5rem;"></i>
-                                            <span class="ms-2 text-white fw-bold">MADMIN</span>
-                                        </div>
+                                        <img id="logo-preview-img" src="/static/img/logo.png" style="max-height: 50px; max-width: 100%; object-fit: contain;">
                                     </div>
                                     ${canManage ? `
                                     <div class="btn-group">
@@ -102,8 +98,7 @@ export async function render(container) {
                                 <div class="d-flex align-items-center gap-3">
                                     <div id="favicon-preview-container" class="border rounded d-flex align-items-center justify-content-center bg-dark"
                                          style="width: 40px; height: 40px;">
-                                        <img id="favicon-preview-img" src="" class="d-none" style="height: 32px; width: 32px; object-fit: contain;">
-                                        <i id="favicon-preview-default" class="ti ti-server-cog text-primary"></i>
+                                        <img id="favicon-preview-img" src="/static/img/favicon.ico" style="height: 32px; width: 32px; object-fit: contain;">
                                     </div>
                                     ${canManage ? `
                                     <div class="btn-group">
@@ -540,26 +535,16 @@ async function loadSettings() {
         const myLangEl = document.getElementById('my-language');
         if (myLangEl) myLangEl.value = getLang();
 
-        // Logo preview - show uploaded image if URL exists (toggle img/default visibility)
-        if (system.logo_url) {
-            const logoImg = document.getElementById('logo-preview-img');
-            const logoDefault = document.getElementById('logo-preview-default');
-            if (logoImg && logoDefault) {
-                logoImg.src = system.logo_url;
-                logoImg.classList.remove('d-none');
-                logoDefault.classList.add('d-none');
-            }
+        // Logo preview - use custom URL if set, otherwise default
+        const logoPreviewImg = document.getElementById('logo-preview-img');
+        if (logoPreviewImg) {
+            logoPreviewImg.src = system.logo_url || '/static/img/logo.png';
         }
 
-        // Favicon preview - show uploaded image if URL exists
-        if (system.favicon_url) {
-            const faviconImg = document.getElementById('favicon-preview-img');
-            const faviconDefault = document.getElementById('favicon-preview-default');
-            if (faviconImg && faviconDefault) {
-                faviconImg.src = system.favicon_url;
-                faviconImg.classList.remove('d-none');
-                faviconDefault.classList.add('d-none');
-            }
+        // Favicon preview - use custom URL if set, otherwise default
+        const faviconPreviewImg = document.getElementById('favicon-preview-img');
+        if (faviconPreviewImg) {
+            faviconPreviewImg.src = system.favicon_url || '/static/img/favicon.ico';
         }
 
         // SMTP
@@ -699,17 +684,12 @@ function setupEventListeners() {
         } catch (e) { showToast(e.message, 'error'); }
     });
 
-    // Reset logo (remove custom)
+    // Reset logo (restore default)
     document.getElementById('reset-logo')?.addEventListener('click', async () => {
         try {
             await apiPatch('/settings/system', { logo_url: null });
-            // Restore default preview
             const logoImg = document.getElementById('logo-preview-img');
-            const logoDefault = document.getElementById('logo-preview-default');
-            if (logoImg && logoDefault) {
-                logoImg.classList.add('d-none');
-                logoDefault.classList.remove('d-none');
-            }
+            if (logoImg) logoImg.src = '/static/img/logo.png';
             showToast(t('settings.logoRemoved'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
@@ -718,13 +698,8 @@ function setupEventListeners() {
     document.getElementById('reset-favicon')?.addEventListener('click', async () => {
         try {
             await apiPatch('/settings/system', { favicon_url: null });
-            // Restore default preview
             const faviconImg = document.getElementById('favicon-preview-img');
-            const faviconDefault = document.getElementById('favicon-preview-default');
-            if (faviconImg && faviconDefault) {
-                faviconImg.classList.add('d-none');
-                faviconDefault.classList.remove('d-none');
-            }
+            if (faviconImg) faviconImg.src = '/static/img/favicon.ico';
             showToast(t('settings.faviconReset'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
@@ -733,16 +708,11 @@ function setupEventListeners() {
     document.getElementById('logo-upload')?.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (file) {
-            // Show preview immediately (toggle img/default visibility)
+            // Show preview immediately
             const reader = new FileReader();
             reader.onload = (ev) => {
                 const img = document.getElementById('logo-preview-img');
-                const defaultEl = document.getElementById('logo-preview-default');
-                if (img && defaultEl) {
-                    img.src = ev.target.result;
-                    img.classList.remove('d-none');
-                    defaultEl.classList.add('d-none');
-                }
+                if (img) img.src = ev.target.result;
             };
             reader.readAsDataURL(file);
 
@@ -773,16 +743,11 @@ function setupEventListeners() {
     document.getElementById('favicon-upload')?.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (file) {
-            // Show preview immediately (toggle img/default visibility)
+            // Show preview immediately
             const reader = new FileReader();
             reader.onload = (ev) => {
                 const img = document.getElementById('favicon-preview-img');
-                const defaultEl = document.getElementById('favicon-preview-default');
-                if (img && defaultEl) {
-                    img.src = ev.target.result;
-                    img.classList.remove('d-none');
-                    defaultEl.classList.add('d-none');
-                }
+                if (img) img.src = ev.target.result;
             };
             reader.readAsDataURL(file);
 
