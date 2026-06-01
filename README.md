@@ -1,5 +1,9 @@
 # MADMIN (Modular Admin System)
 
+<p align="center">
+  <img src="docs/banner.png" alt="MADMIN Banner" width="100%">
+</p>
+
 > **MADMIN** is a high-performance, modular administrative dashboard designed for Linux servers (Ubuntu 24.04). It provides a unified interface to manage system services, networks, VPN, firewall, and specialized components via a powerful plugin architecture.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
