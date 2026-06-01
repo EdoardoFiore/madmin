@@ -110,6 +110,7 @@ madmin/
 │       ├── dhcp/               # ISC DHCP Server (multi-subnet, reservations, leases)
 │       ├── dns/                # BIND9 (zones, records, conditional forwarding)
 │       ├── openvpn/            # OpenVPN multi-instance, PKI, groups, split tunnel
+│       ├── reverseproxy/       # Nginx reverse proxy (SSL/TLS, Let's Encrypt, access lists)
 │       ├── strongswan/         # IPsec site-to-site (strongSwan swanctl)
 │       └── wireguard/          # WireGuard multi-instance, QR codes, groups, split tunnel
 ├── frontend/
@@ -285,6 +286,7 @@ Swagger UI available at `/api/docs` when `DEBUG=true`.
 | `dhcp` | DHCP Server | 1.1.0 | ISC DHCP — multi-interface subnets, static reservations, active leases view |
 | `dns` | DNS Server | 1.1.0 | BIND9 — zone management, record editing, conditional forwarding |
 | `openvpn` | OpenVPN Manager | 1.2.0 | Multi-instance OpenVPN with PKI (easy-rsa), client/group management, per-group firewall, split tunnel |
+| `reverseproxy` | Reverse Proxy | 1.0.0 | Nginx-based reverse proxy — multiple hosts, Let's Encrypt SSL/TLS, HTTP basic auth, IP access lists, exploit blocking |
 | `wireguard` | WireGuard VPN | 1.4.0 | Multi-instance WireGuard with QR code export, client/group management, per-group firewall, split tunnel |
 | `strongswan` | IPsec VPN Manager | 1.1.0 | strongSwan site-to-site IKEv2/IPsec with per-Child-SA firewall chains |
 
@@ -295,6 +297,7 @@ Swagger UI available at `/api/docs` when `DEBUG=true`.
 | DHCP | `dhcp.view`, `dhcp.manage`, `dhcp.reservations` |
 | DNS | `dns.view`, `dns.manage`, `dns.zones`, `dns.records` |
 | OpenVPN | `openvpn.view`, `openvpn.manage`, `openvpn.clients`, `openvpn.groups` |
+| Reverse Proxy | `reverseproxy.view`, `reverseproxy.manage`, `reverseproxy.access_lists`, `reverseproxy.certs` |
 | WireGuard | `wireguard.view`, `wireguard.manage`, `wireguard.clients`, `wireguard.groups` |
 | IPsec | `ipsec.view`, `ipsec.manage` |
 
