@@ -892,6 +892,9 @@ function renderRuleRow(rule, orderedColumns) {
                                 title="${t('firewall.terminateSessionsHint')}">
                             <i class="ti ti-plug-x"></i>
                         </button>` : ''}
+                        <button class="btn btn-ghost-secondary btn-duplicate" title="${t('common.copy')}">
+                            <i class="ti ti-copy"></i>
+                        </button>
                         <button class="btn btn-ghost-primary btn-edit" title="${t('common.edit')}">
                             <i class="ti ti-edit"></i>
                         </button>
@@ -1043,6 +1046,15 @@ function setupRowEvents(container) {
         });
     });
 
+    // Duplicate buttons
+    container.querySelectorAll('.btn-duplicate').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const ruleId = e.target.closest('tr').dataset.id;
+            const rule = rules.find(r => r.id === ruleId);
+            if (rule) openRuleModal(rule, true);   // apre modale create pre-compilata
+        });
+    });
+
     // Delete buttons
     container.querySelectorAll('.btn-delete').forEach(btn => {
         btn.addEventListener('click', async (e) => {
@@ -1066,11 +1078,11 @@ function setupRowEvents(container) {
 /**
  * Open rule modal for create/edit
  */
-function openRuleModal(rule = null) {
-    editingRule = rule;
+function openRuleModal(rule = null, isDuplicate = false) {
+    editingRule = isDuplicate ? null : rule;   // duplica => submit fa POST (nuova regola)
 
     const title = document.getElementById('rule-modal-title');
-    title.textContent = rule ? t('firewall.editRule') : t('firewall.newRule');
+    title.textContent = (rule && !isDuplicate) ? t('firewall.editRule') : t('firewall.newRule');
 
     // Set table first, then update chains/actions
     const tableSelect = document.getElementById('rule-table');
