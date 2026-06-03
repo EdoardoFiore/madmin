@@ -13,6 +13,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
 
+from cryptography import x509
+
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -555,17 +557,11 @@ def revoke_certificate(host_id) -> Tuple[bool, str]:
 
 def _read_cert_expiry(cert_path: Path) -> Optional[datetime]:
     try:
-        r = subprocess.run(
-            ["openssl", "x509", "-enddate", "-noout", "-in", str(cert_path)],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode != 0:
-            return None
-        # notAfter=Aug 12 04:54:00 2026 GMT
-        m = re.match(r"notAfter=(.+)", r.stdout.strip())
-        if not m:
-            return None
-        return datetime.strptime(m.group(1), "%b %d %H:%M:%S %Y %Z")
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        try:
+            return cert.not_valid_after_utc.replace(tzinfo=None)
+        except AttributeError:
+            return cert.not_valid_after  # cryptography < 42
     except Exception:
         return None
 

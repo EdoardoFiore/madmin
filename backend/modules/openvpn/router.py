@@ -33,7 +33,7 @@ from .models import (
 import ipaddress
 import json
 from fastapi import UploadFile, File, Form, Query
-from .service import openvpn_service, OPENVPN_BASE_DIR, OPENVPN_CLIENT_DIR
+from .service import openvpn_service, OPENVPN_BASE_DIR, OPENVPN_CLIENT_DIR, OpenVPNService, get_public_ip
 from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
@@ -264,7 +264,6 @@ async def delete_instance(
         # Stop instance
         openvpn_service.stop_instance(instance_id)
         # Remove group chains first (needs DB access)
-        from .service import OpenVPNService
         await OpenVPNService.remove_all_group_chains(instance.id, db)
         # Remove instance firewall rules
         openvpn_service.remove_instance_firewall_rules(instance_id, instance.interface)
@@ -328,7 +327,6 @@ async def start_instance(
             site_to_site_lans=instance.site_to_site_lans,
         )
         # Also apply group rules (member jumps, default policy)
-        from .service import OpenVPNService
         await OpenVPNService.apply_group_firewall_rules(instance.id, db)
         return {"status": "running"}
     raise HTTPException(500, "Failed to start instance")
@@ -357,7 +355,6 @@ async def stop_instance(
 
     if openvpn_service.stop_instance(instance_id):
         # Remove firewall rules when interface stops
-        from .service import OpenVPNService
         await OpenVPNService.remove_all_group_chains(instance.id, db)
         openvpn_service.remove_instance_firewall_rules(instance_id, instance.interface)
         return {"status": "stopped"}
@@ -494,7 +491,6 @@ async def import_client_instance(
 
     Pass ?dry_run=true to get a parsed preview without persisting anything.
     """
-    from .service import OpenVPNService
 
     config_text = (await config.read()).decode("utf-8", errors="replace")
     parsed = openvpn_service.parse_imported_ovpn(config_text)
@@ -598,7 +594,6 @@ async def get_upstream_status(
     _user: User = Depends(require_permission("openvpn.view")),
 ):
     """Return current upstream connection state for a client-mode instance."""
-    from .service import OpenVPNService
 
     result = await db.execute(select(OvpnInstance).where(OvpnInstance.id == instance_id))
     instance = result.scalar_one_or_none()
@@ -630,7 +625,6 @@ async def reconnect_instance(
     _user: User = Depends(require_permission("openvpn.manage")),
 ):
     """Restart a client-mode instance (stop + re-materialize + start)."""
-    from .service import OpenVPNService
 
     result = await db.execute(select(OvpnInstance).where(OvpnInstance.id == instance_id))
     instance = result.scalar_one_or_none()
@@ -870,7 +864,6 @@ async def create_client(
 
     # Add FORWARD chain ACCEPT rules for remote_lans so split-tunnel doesn't drop their traffic
     if remote_lans and openvpn_service.get_instance_status(instance_id):
-        from .service import OpenVPNService
         OpenVPNService.apply_client_remote_lan_rules(instance_id, data.name, remote_lans)
     
     # If group_id is provided, assign client to group
@@ -891,7 +884,6 @@ async def create_client(
             
             # Apply group firewall rules if instance is running
             if openvpn_service.get_instance_status(instance_id):
-                from .service import OpenVPNService
                 await OpenVPNService.apply_group_firewall_rules(instance_id, db)
     
     return OvpnClientRead(
@@ -934,7 +926,6 @@ async def revoke_client(
 
     # Remove remote_lan ACCEPT rules from FORWARD chain
     if client.remote_lans:
-        from .service import OpenVPNService
         OpenVPNService.remove_client_remote_lan_rules(instance_id, client_name, client.remote_lans)
 
     # Remove from any group memberships (revoked clients shouldn't have firewall rules)
@@ -1062,7 +1053,6 @@ async def get_client_config(
         raise HTTPException(404, "Client not found or revoked")
     
     # Determine endpoint
-    from .service import get_public_ip
     endpoint = instance.endpoint or get_public_ip() or "YOUR_SERVER_IP"
     
     config = openvpn_service.generate_client_config(instance, client, endpoint)
@@ -1353,7 +1343,6 @@ async def download_config_file(
     Download the actual .ovpn file.
     Can be downloaded multiple times within validity period.
     """
-    from .service import get_public_ip
     from pathlib import Path
     
     magic_token, client, instance, error = await _validate_token(token, db)
@@ -1532,7 +1521,6 @@ async def reorder_groups(
     await db.commit()
     
     # Re-apply firewall rules to reflect new order
-    from .service import OpenVPNService
     await OpenVPNService.apply_group_firewall_rules(instance_id, db)
     
     return {"status": "ok"}

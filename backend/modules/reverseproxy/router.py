@@ -511,15 +511,12 @@ async def list_access_lists(
         )
     )
     acls = result.scalars().all()
-    counts = dict(
-        (
-            await db.execute(
-                select(RevproxyHost.access_list_id, func.count(RevproxyHost.id))
-                .where(RevproxyHost.access_list_id.is_not(None))
-                .group_by(RevproxyHost.access_list_id)
-            )
-        ).all()
+    count_result = await db.execute(
+        select(RevproxyHost.access_list_id, func.count(RevproxyHost.id))
+        .where(RevproxyHost.access_list_id.is_not(None))
+        .group_by(RevproxyHost.access_list_id)
     )
+    counts = dict(count_result.all())
     return [_to_acl_read(a, counts.get(a.id, 0)) for a in acls]
 
 

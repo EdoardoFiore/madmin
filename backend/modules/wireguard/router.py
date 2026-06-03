@@ -30,7 +30,7 @@ from .models import (
     WgInstanceDefaultsUpdate, WgClientUpdate
 )
 import ipaddress
-from .service import wireguard_service, WIREGUARD_CONFIG_DIR
+from .service import wireguard_service, WIREGUARD_CONFIG_DIR, WireGuardService, get_public_ip
 from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,6 @@ async def register_module_chains(
     This enables chain priority management via the UI.
     Should be called once after module installation.
     """
-    from .service import WireGuardService
     
     success = await WireGuardService.register_module_chains(db)
     if success:
@@ -119,8 +118,10 @@ async def create_instance(
     
     private_key, public_key = wireguard_service.generate_keypair()
     
-    from ipaddress import ip_network
-    network = ip_network(data.subnet, strict=False)
+    try:
+        network = ipaddress.ip_network(data.subnet, strict=False)
+    except ValueError:
+        raise HTTPException(400, "Subnet non valida")
     server_ip = str(list(network.hosts())[0])
     
     instance = WgInstance(
@@ -367,7 +368,6 @@ async def update_instance_defaults(
     # Reapply firewall rules for all clients if interface is running
     # This updates enforcement chains for clients without overrides
     if wireguard_service.get_interface_status(instance.interface):
-        from .service import WireGuardService
         await WireGuardService.apply_all_client_firewall_rules(instance_id, db)
         logger.info(f"Firewall rules reapplied for instance {instance_id} after defaults update")
     
@@ -409,7 +409,6 @@ async def delete_instance(
             client_lan_interfaces=instance.client_lan_interfaces,
         )
     else:
-        from .service import WireGuardService
         await WireGuardService.remove_all_group_chains(instance.id, db)
         wireguard_service.remove_instance_firewall_rules(instance.id, instance.interface)
 
@@ -450,7 +449,6 @@ async def start_instance(
                 site_to_site=instance.site_to_site,
                 site_to_site_lans=instance.site_to_site_lans,
             )
-            from .service import WireGuardService
             await WireGuardService.apply_group_firewall_rules(instance.id, db)
             await WireGuardService.apply_all_client_firewall_rules(instance.id, db)
         return {"status": "running"}
@@ -476,7 +474,6 @@ async def stop_instance(
                 client_lan_interfaces=instance.client_lan_interfaces,
             )
         else:
-            from .service import WireGuardService
             wireguard_service.remove_instance_firewall_rules(instance.id, instance.interface)
             await WireGuardService.remove_all_group_chains(instance.id, db)
             await WireGuardService.remove_all_client_chains(instance.id, db)
@@ -500,7 +497,6 @@ async def import_client_instance(
 
     Pass ?dry_run=true for a parsed preview without persisting.
     """
-    from .service import WireGuardService
 
     config_text = (await config.read()).decode("utf-8", errors="replace")
     parsed = wireguard_service.parse_imported_wg(config_text)
@@ -607,7 +603,6 @@ async def get_upstream_status(
     _user: User = Depends(require_permission("wireguard.view")),
 ):
     """Return upstream connection state for a client-mode instance."""
-    from .service import WireGuardService
 
     result = await db.execute(select(WgInstance).where(WgInstance.id == instance_id))
     instance = result.scalar_one_or_none()
@@ -639,7 +634,6 @@ async def reconnect_instance(
     _user: User = Depends(require_permission("wireguard.manage")),
 ):
     """Restart a client-mode WireGuard instance."""
-    from .service import WireGuardService
 
     result = await db.execute(select(WgInstance).where(WgInstance.id == instance_id))
     instance = result.scalar_one_or_none()
@@ -702,7 +696,6 @@ async def list_clients(
         status = peer_status.get(c.public_key, {})
         
         # Calculate effective values
-        from .service import WireGuardService
         effective = WireGuardService.get_effective_client_config(c, instance)
         
         response.append(WgClientRead(
@@ -785,7 +778,6 @@ async def create_client(
         wireguard_service.hot_reload_interface(instance.interface)
         
         # Apply per-client firewall rules
-        from .service import WireGuardService
         effective = WireGuardService.get_effective_client_config(client, instance)
         WireGuardService.apply_client_firewall_rules(
             instance_id, allocated_ip, data.name,
@@ -814,7 +806,6 @@ async def create_client(
             logger.info(f"Client {data.name} assigned to group {group.name}")
     
     # Calculate effective values for response
-    from .service import WireGuardService
     effective = WireGuardService.get_effective_client_config(client, instance)
     
     return WgClientRead(
@@ -856,7 +847,6 @@ async def delete_client(
     wireguard_service.remove_peer_from_config(config_path, client.public_key)
     
     # Remove per-client firewall rules
-    from .service import WireGuardService
     WireGuardService.remove_client_firewall_rules(instance_id, client.allocated_ip, client.name,
                                                    remote_lans=client.remote_lans or [])
     
@@ -902,7 +892,6 @@ async def get_client_detail(
     status = peer_status.get(client.public_key, {})
     
     # Calculate effective values
-    from .service import WireGuardService
     effective = WireGuardService.get_effective_client_config(client, instance)
     
     return WgClientRead(
@@ -963,7 +952,6 @@ async def update_client(
     
     # Reapply firewall if interface is running
     if wireguard_service.get_interface_status(instance.interface):
-        from .service import WireGuardService
         effective = WireGuardService.get_effective_client_config(client, instance)
         WireGuardService.apply_client_firewall_rules(
             instance_id, client.allocated_ip, client.name,
@@ -974,7 +962,6 @@ async def update_client(
         )
 
     # Get effective values for response
-    from .service import WireGuardService
     effective = WireGuardService.get_effective_client_config(client, instance)
     
     return {
@@ -1011,7 +998,6 @@ async def get_client_config(
         raise HTTPException(404, "Client non trovato")
     
     # Get endpoint: instance-specific > auto-detect > fallback
-    from .service import get_public_ip
     endpoint = instance.endpoint or get_public_ip() or "YOUR_SERVER_IP"
     
     config = wireguard_service.generate_client_config(instance, client, endpoint)
@@ -1045,7 +1031,6 @@ async def get_client_qr(
         raise HTTPException(404, "Client non trovato")
     
     # Get endpoint: instance-specific > auto-detect > fallback
-    from .service import get_public_ip
     endpoint = instance.endpoint or get_public_ip() or "YOUR_SERVER_IP"
     
     config = wireguard_service.generate_client_config(instance, client, endpoint)
@@ -1247,7 +1232,6 @@ async def download_config_file(
         return HTMLResponse(content=html_content, status_code=410)
     
     # Generate config
-    from .service import get_public_ip
     endpoint = instance.endpoint or get_public_ip() or "YOUR_SERVER_IP"
     config = wireguard_service.generate_client_config(instance, client, endpoint)
     
@@ -1275,7 +1259,6 @@ async def download_qr_code(
         raise HTTPException(410, error[1])
     
     # Generate config and QR
-    from .service import get_public_ip
     endpoint = instance.endpoint or get_public_ip() or "YOUR_SERVER_IP"
     config = wireguard_service.generate_client_config(instance, client, endpoint)
     qr_bytes = wireguard_service.generate_qr_code(config)
@@ -1422,7 +1405,6 @@ async def reorder_groups(
     await db.commit()
     
     # Re-apply firewall rules to reflect new order
-    from .service import WireGuardService
     await WireGuardService.apply_group_firewall_rules(instance_id, db)
     
     return {"status": "ok"}

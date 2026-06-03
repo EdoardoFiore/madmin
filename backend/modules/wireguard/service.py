@@ -1026,23 +1026,6 @@ PersistentKeepalive = 25
         return f"WG_CLI_{inst_part}_{safe_name}"
     
     @staticmethod
-    def get_effective_client_config(client, instance) -> dict:
-        """Get effective config for a client (with fallback to instance defaults).
-        
-        Returns dict with effective_allowed_ips, effective_dns, has_overrides.
-        """
-        effective_allowed_ips = client.allowed_ips or instance.default_allowed_ips or "0.0.0.0/0, ::/0"
-        default_dns = ", ".join(instance.dns_servers) if instance.dns_servers else "8.8.8.8, 1.1.1.1"
-        effective_dns = client.dns or default_dns
-        has_overrides = bool(client.allowed_ips or client.dns)
-        
-        return {
-            "effective_allowed_ips": effective_allowed_ips,
-            "effective_dns": effective_dns,
-            "has_overrides": has_overrides
-        }
-    
-    @staticmethod
     def apply_client_firewall_rules(
         instance_id: str,
         client_ip: str,
