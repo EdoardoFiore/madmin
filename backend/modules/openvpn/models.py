@@ -52,6 +52,8 @@ class OvpnInstance(SQLModel, table=True):
 
     # Status
     status: str = Field(default="stopped")  # "stopped", "running"
+    # Desired runtime state (persisted). True = should be UP; restored on app startup.
+    enabled: bool = Field(default=False)
     endpoint: Optional[str] = Field(default=None, max_length=255)
 
     # Client-mode fields (direction='client')

@@ -16,7 +16,7 @@ from jinja2 import Template
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from .models import DhcpSubnet, DhcpHost, DhcpOption, DhcpLeaseInfo
+from .models import DhcpSubnet, DhcpHost, DhcpOption, DhcpLeaseInfo, DhcpSettings
 from core.network.service import NetworkService
 from core.services.service import SystemdService
 
@@ -83,6 +83,18 @@ subnet {{ subnet.network_address }} netmask {{ subnet.netmask }} {
 
 class DhcpService:
     """Service class for DHCP operations."""
+
+    async def get_or_create_settings(self, session: AsyncSession) -> DhcpSettings:
+        """Fetch the DHCP settings singleton, creating it on first access."""
+        result = await session.execute(select(DhcpSettings).limit(1))
+        settings = result.scalar_one_or_none()
+        if settings is None:
+            settings = DhcpSettings()
+            session.add(settings)
+            await session.commit()
+            result = await session.execute(select(DhcpSettings).limit(1))
+            settings = result.scalar_one()
+        return settings
 
     # --- Config Generation ---
 

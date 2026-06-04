@@ -65,6 +65,7 @@ class ModuleInstallHooks(SQLModel):
     """Lifecycle hooks for module activation/deactivation."""
     post_install: Optional[str] = None  # e.g., "hooks/post_install.py" — runs on activation
     on_disable: Optional[str] = None    # e.g., "hooks/on_disable.py" — runs on deactivation
+    on_startup: Optional[str] = None    # e.g., "hooks/on_startup.py" — runs on app startup (restore UP services)
 
 
 class ModuleConfigExport(SQLModel):

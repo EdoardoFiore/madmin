@@ -72,6 +72,16 @@ class DhcpOption(SQLModel, table=True):
     subnet: Optional["DhcpSubnet"] = Relationship(back_populates="options")
 
 
+class DhcpSettings(SQLModel, table=True):
+    """Global DHCP service settings (singleton row)."""
+    __tablename__ = "dhcp_settings"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    singleton_key: str = Field(default="default", max_length=10, unique=True)
+    # Desired runtime state (persisted). True = service should be running; restored on app startup.
+    service_enabled: bool = Field(default=False)
+
+
 # --- Pydantic Schemas ---
 
 class DhcpSubnetCreate(SQLModel):

@@ -23,6 +23,8 @@ class DnsSettings(SQLModel, table=True):
     system_forwarders: str = Field(default='["8.8.8.8", "1.1.1.1"]', max_length=500)  # JSON array of IPs
     allow_query: str = Field(default="localnets", max_length=200)  # "any", "localnets", CIDR list
     dnssec_validation: bool = Field(default=False)
+    # Desired runtime state (persisted). True = service should be running; restored on app startup.
+    service_enabled: bool = Field(default=False)
 
 
 class DnsZone(SQLModel, table=True):

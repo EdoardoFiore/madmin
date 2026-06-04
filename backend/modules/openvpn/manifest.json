@@ -1,7 +1,7 @@
 {
     "id": "openvpn",
     "name": "OpenVPN Manager",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "description": "OpenVPN server and client management with PKI, certificate generation, and multi-instance support",
     "author": "MADMIN Team",
     "openapi_tag_description": "OpenVPN server — multi-instance management, PKI/easy-rsa certificates, client profiles and groups.",
@@ -19,7 +19,8 @@
     ],
     "install_hooks": {
         "post_install": "hooks/post_install.py",
-        "on_disable": "hooks/on_disable.py"
+        "on_disable": "hooks/on_disable.py",
+        "on_startup": "hooks/on_startup.py"
     },
     "backend_router": "router.py",
     "static_dir": "static",

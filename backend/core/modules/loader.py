@@ -366,7 +366,33 @@ class ModuleLoader:
         
         logger.info(f"Loaded {loaded_count}/{len(module_ids)} modules")
         return loaded_count
-    
+
+    async def run_startup_hooks(self, session: AsyncSession) -> None:
+        """
+        Run the 'on_startup' hook for every loaded module.
+
+        Lets a module restore services that were UP before the last restart
+        (desired-state reconciliation). Each hook is isolated: a failure in one
+        module does not prevent the others from running.
+
+        Must be called after firewall rules are applied, so module start logic
+        can layer its dynamic chains on top of the base ruleset.
+        """
+        for module_id, info in self.loaded_modules.items():
+            manifest: ModuleManifest = info["manifest"]
+            hook_path = manifest.install_hooks.on_startup
+            if not hook_path:
+                continue
+            try:
+                logger.info(f"Running on_startup hook for {module_id}")
+                await self.execute_hook(
+                    hook_path,
+                    Path(info["path"]),
+                    "on_startup"
+                )
+            except Exception as e:
+                logger.error(f"on_startup hook for {module_id} failed: {e}", exc_info=True)
+
     def get_menu_items(self) -> List[Dict]:
         """
         Get all menu items from loaded modules.

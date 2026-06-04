@@ -59,6 +59,10 @@ async def apply_config(
     success, msg = await dns_service.apply_config(session)
     if not success:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    # Persist desired state: service should be running (restored on app startup)
+    settings = await dns_service.get_or_create_settings(session)
+    settings.service_enabled = True
+    await session.commit()
     return {"message": msg}
 
 
@@ -82,17 +86,26 @@ async def start_service(
     ok, msg = dns_service.start_service()
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+    # Persist desired state: service should be running (restored on app startup)
+    settings = await dns_service.get_or_create_settings(session)
+    settings.service_enabled = True
+    await session.commit()
     return {"message": "Servizio DNS avviato"}
 
 
 @router.post("/stop")
 async def stop_service(
+    session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("dns.manage")),
 ):
     """Stop bind9."""
     ok, msg = dns_service.stop_service()
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+    # Persist desired state: must stay DOWN across restarts
+    settings = await dns_service.get_or_create_settings(session)
+    settings.service_enabled = False
+    await session.commit()
     return {"message": "Servizio DNS arrestato"}
 
 
@@ -105,6 +118,10 @@ async def restart_service(
     success, msg = await dns_service.apply_config(session)
     if not success:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    # Persist desired state: service should be running (restored on app startup)
+    settings = await dns_service.get_or_create_settings(session)
+    settings.service_enabled = True
+    await session.commit()
     return {"message": "Servizio DNS riavviato"}
 
 

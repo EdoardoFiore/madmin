@@ -622,6 +622,57 @@ class OpenVPNService:
     # INTERFACE CONTROL
     # =========================================================================
     
+    @classmethod
+    async def bring_instance_up(cls, instance, db) -> bool:
+        """
+        Start an instance (server or client) and apply its firewall rules.
+        Shared by the /start endpoint and the on_startup restore hook so both
+        paths produce an identical firewall state.
+        """
+        if instance.direction == "client":
+            if not cls.start_client_instance(instance.id):
+                return False
+            cls.apply_instance_firewall_rules(
+                instance.id, instance.port, instance.protocol,
+                instance.interface, instance.subnet,
+                instance.tunnel_mode, instance.routes,
+                instance.firewall_default_policy,
+                direction="client",
+                client_lan_interfaces=instance.client_lan_interfaces,
+            )
+            return True
+
+        if not cls.start_instance(instance.id):
+            return False
+        cls.apply_instance_firewall_rules(
+            instance.id, instance.port, instance.protocol,
+            instance.interface, instance.subnet,
+            instance.tunnel_mode, instance.routes,
+            instance.firewall_default_policy,
+            site_to_site=instance.site_to_site,
+            site_to_site_lans=instance.site_to_site_lans,
+        )
+        await cls.apply_group_firewall_rules(instance.id, db)
+        return True
+
+    @classmethod
+    async def bring_instance_down(cls, instance, db) -> bool:
+        """Stop an instance (server or client) and remove its firewall rules."""
+        if instance.direction == "client":
+            if not cls.stop_client_instance(instance.id):
+                return False
+            cls.remove_instance_firewall_rules(
+                instance.id, instance.interface,
+                client_lan_interfaces=instance.client_lan_interfaces,
+            )
+            return True
+
+        if not cls.stop_instance(instance.id):
+            return False
+        await cls.remove_all_group_chains(instance.id, db)
+        cls.remove_instance_firewall_rules(instance.id, instance.interface)
+        return True
+
     @staticmethod
     def start_instance(instance_id: str) -> bool:
         """Start OpenVPN instance."""

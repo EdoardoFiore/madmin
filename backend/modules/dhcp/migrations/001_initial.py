@@ -11,7 +11,7 @@ async def upgrade(session: AsyncSession) -> None:
     """Create DHCP module tables."""
     # Import models to register them in SQLModel metadata
     from modules.dhcp.models import (
-        DhcpSubnet, DhcpHost, DhcpOption
+        DhcpSubnet, DhcpHost, DhcpOption, DhcpSettings
     )
 
     # Import the engine directly from database module
@@ -29,7 +29,7 @@ async def downgrade(session: AsyncSession) -> None:
     from core.database import engine
     from sqlalchemy import text
 
-    tables = ["dhcp_option", "dhcp_host", "dhcp_subnet"]
+    tables = ["dhcp_settings", "dhcp_option", "dhcp_host", "dhcp_subnet"]
 
     async with engine.begin() as conn:
         for table in tables:

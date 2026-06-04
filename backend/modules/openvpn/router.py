@@ -303,31 +303,11 @@ async def start_instance(
     if not instance:
         raise HTTPException(404, "Instance not found")
     
-    if instance.direction == "client":
-        if openvpn_service.start_client_instance(instance_id):
-            openvpn_service.apply_instance_firewall_rules(
-                instance_id, instance.port, instance.protocol,
-                instance.interface, instance.subnet,
-                instance.tunnel_mode, instance.routes,
-                instance.firewall_default_policy,
-                direction="client",
-                client_lan_interfaces=instance.client_lan_interfaces,
-            )
-            return {"status": "running"}
-        raise HTTPException(500, "Failed to start client instance")
-
-    if openvpn_service.start_instance(instance_id):
-        # Apply firewall rules
-        openvpn_service.apply_instance_firewall_rules(
-            instance_id, instance.port, instance.protocol,
-            instance.interface, instance.subnet,
-            instance.tunnel_mode, instance.routes,
-            instance.firewall_default_policy,
-            site_to_site=instance.site_to_site,
-            site_to_site_lans=instance.site_to_site_lans,
-        )
-        # Also apply group rules (member jumps, default policy)
-        await OpenVPNService.apply_group_firewall_rules(instance.id, db)
+    if await OpenVPNService.bring_instance_up(instance, db):
+        # Persist desired state so it is restored on app startup
+        instance.enabled = True
+        instance.status = "running"
+        await db.commit()
         return {"status": "running"}
     raise HTTPException(500, "Failed to start instance")
 
@@ -344,19 +324,11 @@ async def stop_instance(
     if not instance:
         raise HTTPException(404, "Instance not found")
     
-    if instance.direction == "client":
-        if openvpn_service.stop_client_instance(instance_id):
-            openvpn_service.remove_instance_firewall_rules(
-                instance_id, instance.interface,
-                client_lan_interfaces=instance.client_lan_interfaces,
-            )
-            return {"status": "stopped"}
-        raise HTTPException(500, "Failed to stop client instance")
-
-    if openvpn_service.stop_instance(instance_id):
-        # Remove firewall rules when interface stops
-        await OpenVPNService.remove_all_group_chains(instance.id, db)
-        openvpn_service.remove_instance_firewall_rules(instance_id, instance.interface)
+    if await OpenVPNService.bring_instance_down(instance, db):
+        # Persist desired state: must stay DOWN across restarts
+        instance.enabled = False
+        instance.status = "stopped"
+        await db.commit()
         return {"status": "stopped"}
     raise HTTPException(500, "Failed to stop instance")
 

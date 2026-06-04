@@ -1,7 +1,7 @@
 {
     "id": "wireguard",
     "name": "WireGuard VPN",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "description": "WireGuard VPN instance and client management with firewall groups and multi-instance support",
     "author": "MADMIN Team",
     "openapi_tag_description": "WireGuard VPN — multi-instance management, client provisioning, QR codes, firewall groups and rules.",
@@ -21,7 +21,8 @@
     ],
     "install_hooks": {
         "post_install": "hooks/post_install.py",
-        "on_disable": "hooks/on_disable.py"
+        "on_disable": "hooks/on_disable.py",
+        "on_startup": "hooks/on_startup.py"
     },
     "backend_router": "router.py",
     "static_dir": "static",

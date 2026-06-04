@@ -432,25 +432,11 @@ async def start_instance(
     if not instance:
         raise HTTPException(404, "Istanza non trovata")
     
-    if wireguard_service.start_interface(instance.interface):
-        if instance.direction == "client":
-            # Client mode: apply LAN-gateway firewall rules only
-            wireguard_service.apply_instance_firewall_rules(
-                instance.id, instance.port, instance.interface, instance.subnet,
-                instance.tunnel_mode, instance.routes, instance.firewall_default_policy,
-                direction="client",
-                client_lan_interfaces=instance.client_lan_interfaces,
-            )
-        else:
-            # Server mode: apply firewall + group/client chains
-            wireguard_service.apply_instance_firewall_rules(
-                instance.id, instance.port, instance.interface, instance.subnet,
-                instance.tunnel_mode, instance.routes, instance.firewall_default_policy,
-                site_to_site=instance.site_to_site,
-                site_to_site_lans=instance.site_to_site_lans,
-            )
-            await WireGuardService.apply_group_firewall_rules(instance.id, db)
-            await WireGuardService.apply_all_client_firewall_rules(instance.id, db)
+    if await WireGuardService.bring_instance_up(instance, db):
+        # Persist desired state so it is restored on app startup
+        instance.enabled = True
+        instance.status = "running"
+        await db.commit()
         return {"status": "running"}
     raise HTTPException(500, "Impossibile avviare istanza")
 
@@ -467,16 +453,11 @@ async def stop_instance(
     if not instance:
         raise HTTPException(404, "Istanza non trovata")
     
-    if wireguard_service.stop_interface(instance.interface):
-        if instance.direction == "client":
-            wireguard_service.remove_instance_firewall_rules(
-                instance.id, instance.interface,
-                client_lan_interfaces=instance.client_lan_interfaces,
-            )
-        else:
-            wireguard_service.remove_instance_firewall_rules(instance.id, instance.interface)
-            await WireGuardService.remove_all_group_chains(instance.id, db)
-            await WireGuardService.remove_all_client_chains(instance.id, db)
+    if await WireGuardService.bring_instance_down(instance, db):
+        # Persist desired state: must stay DOWN across restarts
+        instance.enabled = False
+        instance.status = "stopped"
+        await db.commit()
         return {"status": "stopped"}
     raise HTTPException(500, "Impossibile fermare istanza")
 

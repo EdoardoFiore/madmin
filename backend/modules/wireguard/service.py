@@ -121,6 +121,49 @@ AllowedIPs = {allowed_ips}
         except subprocess.CalledProcessError:
             return False
     
+    @classmethod
+    async def bring_instance_up(cls, instance, db) -> bool:
+        """
+        Start an instance's interface and apply its firewall rules.
+        Shared by the /start endpoint and the on_startup restore hook so both
+        paths produce an identical firewall state.
+        """
+        if not cls.start_interface(instance.interface):
+            return False
+        if instance.direction == "client":
+            cls.apply_instance_firewall_rules(
+                instance.id, instance.port, instance.interface, instance.subnet,
+                instance.tunnel_mode, instance.routes, instance.firewall_default_policy,
+                direction="client",
+                client_lan_interfaces=instance.client_lan_interfaces,
+            )
+        else:
+            cls.apply_instance_firewall_rules(
+                instance.id, instance.port, instance.interface, instance.subnet,
+                instance.tunnel_mode, instance.routes, instance.firewall_default_policy,
+                site_to_site=instance.site_to_site,
+                site_to_site_lans=instance.site_to_site_lans,
+            )
+            await cls.apply_group_firewall_rules(instance.id, db)
+            await cls.apply_all_client_firewall_rules(instance.id, db)
+        return True
+
+    @classmethod
+    async def bring_instance_down(cls, instance, db) -> bool:
+        """Stop an instance's interface and remove its firewall rules."""
+        if not cls.stop_interface(instance.interface):
+            return False
+        if instance.direction == "client":
+            cls.remove_instance_firewall_rules(
+                instance.id, instance.interface,
+                client_lan_interfaces=instance.client_lan_interfaces,
+            )
+        else:
+            cls.remove_instance_firewall_rules(instance.id, instance.interface)
+            await cls.remove_all_group_chains(instance.id, db)
+            await cls.remove_all_client_chains(instance.id, db)
+        return True
+
     @staticmethod
     def hot_reload_interface(interface: str) -> bool:
         """Apply config changes without restart."""

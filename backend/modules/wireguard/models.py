@@ -40,6 +40,8 @@ class WgInstance(SQLModel, table=True):
     site_to_site: bool = Field(default=False)
     site_to_site_lans: List[str] = Field(default=[], sa_column=Column(JSON))
     status: str = Field(default="stopped")
+    # Desired runtime state (persisted). True = should be UP; restored on app startup.
+    enabled: bool = Field(default=False)
 
     # Public endpoint for client configs (IP or domain)
     # If empty, will auto-detect public IP

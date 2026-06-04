@@ -92,6 +92,10 @@ async def apply_config(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=message
         )
+    # Persist desired state: service should be running (restored on app startup)
+    settings = await dhcp_service.get_or_create_settings(session)
+    settings.service_enabled = True
+    await session.commit()
     return {"message": message}
 
 
@@ -118,11 +122,16 @@ async def start_service(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=message
         )
+    # Persist desired state: service should be running (restored on app startup)
+    settings = await dhcp_service.get_or_create_settings(session)
+    settings.service_enabled = True
+    await session.commit()
     return {"message": message}
 
 
 @router.post("/stop")
 async def stop_service(
+    session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("dhcp.manage"))
 ):
     """Stop DHCP service."""
@@ -132,6 +141,10 @@ async def stop_service(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=message
         )
+    # Persist desired state: must stay DOWN across restarts
+    settings = await dhcp_service.get_or_create_settings(session)
+    settings.service_enabled = False
+    await session.commit()
     return {"message": message}
 
 
@@ -158,6 +171,10 @@ async def restart_service(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=message
         )
+    # Persist desired state: service should be running (restored on app startup)
+    settings = await dhcp_service.get_or_create_settings(session)
+    settings.service_enabled = True
+    await session.commit()
     return {"message": message}
 
 

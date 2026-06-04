@@ -1,7 +1,7 @@
 {
     "id": "dhcp",
     "name": "DHCP Server",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "ISC DHCP server management with multi-interface subnets, pools, static reservations and live lease monitoring",
     "author": "MADMIN Team",
     "openapi_tag_description": "ISC DHCP server — subnets, pools, static reservations and live lease monitoring.",
@@ -18,7 +18,8 @@
     ],
     "install_hooks": {
         "post_install": "hooks/post_install.py",
-        "on_disable": "hooks/on_disable.py"
+        "on_disable": "hooks/on_disable.py",
+        "on_startup": "hooks/on_startup.py"
     },
     "backend_router": "router.py",
     "static_dir": "static",
@@ -47,6 +48,7 @@
     "firewall_chains": [],
     "config_export": {
         "tables": [
+            "dhcp_settings",
             "dhcp_subnet",
             "dhcp_host",
             "dhcp_option"

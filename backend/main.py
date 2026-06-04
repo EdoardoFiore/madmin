@@ -76,9 +76,24 @@ async def lifespan(app: FastAPI):
             await firewall_orchestrator.apply_rules(session)
         except Exception as e:
             logger.error(f"Firewall apply_rules failed on startup: {e}", exc_info=True)
-    
-    # Start background stats collection task
+
     import asyncio
+
+    # Restore services that were UP before the last restart (non-blocking).
+    # Runs each module's on_startup hook after firewall rules are applied, so
+    # module start logic can layer its dynamic chains on top of the base ruleset.
+    async def restore_services():
+        try:
+            async with async_session_maker() as session:
+                await module_loader.run_startup_hooks(session)
+            logger.info("Service auto-restore (on_startup hooks) completed")
+        except Exception as e:
+            logger.error(f"Service auto-restore failed: {e}", exc_info=True)
+
+    restore_task = asyncio.create_task(restore_services())
+    logger.info("Service auto-restore started in background")
+
+    # Start background stats collection task
     from core.system.service import system_service, save_stats_to_history, save_network_traffic
     
     stats_task_running = True
@@ -223,6 +238,11 @@ async def lifespan(app: FastAPI):
     stats_task.cancel()
     backup_task.cancel()
     audit_task.cancel()
+    restore_task.cancel()
+    try:
+        await restore_task
+    except asyncio.CancelledError:
+        pass
     try:
         await stats_task
     except asyncio.CancelledError:

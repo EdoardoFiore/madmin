@@ -1154,6 +1154,67 @@ connections {{
         core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
         core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
 
+    async def bring_tunnel_up(self, tunnel, db) -> bool:
+        """
+        Generate the tunnel config, load it and initiate the IPsec tunnel.
+        Shared by the /start endpoint and the on_startup restore hook so both
+        paths behave identically. Updates tunnel.status (does NOT commit, nor
+        set tunnel.enabled — the caller persists desired state).
+        Returns True if initiation succeeded.
+        """
+        import asyncio
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecChildSa
+
+        result_children = await db.execute(
+            select(IpsecChildSa).where(IpsecChildSa.tunnel_id == tunnel.id)
+        )
+        children = result_children.scalars().all()
+
+        child_sas_data = [
+            {
+                "name": c.name,
+                "local_ts": c.local_ts,
+                "remote_ts": c.remote_ts,
+                "esp_proposal": c.esp_proposal,
+                "esp_lifetime": c.esp_lifetime,
+                "pfs_group": c.pfs_group,
+                "start_action": c.start_action,
+                "close_action": c.close_action,
+            }
+            for c in children if c.enabled
+        ]
+
+        config = self.generate_tunnel_config(
+            tunnel_id=tunnel.id,
+            name=tunnel.name,
+            ike_version=tunnel.ike_version,
+            local_address=tunnel.local_address,
+            remote_address=tunnel.remote_address,
+            local_id=tunnel.local_id,
+            remote_id=tunnel.remote_id,
+            auth_method=tunnel.auth_method,
+            ike_proposal=tunnel.ike_proposal,
+            ike_lifetime=tunnel.ike_lifetime,
+            dpd_action=tunnel.dpd_action,
+            dpd_delay=tunnel.dpd_delay,
+            nat_traversal=tunnel.nat_traversal,
+            child_sas=child_sas_data,
+        )
+
+        await asyncio.to_thread(self.save_tunnel_config, tunnel.name, config)
+        await asyncio.to_thread(self.load_all_connections)
+        success = await asyncio.to_thread(self.initiate_tunnel, tunnel.name)
+        if not success:
+            return False
+
+        real_status = await asyncio.to_thread(self.get_tunnel_status, tunnel.name)
+        if real_status and real_status["ike_state"] == "ESTABLISHED":
+            tunnel.status = "established"
+        else:
+            tunnel.status = "connecting"
+        return True
+
 
 # Singleton instance
 strongswan_service = StrongSwanService()
