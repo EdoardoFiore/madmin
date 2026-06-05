@@ -1,4 +1,7 @@
 {
+  "managedLan": "Managed LAN",
+  "managedLanHint": "Managed LAN subnet: protected. Editable (range, lease, DNS, reservations) but cannot be disabled, deleted, or have its gateway/network changed here.",
+  "managedGatewayHint": "Gateway = the managed interface IP. Change it from the Network page; the DHCP follows.",
   "serviceStatus": "Service Status",
   "statusActive": "Active",
   "statusStopped": "Stopped",

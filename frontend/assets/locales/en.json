@@ -266,6 +266,8 @@
         },
         "autoRule": "Auto",
         "autoRuleHint": "Auto-generated rule that allows the DNAT forward. It updates and is removed together with the matching DNAT rule.",
+        "managedNat": "Managed",
+        "managedNatHint": "Managed LAN NAT rule: required for VMs to navigate. Protected — cannot be edited or deleted.",
         "newRule": "New Rule",
         "exportBtn": "Export",
         "importBtn": "Import",
@@ -385,6 +387,9 @@
         "primaryIpv4": "Primary IPv4",
         "secondaryIpv4": "Secondary IPv4 {index}",
         "wanReadOnly": "Read-only interface — externally managed",
+        "managed": "Managed",
+        "managedHint": "Managed LAN interface: must stay static. The bound DHCP follows the IP you set here.",
+        "managedNote": "Managed LAN interface: keep it static. Changing the IP automatically updates the bound DHCP server. It cannot be set as a DHCP client or removed.",
         "secondaryIps": "{count} additional secondary IPs",
         "up": "Up",
         "down": "Down"

@@ -28,6 +28,7 @@ class DhcpSubnet(SQLModel, table=True):
     lease_time: int = Field(default=86400)       # default-lease-time in seconds
     max_lease_time: int = Field(default=172800)  # max-lease-time
     enabled: bool = Field(default=True)
+    managed: bool = Field(default=False)         # managed LAN subnet — protected from tampering
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
@@ -111,6 +112,7 @@ class DhcpSubnetRead(SQLModel):
     lease_time: int
     max_lease_time: int
     enabled: bool
+    managed: bool = False
     created_at: datetime
     host_count: int = 0
     active_leases: int = 0

@@ -63,6 +63,7 @@ async def init_db() -> None:
         from core.modules.models import InstalledModule
         from core.settings.models import SystemSettings, SMTPSettings, BackupSettings
         from core.audit.models import AuditLog
+        from core.provisioning.models import ManagedLanSettings
         
         await conn.run_sync(SQLModel.metadata.create_all)
         logger.info("Database tables created successfully")

@@ -1,4 +1,7 @@
 {
+  "managedLan": "LAN Gestita",
+  "managedLanHint": "Subnet LAN gestita: protetta. Modificabile (range, lease, DNS, prenotazioni) ma non disabilitabile/eliminabile e con gateway/network non modificabili da qui.",
+  "managedGatewayHint": "Gateway = IP dell'interfaccia gestita. Cambialo dalla pagina Rete; il DHCP si adegua.",
   "serviceStatus": "Stato Servizio",
   "statusActive": "Attivo",
   "statusStopped": "Fermo",

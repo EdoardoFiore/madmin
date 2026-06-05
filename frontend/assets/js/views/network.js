@@ -22,6 +22,9 @@ function ifaceId(name) {
     return 'iface-' + name.replace(/[^a-zA-Z0-9]/g, '_');
 }
 
+// Name of the managed LAN interface (provisioning), or null. Loaded with interfaces.
+let managedIface = null;
+
 export async function render(container) {
     const canManage = checkPermission('settings.manage');
 
@@ -184,6 +187,14 @@ async function loadInterfaces() {
         const response = await apiGet('/network/interfaces');
         const interfaces = response.interfaces || [];
 
+        // Resolve the managed LAN interface (if provisioning is enabled)
+        try {
+            const prov = await apiGet('/provisioning/managed-lan');
+            managedIface = prov?.enabled ? prov.interface : null;
+        } catch (e) {
+            managedIface = null;
+        }
+
         if (interfaces.length === 0) {
             container.innerHTML = `
                 <div class="text-center py-4 text-muted">
@@ -260,7 +271,9 @@ function renderInterfaceRow(iface) {
         netplanBadge = `<span class="badge bg-purple-lt">${t('network.staticIp')}</span>`;
     }
 
+    const isManaged = managedIface && iface.name === managedIface;
     const wanBadge = isWAN ? '<span class="badge bg-orange-lt">WAN</span>' : '';
+    const managedBadge = isManaged ? `<span class="badge bg-azure-lt" title="${t('network.managedHint')}"><i class="ti ti-lock me-1"></i>${t('network.managed')}</span>` : '';
     const speedBadge = iface.speed > 0 ? `<span class="badge bg-azure-lt">${iface.speed} Mbps</span>` : '';
     const lockBadge = isWAN ? `<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
 
@@ -318,6 +331,9 @@ function renderInterfaceRow(iface) {
     const wanNote = isWAN ? `
         <div class="mt-3 text-muted small">
             <i class="ti ti-lock me-1"></i>${t('network.wanReadOnly')}
+        </div>` : isManaged ? `
+        <div class="mt-3 text-muted small">
+            <i class="ti ti-lock me-1"></i>${t('network.managedNote')}
         </div>` : '';
 
     return `
@@ -334,6 +350,7 @@ function renderInterfaceRow(iface) {
                     ${netplanBadge}
                     ${speedBadge}
                     ${wanBadge}
+                    ${managedBadge}
                     ${lockBadge}
                 </div>
 
@@ -433,6 +450,16 @@ async function openNetplanModal(interfaceName) {
         }
     } catch (error) {
         // No existing config, start fresh
+    }
+
+    // Managed LAN interface must stay static: lock the DHCP-client option
+    const isManaged = managedIface && interfaceName === managedIface;
+    const dhcpRadio = document.querySelector('input[name="netplan-mode"][value="dhcp"]');
+    dhcpRadio.disabled = isManaged;
+    dhcpRadio.closest('label')?.classList.toggle('opacity-50', isManaged);
+    if (isManaged) {
+        document.querySelector('input[name="netplan-mode"][value="static"]').checked = true;
+        document.getElementById('static-config').style.display = 'block';
     }
 
     new bootstrap.Modal(document.getElementById('modal-netplan')).show();

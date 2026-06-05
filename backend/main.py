@@ -63,7 +63,17 @@ async def lifespan(app: FastAPI):
     # Initialize firewall chains
     logger.info("Initializing firewall chains...")
     await firewall_orchestrator.initialize()
-    
+
+    # Managed LAN reconcile (self-heal) — MUST run before load_all_modules so the
+    # DHCP module (if activated here) gets its router mounted in this same boot.
+    from core.provisioning.service import provisioning_service
+    async with async_session_maker() as session:
+        try:
+            await provisioning_service.reconcile(session)
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Managed LAN reconcile failed on startup: {e}", exc_info=True)
+
     # Load installed modules
     logger.info("Loading modules...")
     async with async_session_maker() as session:
@@ -306,6 +316,7 @@ def create_app() -> FastAPI:
     from core.network.router import router as network_router
     from core.cron.router import router as cron_router
     from core.audit.router import router as audit_router
+    from core.provisioning.router import router as provisioning_router
     
     app.include_router(auth_router)
     app.include_router(firewall_router)
@@ -318,6 +329,7 @@ def create_app() -> FastAPI:
     app.include_router(network_router)
     app.include_router(cron_router)
     app.include_router(audit_router)
+    app.include_router(provisioning_router)
     
     # UI Router for frontend
     from core.auth.dependencies import get_current_user

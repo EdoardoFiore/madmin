@@ -152,6 +152,21 @@ async def deactivate_module(
     Deactivate a module with full cleanup.
     Removes chains, permissions, and drops module tables.
     """
+    # Block deactivating DHCP while a managed LAN subnet depends on it
+    if module_id == "dhcp":
+        from sqlalchemy import text
+        try:
+            managed = (await session.execute(
+                text("SELECT COUNT(*) FROM dhcp_subnet WHERE managed = true")
+            )).scalar() or 0
+        except Exception:
+            managed = 0
+        if managed > 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Modulo DHCP non disattivabile: una LAN gestita ne dipende"
+            )
+
     try:
         result = await module_loader.deactivate_module(session, module_id)
         

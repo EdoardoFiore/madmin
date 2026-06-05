@@ -266,6 +266,8 @@
         },
         "autoRule": "Auto",
         "autoRuleHint": "Regola generata automaticamente per consentire il forward del DNAT. Si aggiorna ed elimina insieme alla regola DNAT corrispondente.",
+        "managedNat": "Gestita",
+        "managedNatHint": "Regola NAT della LAN gestita: necessaria alla navigazione delle VM. Protetta — non modificabile né eliminabile.",
         "newRule": "Nuova Regola",
         "exportBtn": "Esporta",
         "importBtn": "Importa",
@@ -385,6 +387,9 @@
         "primaryIpv4": "IPv4 primario",
         "secondaryIpv4": "IPv4 secondario {index}",
         "wanReadOnly": "Interfaccia in sola lettura — gestita esternamente",
+        "managed": "Gestita",
+        "managedHint": "Interfaccia LAN gestita: deve restare statica. Il DHCP associato segue l'IP impostato qui.",
+        "managedNote": "Interfaccia LAN gestita: mantienila statica. Cambiando l'IP il DHCP associato si aggiorna automaticamente. Non può essere impostata come client DHCP né rimossa.",
         "secondaryIps": "{count} IP secondari aggiuntivi",
         "up": "Attiva",
         "down": "Inattiva"

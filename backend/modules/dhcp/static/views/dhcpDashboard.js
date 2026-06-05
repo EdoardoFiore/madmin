@@ -156,7 +156,9 @@ function renderSubnetsTable(subnets, canManage) {
                     ${subnets.map(s => `
                         <tr class="subnet-row ${!s.enabled ? 'text-muted' : ''}" data-id="${s.id}" style="cursor: pointer;">
                             <td onclick="event.stopPropagation();">
-                                ${canManage ? `
+                                ${s.managed ? `
+                                <span class="status-dot bg-success" title="${t('dhcp.managedLan')}"></span>`
+                                : canManage ? `
                                 <label class="form-check form-switch mb-0">
                                     <input class="form-check-input subnet-toggle" type="checkbox"
                                            data-id="${s.id}" ${s.enabled ? 'checked' : ''}>
@@ -168,6 +170,7 @@ function renderSubnetsTable(subnets, canManage) {
                                 <a href="#dhcp/${s.id}" class="text-reset">
                                     <strong>${s.name}</strong>
                                 </a>
+                                ${s.managed ? `<span class="badge bg-azure-lt ms-1" title="${t('dhcp.managedLanHint')}"><i class="ti ti-lock"></i> ${t('dhcp.managedLan')}</span>` : ''}
                                 <div class="small text-muted">${s.domain_name || ''}</div>
                             </td>
                             <td><code>${s.network}</code></td>
@@ -182,10 +185,10 @@ function renderSubnetsTable(subnets, canManage) {
                             </td>
                             <td>
                                 <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
-                                    ${canManage ? `
+                                    ${canManage && !s.managed ? `
                                     <button class="btn btn-ghost-danger btn-delete-subnet" data-id="${s.id}" title="${t('dhcp.delete')}">
                                         <i class="ti ti-trash"></i>
-                                    </button>` : ''}
+                                    </button>` : s.managed ? `<i class="ti ti-lock text-muted" title="${t('dhcp.managedLanHint')}"></i>` : ''}
                                 </div>
                             </td>
                         </tr>

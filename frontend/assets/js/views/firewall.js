@@ -10,6 +10,9 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../app.js';
 import { t } from '../i18n.js';
 
+// Sentinel comment marking the protected managed-LAN MASQUERADE rule (mirrors backend)
+const MANAGED_NAT_SENTINEL = 'MADMIN_MANAGED_LAN_NAT';
+
 let rules = [];
 let editingRule = null;
 let currentTable = 'filter';
@@ -868,6 +871,20 @@ function renderRuleRow(rule, orderedColumns) {
                     <span class="text-muted"><i class="ti ti-lock"></i></span>
                 </td>
                 <td>${actionBadge(rule.action)} <span class="badge bg-azure-lt" title="${t('firewall.autoRuleHint')}">${t('firewall.autoRule')}</span></td>
+                ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
+                <td class="rule-actions"></td>
+            </tr>
+        `;
+    }
+
+    // Managed LAN NAT rule: protected (needed for VM navigation), read-only
+    if (rule.comment === MANAGED_NAT_SENTINEL) {
+        return `
+            <tr class="auto-rule" data-id="${rule.id}">
+                <td class="rule-order">
+                    <span class="text-muted"><i class="ti ti-lock"></i></span>
+                </td>
+                <td>${actionBadge(rule.action)} <span class="badge bg-azure-lt" title="${t('firewall.managedNatHint')}"><i class="ti ti-lock me-1"></i>${t('firewall.managedNat')}</span></td>
                 ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
                 <td class="rule-actions"></td>
             </tr>

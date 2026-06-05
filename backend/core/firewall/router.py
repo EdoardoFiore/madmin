@@ -244,6 +244,14 @@ async def update_rule(
     existing = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
     if not existing:
         raise HTTPException(status_code=404, detail="Rule not found")
+
+    from core.provisioning.service import MANAGED_NAT_SENTINEL
+    if existing.comment == MANAGED_NAT_SENTINEL:
+        raise HTTPException(
+            status_code=403,
+            detail="Regola NAT della LAN gestita: non modificabile (necessaria alla navigazione delle VM)."
+        )
+
     _validate_rule_constraints(
         update_data.get("chain", existing.chain),
         update_data.get("action", existing.action),
@@ -282,7 +290,16 @@ async def delete_rule(
         rule_uuid = uuid.UUID(rule_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid rule ID format")
-    
+
+    existing = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
+    if existing:
+        from core.provisioning.service import MANAGED_NAT_SENTINEL
+        if existing.comment == MANAGED_NAT_SENTINEL:
+            raise HTTPException(
+                status_code=403,
+                detail="Regola NAT della LAN gestita: non eliminabile (necessaria alla navigazione delle VM)."
+            )
+
     try:
         success = await firewall_orchestrator.delete_rule(session, rule_uuid)
         if not success:

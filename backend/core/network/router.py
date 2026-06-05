@@ -125,11 +125,12 @@ async def get_interface_config(
 async def set_interface_config(
     interface: str,
     config: NetplanConfig,
+    session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("network.manage"))
 ):
     """
     Set netplan configuration for an interface.
-    
+
     Creates a new config file: /etc/netplan/99-madmin-{interface}.yaml
     Does NOT apply automatically - use /apply endpoint.
     """
@@ -138,6 +139,22 @@ async def set_interface_config(
             status_code=403,
             detail=f"Interface {interface} (WAN) is not modifiable."
         )
+
+    # Managed LAN interface: must stay static; the bound DHCP follows the IP change
+    from core.provisioning.service import provisioning_service
+    is_managed = await provisioning_service.is_managed_interface(session, interface)
+    if is_managed:
+        if config.dhcp4:
+            raise HTTPException(
+                status_code=403,
+                detail="Interfaccia LAN gestita: deve restare statica (no DHCP client)."
+            )
+        if not config.addresses:
+            raise HTTPException(
+                status_code=400,
+                detail="Interfaccia LAN gestita: indirizzo statico obbligatorio."
+            )
+
     success, message = netplan_service.set_interface_config(
         interface=interface,
         dhcp4=config.dhcp4,
@@ -146,21 +163,40 @@ async def set_interface_config(
         dns_servers=config.dns_servers,
         mtu=config.mtu
     )
-    
+
     if not success:
         raise HTTPException(status_code=500, detail=message)
-    
+
+    # Managed interface: apply netplan immediately (so the IP exists) THEN sync the
+    # bound DHCP subnet. Otherwise the DHCP pre-flight (subnet must match the live
+    # interface IP) would fail because the new IP isn't applied yet.
+    if is_managed:
+        applied, apply_msg = netplan_service.apply_netplan()
+        if not applied:
+            raise HTTPException(status_code=500, detail=f"Netplan apply failed: {apply_msg}")
+        try:
+            await firewall_orchestrator.apply_rules(session)
+        except Exception as e:
+            logger.warning(f"Firewall rebuild after managed-iface change failed: {e}")
+        try:
+            await provisioning_service.sync_dhcp_to_interface(session, config.addresses[0])
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Managed LAN DHCP sync failed for {interface}: {e}", exc_info=True)
+        return {"success": True, "message": f"{message} (applicato e DHCP sincronizzato)"}
+
     return {"success": True, "message": message}
 
 
 @router.delete("/interfaces/{interface}/config", response_model=NetworkActionResponse)
 async def delete_interface_config(
     interface: str,
+    session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("network.manage"))
 ):
     """
     Delete MADMIN-managed netplan config for an interface.
-    
+
     Only deletes 99-madmin-{interface}.yaml files.
     Does NOT apply automatically - use /apply endpoint.
     """
@@ -169,6 +205,14 @@ async def delete_interface_config(
             status_code=403,
             detail=f"Interface {interface} (WAN) is not modifiable."
         )
+
+    from core.provisioning.service import provisioning_service
+    if await provisioning_service.is_managed_interface(session, interface):
+        raise HTTPException(
+            status_code=403,
+            detail="Interfaccia LAN gestita: configurazione non eliminabile."
+        )
+
     success, message = netplan_service.delete_interface_config(interface)
     
     if not success:

@@ -135,6 +135,19 @@ async def stop_service(
     _user: User = Depends(require_permission("dhcp.manage"))
 ):
     """Stop DHCP service."""
+    # Block stopping while a managed LAN subnet is active (VMs rely on it)
+    managed_count = (await session.execute(
+        select(func.count(DhcpSubnet.id)).where(
+            DhcpSubnet.managed == True,  # noqa: E712
+            DhcpSubnet.enabled == True   # noqa: E712
+        )
+    )).scalar() or 0
+    if managed_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="DHCP non arrestabile: una LAN gestita è attiva e dipende dal servizio"
+        )
+
     success, message = dhcp_service.stop_service()
     if not success:
         raise HTTPException(
@@ -240,6 +253,7 @@ async def list_subnets(
             lease_time=subnet.lease_time,
             max_lease_time=subnet.max_lease_time,
             enabled=subnet.enabled,
+            managed=subnet.managed,
             created_at=subnet.created_at,
             host_count=host_count,
             active_leases=active_leases
@@ -340,6 +354,24 @@ async def update_subnet(
 
     update_data = data.dict(exclude_unset=True)
 
+    # Managed subnet: editable but not tamperable
+    if subnet.managed:
+        if update_data.get("enabled") is False:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Subnet LAN gestita: non può essere disabilitata"
+            )
+        locked = {"gateway", "network", "interface"} & set(update_data.keys())
+        if locked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Subnet LAN gestita: gateway/network/interfaccia non modificabili "
+                    "da qui. Cambia l'IP dell'interfaccia dalla pagina Rete: il DHCP si "
+                    "aggiorna di conseguenza."
+                )
+            )
+
     # If range or network changed, validate
     new_network = update_data.get("network", subnet.network)
     new_start = update_data.get("range_start", subnet.range_start)
@@ -402,6 +434,12 @@ async def delete_subnet(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subnet not found"
+        )
+
+    if subnet.managed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Subnet LAN gestita: non può essere eliminata"
         )
 
     await session.delete(subnet)

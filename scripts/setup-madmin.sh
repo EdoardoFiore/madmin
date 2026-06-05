@@ -85,12 +85,14 @@ EOF
 ADMIN_USERNAME="admin"
 ADMIN_PASSWORD="admin"
 FORCE_PW_CHANGE="false"   # opt-in: usato dagli automatismi di installazione (es. madmin-hub)
+PROVISION_LAN="false"     # opt-in: auto-provisiona LAN gestita (interfaccia + DHCP + NAT)
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -u|--username) ADMIN_USERNAME="$2"; shift ;;
         -p|--password) ADMIN_PASSWORD="$2"; shift ;;
         -f|--force-password-change) FORCE_PW_CHANGE="true" ;;
+        -l|--provision-lan) PROVISION_LAN="true" ;;
     esac
     shift
 done
@@ -462,6 +464,25 @@ else
     log_warning "JWT non disponibile o file regole mancante. Import firewall saltato."
 fi
 
+# Auto-provisioning LAN gestita (opt-in, usato dagli automatismi tipo madmin-hub).
+# Configura interfaccia LAN + DHCP + NAT cosi' le VM dietro il router navigano da subito.
+if [ "$PROVISION_LAN" = "true" ]; then
+    if [ -n "$JWT_TOKEN" ]; then
+        log_info "Attivazione provisioning LAN gestita (interfaccia + DHCP + NAT)..."
+        PROV_HTTP=$(curl -s -o /tmp/madmin_prov.json -w "%{http_code}" -X POST \
+            "http://localhost:8000/api/provisioning/managed-lan/enable" \
+            -H "Authorization: Bearer $JWT_TOKEN")
+        if [ "$PROV_HTTP" = "200" ]; then
+            log_success "LAN gestita configurata: $(cat /tmp/madmin_prov.json)"
+        else
+            log_warning "Provisioning LAN gestita fallito (HTTP $PROV_HTTP): $(cat /tmp/madmin_prov.json)"
+        fi
+        rm -f /tmp/madmin_prov.json
+    else
+        log_warning "JWT non disponibile: provisioning LAN gestita non attivato."
+    fi
+fi
+
 # Forza il cambio password al primo accesso (opt-in, usato dagli automatismi).
 # Eseguito DOPO l'import firewall: l'admin ha gia' ottenuto un token pieno sopra,
 # evitando il chicken-egg con il gate "password_change_required" al login.
@@ -481,6 +502,13 @@ if [ "$FORCE_PW_CHANGE" = "true" ]; then
     else
         log_warning "JWT non disponibile: cambio password forzato non attivato."
     fi
+fi
+
+# Se il provisioning LAN ha attivato il modulo DHCP, riavvia il servizio cosi'
+# il router del modulo viene montato pulito (il servizio isc-dhcp-server gira comunque).
+if [ "$PROVISION_LAN" = "true" ]; then
+    log_info "Riavvio MADMIN per montare il modulo DHCP..."
+    systemctl restart madmin.service
 fi
 
 # --- Completato ---

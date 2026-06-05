@@ -42,15 +42,17 @@ export async function renderDhcpDetail(container, subnetId, canManage, canReserv
                                 ${subnet.name}
                             </h3>
                             <small class="text-muted">${subnet.network} ${t('dhcp.on')} ${subnet.interface}</small>
+                            ${subnet.managed ? `<span class="badge bg-azure-lt ms-2" title="${t('dhcp.managedLanHint')}"><i class="ti ti-lock me-1"></i>${t('dhcp.managedLan')}</span>` : ''}
                         </div>
                         ${canManage ? `
                         <div class="btn-group">
                             <button class="btn btn-outline-primary" id="btn-edit-subnet">
                                 <i class="ti ti-edit me-1"></i>${t('dhcp.edit')}
                             </button>
+                            ${subnet.managed ? '' : `
                             <button class="btn btn-outline-danger" id="btn-delete-subnet">
                                 <i class="ti ti-trash me-1"></i>${t('dhcp.delete')}
-                            </button>
+                            </button>`}
                         </div>` : ''}
                     </div>
                 </div>
@@ -330,7 +332,7 @@ function renderEditSubnetModal(subnet) {
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">${t('dhcp.interface')}</label>
-                                <select class="form-select" id="edit-subnet-interface">
+                                <select class="form-select" id="edit-subnet-interface" ${subnet.managed ? 'disabled' : ''}>
                                     <option value="${subnet.interface}" selected>${subnet.interface}</option>
                                 </select>
                             </div>
@@ -348,7 +350,8 @@ function renderEditSubnetModal(subnet) {
                         <div class="row">
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">Gateway</label>
-                                <input type="text" class="form-control" id="edit-subnet-gateway" value="${subnet.gateway}">
+                                <input type="text" class="form-control" id="edit-subnet-gateway" value="${subnet.gateway}" ${subnet.managed ? 'disabled' : ''}>
+                                ${subnet.managed ? `<small class="form-hint">${t('dhcp.managedGatewayHint')}</small>` : ''}
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dhcp.dnsServers')}</label>
@@ -371,7 +374,7 @@ function renderEditSubnetModal(subnet) {
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dhcp.status')}</label>
                                 <div class="form-check form-switch mt-2">
-                                    <input class="form-check-input" type="checkbox" id="edit-subnet-enabled" ${subnet.enabled ? 'checked' : ''}>
+                                    <input class="form-check-input" type="checkbox" id="edit-subnet-enabled" ${subnet.enabled ? 'checked' : ''} ${subnet.managed ? 'disabled' : ''}>
                                     <label class="form-check-label" for="edit-subnet-enabled">${t('dhcp.enabled')}</label>
                                 </div>
                             </div>
@@ -410,18 +413,22 @@ function setupDetailActions(subnet, subnetId, container, canManage, canReservati
     // Save Subnet
     document.getElementById('btn-save-subnet')?.addEventListener('click', async () => {
         try {
-            await apiPatch(`/modules/dhcp/subnets/${subnetId}`, {
+            const payload = {
                 name: document.getElementById('edit-subnet-name').value.trim(),
                 range_start: document.getElementById('edit-subnet-range-start').value.trim(),
                 range_end: document.getElementById('edit-subnet-range-end').value.trim(),
-                gateway: document.getElementById('edit-subnet-gateway').value.trim(),
                 dns_servers: document.getElementById('edit-subnet-dns').value.trim(),
                 domain_name: document.getElementById('edit-subnet-domain').value.trim() || null,
-                interface: document.getElementById('edit-subnet-interface').value,
                 lease_time: parseInt(document.getElementById('edit-subnet-lease-time').value) || 86400,
                 max_lease_time: parseInt(document.getElementById('edit-subnet-max-lease').value) || 172800,
-                enabled: document.getElementById('edit-subnet-enabled').checked
-            });
+            };
+            // Locked fields on a managed subnet (gateway/interface/enabled) are omitted
+            if (!subnet.managed) {
+                payload.gateway = document.getElementById('edit-subnet-gateway').value.trim();
+                payload.interface = document.getElementById('edit-subnet-interface').value;
+                payload.enabled = document.getElementById('edit-subnet-enabled').checked;
+            }
+            await apiPatch(`/modules/dhcp/subnets/${subnetId}`, payload);
             showToast(t('dhcp.subnetUpdated'), 'success');
             bootstrap.Modal.getInstance(document.getElementById('modal-edit-subnet'))?.hide();
             await renderDhcpDetail(container, subnetId, canManage, canReservations);
