@@ -195,6 +195,22 @@ export async function render(container) {
                                     </label>
                                     <small class="form-hint text-muted">${t('users.force2faNote')}</small>
                                 </div>
+                                <div class="col-12 d-none" id="pwd-policy-container">
+                                    <div class="row g-3">
+                                        <div class="col-md-6">
+                                            <label class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="user-must-change-password">
+                                                <span class="form-check-label"><i class="ti ti-key me-1"></i>${t('users.forcePasswordChange')}</span>
+                                            </label>
+                                            <small class="form-hint text-muted">${t('users.forcePasswordChangeNote')}</small>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="form-label">${t('users.passwordExpiresAt')}</label>
+                                            <input type="datetime-local" class="form-control" id="user-password-expires-at">
+                                            <small class="form-hint text-muted">${t('users.passwordExpiresAtNote')}</small>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div class="col-12" id="permissions-section">
                                     <label class="form-label">${t('users.permissions')}</label>
                                     <div id="permissions-list" class="row g-3">
@@ -390,6 +406,14 @@ function renderUsers() {
         // Protected user (first setup user): no one else can edit or delete
         const showActions = canManage && !isSelf && !user.is_protected;
 
+        // Password status badge: force-change takes priority, then expired
+        const pwdExpired = user.password_expires_at && new Date(user.password_expires_at) < new Date();
+        const pwdBadge = user.must_change_password
+            ? `<span class="badge bg-orange-lt ms-1" title="${t('users.forcePasswordChange')}"><i class="ti ti-key"></i></span>`
+            : pwdExpired
+                ? `<span class="badge bg-red-lt ms-1" title="${t('users.passwordExpired')}"><i class="ti ti-clock-exclamation"></i></span>`
+                : '';
+
         // 2FA status icon
         const twoFaIcon = user.totp_locked
             ? `<span class="badge bg-orange-lt" title="${t('users.2faActive')} — Reset"><i class="ti ti-shield-x"></i></span>`
@@ -405,7 +429,7 @@ function renderUsers() {
                             <i class="ti ti-${user.is_superuser ? 'crown' : 'user'}"></i>
                         </span>
                         <div>
-                            <div class="font-weight-medium">${escapeHtml(user.username)}</div>
+                            <div class="font-weight-medium">${escapeHtml(user.username)}${pwdBadge}</div>
                             ${user.is_superuser ? '<small class="text-muted">Superuser</small>' : ''}
                         </div>
                     </div>
@@ -553,6 +577,14 @@ function openUserModal(user = null) {
     document.getElementById('user-active').checked = user?.is_active ?? true;
     document.getElementById('user-totp-enforced').checked = user?.totp_enforced || false;
 
+    // Password policy fields (only meaningful when editing an existing user)
+    const pwdPolicyContainer = document.getElementById('pwd-policy-container');
+    document.getElementById('user-must-change-password').checked = user?.must_change_password || false;
+    // datetime-local needs "YYYY-MM-DDTHH:mm"; API returns a naive ISO timestamp
+    document.getElementById('user-password-expires-at').value =
+        user?.password_expires_at ? user.password_expires_at.slice(0, 16) : '';
+    pwdPolicyContainer.classList.toggle('d-none', !user);
+
     // Show "Force 2FA" option only for superusers editing other users
     const force2faContainer = document.getElementById('force-2fa-container');
     if (isSuperuser && user && user.username !== currentUser?.username) {
@@ -600,7 +632,8 @@ async function handleUserSubmit(e) {
             const updateData = {
                 email: document.getElementById('user-email').value || null,
                 is_superuser: document.getElementById('user-superuser').checked,
-                is_active: document.getElementById('user-active').checked
+                is_active: document.getElementById('user-active').checked,
+                must_change_password: document.getElementById('user-must-change-password').checked
             };
 
             // Only send totp_enforced if the container is visible (superuser editing another user)
@@ -608,6 +641,10 @@ async function handleUserSubmit(e) {
             if (!force2faContainer.classList.contains('d-none')) {
                 updateData.totp_enforced = document.getElementById('user-totp-enforced').checked;
             }
+
+            // Manual password expiry override (empty = leave unchanged)
+            const expiresAt = document.getElementById('user-password-expires-at').value;
+            if (expiresAt) updateData.password_expires_at = expiresAt;
 
             if (password) updateData.password = password;
 

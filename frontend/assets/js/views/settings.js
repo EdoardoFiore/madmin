@@ -72,6 +72,11 @@ export async function render(container) {
                                 </select>
                                 <small class="form-hint">${t('settings.myLanguageHint')}</small>
                             </div>
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.passwordMaxAge')}</label>
+                                <input type="number" min="0" class="form-control" id="password-max-age" placeholder="0" ${canManage ? '' : 'disabled'}>
+                                <small class="form-hint">${t('settings.passwordMaxAgeHint')}</small>
+                            </div>
                             <div class="col-md-6">
                                 <label class="form-label">${t('settings.logo')}</label>
                                 <div class="d-flex align-items-center gap-3">
@@ -522,6 +527,8 @@ async function loadSettings() {
         document.getElementById('primary-color').value = system.primary_color || '#206bc4';
         document.getElementById('primary-color-hex').value = system.primary_color || '#206bc4';
         document.getElementById('support-url').value = system.support_url || '';
+        const pwdMaxAgeEl = document.getElementById('password-max-age');
+        if (pwdMaxAgeEl) pwdMaxAgeEl.value = system.password_max_age_days ?? 0;
 
         // Dark mode toggle (per-user preference)
         const darkToggle = document.getElementById('dark-mode-toggle');
@@ -781,12 +788,14 @@ function setupEventListeners() {
             const primaryColor = document.getElementById('primary-color').value;
             const supportUrl = document.getElementById('support-url').value || '';
             const systemLang = document.getElementById('system-language')?.value || 'en';
+            const passwordMaxAge = parseInt(document.getElementById('password-max-age')?.value, 10) || 0;
 
             await apiPatch('/settings/system', {
                 company_name: companyName,
                 primary_color: primaryColor,
                 support_url: supportUrl,
-                default_language: systemLang
+                default_language: systemLang,
+                password_max_age_days: passwordMaxAge
             });
 
             // Apply changes immediately to UI

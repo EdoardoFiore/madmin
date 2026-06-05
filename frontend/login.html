@@ -136,6 +136,31 @@
                         <i class="ti ti-arrow-left"></i> <span data-i18n="auth.backToLogin">Back to login</span>
                     </button>
                 </div>
+
+                <!-- Forced Password Change Section (hidden by default) -->
+                <div id="pwd-change-section" class="d-none">
+                    <div class="text-center mb-3">
+                        <i class="ti ti-key" style="font-size: 3rem; color: var(--tblr-primary);"></i>
+                    </div>
+                    <p class="text-center mb-3" data-i18n="auth.passwordChangeRequired">
+                        You must set a new password before continuing
+                    </p>
+                    <div class="mb-3">
+                        <input type="password" class="form-control" id="new-password"
+                            data-i18n-placeholder="auth.newPassword" placeholder="New password" autocomplete="new-password">
+                    </div>
+                    <div class="mb-2">
+                        <input type="password" class="form-control" id="new-password-confirm"
+                            data-i18n-placeholder="auth.confirmPassword" placeholder="Confirm new password" autocomplete="new-password">
+                    </div>
+                    <small class="form-hint d-block mb-3" data-i18n="auth.passwordHint">
+                        Min 8 chars, with an uppercase letter, a digit and a special character.
+                    </small>
+                    <button type="button" class="btn btn-primary w-100" id="set-password-btn">
+                        <span class="btn-text" data-i18n="auth.setPassword">Set password</span>
+                        <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -217,8 +242,12 @@
         const verify2faBtn = document.getElementById('verify-2fa-btn');
         const backToLoginBtn = document.getElementById('back-to-login');
         const otpInput = document.getElementById('otp-code');
+        const pwdChangeSection = document.getElementById('pwd-change-section');
+        const setPasswordBtn = document.getElementById('set-password-btn');
+        const newPwdInput = document.getElementById('new-password');
+        const newPwdConfirmInput = document.getElementById('new-password-confirm');
 
-        // State for 2FA flow
+        // State for 2FA / password-change flows
         let tempToken = null;
 
         function _t(key) {
@@ -252,16 +281,53 @@
         function showLoginForm() {
             form.classList.remove('d-none');
             twoFaSection.classList.add('d-none');
+            pwdChangeSection.classList.add('d-none');
             tempToken = null;
             hideError();
         }
 
         function show2faForm() {
             form.classList.add('d-none');
+            pwdChangeSection.classList.add('d-none');
             twoFaSection.classList.remove('d-none');
             otpInput.value = '';
             otpInput.focus();
             hideError();
+        }
+
+        function showPwdChangeForm() {
+            form.classList.add('d-none');
+            twoFaSection.classList.add('d-none');
+            pwdChangeSection.classList.remove('d-none');
+            newPwdInput.value = '';
+            newPwdConfirmInput.value = '';
+            newPwdInput.focus();
+            hideError();
+        }
+
+        // Central dispatch on token_type for both /token and /token/2fa responses.
+        // Returns true if a follow-up step was shown, false on final login.
+        function handleTokenResponse(data) {
+            if (data.token_type === '2fa_required') {
+                tempToken = data.access_token;
+                show2faForm();
+                return true;
+            }
+            if (data.token_type === 'password_change_required') {
+                tempToken = data.access_token;
+                showPwdChangeForm();
+                return true;
+            }
+            if (data.token_type === '2fa_setup_required') {
+                localStorage.setItem('madmin_token', data.access_token);
+                localStorage.setItem('madmin_2fa_setup_required', 'true');
+                window.location.href = '/#/users';
+                return true;
+            }
+            // Final login
+            localStorage.setItem('madmin_token', data.access_token);
+            window.location.href = '/';
+            return false;
         }
 
         // Login form submit
@@ -288,21 +354,7 @@
 
                 if (response.ok) {
                     const data = await response.json();
-
-                    // Check if 2FA is required
-                    if (data.token_type === '2fa_required') {
-                        tempToken = data.access_token;
-                        show2faForm();
-                    } else if (data.token_type === '2fa_setup_required') {
-                        // 2FA enforced but not set up - store temp token and redirect to setup
-                        localStorage.setItem('madmin_token', data.access_token);
-                        localStorage.setItem('madmin_2fa_setup_required', 'true');
-                        window.location.href = '/#/users';
-                    } else {
-                        // Normal login - store token and redirect
-                        localStorage.setItem('madmin_token', data.access_token);
-                        window.location.href = '/';
-                    }
+                    handleTokenResponse(data);
                 } else {
                     const error = await response.json();
                     showError(error.detail || _t('auth.invalidCredentials'));
@@ -338,8 +390,8 @@
 
                 if (response.ok) {
                     const data = await response.json();
-                    localStorage.setItem('madmin_token', data.access_token);
-                    window.location.href = '/';
+                    // May return a password_change_required step after 2FA succeeds
+                    handleTokenResponse(data);
                 } else {
                     const error = await response.json();
                     showError(error.detail || _t('auth.invalidCode'));
@@ -352,6 +404,54 @@
             } finally {
                 setLoading(verify2faBtn, false, 'auth.verifying', 'auth.verify');
             }
+        });
+
+        // Forced password change
+        async function submitPasswordChange() {
+            const newPwd = newPwdInput.value;
+            const confirmPwd = newPwdConfirmInput.value;
+
+            if (!newPwd || !confirmPwd) {
+                showError(_t('auth.fillAllFields'));
+                return;
+            }
+            if (newPwd !== confirmPwd) {
+                showError(_t('auth.passwordsDoNotMatch'));
+                return;
+            }
+
+            hideError();
+            setLoading(setPasswordBtn, true, 'auth.settingPassword', 'auth.setPassword');
+
+            try {
+                const response = await fetch('/api/auth/token/password-change', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${tempToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ new_password: newPwd })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    localStorage.setItem('madmin_token', data.access_token);
+                    window.location.href = '/';
+                } else {
+                    const error = await response.json();
+                    showError(error.detail || _t('auth.passwordChangeFailed'));
+                }
+            } catch (error) {
+                showError(_t('auth.connectionError'));
+                console.error('Password change error:', error);
+            } finally {
+                setLoading(setPasswordBtn, false, 'auth.settingPassword', 'auth.setPassword');
+            }
+        }
+
+        setPasswordBtn.addEventListener('click', submitPasswordChange);
+        newPwdConfirmInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') submitPasswordChange();
         });
 
         // Handle Enter key on OTP input

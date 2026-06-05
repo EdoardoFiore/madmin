@@ -60,6 +60,9 @@ class SystemSettings(SQLModel, table=True):
     support_url: Optional[str] = Field(default=None, max_length=255)
     default_language: str = Field(default="en", max_length=10)
 
+    # Password policy
+    password_max_age_days: int = Field(default=0)  # 0 = expiry disabled
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -122,6 +125,16 @@ class SystemSettingsUpdate(SQLModel):
     favicon_url: Optional[str] = None
     support_url: Optional[str] = None
     default_language: Optional[str] = None
+    password_max_age_days: Optional[int] = None
+
+    @field_validator('password_max_age_days', mode='before')
+    @classmethod
+    def validate_max_age(cls, v):
+        if v is None:
+            return v
+        if int(v) < 0:
+            raise ValueError("password_max_age_days must be >= 0 (0 = disabled)")
+        return int(v)
 
     @field_validator('primary_color', mode='before')
     @classmethod
@@ -153,6 +166,7 @@ class SystemSettingsResponse(SQLModel):
     favicon_url: Optional[str]
     support_url: Optional[str]
     default_language: str = "en"
+    password_max_age_days: int = 0
     updated_at: datetime
 
 

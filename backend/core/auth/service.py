@@ -45,6 +45,32 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
+def is_password_expired(user: User) -> bool:
+    """True if the user has an expiry date that is already in the past."""
+    return user.password_expires_at is not None and datetime.utcnow() > user.password_expires_at
+
+
+def password_change_required(user: User) -> bool:
+    """True if the user must change password before getting a full session."""
+    return user.must_change_password or is_password_expired(user)
+
+
+async def _get_password_max_age_days(session: AsyncSession) -> int:
+    """Read the global password validity policy (0 = disabled)."""
+    from core.settings.models import SystemSettings
+    result = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
+    settings_row = result.scalar_one_or_none()
+    if not settings_row:
+        return 0
+    return getattr(settings_row, "password_max_age_days", 0) or 0
+
+
+async def _compute_password_expiry(session: AsyncSession, changed_at: datetime) -> Optional[datetime]:
+    """Compute expiry date from the global policy, or None if disabled."""
+    max_age = await _get_password_max_age_days(session)
+    return changed_at + timedelta(days=max_age) if max_age > 0 else None
+
+
 def validate_password_strength(password: str) -> Tuple[bool, str]:
     """
     Validate password strength requirements.
@@ -191,11 +217,14 @@ async def create_user(session: AsyncSession, user_data: UserCreate) -> User:
     if existing:
         raise ValueError(f"Username '{user_data.username}' already exists")
 
+    now = datetime.utcnow()
     user = User(
         username=user_data.username,
         email=user_data.email,
         hashed_password=get_password_hash(user_data.password),
-        is_superuser=user_data.is_superuser
+        is_superuser=user_data.is_superuser,
+        password_changed_at=now,
+        password_expires_at=await _compute_password_expiry(session, now)
     )
 
     session.add(user)
@@ -221,6 +250,11 @@ async def update_user(session: AsyncSession, user_id: uuid.UUID, user_data: User
         if not ok:
             raise ValueError(msg)
         user.hashed_password = get_password_hash(user_data.password)
+        # Password changed: reset force-change flag and recompute expiry from policy
+        now = datetime.utcnow()
+        user.password_changed_at = now
+        user.must_change_password = False
+        user.password_expires_at = await _compute_password_expiry(session, now)
     if user_data.email is not None:
         user.email = user_data.email
     if user_data.is_active is not None:
@@ -229,6 +263,11 @@ async def update_user(session: AsyncSession, user_id: uuid.UUID, user_data: User
         user.is_superuser = user_data.is_superuser
     if user_data.totp_enforced is not None:
         user.totp_enforced = user_data.totp_enforced
+    # Admin explicit overrides (applied after password-change recompute)
+    if user_data.must_change_password is not None:
+        user.must_change_password = user_data.must_change_password
+    if user_data.password_expires_at is not None:
+        user.password_expires_at = user_data.password_expires_at
 
     session.add(user)
     await session.flush()
@@ -327,7 +366,12 @@ async def init_core_permissions(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def create_first_user(session: AsyncSession, username: str, password: str) -> User:
+async def create_first_user(
+    session: AsyncSession,
+    username: str,
+    password: str,
+    force_password_change: bool = False
+) -> User:
     """
     Create the first superuser. Fails if any users already exist.
     Called by POST /api/auth/init during initial setup.
@@ -336,12 +380,15 @@ async def create_first_user(session: AsyncSession, username: str, password: str)
     if result.scalar_one_or_none() is not None:
         raise ValueError("Setup already completed: users already exist")
 
+    now = datetime.utcnow()
     user = User(
         username=username,
         email=f"{username}@localhost",
         hashed_password=get_password_hash(password),
         is_superuser=True,
-        is_protected=True
+        is_protected=True,
+        must_change_password=force_password_change,
+        password_changed_at=now
     )
     session.add(user)
     await session.commit()

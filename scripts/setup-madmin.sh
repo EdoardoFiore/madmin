@@ -84,11 +84,13 @@ EOF
 # --- Argomenti ---
 ADMIN_USERNAME="admin"
 ADMIN_PASSWORD="admin"
+FORCE_PW_CHANGE="false"   # opt-in: usato dagli automatismi di installazione (es. madmin-hub)
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -u|--username) ADMIN_USERNAME="$2"; shift ;;
         -p|--password) ADMIN_PASSWORD="$2"; shift ;;
+        -f|--force-password-change) FORCE_PW_CHANGE="true" ;;
     esac
     shift
 done
@@ -458,6 +460,27 @@ if [ -n "$JWT_TOKEN" ] && [ -f "$INSTALL_DIR/backend/default_rules.json" ]; then
     rm -f "$INSTALL_DIR/backend/default_rules.json"
 else
     log_warning "JWT non disponibile o file regole mancante. Import firewall saltato."
+fi
+
+# Forza il cambio password al primo accesso (opt-in, usato dagli automatismi).
+# Eseguito DOPO l'import firewall: l'admin ha gia' ottenuto un token pieno sopra,
+# evitando il chicken-egg con il gate "password_change_required" al login.
+if [ "$FORCE_PW_CHANGE" = "true" ]; then
+    if [ -n "$JWT_TOKEN" ]; then
+        log_info "Attivazione cambio password forzato al primo accesso..."
+        PW_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+            "http://localhost:8000/api/auth/users/$ADMIN_USERNAME" \
+            -H "Authorization: Bearer $JWT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"must_change_password": true}')
+        if [ "$PW_HTTP" = "200" ]; then
+            log_success "Cambio password forzato attivato per $ADMIN_USERNAME."
+        else
+            log_warning "Impossibile attivare il cambio password forzato (HTTP $PW_HTTP)."
+        fi
+    else
+        log_warning "JWT non disponibile: cambio password forzato non attivato."
+    fi
 fi
 
 # --- Completato ---

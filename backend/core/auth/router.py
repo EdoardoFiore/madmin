@@ -69,6 +69,10 @@ class InitAdminRequest(BaseModel):
     password: str
 
 
+class PasswordChangePendingRequest(BaseModel):
+    new_password: str
+
+
 def _user_response(user: User) -> UserResponse:
     """Helper to build a UserResponse from a User ORM object."""
     return UserResponse(
@@ -81,6 +85,8 @@ def _user_response(user: User) -> UserResponse:
         totp_enabled=user.totp_enabled,
         totp_enforced=user.totp_enforced,
         totp_locked=user.totp_locked,
+        must_change_password=user.must_change_password,
+        password_expires_at=user.password_expires_at,
         created_at=user.created_at,
         last_login=user.last_login,
         permissions=[p.slug for p in user.permissions] if not user.is_superuser else ["*"],
@@ -112,6 +118,8 @@ async def init_first_user(
             totp_enabled=user.totp_enabled,
             totp_enforced=user.totp_enforced,
             totp_locked=user.totp_locked,
+            must_change_password=user.must_change_password,
+            password_expires_at=user.password_expires_at,
             created_at=user.created_at,
             last_login=user.last_login,
             permissions=["*"]
@@ -177,6 +185,14 @@ async def login(
             expires_delta=timedelta(minutes=15)  # More time to set up
         )
         return {"access_token": temp_token, "token_type": "2fa_setup_required"}
+
+    # If a password change is required (forced or expired), gate before full session
+    if service.password_change_required(user):
+        temp_token = service.create_access_token(
+            data={"sub": user.username, "user_id": str(user.id), "pwd_change_pending": True},
+            expires_delta=timedelta(minutes=15)
+        )
+        return {"access_token": temp_token, "token_type": "password_change_required"}
 
     # Update last login
     await service.update_last_login(session, user)
@@ -268,6 +284,15 @@ async def verify_2fa_login(
     # Success — clear per-user attempt counter
     _2fa_attempts.pop(user_id_str, None)
 
+    # 2FA satisfied — now gate on password change if required
+    if service.password_change_required(user):
+        await session.commit()  # persist any backup-code update done above
+        temp_token = service.create_access_token(
+            data={"sub": user.username, "user_id": str(user.id), "pwd_change_pending": True},
+            expires_delta=timedelta(minutes=15)
+        )
+        return {"access_token": temp_token, "token_type": "password_change_required"}
+
     # Update last login
     await service.update_last_login(session, user)
     await session.commit()
@@ -278,6 +303,54 @@ async def verify_2fa_login(
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
     )
 
+    return Token(access_token=access_token)
+
+
+@router.post("/token/password-change", response_model=Token)
+async def complete_password_change(
+    data: PasswordChangePendingRequest,
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Complete a forced/expired password change started at login.
+    Requires the temporary token (pwd_change_pending) from /token or /token/2fa.
+    On success the password is updated and a full access token is returned.
+    """
+    payload = service.decode_access_token(token)
+    if not payload or not payload.get("pwd_change_pending"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired password-change token"
+        )
+
+    user = await service.get_user_by_username(session, payload.get("sub"))
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive"
+        )
+
+    ok, msg = service.validate_password_strength(data.new_password)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+
+    # Disallow reusing the current password
+    if service.verify_password(data.new_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La nuova password deve essere diversa dalla precedente"
+        )
+
+    # Updates password, clears must_change_password, recomputes expiry from policy
+    await service.update_user(session, user.id, UserUpdate(password=data.new_password))
+    await service.update_last_login(session, user)
+    await session.commit()
+
+    access_token = service.create_access_token(
+        data={"sub": user.username, "user_id": str(user.id)},
+        expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
+    )
     return Token(access_token=access_token)
 
 
@@ -323,6 +396,8 @@ async def list_users(
             totp_enabled=u.totp_enabled,
             totp_enforced=u.totp_enforced,
             totp_locked=u.totp_locked,
+            must_change_password=u.must_change_password,
+            password_expires_at=u.password_expires_at,
             created_at=u.created_at,
             last_login=u.last_login,
             permissions=[p.slug for p in u.permissions]

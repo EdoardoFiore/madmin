@@ -67,6 +67,11 @@ class User(SQLModel, table=True):
     totp_locked: bool = Field(default=False)    # Locked after too many failed 2FA attempts
     backup_codes: Optional[str] = Field(default=None)  # JSON array of hashed backup codes
 
+    # Password lifecycle
+    must_change_password: bool = Field(default=False)  # Force change at next login
+    password_changed_at: Optional[datetime] = Field(default=None)
+    password_expires_at: Optional[datetime] = Field(default=None)  # None = no expiry
+
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: Optional[datetime] = Field(default=None)
@@ -135,6 +140,8 @@ class UserUpdate(SQLModel):
     is_active: Optional[bool] = None
     is_superuser: Optional[bool] = None
     totp_enforced: Optional[bool] = None  # Force 2FA on user
+    must_change_password: Optional[bool] = None  # Force password change at next login
+    password_expires_at: Optional[datetime] = None  # Manual per-user expiry override
 
 
 class UserPreferencesUpdate(SQLModel):
@@ -153,6 +160,8 @@ class UserResponse(SQLModel):
     totp_enabled: bool = False
     totp_enforced: bool = False
     totp_locked: bool = False
+    must_change_password: bool = False
+    password_expires_at: Optional[datetime] = None
     created_at: datetime
     last_login: Optional[datetime]
     permissions: List[str] = []  # List of permission slugs
