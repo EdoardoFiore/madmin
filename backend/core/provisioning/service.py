@@ -174,10 +174,17 @@ class ProvisioningService:
         # 5. Ensure the MASQUERADE rule for this interface
         await self._ensure_masquerade(session, iface)
 
-        # 6. Persist desired DHCP runtime state UP (started by on_startup hook)
+        # 6. Persist desired DHCP runtime state UP
         await self._set_dhcp_enabled(session, True)
 
+        # 7. Start the DHCP service deterministically, right after netplan (the IP
+        #    is up). We do NOT rely solely on the module on_startup hook: it runs
+        #    later in a background task and its pre-flight (subnet must match the
+        #    LIVE interface IP) can lose a race at early boot. The on_startup hook
+        #    still runs afterwards as a safety net / retry.
         await session.flush()
+        await self._start_dhcp_with_retry(session)
+
         logger.info(f"Managed LAN: reconcile complete (iface={iface}, net={network_cidr})")
 
     # --- DHCP sync on interface network change ---
@@ -324,6 +331,32 @@ class ProvisioningService:
             logger.info("Managed LAN: DHCP config re-applied")
         else:
             logger.error(f"Managed LAN: DHCP apply failed: {msg}")
+
+    async def _start_dhcp_with_retry(self, session: AsyncSession, attempts: int = 3, delay: float = 2.0) -> None:
+        """
+        Apply DHCP config (which starts/restarts the service), retrying a few
+        times to absorb the brief window where the freshly-applied interface IP
+        is not yet visible to the config pre-flight at early boot.
+        """
+        import asyncio
+        try:
+            from modules.dhcp.service import dhcp_service
+        except Exception as e:
+            logger.error(f"Managed LAN: DHCP service unavailable: {e}")
+            return
+
+        for attempt in range(1, attempts + 1):
+            ok, msg = await dhcp_service.apply_config(session)
+            if ok:
+                logger.info(f"Managed LAN: DHCP service started (attempt {attempt})")
+                return
+            logger.warning(f"Managed LAN: DHCP start attempt {attempt}/{attempts} failed: {msg}")
+            if attempt < attempts:
+                await asyncio.sleep(delay)
+        logger.error(
+            "Managed LAN: DHCP service did not start after retries; "
+            "the module on_startup hook will retry"
+        )
 
 
 # Singleton instance
