@@ -343,6 +343,30 @@ async def set_user_permissions(session: AsyncSession, user_id: uuid.UUID, permis
     return await get_user_by_id(session, user_id)
 
 
+async def apply_password_expiry_policy(session: AsyncSession, max_age_days: int) -> int:
+    """
+    Backfill password_expires_at for all users that don't have one set.
+    Called when the global policy is enabled or changed.
+    Uses password_changed_at as reference; falls back to utcnow().
+    Returns the number of users updated.
+    """
+    if max_age_days <= 0:
+        return 0
+
+    now = datetime.utcnow()
+    delta = timedelta(days=max_age_days)
+
+    result = await session.execute(select(User).where(User.password_expires_at == None))
+    users_to_update = result.scalars().all()
+
+    for user in users_to_update:
+        ref = user.password_changed_at if user.password_changed_at else now
+        user.password_expires_at = ref + delta
+        session.add(user)
+
+    return len(users_to_update)
+
+
 async def init_core_permissions(session: AsyncSession) -> None:
     """
     Initialize core permissions in database.

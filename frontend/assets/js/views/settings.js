@@ -15,7 +15,8 @@ export async function render(container) {
 
     container.innerHTML = `
         <div class="row row-deck row-cards">
-            <!-- Personalization Settings -->
+
+            <!-- Appearance -->
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
@@ -47,15 +48,6 @@ export async function render(container) {
                                     ${canManage ? `<button type="button" class="btn btn-outline-secondary" id="reset-support" title="${t('settings.remove')}"><i class="ti ti-x"></i></button>` : ''}
                                 </div>
                             </div>
-                            <div class="col-md-4 d-flex align-items-end">
-                                <div class="mb-0">
-                                    <label class="form-check form-switch">
-                                        <input type="checkbox" class="form-check-input" id="dark-mode-toggle">
-                                        <span class="form-check-label">${t('settings.darkMode')}</span>
-                                    </label>
-                                    <small class="form-hint">${t('settings.darkModeHint')}</small>
-                                </div>
-                            </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.language')}</label>
                                 <select class="form-select" id="system-language" ${canManage ? '' : 'disabled'}>
@@ -65,19 +57,6 @@ export async function render(container) {
                                 <small class="form-hint">${t('settings.languageHint')}</small>
                             </div>
                             <div class="col-md-4">
-                                <label class="form-label">${t('settings.myLanguage')}</label>
-                                <select class="form-select" id="my-language">
-                                    <option value="en">English</option>
-                                    <option value="it">Italiano</option>
-                                </select>
-                                <small class="form-hint">${t('settings.myLanguageHint')}</small>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label">${t('settings.passwordMaxAge')}</label>
-                                <input type="number" min="0" class="form-control" id="password-max-age" placeholder="0" ${canManage ? '' : 'disabled'}>
-                                <small class="form-hint">${t('settings.passwordMaxAgeHint')}</small>
-                            </div>
-                            <div class="col-md-6">
                                 <label class="form-label">${t('settings.logo')}</label>
                                 <div class="d-flex align-items-center gap-3">
                                     <div id="logo-preview-container" class="border rounded p-2 d-flex align-items-center justify-content-center bg-dark"
@@ -98,7 +77,7 @@ export async function render(container) {
                                 </div>
                                 <small class="form-hint">PNG o SVG, max 200x50px</small>
                             </div>
-                            <div class="col-md-6">
+                            <div class="col-md-4">
                                 <label class="form-label">${t('settings.favicon')}</label>
                                 <div class="d-flex align-items-center gap-3">
                                     <div id="favicon-preview-container" class="border rounded d-flex align-items-center justify-content-center bg-dark"
@@ -126,8 +105,41 @@ export async function render(container) {
                     </div>
                 </div>
             </div>
-            
-            <!-- Network Security Settings -->
+
+            <!-- Personal Preferences -->
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="ti ti-user-cog me-2"></i>${t('settings.personalPreferences')}</h3>
+                        <div class="card-options">
+                            <span class="text-muted small">${t('settings.personalPreferencesHint')}</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3 align-items-center">
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.myLanguage')}</label>
+                                <select class="form-select" id="my-language">
+                                    <option value="en">English</option>
+                                    <option value="it">Italiano</option>
+                                </select>
+                                <small class="form-hint">${t('settings.myLanguageHint')}</small>
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <div>
+                                    <label class="form-check form-switch">
+                                        <input type="checkbox" class="form-check-input" id="dark-mode-toggle">
+                                        <span class="form-check-label">${t('settings.darkMode')}</span>
+                                    </label>
+                                    <small class="form-hint">${t('settings.darkModeHint')}</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Security Settings -->
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
@@ -135,8 +147,8 @@ export async function render(container) {
                     </div>
                     <div class="card-body">
                         <div class="row g-3">
-                             <!-- Port Configuration -->
-                            <div class="col-md-6">
+                            <!-- Management Port -->
+                            <div class="col-md-4">
                                 <label class="form-label">${t('settings.managementPort')}</label>
                                 <div class="input-group">
                                     <input type="number" class="form-control" id="network-port" placeholder="7443" ${canManage ? '' : 'disabled'}>
@@ -147,18 +159,26 @@ export async function render(container) {
                                     ${t('settings.portWarning')}
                                 </small>
                             </div>
-
-                            <!-- SSL Certificate Info -->
-                            <div class="col-md-6">
-                                 <label class="form-label">${t('settings.sslCert')}</label>
-                                 <div class="card card-sm">
+                            <!-- Password Policy -->
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.passwordMaxAge')}</label>
+                                <div class="input-group">
+                                    <input type="number" min="0" class="form-control" id="password-max-age" placeholder="0" ${canManage ? '' : 'disabled'}>
+                                    <span class="input-group-text text-muted">${t('settings.days')}</span>
+                                </div>
+                                <small class="form-hint">${t('settings.passwordMaxAgeHint')}</small>
+                                ${canManage ? `<button class="btn btn-primary btn-sm mt-2" id="save-password-policy">${t('common.save')}</button>` : ''}
+                            </div>
+                            <!-- SSL Certificate -->
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.sslCert')}</label>
+                                <div class="card card-sm mb-0">
                                     <div class="card-body">
                                         <div class="d-flex align-items-center mb-2">
                                             <span class="badge bg-green-lt me-2" id="ssl-status-badge">Attivo</span>
                                             <div class="text-muted small" id="ssl-issuer">Issuer: -</div>
                                         </div>
                                         <div class="text-muted small mb-2" id="ssl-validity">Scadenza: -</div>
-                                        
                                         ${canManage ? `
                                         <div class="btn-group w-100">
                                             <button class="btn btn-outline-primary btn-sm" id="renew-ssl">
@@ -170,7 +190,7 @@ export async function render(container) {
                                         </div>
                                         ` : ''}
                                     </div>
-                                 </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -781,21 +801,30 @@ function setupEventListeners() {
         }
     });
 
-    // Save system settings
+    // Save password policy (separate button in Security card)
+    document.getElementById('save-password-policy')?.addEventListener('click', async () => {
+        try {
+            const passwordMaxAge = parseInt(document.getElementById('password-max-age')?.value, 10) || 0;
+            await apiPatch('/settings/system', { password_max_age_days: passwordMaxAge });
+            showToast(t('settings.settingsSaved'), 'success');
+        } catch (err) {
+            showToast(t('common.errorPrefix') + err.message, 'error');
+        }
+    });
+
+    // Save appearance settings
     document.getElementById('save-system')?.addEventListener('click', async () => {
         try {
             const companyName = document.getElementById('company-name').value || 'MADMIN';
             const primaryColor = document.getElementById('primary-color').value;
             const supportUrl = document.getElementById('support-url').value || '';
             const systemLang = document.getElementById('system-language')?.value || 'en';
-            const passwordMaxAge = parseInt(document.getElementById('password-max-age')?.value, 10) || 0;
 
             await apiPatch('/settings/system', {
                 company_name: companyName,
                 primary_color: primaryColor,
                 support_url: supportUrl,
-                default_language: systemLang,
-                password_max_age_days: passwordMaxAge
+                default_language: systemLang
             });
 
             // Apply changes immediately to UI

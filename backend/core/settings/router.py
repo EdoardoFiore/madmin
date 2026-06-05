@@ -102,7 +102,15 @@ async def update_system_settings(
     session.add(settings)
     await session.commit()
     await session.refresh(settings)
-    
+
+    # When password policy is enabled/changed, immediately backfill users with no expiry set
+    if 'password_max_age_days' in update_data:
+        from core.auth.service import apply_password_expiry_policy
+        updated = await apply_password_expiry_policy(session, update_data['password_max_age_days'])
+        if updated:
+            await session.commit()
+            logger.info(f"Password expiry policy applied to {updated} existing users")
+
     return SystemSettingsResponse(
         company_name=settings.company_name,
         primary_color=settings.primary_color,
