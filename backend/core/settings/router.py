@@ -92,6 +92,14 @@ async def update_system_settings(
     # Update fields - allow setting to None for reset
     # Also convert empty strings to None for nullable fields
     update_data = data.model_dump(exclude_unset=True)
+
+    # WAN edit protection is ONE-WAY: it can be enabled (e.g. by the installer
+    # --protect-wan flag) but never disabled via the API. Disabling it would let an
+    # admin reconfigure the WAN interface IP on the host infrastructure — a serious
+    # security risk. Silently drop any attempt to turn it off.
+    if update_data.get('wan_protection_enabled') is False:
+        update_data.pop('wan_protection_enabled')
+
     nullable_fields = {'logo_url', 'favicon_url', 'support_url'}
     for key, value in update_data.items():
         # Convert empty strings to None for nullable fields only

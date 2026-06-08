@@ -5,7 +5,7 @@
  * Allows netplan configuration for static IP or DHCP.
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete } from '../api.js';
+import { apiGet, apiPost, apiDelete } from '../api.js';
 import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
@@ -241,23 +241,6 @@ async function loadInterfaces() {
             });
         });
 
-        // WAN edit-protection toggle
-        container.querySelector('[data-wan-protect-toggle]')?.addEventListener('change', async (e) => {
-            e.stopPropagation();
-            const enabled = e.target.checked;
-            e.target.disabled = true;
-            try {
-                await apiPatch('/settings/system', { wan_protection_enabled: enabled });
-                wanProtectionEnabled = enabled;
-                showToast(enabled ? t('network.wanProtectionOn') : t('network.wanProtectionOff'), 'success');
-                await loadInterfaces();
-            } catch (error) {
-                e.target.checked = !enabled;
-                e.target.disabled = false;
-                showToast(t('network.wanProtectionError', { error: escapeHtml(error.message) }), 'danger');
-            }
-        });
-
     } catch (error) {
         console.error('Error loading interfaces:', error);
         container.innerHTML = `
@@ -365,17 +348,6 @@ function renderInterfaceRow(iface) {
             <i class="ti ti-lock me-1"></i>${t('network.managedNote')}
         </div>` : '';
 
-    // WAN edit-protection toggle (admins only), shown on the WAN card
-    const wanProtectToggle = (isWAN && canManage) ? `
-        <div class="mt-3 pt-3 border-top">
-            <label class="form-check form-switch mb-1">
-                <input class="form-check-input" type="checkbox" data-wan-protect-toggle
-                       ${wanProtectionEnabled ? 'checked' : ''}>
-                <span class="form-check-label fw-semibold">${t('network.wanProtectionLabel')}</span>
-            </label>
-            <div class="text-muted small">${t('network.wanProtectionHint')}</div>
-        </div>` : '';
-
     return `
         <div class="card mb-2">
             <div class="iface-row" data-collapse-target="${collapseId}">
@@ -456,7 +428,6 @@ function renderInterfaceRow(iface) {
                                 </tbody>
                             </table>
                             ${wanNote}
-                            ${wanProtectToggle}
                         </div>
                     </div>
                 </div>
