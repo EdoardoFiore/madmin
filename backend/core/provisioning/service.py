@@ -12,7 +12,8 @@ All operations are idempotent: they only act on drift.
 """
 import ipaddress
 import logging
-from typing import Optional, Tuple
+import re
+from typing import List, Optional, Tuple
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,8 +23,18 @@ from .models import ManagedLanSettings
 
 logger = logging.getLogger(__name__)
 
-# Interfaces never managed/altered (WAN, externally managed by cloud-init)
+# Interfaces never managed/altered (WAN, externally managed by cloud-init).
+# eth0 is the legacy WAN name; the real WAN is resolved at runtime via the
+# default route (get_default_interface) and excluded too.
 WAN_INTERFACES = {"eth0"}
+
+
+def _natural_key(name: str) -> List:
+    """
+    Natural sort key so interfaces order incrementally, not lexicographically:
+    eth2 < eth10, ens18 < ens19, enp1s0 < enp10s0. Splits digit runs into ints.
+    """
+    return [int(tok) if tok.isdigit() else tok for tok in re.split(r'(\d+)', name)]
 
 # Sentinel comment marking the managed MASQUERADE rule (for API guards + reconcile)
 MANAGED_NAT_SENTINEL = "MADMIN_MANAGED_LAN_NAT"
@@ -56,15 +67,31 @@ class ProvisioningService:
         """
         Resolve the managed LAN interface name at runtime.
 
-        The name is NOT assumed to be "eth1": it may be ens19, enp1s0, etc.
-        Returns the first non-virtual interface whose name is not a WAN
-        interface, ordered as NetworkService returns them (up first, then name).
+        Rule: the managed LAN is ALWAYS the first non-WAN physical interface in
+        incremental order — eth1 after eth0, ens19 after ens18, enp2s0 after
+        enp1s0, etc. The name is never assumed: it is derived from the live NICs.
+
+        WAN exclusion: the real WAN is the default-route interface
+        (get_default_interface) plus the legacy eth0 name. If no default route is
+        known yet (early boot), the lowest-ordered NIC is treated as the WAN.
         """
+        from core.network.utils import get_default_interface
+
         interfaces = NetworkService.get_interfaces()  # already filters virtual ifaces
-        # Stable ordering by interface name so "first after eth0" is deterministic
-        names = sorted(i["name"] for i in interfaces if i.get("name"))
+        names = sorted((i["name"] for i in interfaces if i.get("name")), key=_natural_key)
+        if not names:
+            return None
+
+        excluded = set(WAN_INTERFACES)
+        wan = get_default_interface()
+        if wan:
+            excluded.add(wan)
+        else:
+            # No default route resolved: by convention the first NIC is the WAN.
+            excluded.add(names[0])
+
         for name in names:
-            if name not in WAN_INTERFACES:
+            if name not in excluded:
                 return name
         return None
 
