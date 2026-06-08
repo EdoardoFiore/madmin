@@ -5,7 +5,7 @@
  * Allows netplan configuration for static IP or DHCP.
  */
 
-import { apiGet, apiPost, apiDelete } from '../api.js';
+import { apiGet, apiPost, apiPatch, apiDelete } from '../api.js';
 import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
@@ -24,6 +24,8 @@ function ifaceId(name) {
 
 // Name of the managed LAN interface (provisioning), or null. Loaded with interfaces.
 let managedIface = null;
+// WAN edit-protection state (installer flag --protect-wan). Loaded with interfaces.
+let wanProtectionEnabled = false;
 
 export async function render(container) {
     const canManage = checkPermission('settings.manage');
@@ -195,6 +197,14 @@ async function loadInterfaces() {
             managedIface = null;
         }
 
+        // Resolve WAN edit-protection state (mirror of managed-LAN resolution)
+        try {
+            const sys = await apiGet('/settings/system');
+            wanProtectionEnabled = !!sys?.wan_protection_enabled;
+        } catch (e) {
+            wanProtectionEnabled = false;
+        }
+
         if (interfaces.length === 0) {
             container.innerHTML = `
                 <div class="text-center py-4 text-muted">
@@ -231,6 +241,23 @@ async function loadInterfaces() {
             });
         });
 
+        // WAN edit-protection toggle
+        container.querySelector('[data-wan-protect-toggle]')?.addEventListener('change', async (e) => {
+            e.stopPropagation();
+            const enabled = e.target.checked;
+            e.target.disabled = true;
+            try {
+                await apiPatch('/settings/system', { wan_protection_enabled: enabled });
+                wanProtectionEnabled = enabled;
+                showToast(enabled ? t('network.wanProtectionOn') : t('network.wanProtectionOff'), 'success');
+                await loadInterfaces();
+            } catch (error) {
+                e.target.checked = !enabled;
+                e.target.disabled = false;
+                showToast(t('network.wanProtectionError', { error: escapeHtml(error.message) }), 'danger');
+            }
+        });
+
     } catch (error) {
         console.error('Error loading interfaces:', error);
         container.innerHTML = `
@@ -246,6 +273,8 @@ function renderInterfaceRow(iface) {
     const isUp = iface.is_up;
     const canManage = checkPermission('settings.manage');
     const isWAN = iface.name === 'eth0';
+    // WAN is read-only only when edit-protection is enabled (installer flag --protect-wan)
+    const isProtected = isWAN && wanProtectionEnabled;
     const collapseId = ifaceId(iface.name);
     const secondaryCount = iface.secondary_ips?.length || 0;
 
@@ -275,7 +304,7 @@ function renderInterfaceRow(iface) {
     const wanBadge = isWAN ? '<span class="badge bg-orange-lt">WAN</span>' : '';
     const managedBadge = isManaged ? `<span class="badge bg-azure-lt" title="${t('network.managedHint')}"><i class="ti ti-lock me-1"></i>${t('network.managed')}</span>` : '';
     const speedBadge = iface.speed > 0 ? `<span class="badge bg-azure-lt">${iface.speed} Mbps</span>` : '';
-    const lockBadge = isWAN ? `<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
+    const lockBadge = isProtected ? `<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
 
     const secondaryBadge = secondaryCount > 0
         ? `<span class="badge bg-secondary-lt ms-1" title="${t('network.secondaryIps', { count: secondaryCount })}">+${secondaryCount}</span>`
@@ -285,7 +314,7 @@ function renderInterfaceRow(iface) {
         ? `<code>${iface.ipv4}</code>${secondaryBadge}`
         : `<span class="text-muted">—</span>`;
 
-    const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isWAN;
+    const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isProtected;
     const configureBtn = canConfigure
         ? `<button class="btn btn-sm btn-ghost-primary" data-configure-iface="${iface.name}" title="${t('network.configureInterface')}">
                <i class="ti ti-settings"></i>
@@ -328,12 +357,23 @@ function renderInterfaceRow(iface) {
             </td>
         </tr>` : '';
 
-    const wanNote = isWAN ? `
+    const wanNote = isProtected ? `
         <div class="mt-3 text-muted small">
             <i class="ti ti-lock me-1"></i>${t('network.wanReadOnly')}
         </div>` : isManaged ? `
         <div class="mt-3 text-muted small">
             <i class="ti ti-lock me-1"></i>${t('network.managedNote')}
+        </div>` : '';
+
+    // WAN edit-protection toggle (admins only), shown on the WAN card
+    const wanProtectToggle = (isWAN && canManage) ? `
+        <div class="mt-3 pt-3 border-top">
+            <label class="form-check form-switch mb-1">
+                <input class="form-check-input" type="checkbox" data-wan-protect-toggle
+                       ${wanProtectionEnabled ? 'checked' : ''}>
+                <span class="form-check-label fw-semibold">${t('network.wanProtectionLabel')}</span>
+            </label>
+            <div class="text-muted small">${t('network.wanProtectionHint')}</div>
         </div>` : '';
 
     return `
@@ -416,6 +456,7 @@ function renderInterfaceRow(iface) {
                                 </tbody>
                             </table>
                             ${wanNote}
+                            ${wanProtectToggle}
                         </div>
                     </div>
                 </div>

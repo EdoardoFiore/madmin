@@ -70,6 +70,7 @@ async def get_system_settings(
         support_url=settings.support_url,
         default_language=getattr(settings, 'default_language', 'en') or 'en',
         password_max_age_days=getattr(settings, 'password_max_age_days', 0) or 0,
+        wan_protection_enabled=getattr(settings, 'wan_protection_enabled', False) or False,
         updated_at=settings.updated_at
     )
 
@@ -119,6 +120,7 @@ async def update_system_settings(
         support_url=settings.support_url,
         default_language=getattr(settings, 'default_language', 'en') or 'en',
         password_max_age_days=getattr(settings, 'password_max_age_days', 0) or 0,
+        wan_protection_enabled=getattr(settings, 'wan_protection_enabled', False) or False,
         updated_at=settings.updated_at
     )
 

@@ -5,9 +5,10 @@ API endpoints for network interface information and netplan configuration.
 """
 import ipaddress
 import logging
-from typing import List, Optional
+from typing import List, Optional, Set
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.auth.dependencies import get_current_user, require_permission
 from core.auth.models import User
@@ -15,13 +16,30 @@ from core.database import get_session
 from core.firewall.orchestrator import firewall_orchestrator
 
 from .service import network_service, netplan_service
+from .utils import get_default_interface
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/network", tags=["Network"])
 
-# Interfaces managed externally (e.g. cloud-init) — read-only via API
-PROTECTED_INTERFACES = {"eth0"}
+# WAN interface fallback when the default route can't be resolved (e.g. cloud-init eth0).
+WAN_INTERFACE_FALLBACK = "eth0"
+
+
+async def _wan_locked_interfaces(session: AsyncSession) -> Set[str]:
+    """
+    Interfaces that are read-only via API because WAN edit-protection is enabled.
+
+    Returns the WAN interface only when SystemSettings.wan_protection_enabled is True
+    (opt-in via installer flag --protect-wan). Empty set otherwise → WAN freely editable.
+    Mirrors the managed-LAN immutability concept (orthogonal: WAN != managed LAN iface).
+    """
+    from core.settings.models import SystemSettings
+    result = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    if not settings or not getattr(settings, "wan_protection_enabled", False):
+        return set()
+    return {get_default_interface() or WAN_INTERFACE_FALLBACK}
 
 
 class NetplanConfig(BaseModel):
@@ -134,7 +152,7 @@ async def set_interface_config(
     Creates a new config file: /etc/netplan/99-madmin-{interface}.yaml
     Does NOT apply automatically - use /apply endpoint.
     """
-    if interface in PROTECTED_INTERFACES:
+    if interface in await _wan_locked_interfaces(session):
         raise HTTPException(
             status_code=403,
             detail=f"Interface {interface} (WAN) is not modifiable."
@@ -200,7 +218,7 @@ async def delete_interface_config(
     Only deletes 99-madmin-{interface}.yaml files.
     Does NOT apply automatically - use /apply endpoint.
     """
-    if interface in PROTECTED_INTERFACES:
+    if interface in await _wan_locked_interfaces(session):
         raise HTTPException(
             status_code=403,
             detail=f"Interface {interface} (WAN) is not modifiable."

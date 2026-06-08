@@ -4,10 +4,6 @@
   <img src="docs/banner.png" alt="MADMIN Banner" width="100%">
 </p>
 
-> [!WARNING]
-> **This project is currently under active development for a custom internal deployment with specific architectural and operational constraints tied to that context.**
-> Once the target project goes live, a more open and general-purpose version of MADMIN will be published — without those limitations. Stay tuned.
-
 > **MADMIN** is a high-performance, modular administrative dashboard designed for Linux servers (Ubuntu 24.04). It provides a unified interface to manage system services, networks, VPN, firewall, and specialized components via a powerful plugin architecture.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -157,6 +153,18 @@ sudo bash scripts/setup-madmin.sh -u <admin-username> -p '<admin-password>'
 |----------|-------------|
 | `-u`, `--username` | Admin account username to create |
 | `-p`, `--password` | Admin account password |
+
+#### Auto-provisioning flags
+
+These optional, opt-in flags make MADMIN **auto-provisionable on multiple levels**: an external orchestrator (e.g. cloud-init or a VM provisioner) can pass them at install time to deliver a hardened, ready-to-use instance with no manual post-install steps. Each flag enables one independent capability; all default to off.
+
+| Flag | Effect |
+|------|--------|
+| `-f`, `--force-password-change` | Forces the admin to change the password at first login. The account is created with the provided password, then flagged so the login flow gates on a mandatory password change. |
+| `-l`, `--provision-lan` | Auto-provisions a managed LAN: picks the first non-WAN interface, assigns it a static IP, enables the DHCP module with a subnet bound to that interface, and adds the LAN→WAN NAT (MASQUERADE) rule. Self-heals on every boot. |
+| `-w`, `--protect-wan` | Enables WAN edit protection: the WAN interface (`eth0`, managed externally via cloud-init) becomes read-only via UI/API. Without this flag the WAN config is freely editable. |
+
+State set by these flags is persisted in the database and applied/reconciled on subsequent boots; the flags can also be toggled later from the dashboard.
 
 **The installer handles:**
 1. System dependencies (PostgreSQL, Python 3.12, Nginx, iptables, ipset, conntrack)

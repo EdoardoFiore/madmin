@@ -63,6 +63,10 @@ class SystemSettings(SQLModel, table=True):
     # Password policy
     password_max_age_days: int = Field(default=0)  # 0 = expiry disabled
 
+    # WAN edit protection: when True, the WAN interface (eth0) config is read-only
+    # (set via installer flag --protect-wan). Default False = WAN freely editable.
+    wan_protection_enabled: bool = Field(default=False)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -126,6 +130,7 @@ class SystemSettingsUpdate(SQLModel):
     support_url: Optional[str] = None
     default_language: Optional[str] = None
     password_max_age_days: Optional[int] = None
+    wan_protection_enabled: Optional[bool] = None
 
     @field_validator('password_max_age_days', mode='before')
     @classmethod
@@ -167,6 +172,7 @@ class SystemSettingsResponse(SQLModel):
     support_url: Optional[str]
     default_language: str = "en"
     password_max_age_days: int = 0
+    wan_protection_enabled: bool = False
     updated_at: datetime
 
 

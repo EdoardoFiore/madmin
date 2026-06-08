@@ -3,47 +3,47 @@
 # =================================================================
 #                     MADMIN - Installer
 # =================================================================
-# Installa e configura MADMIN (Modular Admin System) su Ubuntu 24.04
-# Richiede: PostgreSQL 15+, Python 3.12+, Nginx
+# Installs and configures MADMIN (Modular Admin System) on Ubuntu 24.04
+# Requires: PostgreSQL 15+, Python 3.12+, Nginx
 # =================================================================
 
 set -e
 
-# --- Colori e Logging ---
+# --- Colors and logging ---
 log_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
 log_success() { echo -e "\033[32m[SUCCESS]\033[0m $1"; }
 log_error() { echo -e "\033[31m[ERROR]\033[0m $1" >&2; }
 log_warning() { echo -e "\033[33m[WARNING]\033[0m $1"; }
 
-# --- Disabilita unattended-upgrades per la durata dell'installazione ---
+# --- Disable unattended-upgrades for the duration of the installation ---
 disable_unattended_upgrades() {
-    log_info "Sospensione unattended-upgrades per la durata dell'installazione..."
+    log_info "Pausing unattended-upgrades for the duration of the installation..."
     systemctl stop unattended-upgrades 2>/dev/null || true
     systemctl stop apt-daily.service 2>/dev/null || true
     systemctl stop apt-daily-upgrade.service 2>/dev/null || true
-    # Attendi che eventuali processi apt in corso terminino
+    # Wait for any in-flight apt processes to finish
     local waited=0
     while pgrep -x "unattended-upgr" >/dev/null 2>&1 || pgrep -x "apt-get" >/dev/null 2>&1; do
         if [ $waited -eq 0 ]; then
-            log_warning "Processo apt ancora in esecuzione, attendo terminazione..."
+            log_warning "An apt process is still running, waiting for it to finish..."
         fi
         sleep 2
         waited=$((waited + 2))
         if [ $waited -ge 120 ]; then
-            log_warning "Timeout attesa processo apt. Procedo comunque."
+            log_warning "Timed out waiting for apt process. Proceeding anyway."
             break
         fi
     done
 }
 
-# Riabilita unattended-upgrades al termine (o in caso di errore)
+# Re-enable unattended-upgrades at the end (or on error)
 reenable_unattended_upgrades() {
     systemctl start unattended-upgrades 2>/dev/null || true
     systemctl start apt-daily.timer 2>/dev/null || true
     systemctl start apt-daily-upgrade.timer 2>/dev/null || true
 }
 
-# --- Attendi rilascio lock apt/dpkg ---
+# --- Wait for apt/dpkg lock to be released ---
 wait_for_apt() {
     local max_wait=60
     local waited=0
@@ -52,17 +52,17 @@ wait_for_apt() {
           fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
           fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
         if [ $waited -eq 0 ]; then
-            log_warning "Lock apt ancora occupato, attendo..."
+            log_warning "apt lock still held, waiting..."
         fi
         sleep 2
         waited=$((waited + 2))
         if [ $waited -ge $max_wait ]; then
-            log_error "Timeout: impossibile ottenere il lock apt dopo ${max_wait}s."
+            log_error "Timeout: could not acquire apt lock after ${max_wait}s."
             exit 1
         fi
     done
     if [ $waited -gt 0 ]; then
-        log_info "Lock apt rilasciato dopo ${waited}s."
+        log_info "apt lock released after ${waited}s."
     fi
 }
 
@@ -70,22 +70,23 @@ wait_for_apt() {
 print_banner() {
     echo -e "\033[1;36m"
     cat << 'EOF'
-    __  __    _    ____  __  __ ___ _   _ 
+    __  __    _    ____  __  __ ___ _   _
    |  \/  |  / \  |  _ \|  \/  |_ _| \ | |
    | |\/| | / _ \ | | | | |\/| || ||  \| |
    | |  | |/ ___ \| |_| | |  | || || |\  |
    |_|  |_/_/   \_\____/|_|  |_|___|_| \_|
-                                          
+
      Modular Admin System - Installer
 EOF
     echo -e "\033[0m"
 }
 
-# --- Argomenti ---
+# --- Arguments ---
 ADMIN_USERNAME="admin"
 ADMIN_PASSWORD="admin"
-FORCE_PW_CHANGE="false"   # opt-in: usato dagli automatismi di installazione (es. madmin-hub)
-PROVISION_LAN="false"     # opt-in: auto-provisiona LAN gestita (interfaccia + DHCP + NAT)
+FORCE_PW_CHANGE="false"   # opt-in: used by install automations (e.g. madmin-hub)
+PROVISION_LAN="false"     # opt-in: auto-provisions a managed LAN (interface + DHCP + NAT)
+PROTECT_WAN="false"       # opt-in: makes WAN (eth0) editing read-only via UI/API
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -93,22 +94,23 @@ while [[ "$#" -gt 0 ]]; do
         -p|--password) ADMIN_PASSWORD="$2"; shift ;;
         -f|--force-password-change) FORCE_PW_CHANGE="true" ;;
         -l|--provision-lan) PROVISION_LAN="true" ;;
+        -w|--protect-wan) PROTECT_WAN="true" ;;
     esac
     shift
 done
 
-# --- Check Root ---
+# --- Root check ---
 if [[ $EUID -ne 0 ]]; then
-    log_error "Questo script deve essere eseguito come root. Usa 'sudo bash setup-madmin.sh'"
+    log_error "This script must be run as root. Use 'sudo bash setup-madmin.sh'"
     exit 1
 fi
 
 print_banner
 
-# Riabilita unattended-upgrades alla fine dello script (anche in caso di errore)
+# Re-enable unattended-upgrades when the script ends (even on error)
 trap reenable_unattended_upgrades EXIT
 
-# --- Variabili di Configurazione ---
+# --- Configuration variables ---
 INSTALL_DIR="/opt/madmin"
 DB_NAME="madmin"
 DB_USER="madmin"
@@ -117,18 +119,18 @@ SECRET_KEY=$(openssl rand -hex 32)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-log_info "Directory di installazione: $INSTALL_DIR"
-log_info "Directory del progetto: $PROJECT_DIR"
+log_info "Installation directory: $INSTALL_DIR"
+log_info "Project directory: $PROJECT_DIR"
 
-# --- Fase 1: Dipendenze di Sistema ---
-log_info "Fase 1/7: Installazione dipendenze di sistema..."
+# --- Step 1: System dependencies ---
+log_info "Step 1/7: Installing system dependencies..."
 
 disable_unattended_upgrades
 wait_for_apt
 apt-get update
 
-# Utility di base (necessarie su Ubuntu Minimal dove non sono preinstallate)
-log_info "Installazione utility di base..."
+# Base utilities (needed on Ubuntu Minimal where they are not preinstalled)
+log_info "Installing base utilities..."
 apt-get install -y \
     cron \
     iproute2 \
@@ -143,68 +145,68 @@ apt-get install -y \
     git
 
 # PostgreSQL
-log_info "Installazione PostgreSQL..."
+log_info "Installing PostgreSQL..."
 apt-get install -y postgresql postgresql-contrib libpq-dev
 
 # Python
-log_info "Installazione Python..."
+log_info "Installing Python..."
 apt-get install -y python3-pip python3-venv python3-dev python3-full
 
 # Nginx
-log_info "Installazione Nginx..."
+log_info "Installing Nginx..."
 apt-get install -y nginx
 
-# Pre-configurazione iptables-persistent (silent install)
+# Pre-seed iptables-persistent (silent install)
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 
 # Firewall
 apt-get install -y iptables iptables-persistent ipset conntrack
 
-# Abilita e avvia cron daemon
+# Enable and start the cron daemon
 systemctl enable cron
 systemctl start cron
 
-log_success "Dipendenze installate."
+log_success "Dependencies installed."
 
-# --- Fase 2: Configurazione PostgreSQL ---
-log_info "Fase 2/7: Configurazione PostgreSQL..."
+# --- Step 2: PostgreSQL configuration ---
+log_info "Step 2/7: Configuring PostgreSQL..."
 
-# Avvia PostgreSQL se non attivo
+# Start PostgreSQL if not running
 systemctl start postgresql
 systemctl enable postgresql
 
-# Crea utente e database
+# Create user and database
 sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null || \
     sudo -u postgres psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASSWORD';"
 
 sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>/dev/null || \
-    log_warning "Database $DB_NAME già esistente."
+    log_warning "Database $DB_NAME already exists."
 
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;"
 
-log_success "PostgreSQL configurato (DB: $DB_NAME, User: $DB_USER)"
+log_success "PostgreSQL configured (DB: $DB_NAME, User: $DB_USER)"
 
-# --- Fase 3: Deploy Backend ---
-log_info "Fase 3/7: Deploy Backend..."
+# --- Step 3: Backend deployment ---
+log_info "Step 3/7: Deploying backend..."
 
 mkdir -p $INSTALL_DIR/backend
 mkdir -p $INSTALL_DIR/backend/modules
 mkdir -p $INSTALL_DIR/data
 
-# Copia file backend
+# Copy backend files
 cp -r "$PROJECT_DIR/backend/"* $INSTALL_DIR/backend/
 
-# Crea ambiente virtuale
-log_info "Creazione virtual environment..."
+# Create virtual environment
+log_info "Creating virtual environment..."
 python3 -m venv $INSTALL_DIR/venv
 
-# Installa dipendenze
-log_info "Installazione dipendenze Python..."
+# Install dependencies
+log_info "Installing Python dependencies..."
 $INSTALL_DIR/venv/bin/pip install --upgrade pip
 $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/backend/requirements.txt
 
-# Crea file .env
+# Create .env file
 cat > $INSTALL_DIR/backend/.env << EOF
 DATABASE_URL=postgresql+asyncpg://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME
 SECRET_KEY=$SECRET_KEY
@@ -217,35 +219,35 @@ EOF
 
 chmod 600 $INSTALL_DIR/backend/.env
 
-log_success "Backend deployato."
+log_success "Backend deployed."
 
-# --- Fase 4: Deploy Frontend ---
-log_info "Fase 4/7: Deploy Frontend..."
+# --- Step 4: Frontend deployment ---
+log_info "Step 4/7: Deploying frontend..."
 
 mkdir -p $INSTALL_DIR/frontend
 
-# Copia file frontend
+# Copy frontend files
 cp -r "$PROJECT_DIR/frontend/"* $INSTALL_DIR/frontend/
 
-# Permessi
+# Permissions
 chown -R www-data:www-data $INSTALL_DIR/frontend
 chmod -R 755 $INSTALL_DIR/frontend
 
-log_success "Frontend deployato."
+log_success "Frontend deployed."
 
-# --- Fase 5: Configurazione Nginx ---
-log_info "Fase 5/7: Configurazione Nginx..."
+# --- Step 5: Nginx configuration ---
+log_info "Step 5/7: Configuring Nginx..."
 
-# Rileva IP pubblico
+# Detect public IP
 PUBLIC_IP=$(curl -s https://ifconfig.me 2>/dev/null || echo "localhost")
 
-# Crea directory SSL
+# Create SSL directory
 mkdir -p $INSTALL_DIR/data/ssl
 chmod 700 $INSTALL_DIR/data/ssl
 
-# Genera certificato self-signed (10 anni)
+# Generate self-signed certificate (10 years)
 if [ ! -f "$INSTALL_DIR/data/ssl/server.crt" ]; then
-    log_info "Generazione certificato SSL self-signed (10 anni)..."
+    log_info "Generating self-signed SSL certificate (10 years)..."
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout $INSTALL_DIR/data/ssl/server.key \
         -out $INSTALL_DIR/data/ssl/server.crt \
@@ -257,16 +259,16 @@ cat > /etc/nginx/sites-available/madmin.conf << EOF
 server {
     listen 7443 ssl;
     server_name $PUBLIC_IP _;
-    
+
     ssl_certificate $INSTALL_DIR/data/ssl/server.crt;
     ssl_certificate_key $INSTALL_DIR/data/ssl/server.key;
-    
+
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
-    
+
     root $INSTALL_DIR/frontend;
     index index.html;
-    
+
     # Module static files (served by FastAPI, mounted dynamically)
     location /static/modules {
         proxy_pass http://127.0.0.1:8000;
@@ -275,14 +277,14 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_cache_valid 200 1d;
     }
-    
+
     # Core static assets (served directly from filesystem)
     location /static {
         alias $INSTALL_DIR/frontend/assets;
         expires 7d;
         add_header Cache-Control "public, immutable";
     }
-    
+
     # Uploaded files (logos, favicons, etc.)
     location /uploads {
         proxy_pass http://127.0.0.1:8000;
@@ -290,7 +292,7 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
     }
-    
+
     # API reverse proxy
     location /api {
         proxy_pass http://127.0.0.1:8000;
@@ -300,12 +302,12 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
-    
+
     # Login page
     location /login {
         try_files /login.html =404;
     }
-    
+
     # SPA fallback
     location / {
         try_files \$uri \$uri/ /index.html;
@@ -318,19 +320,19 @@ mkdir -p $INSTALL_DIR/uploads
 chown -R www-data:www-data $INSTALL_DIR/uploads
 chmod 755 $INSTALL_DIR/uploads
 
-# Abilita sito
+# Enable site
 rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/madmin.conf /etc/nginx/sites-enabled/
 
-# Test e restart Nginx
+# Test and restart Nginx
 nginx -t
 systemctl restart nginx
 systemctl enable nginx
 
-log_success "Nginx configurato."
+log_success "Nginx configured."
 
-# --- Fase 6: Servizio Systemd ---
-log_info "Fase 6/7: Configurazione servizio systemd..."
+# --- Step 6: Systemd service ---
+log_info "Step 6/7: Configuring systemd service..."
 
 cat > /etc/systemd/system/madmin.service << EOF
 [Unit]
@@ -350,30 +352,30 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# Abilita IP forwarding
-log_info "Abilitazione IP Forwarding..."
+# Enable IP forwarding
+log_info "Enabling IP forwarding..."
 echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-madmin.conf
 sysctl -p /etc/sysctl.d/99-madmin.conf
 
-# Non avviare ancora — prima installiamo le dipendenze dei moduli
+# Don't start yet — install module dependencies first
 systemctl daemon-reload
 systemctl enable madmin.service
 
-log_success "Servizio systemd configurato."
+log_success "Systemd service configured."
 
-# --- Fase 7: Dipendenze Moduli (dinamico da manifest.json) ---
-log_info "Fase 7/7: Installazione dipendenze moduli..."
+# --- Step 7: Module dependencies (dynamic from manifest.json) ---
+log_info "Step 7/7: Installing module dependencies..."
 
 MODULE_COUNT=0
 for manifest in $INSTALL_DIR/backend/modules/*/manifest.json; do
     [ -f "$manifest" ] || continue
     MODULE_COUNT=$((MODULE_COUNT + 1))
 
-    MODULE_NAME=$(python3 -c "import json; print(json.load(open('$manifest'))['name'])" 2>/dev/null || echo "Modulo sconosciuto")
+    MODULE_NAME=$(python3 -c "import json; print(json.load(open('$manifest'))['name'])" 2>/dev/null || echo "Unknown module")
     MODULE_ID=$(python3 -c "import json; print(json.load(open('$manifest'))['id'])" 2>/dev/null || echo "unknown")
-    log_info "Modulo $MODULE_COUNT: $MODULE_NAME ($MODULE_ID)"
+    log_info "Module $MODULE_COUNT: $MODULE_NAME ($MODULE_ID)"
 
-    # Dipendenze apt
+    # apt dependencies
     APT_DEPS=$(python3 -c "
 import json
 m = json.load(open('$manifest'))
@@ -382,16 +384,16 @@ print(' '.join(deps))
 " 2>/dev/null)
 
     if [ -n "$APT_DEPS" ]; then
-        log_info "  Installazione pacchetti apt: $APT_DEPS"
+        log_info "  Installing apt packages: $APT_DEPS"
         wait_for_apt
         if ! DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_DEPS; then
-            log_warning "  apt-get fallito, riprovo dopo attesa lock..."
+            log_warning "  apt-get failed, retrying after waiting for lock..."
             wait_for_apt
             DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_DEPS
         fi
     fi
 
-    # Dipendenze pip
+    # pip dependencies
     PIP_DEPS=$(python3 -c "
 import json
 m = json.load(open('$manifest'))
@@ -400,49 +402,49 @@ print(' '.join(deps))
 " 2>/dev/null)
 
     if [ -n "$PIP_DEPS" ]; then
-        log_info "  Installazione pacchetti pip: $PIP_DEPS"
+        log_info "  Installing pip packages: $PIP_DEPS"
         $INSTALL_DIR/venv/bin/pip install $PIP_DEPS
     fi
 
-    log_success "  $MODULE_NAME — dipendenze installate."
+    log_success "  $MODULE_NAME — dependencies installed."
 done
 
 if [ $MODULE_COUNT -eq 0 ]; then
-    log_warning "Nessun modulo trovato in $INSTALL_DIR/backend/modules/"
+    log_warning "No modules found in $INSTALL_DIR/backend/modules/"
 else
-    log_success "$MODULE_COUNT moduli rilevati, dipendenze installate (moduli disabilitati di default)."
+    log_success "$MODULE_COUNT modules detected, dependencies installed (modules disabled by default)."
 fi
 
-# --- Avvio servizio ---
-log_info "Avvio servizio MADMIN..."
+# --- Start service ---
+log_info "Starting MADMIN service..."
 systemctl start madmin.service
 
-# Attendi che il backend sia pronto
-log_info "Attendo avvio backend..."
+# Wait for the backend to be ready
+log_info "Waiting for backend to start..."
 sleep 5
 
-# Verifica stato
+# Check status
 if systemctl is-active --quiet madmin.service; then
-    log_success "Servizio MADMIN attivo."
+    log_success "MADMIN service is active."
 else
-    log_error "Servizio MADMIN non attivo. Controlla: journalctl -u madmin -f"
+    log_error "MADMIN service is not active. Check: journalctl -u madmin -f"
 fi
 
-# Crea utente amministratore iniziale
-log_info "Creazione utente amministratore..."
+# Create the initial administrator user
+log_info "Creating administrator user..."
 INIT_BODY=$(python3 -c "import json,sys; print(json.dumps({'username':sys.argv[1],'password':sys.argv[2]}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
 INIT_HTTP=$(curl -s -o /tmp/madmin_init.json -w "%{http_code}" -X POST http://localhost:8000/api/auth/init \
     -H "Content-Type: application/json" \
     -d "$INIT_BODY")
 if [ "$INIT_HTTP" = "201" ]; then
-    log_success "Utente amministratore creato: $ADMIN_USERNAME"
+    log_success "Administrator user created: $ADMIN_USERNAME"
 else
-    log_error "Errore nella creazione dell'utente amministratore (HTTP $INIT_HTTP): $(cat /tmp/madmin_init.json)"
+    log_error "Failed to create administrator user (HTTP $INIT_HTTP): $(cat /tmp/madmin_init.json)"
 fi
 rm -f /tmp/madmin_init.json
 
-# Import regole firewall di default
-log_info "Import regole firewall di default..."
+# Import default firewall rules
+log_info "Importing default firewall rules..."
 LOGIN_BODY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.urlencode({'username':sys.argv[1],'password':sys.argv[2],'grant_type':'password'}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
 TOKEN_RESPONSE=$(curl -s -X POST http://localhost:8000/api/auth/token \
     -H "Content-Type: application/x-www-form-urlencoded" \
@@ -455,82 +457,116 @@ if [ -n "$JWT_TOKEN" ] && [ -f "$INSTALL_DIR/backend/default_rules.json" ]; then
         -H "Authorization: Bearer $JWT_TOKEN" \
         -F "file=@$INSTALL_DIR/backend/default_rules.json")
     if [ "$IMPORT_HTTP" = "200" ]; then
-        log_success "Regole firewall di default importate."
+        log_success "Default firewall rules imported."
     else
-        log_warning "Import regole firewall fallito (HTTP $IMPORT_HTTP). Applicare manualmente dalla UI."
+        log_warning "Default firewall rules import failed (HTTP $IMPORT_HTTP). Apply them manually from the UI."
     fi
     rm -f "$INSTALL_DIR/backend/default_rules.json"
 else
-    log_warning "JWT non disponibile o file regole mancante. Import firewall saltato."
+    log_warning "JWT unavailable or rules file missing. Firewall import skipped."
 fi
 
-# Auto-provisioning LAN gestita (opt-in, usato dagli automatismi tipo madmin-hub).
-# Configura interfaccia LAN + DHCP + NAT cosi' le VM dietro il router navigano da subito.
+# Managed LAN auto-provisioning (opt-in, used by automations such as madmin-hub).
+# Sets up the LAN interface + DHCP + NAT so VMs behind the router get connectivity right away.
 if [ "$PROVISION_LAN" = "true" ]; then
     if [ -n "$JWT_TOKEN" ]; then
-        log_info "Attivazione provisioning LAN gestita (interfaccia + DHCP + NAT)..."
+        log_info "Enabling managed LAN provisioning (interface + DHCP + NAT)..."
         PROV_HTTP=$(curl -s -o /tmp/madmin_prov.json -w "%{http_code}" -X POST \
             "http://localhost:8000/api/provisioning/managed-lan/enable" \
             -H "Authorization: Bearer $JWT_TOKEN")
         if [ "$PROV_HTTP" = "200" ]; then
-            log_success "LAN gestita configurata: $(cat /tmp/madmin_prov.json)"
+            log_success "Managed LAN configured: $(cat /tmp/madmin_prov.json)"
         else
-            log_warning "Provisioning LAN gestita fallito (HTTP $PROV_HTTP): $(cat /tmp/madmin_prov.json)"
+            log_warning "Managed LAN provisioning failed (HTTP $PROV_HTTP): $(cat /tmp/madmin_prov.json)"
         fi
         rm -f /tmp/madmin_prov.json
     else
-        log_warning "JWT non disponibile: provisioning LAN gestita non attivato."
+        log_warning "JWT unavailable: managed LAN provisioning not enabled."
     fi
 fi
 
-# Forza il cambio password al primo accesso (opt-in, usato dagli automatismi).
-# Eseguito DOPO l'import firewall: l'admin ha gia' ottenuto un token pieno sopra,
-# evitando il chicken-egg con il gate "password_change_required" al login.
+# Force password change at first login (opt-in, used by automations).
+# Done AFTER the firewall import: the admin already obtained a full token above,
+# avoiding the chicken-and-egg with the "password_change_required" login gate.
 if [ "$FORCE_PW_CHANGE" = "true" ]; then
     if [ -n "$JWT_TOKEN" ]; then
-        log_info "Attivazione cambio password forzato al primo accesso..."
+        log_info "Enabling forced password change at first login..."
         PW_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
             "http://localhost:8000/api/auth/users/$ADMIN_USERNAME" \
             -H "Authorization: Bearer $JWT_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"must_change_password": true}')
         if [ "$PW_HTTP" = "200" ]; then
-            log_success "Cambio password forzato attivato per $ADMIN_USERNAME."
+            log_success "Forced password change enabled for $ADMIN_USERNAME."
         else
-            log_warning "Impossibile attivare il cambio password forzato (HTTP $PW_HTTP)."
+            log_warning "Could not enable forced password change (HTTP $PW_HTTP)."
         fi
     else
-        log_warning "JWT non disponibile: cambio password forzato non attivato."
+        log_warning "JWT unavailable: forced password change not enabled."
     fi
 fi
 
-# Se il provisioning LAN ha attivato il modulo DHCP, riavvia il servizio cosi'
-# il router del modulo viene montato pulito (il servizio isc-dhcp-server gira comunque).
+# Enable WAN protection (eth0 editing read-only, opt-in used by automations).
+if [ "$PROTECT_WAN" = "true" ]; then
+    if [ -n "$JWT_TOKEN" ]; then
+        log_info "Enabling WAN protection (eth0 editing read-only)..."
+        WAN_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+            "http://localhost:8000/api/settings/system" \
+            -H "Authorization: Bearer $JWT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"wan_protection_enabled": true}')
+        if [ "$WAN_HTTP" = "200" ]; then
+            log_success "WAN protection enabled: eth0 editing blocked."
+        else
+            log_warning "Could not enable WAN protection (HTTP $WAN_HTTP)."
+        fi
+    else
+        log_warning "JWT unavailable: WAN protection not enabled."
+    fi
+fi
+
+# If LAN provisioning enabled the DHCP module, restart the service so the module's
+# router is mounted cleanly (the isc-dhcp-server service runs regardless).
 if [ "$PROVISION_LAN" = "true" ]; then
-    log_info "Riavvio MADMIN per montare il modulo DHCP..."
+    log_info "Restarting MADMIN to mount the DHCP module..."
     systemctl restart madmin.service
 fi
 
-# --- Completato ---
+# --- Completed ---
 echo ""
 log_success "=========================================="
-log_success "   INSTALLAZIONE COMPLETATA!"
+log_success "   INSTALLATION COMPLETED!"
 log_success "=========================================="
 echo ""
 echo "Dashboard: https://$PUBLIC_IP:7443"
 echo ""
-echo "Credenziali Amministratore:"
+echo "Administrator credentials:"
 echo "  Username: $ADMIN_USERNAME"
-echo "  Password: (quella specificata al momento dell'installazione)"
+echo "  Password: (the one provided during installation)"
 echo ""
 echo "Database:"
-echo "  Nome: $DB_NAME"
-echo "  Utente: $DB_USER"
+echo "  Name:     $DB_NAME"
+echo "  User:     $DB_USER"
 echo "  Password: $DB_PASSWORD"
 echo ""
-echo "NOTA: Cambia la password al primo accesso!"
+
+# Auto-provisioning options actually enabled by flags
+if [ "$FORCE_PW_CHANGE" = "true" ] || [ "$PROVISION_LAN" = "true" ] || [ "$PROTECT_WAN" = "true" ]; then
+    echo "Auto-provisioning options enabled:"
+    [ "$FORCE_PW_CHANGE" = "true" ] && echo "  - Forced password change at first login"
+    [ "$PROVISION_LAN" = "true" ]  && echo "  - Managed LAN (interface + DHCP + NAT)"
+    [ "$PROTECT_WAN" = "true" ]    && echo "  - WAN edit protection (eth0 config read-only)"
+    echo ""
+fi
+
+# Password reminder: only meaningful when a change is not already forced
+if [ "$FORCE_PW_CHANGE" = "true" ]; then
+    echo "NOTE: You will be required to change the admin password at first login."
+else
+    echo "NOTE: Remember to change the admin password after first login."
+fi
 echo ""
-echo "Comandi utili:"
+echo "Useful commands:"
 echo "  Logs:     journalctl -u madmin -f"
 echo "  Restart:  systemctl restart madmin"
 echo "  Status:   systemctl status madmin"
