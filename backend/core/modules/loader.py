@@ -12,6 +12,7 @@ import re
 import json
 import logging
 import importlib.util
+import inspect
 import asyncio
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -217,12 +218,18 @@ class ModuleLoader:
         self,
         hook_path: Optional[str],
         module_path: Path,
-        hook_name: str
+        hook_name: str,
+        session: Optional[AsyncSession] = None
     ) -> bool:
         """
         Execute a module lifecycle hook script.
         Hook files are Python scripts with a 'run()' async function.
-        
+
+        Hooks come in two flavours: 'run()' (post_install/on_disable — no DB
+        access) and 'run(session)' (on_startup — desired-state reconciliation).
+        When the hook's run() declares parameters and a session is provided, the
+        session is passed through; otherwise run() is called with no arguments.
+
         Returns True if hook executed successfully (or no hook defined).
         """
         if not hook_path:
@@ -247,7 +254,13 @@ class ModuleLoader:
             spec.loader.exec_module(hook_module)
             
             if hasattr(hook_module, "run"):
-                result = hook_module.run()
+                run_fn = hook_module.run
+                # Pass the session only to hooks that declare a parameter for it
+                # (on_startup); no-arg hooks (post_install/on_disable) call run().
+                if session is not None and len(inspect.signature(run_fn).parameters) >= 1:
+                    result = run_fn(session)
+                else:
+                    result = run_fn()
                 # Support both sync and async run functions
                 if asyncio.iscoroutine(result):
                     await result
@@ -388,7 +401,8 @@ class ModuleLoader:
                 await self.execute_hook(
                     hook_path,
                     Path(info["path"]),
-                    "on_startup"
+                    "on_startup",
+                    session=session
                 )
             except Exception as e:
                 logger.error(f"on_startup hook for {module_id} failed: {e}", exc_info=True)
