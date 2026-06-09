@@ -292,9 +292,11 @@ function renderInterfaceRow(iface) {
     const isLockedLan = lockedIfaces.has(iface.name);
     const isLockedSecondary = isLockedLan && !isManaged;
     const wanBadge = isWAN ? '<span class="badge bg-orange-lt">WAN</span>' : '';
-    const managedBadge = isManaged ? `<span class="badge bg-azure-lt" title="${t('network.managedHint')}"><i class="ti ti-lock me-1"></i>${t('network.managed')}</span>` : '';
+    // Uniform "read-only" badge for every locked interface (managed or not, WAN).
+    // The managed vs locked distinction is kept only in the expanded detail note.
+    const managedBadge = '';
     const speedBadge = iface.speed > 0 ? `<span class="badge bg-azure-lt">${iface.speed} Mbps</span>` : '';
-    const lockBadge = (isProtected || isLockedSecondary) ? `<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
+    const lockBadge = (isProtected || isLockedLan) ? `<span class="badge bg-secondary-lt" title="${isManaged ? t('network.managedHint') : ''}"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
 
     const secondaryBadge = secondaryCount > 0
         ? `<span class="badge bg-secondary-lt ms-1" title="${t('network.secondaryIps', { count: secondaryCount })}">+${secondaryCount}</span>`
