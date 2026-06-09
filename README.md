@@ -161,7 +161,7 @@ These optional, opt-in flags make MADMIN **auto-provisionable on multiple levels
 | Flag | Effect |
 |------|--------|
 | `-f`, `--force-password-change` | Forces the admin to change the password at first login. The account is created with the provided password, then flagged so the login flow gates on a mandatory password change. |
-| `-l`, `--provision-lan` | Auto-provisions a managed LAN: picks the first non-WAN interface, assigns it a static IP, enables the DHCP module with a subnet bound to that interface, and adds the LAN→WAN NAT (MASQUERADE) rule. Self-heals on every boot. |
+| `-l`, `--provision-lan` | Auto-provisions a managed LAN for special setups where the LAN must stay **editable only externally** (e.g. its IP assigned via cloud-init). Identifies the LAN interface strictly by name (`eth1`/`ens19`); if none is present, provisioning is skipped (a warning is printed at the end of setup). MADMIN does **not** set the IP — it is assigned externally; MADMIN locks the interface read-only (like the WAN), binds a DHCP subnet that derives its subnet/gateway from the interface's live IP, and adds the LAN→WAN NAT (MASQUERADE) rule. Self-heals on every boot. |
 | `-w`, `--protect-wan` | Enables WAN edit protection: the WAN interface (`eth0`, managed externally via cloud-init) becomes read-only via UI/API. Without this flag the WAN config is freely editable. **One-way:** once enabled it cannot be disabled from the UI or API — preventing an operator from reassigning the WAN IP on the host infrastructure. |
 
 State set by these flags is persisted in the database and applied/reconciled on subsequent boots.
