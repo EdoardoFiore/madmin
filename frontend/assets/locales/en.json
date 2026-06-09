@@ -390,6 +390,7 @@
         "managed": "Managed",
         "managedHint": "Managed LAN interface: read-only. The IP is assigned externally; the bound DHCP automatically follows the interface IP.",
         "managedNote": "Managed LAN interface, read-only — IP assigned externally, DHCP follows the interface IP",
+        "lockedNote": "Locked interface, read-only — IP assigned externally",
         "secondaryIps": "{count} additional secondary IPs",
         "up": "Up",
         "down": "Down"

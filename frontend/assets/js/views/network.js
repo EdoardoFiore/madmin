@@ -22,8 +22,10 @@ function ifaceId(name) {
     return 'iface-' + name.replace(/[^a-zA-Z0-9]/g, '_');
 }
 
-// Name of the managed LAN interface (provisioning), or null. Loaded with interfaces.
+// Name of the managed LAN interface (DHCP/NAT), or null. Loaded with interfaces.
 let managedIface = null;
+// All interfaces locked read-only by provisioning (incl. the managed one). Set of names.
+let lockedIfaces = new Set();
 // WAN edit-protection state (installer flag --protect-wan). Loaded with interfaces.
 let wanProtectionEnabled = false;
 
@@ -189,12 +191,14 @@ async function loadInterfaces() {
         const response = await apiGet('/network/interfaces');
         const interfaces = response.interfaces || [];
 
-        // Resolve the managed LAN interface (if provisioning is enabled)
+        // Resolve the managed LAN interface + the full locked set (if provisioning is enabled)
         try {
             const prov = await apiGet('/provisioning/managed-lan');
             managedIface = prov?.enabled ? prov.interface : null;
+            lockedIfaces = new Set(prov?.enabled ? (prov.locked_interfaces || []) : []);
         } catch (e) {
             managedIface = null;
+            lockedIfaces = new Set();
         }
 
         // Resolve WAN edit-protection state (mirror of managed-LAN resolution)
@@ -284,10 +288,13 @@ function renderInterfaceRow(iface) {
     }
 
     const isManaged = managedIface && iface.name === managedIface;
+    // Locked by provisioning but not the managed (DHCP/NAT) one: read-only only.
+    const isLockedLan = lockedIfaces.has(iface.name);
+    const isLockedSecondary = isLockedLan && !isManaged;
     const wanBadge = isWAN ? '<span class="badge bg-orange-lt">WAN</span>' : '';
     const managedBadge = isManaged ? `<span class="badge bg-azure-lt" title="${t('network.managedHint')}"><i class="ti ti-lock me-1"></i>${t('network.managed')}</span>` : '';
     const speedBadge = iface.speed > 0 ? `<span class="badge bg-azure-lt">${iface.speed} Mbps</span>` : '';
-    const lockBadge = isProtected ? `<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
+    const lockBadge = (isProtected || isLockedSecondary) ? `<span class="badge bg-secondary-lt"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
 
     const secondaryBadge = secondaryCount > 0
         ? `<span class="badge bg-secondary-lt ms-1" title="${t('network.secondaryIps', { count: secondaryCount })}">+${secondaryCount}</span>`
@@ -297,8 +304,8 @@ function renderInterfaceRow(iface) {
         ? `<code>${iface.ipv4}</code>${secondaryBadge}`
         : `<span class="text-muted">—</span>`;
 
-    // Managed LAN interface is read-only too: its IP is assigned externally.
-    const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isProtected && !isManaged;
+    // Managed/locked LAN interfaces are read-only too: their IP is assigned externally.
+    const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isProtected && !isLockedLan;
     const configureBtn = canConfigure
         ? `<button class="btn btn-sm btn-ghost-primary" data-configure-iface="${iface.name}" title="${t('network.configureInterface')}">
                <i class="ti ti-settings"></i>
@@ -347,6 +354,9 @@ function renderInterfaceRow(iface) {
         </div>` : isManaged ? `
         <div class="mt-3 text-muted small">
             <i class="ti ti-lock me-1"></i>${t('network.managedNote')}
+        </div>` : isLockedSecondary ? `
+        <div class="mt-3 text-muted small">
+            <i class="ti ti-lock me-1"></i>${t('network.lockedNote')}
         </div>` : '';
 
     return `

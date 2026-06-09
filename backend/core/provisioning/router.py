@@ -10,8 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_session
 from core.auth.dependencies import require_permission, require_superuser
 from core.auth.models import User
-from .models import ManagedLanSettings, ManagedLanResponse, ManagedLanUpdate
-from .service import provisioning_service
+from .models import (
+    ManagedLanSettings, ManagedLanResponse, ManagedLanUpdate, ManagedLanEnableRequest,
+)
+from .service import provisioning_service, parse_locked
+from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,9 @@ def _build_response(settings: ManagedLanSettings, detected: str | None) -> Manag
     return ManagedLanResponse(
         enabled=settings.enabled,
         interface=settings.interface,
+        locked_interfaces=parse_locked(settings.locked_interfaces) or (
+            [settings.interface] if settings.enabled and settings.interface else []
+        ),
         address_cidr=source_cidr,
         network=network,
         gateway=gateway,
@@ -57,6 +63,7 @@ async def get_managed_lan(
 
 @router.post("/managed-lan/enable", response_model=ManagedLanResponse)
 async def enable_managed_lan(
+    data: ManagedLanEnableRequest | None = None,
     _user: User = Depends(require_superuser()),
     session: AsyncSession = Depends(get_session),
 ):
@@ -64,26 +71,55 @@ async def enable_managed_lan(
     Enable managed-LAN provisioning and run a reconcile immediately.
     Called by the installer (--provision-lan).
 
-    If no known LAN interface (eth1/ens19) is present, provisioning is NOT
-    enabled — the response reports enabled=False so the installer can warn,
-    behaving as if --provision-lan had not been passed.
+    Body (optional): `interfaces` = explicit list to lock read-only; the first
+    becomes the managed LAN (DHCP/NAT). If omitted, the managed interface is
+    auto-detected (eth1/ens19) and only it is locked.
+
+    If the required interface(s) are not present, provisioning is NOT enabled —
+    the response reports enabled=False so the installer can warn, behaving as if
+    --provision-lan had not been passed.
     """
     settings = await provisioning_service.get_or_create_settings(session)
 
-    detected = provisioning_service.detect_managed_interface()
-    if not detected:
-        logger.warning("Managed LAN: no known LAN interface present; provisioning not enabled")
+    def _disable_and_return():
         settings.enabled = False
         settings.interface = None
+        settings.locked_interfaces = ""
         session.add(settings)
-        await session.commit()
-        return _build_response(settings, None)
+
+    present = {i["name"] for i in NetworkService.get_interfaces() if i.get("name")}
+
+    requested = parse_locked(",".join(data.interfaces)) if (data and data.interfaces) else []
+    if data and data.interfaces and not requested:
+        raise HTTPException(status_code=400, detail="Nomi interfaccia non validi")
+
+    if requested:
+        # EXPLICIT mode: every listed interface must currently exist.
+        missing = [n for n in requested if n not in present]
+        if missing:
+            logger.warning(f"Managed LAN: specified interfaces not found {missing}; provisioning not enabled")
+            _disable_and_return()
+            await session.commit()
+            return _build_response(settings, None)
+        settings.locked_interfaces = ",".join(requested)
+        settings.interface = requested[0]
+    else:
+        # AUTO mode: resolve a known candidate by name.
+        detected = provisioning_service.detect_managed_interface()
+        if not detected:
+            logger.warning("Managed LAN: no known LAN interface present; provisioning not enabled")
+            _disable_and_return()
+            await session.commit()
+            return _build_response(settings, None)
+        settings.locked_interfaces = ""
+        settings.interface = detected
 
     settings.enabled = True
     session.add(settings)
     await session.flush()
     await provisioning_service.reconcile(session)
     await session.commit()
+    detected = provisioning_service.detect_managed_interface()
     settings = await provisioning_service.get_or_create_settings(session)
     return _build_response(settings, detected)
 

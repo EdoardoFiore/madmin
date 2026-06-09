@@ -86,6 +86,7 @@ ADMIN_USERNAME="admin"
 ADMIN_PASSWORD="admin"
 FORCE_PW_CHANGE="false"   # opt-in: used by install automations (e.g. madmin-hub)
 PROVISION_LAN="false"     # opt-in: auto-provisions a managed LAN (interface + DHCP + NAT)
+PROVISION_LAN_IFACES=""   # optional: comma-separated interfaces to lock (first = managed LAN)
 PROTECT_WAN="false"       # opt-in: makes WAN (eth0) editing read-only via UI/API
 
 while [[ "$#" -gt 0 ]]; do
@@ -93,7 +94,12 @@ while [[ "$#" -gt 0 ]]; do
         -u|--username) ADMIN_USERNAME="$2"; shift ;;
         -p|--password) ADMIN_PASSWORD="$2"; shift ;;
         -f|--force-password-change) FORCE_PW_CHANGE="true" ;;
-        -l|--provision-lan) PROVISION_LAN="true" ;;
+        -l|--provision-lan)
+            PROVISION_LAN="true"
+            # Optional value: comma-separated interface list (consumed only if the
+            # next token is not another flag).
+            if [[ -n "$2" && "$2" != -* ]]; then PROVISION_LAN_IFACES="$2"; shift; fi
+            ;;
         -w|--protect-wan) PROTECT_WAN="true" ;;
     esac
     shift
@@ -473,16 +479,30 @@ fi
 if [ "$PROVISION_LAN" = "true" ]; then
     if [ -n "$JWT_TOKEN" ]; then
         log_info "Enabling managed LAN provisioning (interface + DHCP + NAT)..."
-        PROV_HTTP=$(curl -s -o /tmp/madmin_prov.json -w "%{http_code}" -X POST \
-            "http://localhost:8000/api/provisioning/managed-lan/enable" \
-            -H "Authorization: Bearer $JWT_TOKEN")
+        # If an explicit interface list was given, send it as JSON body; the first
+        # is the managed LAN (DHCP/NAT), all are locked read-only.
+        if [ -n "$PROVISION_LAN_IFACES" ]; then
+            PROV_BODY=$(python3 -c "import json,sys; print(json.dumps({'interfaces':[s for s in sys.argv[1].split(',') if s.strip()]}))" "$PROVISION_LAN_IFACES")
+            PROV_HTTP=$(curl -s -o /tmp/madmin_prov.json -w "%{http_code}" -X POST \
+                "http://localhost:8000/api/provisioning/managed-lan/enable" \
+                -H "Authorization: Bearer $JWT_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "$PROV_BODY")
+        else
+            PROV_HTTP=$(curl -s -o /tmp/madmin_prov.json -w "%{http_code}" -X POST \
+                "http://localhost:8000/api/provisioning/managed-lan/enable" \
+                -H "Authorization: Bearer $JWT_TOKEN")
+        fi
         if [ "$PROV_HTTP" = "200" ]; then
-            # enabled=false means no known LAN interface (eth1/ens19) was found:
+            # enabled=false means the required interface(s) were not found:
             # provisioning was skipped, as if --provision-lan had not been passed.
             PROV_ENABLED=$(python3 -c "import json,sys; print(str(json.load(open('/tmp/madmin_prov.json')).get('enabled', False)).lower())" 2>/dev/null)
             PROV_IFACE=$(python3 -c "import json,sys; print(json.load(open('/tmp/madmin_prov.json')).get('interface') or '')" 2>/dev/null)
+            PROV_LOCKED=$(python3 -c "import json,sys; print(', '.join(json.load(open('/tmp/madmin_prov.json')).get('locked_interfaces') or []))" 2>/dev/null)
             if [ "$PROV_ENABLED" = "true" ]; then
-                log_success "Managed LAN configured on interface '$PROV_IFACE'."
+                log_success "Managed LAN configured: DHCP/NAT on '$PROV_IFACE', locked interfaces: $PROV_LOCKED."
+            elif [ -n "$PROVISION_LAN_IFACES" ]; then
+                log_warning "Managed LAN NOT configured: one or more specified interfaces ($PROVISION_LAN_IFACES) not found. DHCP/NAT not set up."
             else
                 log_warning "Managed LAN NOT configured: no known LAN interface (eth1/ens19) found. DHCP/NAT not set up."
             fi

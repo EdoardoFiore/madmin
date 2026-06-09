@@ -3,7 +3,7 @@ MADMIN Provisioning Models
 
 Singleton settings for the managed LAN (interface + DHCP + NAT).
 """
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 from sqlmodel import SQLModel, Field
 from pydantic import BaseModel
@@ -22,7 +22,11 @@ class ManagedLanSettings(SQLModel, table=True):
 
     id: int = Field(default=1, primary_key=True)
     enabled: bool = Field(default=False)            # provisioning active (set by installer flag)
-    interface: Optional[str] = Field(default=None, max_length=32)  # resolved at runtime, NOT assumed "eth1"
+    interface: Optional[str] = Field(default=None, max_length=32)  # managed LAN (DHCP/NAT); first locked iface or auto-detected
+    # CSV of interface names locked read-only in the Network section. Non-empty =>
+    # EXPLICIT mode (interface == first token, no auto-detect). Empty => AUTO mode
+    # (interface auto-resolved from MANAGED_LAN_CANDIDATES, only it is locked).
+    locked_interfaces: Optional[str] = Field(default="", max_length=512)
     # Last OBSERVED live host CIDR of the interface (informational/display only).
     # The DHCP subnet + gateway are derived from the live IP, not from this field.
     address_cidr: str = Field(default="172.25.1.1/24")
@@ -38,6 +42,7 @@ class ManagedLanResponse(BaseModel):
     """Current managed-LAN provisioning state."""
     enabled: bool
     interface: Optional[str]
+    locked_interfaces: List[str] = []  # all interfaces locked read-only (incl. the managed one)
     address_cidr: str
     network: Optional[str] = None
     gateway: Optional[str] = None
@@ -45,6 +50,15 @@ class ManagedLanResponse(BaseModel):
     dhcp_range_end: Optional[str] = None
     dns_servers: str
     detected_interface: Optional[str] = None  # what the system currently sees, for the UI
+
+
+class ManagedLanEnableRequest(BaseModel):
+    """
+    Optional body for the enable endpoint. `interfaces` = explicit list to lock
+    read-only; the FIRST one becomes the managed LAN (DHCP/NAT). If omitted, the
+    managed interface is auto-detected (eth1/ens19) and only it is locked.
+    """
+    interfaces: Optional[List[str]] = None
 
 
 class ManagedLanUpdate(BaseModel):

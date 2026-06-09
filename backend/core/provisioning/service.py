@@ -13,7 +13,8 @@ never sets it. All operations are idempotent: they only act on drift.
 """
 import ipaddress
 import logging
-from typing import Optional, Tuple
+import re
+from typing import List, Optional, Tuple
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,21 @@ from core.network.service import NetworkService
 from .models import ManagedLanSettings
 
 logger = logging.getLogger(__name__)
+
+# Valid Linux interface name (also guards values reaching iptables / DHCP config).
+_IFACE_NAME_RE = re.compile(r'^[A-Za-z0-9._-]{1,32}$')
+
+
+def parse_locked(csv: Optional[str]) -> List[str]:
+    """Parse a CSV of interface names into an ordered, de-duped, validated list."""
+    if not csv:
+        return []
+    out: List[str] = []
+    for tok in csv.split(","):
+        name = tok.strip()
+        if name and _IFACE_NAME_RE.match(name) and name not in out:
+            out.append(name)
+    return out
 
 # Interfaces never managed/altered (WAN, externally managed by cloud-init).
 # eth0 is the legacy WAN name; the real WAN is resolved at runtime via the
@@ -179,22 +195,26 @@ class ProvisioningService:
             logger.info("Managed LAN: provisioning disabled, skipping reconcile")
             return
 
-        # 1. Resolve & persist interface BY NAME (deterministic, IP-independent).
-        #    Re-detect every boot so a previously mis-detected/stale name
-        #    self-heals to the current known candidate (eth1/ens19).
-        detected = self.detect_managed_interface()
-        if not detected:
-            logger.warning(
-                "Managed LAN: no known LAN interface present "
-                f"({', '.join(MANAGED_LAN_CANDIDATES)}); skipping provisioning"
-            )
-            return
-        if settings.interface != detected:
-            logger.info(f"Managed LAN: interface '{settings.interface}' -> '{detected}'")
-            settings.interface = detected
+        # 1. Resolve the managed (DHCP/NAT) interface BY NAME (IP-independent).
+        #    EXPLICIT mode (locked_interfaces set at install): managed = first
+        #    listed iface, taken as-is. AUTO mode: re-detect a known candidate
+        #    every boot so a stale name self-heals to eth1/ens19.
+        locked = parse_locked(settings.locked_interfaces)
+        if locked:
+            iface = locked[0]
+        else:
+            iface = self.detect_managed_interface()
+            if not iface:
+                logger.warning(
+                    "Managed LAN: no known LAN interface present "
+                    f"({', '.join(MANAGED_LAN_CANDIDATES)}); skipping provisioning"
+                )
+                return
+        if settings.interface != iface:
+            logger.info(f"Managed LAN: interface '{settings.interface}' -> '{iface}'")
+            settings.interface = iface
             session.add(settings)
             await session.flush()
-        iface = detected
 
         # 2. Ensure DHCP module is active (mounts router this boot) and the
         #    MASQUERADE rule exists. These are name-only and run even before the

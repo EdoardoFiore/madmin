@@ -390,6 +390,7 @@
         "managed": "Gestita",
         "managedHint": "Interfaccia LAN gestita: in sola lettura. L'IP è assegnato esternamente; il DHCP associato segue automaticamente l'IP dell'interfaccia.",
         "managedNote": "Interfaccia LAN gestita in sola lettura — IP assegnato esternamente, il DHCP segue l'IP dell'interfaccia",
+        "lockedNote": "Interfaccia bloccata in sola lettura — IP assegnato esternamente",
         "secondaryIps": "{count} IP secondari aggiuntivi",
         "up": "Attiva",
         "down": "Inattiva"

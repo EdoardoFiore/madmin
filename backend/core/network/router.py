@@ -33,7 +33,8 @@ async def _locked_interfaces(session: AsyncSession) -> Set[str]:
     Two orthogonal sources, both externally managed (IP/subnet set elsewhere):
     - WAN: the default-route interface, only when SystemSettings.wan_protection_enabled
       is True (opt-in via installer flag --protect-wan).
-    - Managed LAN: the provisioned LAN interface, whose IP is assigned by the
+    - Managed LAN: every interface listed in provisioning (the explicit lock list,
+      or the single auto-detected managed interface), whose IP is assigned by the
       WAN-managing software (cannot change its subnet from MADMIN).
     """
     locked: Set[str] = set()
@@ -44,10 +45,11 @@ async def _locked_interfaces(session: AsyncSession) -> Set[str]:
     if settings and getattr(settings, "wan_protection_enabled", False):
         locked.add(get_default_interface() or WAN_INTERFACE_FALLBACK)
 
-    from core.provisioning.service import provisioning_service
+    from core.provisioning.service import provisioning_service, parse_locked
     prov = await provisioning_service.get_or_create_settings(session)
-    if prov.enabled and prov.interface:
-        locked.add(prov.interface)
+    if prov.enabled:
+        listed = parse_locked(prov.locked_interfaces)
+        locked.update(listed or ([prov.interface] if prov.interface else []))
 
     return locked
 
