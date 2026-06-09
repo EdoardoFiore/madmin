@@ -15,6 +15,7 @@ import os
 import re
 import glob
 import json
+import uuid
 import shutil
 import asyncio
 import tarfile
@@ -1334,8 +1335,38 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
             continue
         
         _validate_sql_identifier(table_name, "table name")
+
+        # Live schema (source of truth post-migration). Used to tolerate schema
+        # drift between the backup and the current version: drop columns that no
+        # longer exist, and backfill NOT NULL columns the backup predates.
+        live_cols = await _get_table_columns(session, table_name)
+
         for row in rows:
-            processed_row = {k: _convert_value(v) for k, v in row.items()}
+            processed_row = {
+                k: _convert_value(v) for k, v in row.items()
+                if not live_cols or k in live_cols
+            }
+
+            # Backfill NOT NULL columns missing from this (older) backup row.
+            if live_cols:
+                for col_name, meta in live_cols.items():
+                    if col_name in processed_row:
+                        continue
+                    if meta["nullable"] or meta["has_default"]:
+                        continue  # DB sets NULL or its own default
+                    ok, value = _default_for_type(meta["data_type"])
+                    if not ok:
+                        logger.warning(
+                            f"Cannot backfill NOT NULL column '{col_name}' on "
+                            f"'{table_name}' (unmapped type '{meta['data_type']}'); "
+                            f"leaving to DB — insert may fail"
+                        )
+                        continue
+                    processed_row[col_name] = value
+                    logger.info(
+                        f"Backfilled NOT NULL column '{col_name}' on "
+                        f"'{table_name}' with type-default {value!r}"
+                    )
 
             columns = list(processed_row.keys())
             for col in columns:
@@ -1354,6 +1385,53 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
     
     logger.info(f"Module tables imported: {total_rows} rows across {len(sorted_tables)} tables")
     return total_rows
+
+
+async def _get_table_columns(session: AsyncSession, table_name: str) -> dict:
+    """Introspect the live schema of a table via information_schema.
+
+    Returns {col_name: {"nullable": bool, "data_type": str, "has_default": bool}}.
+    Returns {} if the table has no columns (e.g. not found), in which case the
+    caller falls back to the legacy behavior of inserting the row as-is.
+    """
+    _validate_sql_identifier(table_name, "table name")
+    result = await session.execute(text("""
+        SELECT column_name, is_nullable, data_type, column_default
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = :table_name
+    """), {"table_name": table_name})
+
+    columns = {}
+    for row in result:
+        col_name, is_nullable, data_type, column_default = row
+        columns[col_name] = {
+            "nullable": is_nullable == "YES",
+            "data_type": data_type,
+            "has_default": column_default is not None,
+        }
+    return columns
+
+
+def _default_for_type(data_type: str):
+    """Return (ok, value) — a sensible default for a NOT NULL column of the given
+    information_schema data_type, used to backfill columns absent from old backups.
+
+    Returns (False, None) for unmapped types so the caller can warn and skip.
+    """
+    dt = (data_type or "").lower()
+    if dt == "boolean":
+        return True, False
+    if dt in ("integer", "bigint", "smallint", "numeric", "double precision", "real"):
+        return True, 0
+    if dt in ("character varying", "text", "character", "char"):
+        return True, ""
+    if dt in ("json", "jsonb"):
+        return True, "{}"
+    if dt.startswith("timestamp") or dt == "date":
+        return True, datetime.utcnow()
+    if dt == "uuid":
+        return True, str(uuid.uuid4())
+    return False, None
 
 
 # Regex for datetime strings: "2026-03-01 14:52:36.077484" or "2026-03-01T14:52:36.077484"
