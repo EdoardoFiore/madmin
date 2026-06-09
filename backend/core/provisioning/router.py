@@ -19,15 +19,21 @@ router = APIRouter(prefix="/api/provisioning", tags=["Provisioning"])
 
 
 def _build_response(settings: ManagedLanSettings, detected: str | None) -> ManagedLanResponse:
+    # Prefer the interface's LIVE CIDR (set externally) over the last-stored value,
+    # so the UI always reflects the IP the WAN-managing software assigned.
+    iface = settings.interface or detected
+    live_cidr = provisioning_service.get_live_interface_cidr(iface) if iface else None
+    source_cidr = live_cidr or settings.address_cidr
+
     network = gateway = None
     try:
-        network, gateway, d_start, d_end = provisioning_service.derive_network(settings.address_cidr)
+        network, gateway, d_start, d_end = provisioning_service.derive_network(source_cidr)
     except Exception:
         d_start = d_end = None
     return ManagedLanResponse(
         enabled=settings.enabled,
         interface=settings.interface,
-        address_cidr=settings.address_cidr,
+        address_cidr=source_cidr,
         network=network,
         gateway=gateway,
         dhcp_range_start=settings.dhcp_range_start or d_start,
@@ -57,14 +63,27 @@ async def enable_managed_lan(
     """
     Enable managed-LAN provisioning and run a reconcile immediately.
     Called by the installer (--provision-lan).
+
+    If no known LAN interface (eth1/ens19) is present, provisioning is NOT
+    enabled — the response reports enabled=False so the installer can warn,
+    behaving as if --provision-lan had not been passed.
     """
     settings = await provisioning_service.get_or_create_settings(session)
+
+    detected = provisioning_service.detect_managed_interface()
+    if not detected:
+        logger.warning("Managed LAN: no known LAN interface present; provisioning not enabled")
+        settings.enabled = False
+        settings.interface = None
+        session.add(settings)
+        await session.commit()
+        return _build_response(settings, None)
+
     settings.enabled = True
     session.add(settings)
     await session.flush()
     await provisioning_service.reconcile(session)
     await session.commit()
-    detected = provisioning_service.detect_managed_interface()
     settings = await provisioning_service.get_or_create_settings(session)
     return _build_response(settings, detected)
 
@@ -76,14 +95,15 @@ async def update_managed_lan(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Update user-editable managed-LAN parameters. If the network (address_cidr)
-    changes, the bound DHCP subnet is recomputed and the service re-applied.
+    Update user-editable managed-LAN DHCP parameters (DNS servers, pool range).
+
+    The interface IP/subnet is NOT user-settable: it is assigned externally by
+    the WAN-managing software, and the DHCP subnet/gateway are derived from the
+    live interface IP. We only recompute and re-apply the bound DHCP config.
     """
     settings = await provisioning_service.get_or_create_settings(session)
     if not settings.enabled:
         raise HTTPException(status_code=400, detail="Managed LAN provisioning is not enabled")
-
-    network_changed = data.address_cidr is not None and data.address_cidr != settings.address_cidr
 
     if data.dns_servers is not None:
         settings.dns_servers = data.dns_servers
@@ -94,19 +114,8 @@ async def update_managed_lan(
     session.add(settings)
     await session.flush()
 
-    if network_changed:
-        # Re-write the interface netplan + sync DHCP to the new network
-        from core.network.service import NetplanService
-        ok, msg = NetplanService.set_interface_config(
-            interface=settings.interface, dhcp4=False, addresses=[data.address_cidr]
-        )
-        if not ok:
-            raise HTTPException(status_code=500, detail=f"Netplan write failed: {msg}")
-        NetplanService.apply_netplan()
-        await provisioning_service.sync_dhcp_to_interface(session, data.address_cidr)
-    else:
-        # Pool/DNS change only — re-apply DHCP config
-        await provisioning_service._apply_dhcp(session)
+    # Recompute the DHCP subnet from the live interface IP and re-apply.
+    await provisioning_service.resync_managed_dhcp(session)
 
     await session.commit()
     detected = provisioning_service.detect_managed_interface()

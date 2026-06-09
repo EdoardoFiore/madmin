@@ -388,8 +388,8 @@
         "secondaryIpv4": "Secondary IPv4 {index}",
         "wanReadOnly": "Read-only interface — externally managed",
         "managed": "Managed",
-        "managedHint": "Managed LAN interface: must stay static. The bound DHCP follows the IP you set here.",
-        "managedNote": "Managed LAN interface: keep it static. Changing the IP automatically updates the bound DHCP server. It cannot be set as a DHCP client or removed.",
+        "managedHint": "Managed LAN interface: read-only. The IP is assigned externally; the bound DHCP automatically follows the interface IP.",
+        "managedNote": "Managed LAN interface: read-only. The IP/subnet is assigned externally (by the WAN-managing software); the bound DHCP derives its subnet and gateway from the interface IP. It cannot be modified or removed.",
         "secondaryIps": "{count} additional secondary IPs",
         "up": "Up",
         "down": "Down"

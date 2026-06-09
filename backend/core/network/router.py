@@ -26,20 +26,30 @@ router = APIRouter(prefix="/api/network", tags=["Network"])
 WAN_INTERFACE_FALLBACK = "eth0"
 
 
-async def _wan_locked_interfaces(session: AsyncSession) -> Set[str]:
+async def _locked_interfaces(session: AsyncSession) -> Set[str]:
     """
-    Interfaces that are read-only via API because WAN edit-protection is enabled.
+    Interfaces that are read-only via API (config cannot be set or deleted).
 
-    Returns the WAN interface only when SystemSettings.wan_protection_enabled is True
-    (opt-in via installer flag --protect-wan). Empty set otherwise → WAN freely editable.
-    Mirrors the managed-LAN immutability concept (orthogonal: WAN != managed LAN iface).
+    Two orthogonal sources, both externally managed (IP/subnet set elsewhere):
+    - WAN: the default-route interface, only when SystemSettings.wan_protection_enabled
+      is True (opt-in via installer flag --protect-wan).
+    - Managed LAN: the provisioned LAN interface, whose IP is assigned by the
+      WAN-managing software (cannot change its subnet from MADMIN).
     """
+    locked: Set[str] = set()
+
     from core.settings.models import SystemSettings
     result = await session.execute(select(SystemSettings).where(SystemSettings.id == 1))
     settings = result.scalar_one_or_none()
-    if not settings or not getattr(settings, "wan_protection_enabled", False):
-        return set()
-    return {get_default_interface() or WAN_INTERFACE_FALLBACK}
+    if settings and getattr(settings, "wan_protection_enabled", False):
+        locked.add(get_default_interface() or WAN_INTERFACE_FALLBACK)
+
+    from core.provisioning.service import provisioning_service
+    prov = await provisioning_service.get_or_create_settings(session)
+    if prov.enabled and prov.interface:
+        locked.add(prov.interface)
+
+    return locked
 
 
 class NetplanConfig(BaseModel):
@@ -152,26 +162,11 @@ async def set_interface_config(
     Creates a new config file: /etc/netplan/99-madmin-{interface}.yaml
     Does NOT apply automatically - use /apply endpoint.
     """
-    if interface in await _wan_locked_interfaces(session):
+    if interface in await _locked_interfaces(session):
         raise HTTPException(
             status_code=403,
-            detail=f"Interface {interface} (WAN) is not modifiable."
+            detail=f"Interface {interface} is externally managed and not modifiable."
         )
-
-    # Managed LAN interface: must stay static; the bound DHCP follows the IP change
-    from core.provisioning.service import provisioning_service
-    is_managed = await provisioning_service.is_managed_interface(session, interface)
-    if is_managed:
-        if config.dhcp4:
-            raise HTTPException(
-                status_code=403,
-                detail="Interfaccia LAN gestita: deve restare statica (no DHCP client)."
-            )
-        if not config.addresses:
-            raise HTTPException(
-                status_code=400,
-                detail="Interfaccia LAN gestita: indirizzo statico obbligatorio."
-            )
 
     success, message = netplan_service.set_interface_config(
         interface=interface,
@@ -184,24 +179,6 @@ async def set_interface_config(
 
     if not success:
         raise HTTPException(status_code=500, detail=message)
-
-    # Managed interface: apply netplan immediately (so the IP exists) THEN sync the
-    # bound DHCP subnet. Otherwise the DHCP pre-flight (subnet must match the live
-    # interface IP) would fail because the new IP isn't applied yet.
-    if is_managed:
-        applied, apply_msg = netplan_service.apply_netplan()
-        if not applied:
-            raise HTTPException(status_code=500, detail=f"Netplan apply failed: {apply_msg}")
-        try:
-            await firewall_orchestrator.apply_rules(session)
-        except Exception as e:
-            logger.warning(f"Firewall rebuild after managed-iface change failed: {e}")
-        try:
-            await provisioning_service.sync_dhcp_to_interface(session, config.addresses[0])
-            await session.commit()
-        except Exception as e:
-            logger.error(f"Managed LAN DHCP sync failed for {interface}: {e}", exc_info=True)
-        return {"success": True, "message": f"{message} (applicato e DHCP sincronizzato)"}
 
     return {"success": True, "message": message}
 
@@ -218,17 +195,10 @@ async def delete_interface_config(
     Only deletes 99-madmin-{interface}.yaml files.
     Does NOT apply automatically - use /apply endpoint.
     """
-    if interface in await _wan_locked_interfaces(session):
+    if interface in await _locked_interfaces(session):
         raise HTTPException(
             status_code=403,
-            detail=f"Interface {interface} (WAN) is not modifiable."
-        )
-
-    from core.provisioning.service import provisioning_service
-    if await provisioning_service.is_managed_interface(session, interface):
-        raise HTTPException(
-            status_code=403,
-            detail="Interfaccia LAN gestita: configurazione non eliminabile."
+            detail=f"Interface {interface} is externally managed and not modifiable."
         )
 
     success, message = netplan_service.delete_interface_config(interface)

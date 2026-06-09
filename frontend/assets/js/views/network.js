@@ -297,7 +297,8 @@ function renderInterfaceRow(iface) {
         ? `<code>${iface.ipv4}</code>${secondaryBadge}`
         : `<span class="text-muted">—</span>`;
 
-    const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isProtected;
+    // Managed LAN interface is read-only too: its IP is assigned externally.
+    const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isProtected && !isManaged;
     const configureBtn = canConfigure
         ? `<button class="btn btn-sm btn-ghost-primary" data-configure-iface="${iface.name}" title="${t('network.configureInterface')}">
                <i class="ti ti-settings"></i>
@@ -462,16 +463,6 @@ async function openNetplanModal(interfaceName) {
         }
     } catch (error) {
         // No existing config, start fresh
-    }
-
-    // Managed LAN interface must stay static: lock the DHCP-client option
-    const isManaged = managedIface && interfaceName === managedIface;
-    const dhcpRadio = document.querySelector('input[name="netplan-mode"][value="dhcp"]');
-    dhcpRadio.disabled = isManaged;
-    dhcpRadio.closest('label')?.classList.toggle('opacity-50', isManaged);
-    if (isManaged) {
-        document.querySelector('input[name="netplan-mode"][value="static"]').checked = true;
-        document.getElementById('static-config').style.display = 'block';
     }
 
     new bootstrap.Modal(document.getElementById('modal-netplan')).show();

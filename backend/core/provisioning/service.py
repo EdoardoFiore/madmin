@@ -6,19 +6,19 @@ Boot-time reconciler and helpers for the managed LAN (interface + DHCP + NAT).
 Single source of truth used by:
 - the installer trigger (POST /api/provisioning/managed-lan/enable)
 - the lifespan boot reconcile (self-heal)
-- the Network page (sync DHCP when the managed interface network changes)
+- the Network page (resync DHCP from the live interface IP)
 
-All operations are idempotent: they only act on drift.
+The interface IP is assigned externally (by the WAN-managing software); MADMIN
+never sets it. All operations are idempotent: they only act on drift.
 """
 import ipaddress
 import logging
-import re
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.network.service import NetworkService, NetplanService
+from core.network.service import NetworkService
 from .models import ManagedLanSettings
 
 logger = logging.getLogger(__name__)
@@ -28,13 +28,12 @@ logger = logging.getLogger(__name__)
 # default route (get_default_interface) and excluded too.
 WAN_INTERFACES = {"eth0"}
 
-
-def _natural_key(name: str) -> List:
-    """
-    Natural sort key so interfaces order incrementally, not lexicographically:
-    eth2 < eth10, ens18 < ens19, enp1s0 < enp10s0. Splits digit runs into ints.
-    """
-    return [int(tok) if tok.isdigit() else tok for tok in re.split(r'(\d+)', name)]
+# Known managed-LAN interface names (the second NIC), in preference order.
+# The managed LAN is identified STRICTLY by these names — never by IP/position —
+# so a spare NIC (e.g. ens2s1) is never auto-selected and detection works even
+# before the external software has assigned an IP. If none of these is present,
+# provisioning is skipped entirely. Extend per hardware naming convention.
+MANAGED_LAN_CANDIDATES = ("eth1", "ens19")
 
 # Sentinel comment marking the managed MASQUERADE rule (for API guards + reconcile)
 MANAGED_NAT_SENTINEL = "MADMIN_MANAGED_LAN_NAT"
@@ -63,36 +62,46 @@ class ProvisioningService:
 
     # --- Interface detection ---
 
+    @staticmethod
+    def interface_cidr(iface: dict) -> Optional[str]:
+        """
+        Build the live "ip/prefix" CIDR of an interface dict from
+        NetworkService.get_interfaces() (psutil ipv4 + netmask). None if the
+        interface has no usable IPv4 address.
+        """
+        ip = iface.get("ipv4")
+        netmask = iface.get("netmask")
+        if not ip or not netmask:
+            return None
+        try:
+            net = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+            return f"{ip}/{net.prefixlen}"
+        except ValueError:
+            return None
+
+    def get_live_interface_cidr(self, iface_name: str) -> Optional[str]:
+        """Live host CIDR of a NIC by name (e.g. "172.25.1.1/24"), or None."""
+        for iface in NetworkService.get_interfaces():
+            if iface.get("name") == iface_name:
+                return self.interface_cidr(iface)
+        return None
+
     def detect_managed_interface(self) -> Optional[str]:
         """
         Resolve the managed LAN interface name at runtime.
 
-        Rule: the managed LAN is ALWAYS the first non-WAN physical interface in
-        incremental order — eth1 after eth0, ens19 after ens18, enp2s0 after
-        enp1s0, etc. The name is never assumed: it is derived from the live NICs.
-
-        WAN exclusion: the real WAN is the default-route interface
-        (get_default_interface) plus the legacy eth0 name. If no default route is
-        known yet (early boot), the lowest-ordered NIC is treated as the WAN.
+        Rule: the managed LAN is identified STRICTLY by name from
+        MANAGED_LAN_CANDIDATES (e.g. "eth1"/"ens19"), matching the first present
+        candidate in preference order. This is deterministic and IP-independent:
+        a spare NIC (e.g. ens2s1) is never selected, and identification works even
+        before the external software has assigned an IP (so the interface can be
+        locked immediately). Returns None if no known candidate is present, in
+        which case the caller skips provisioning entirely.
         """
-        from core.network.utils import get_default_interface
-
-        interfaces = NetworkService.get_interfaces()  # already filters virtual ifaces
-        names = sorted((i["name"] for i in interfaces if i.get("name")), key=_natural_key)
-        if not names:
-            return None
-
-        excluded = set(WAN_INTERFACES)
-        wan = get_default_interface()
-        if wan:
-            excluded.add(wan)
-        else:
-            # No default route resolved: by convention the first NIC is the WAN.
-            excluded.add(names[0])
-
-        for name in names:
-            if name not in excluded:
-                return name
+        names = {i["name"] for i in NetworkService.get_interfaces() if i.get("name")}
+        for candidate in MANAGED_LAN_CANDIDATES:
+            if candidate in names:
+                return candidate
         return None
 
     # --- Network derivation ---
@@ -130,23 +139,30 @@ class ProvisioningService:
 
         return str(network), gateway_ip, str(range_start), str(range_end)
 
-    # --- Guards helper ---
+    @staticmethod
+    def _pool_within(network_cidr: str, stored_start: Optional[str], stored_end: Optional[str],
+                     default_start: str, default_end: str) -> Tuple[str, str]:
+        """
+        Keep the user-tuned DHCP pool only if it still falls inside the (possibly
+        changed) network; otherwise fall back to the derived defaults. Guards
+        against a stale pool after the external IP moves to a different subnet.
+        """
+        try:
+            net = ipaddress.IPv4Network(network_cidr)
+        except ValueError:
+            return default_start, default_end
 
-    async def is_managed_interface(self, session: AsyncSession, name: str) -> bool:
-        """True if `name` is the currently managed LAN interface (and provisioning is enabled)."""
-        settings = await self.get_or_create_settings(session)
-        return bool(settings.enabled and settings.interface and settings.interface == name)
+        def _in(ip: Optional[str]) -> bool:
+            if not ip:
+                return False
+            try:
+                return ipaddress.IPv4Address(ip) in net
+            except ValueError:
+                return False
 
-    # --- Drift checks ---
-
-    def _netplan_matches(self, iface: str, address_cidr: str) -> bool:
-        """True if the interface's netplan already matches the desired static config."""
-        cfg = NetplanService.get_interface_config(iface)
-        if not cfg:
-            return False
-        if cfg.get("dhcp4"):
-            return False
-        return address_cidr in (cfg.get("addresses") or [])
+        start = stored_start if _in(stored_start) else default_start
+        end = stored_end if _in(stored_end) else default_end
+        return start, end
 
     # --- Reconcile (self-heal) ---
 
@@ -163,78 +179,100 @@ class ProvisioningService:
             logger.info("Managed LAN: provisioning disabled, skipping reconcile")
             return
 
-        # 1. Resolve & persist interface
-        if not settings.interface:
-            detected = self.detect_managed_interface()
-            if not detected:
-                logger.warning("Managed LAN: no candidate interface after WAN, cannot provision")
-                return
+        # 1. Resolve & persist interface BY NAME (deterministic, IP-independent).
+        #    Re-detect every boot so a previously mis-detected/stale name
+        #    self-heals to the current known candidate (eth1/ens19).
+        detected = self.detect_managed_interface()
+        if not detected:
+            logger.warning(
+                "Managed LAN: no known LAN interface present "
+                f"({', '.join(MANAGED_LAN_CANDIDATES)}); skipping provisioning"
+            )
+            return
+        if settings.interface != detected:
+            logger.info(f"Managed LAN: interface '{settings.interface}' -> '{detected}'")
             settings.interface = detected
             session.add(settings)
             await session.flush()
-            logger.info(f"Managed LAN: resolved interface '{detected}'")
+        iface = detected
 
-        iface = settings.interface
-        network_cidr, gateway_ip, default_start, default_end = self.derive_network(settings.address_cidr)
-        range_start = settings.dhcp_range_start or default_start
-        range_end = settings.dhcp_range_end or default_end
-
-        # 2. Ensure DHCP module is active (mounts router this boot)
+        # 2. Ensure DHCP module is active (mounts router this boot) and the
+        #    MASQUERADE rule exists. These are name-only and run even before the
+        #    interface has an IP, so the interface is locked/NAT-ready immediately.
         await self._ensure_dhcp_module(session)
+        await self._ensure_masquerade(session, iface)
 
-        # 3. Netplan: static IP on the managed interface (only on drift)
-        if not self._netplan_matches(iface, settings.address_cidr):
-            ok, msg = NetplanService.set_interface_config(
-                interface=iface, dhcp4=False, addresses=[settings.address_cidr]
+        # 3. Read the LIVE host IP/CIDR (assigned by the WAN-managing software).
+        #    We never set the IP ourselves; the DHCP subnet/gateway are derived
+        #    from whatever the interface currently holds. Without an IP yet, defer
+        #    the DHCP setup (the interface stays identified, locked and NAT-ready).
+        live_cidr = self.get_live_interface_cidr(iface)
+        if not live_cidr:
+            logger.warning(
+                f"Managed LAN: interface '{iface}' has no live IPv4 yet; "
+                f"deferring DHCP (next boot reconcile will retry)"
             )
-            if ok:
-                applied, apply_msg = NetplanService.apply_netplan()
-                logger.info(f"Managed LAN: netplan applied for {iface}: {apply_msg}")
-            else:
-                logger.error(f"Managed LAN: netplan write failed for {iface}: {msg}")
+            return
 
-        # 4. Ensure the managed DHCP subnet matches
+        network_cidr, gateway_ip, default_start, default_end = self.derive_network(live_cidr)
+        range_start, range_end = self._pool_within(
+            network_cidr, settings.dhcp_range_start, settings.dhcp_range_end,
+            default_start, default_end,
+        )
+        # Persist the observed CIDR for display (informational, not a setpoint).
+        settings.address_cidr = live_cidr
+        session.add(settings)
+        await session.flush()
+
+        # 4. Ensure the managed DHCP subnet matches the live interface network
         await self._ensure_managed_subnet(
             session, iface, network_cidr, gateway_ip, range_start, range_end, settings.dns_servers
         )
 
-        # 5. Ensure the MASQUERADE rule for this interface
-        await self._ensure_masquerade(session, iface)
-
-        # 6. Persist desired DHCP runtime state UP
+        # 5. Persist desired DHCP runtime state UP
         await self._set_dhcp_enabled(session, True)
 
-        # 7. Start the DHCP service deterministically, right after netplan (the IP
-        #    is up). We do NOT rely solely on the module on_startup hook: it runs
-        #    later in a background task and its pre-flight (subnet must match the
-        #    LIVE interface IP) can lose a race at early boot. The on_startup hook
-        #    still runs afterwards as a safety net / retry.
+        # 6. Start the DHCP service deterministically. We do NOT rely solely on
+        #    the module on_startup hook: it runs later in a background task and its
+        #    pre-flight (subnet must match the LIVE interface IP) can lose a race at
+        #    early boot before the external software has assigned the IP. The
+        #    on_startup hook still runs afterwards as a safety net / retry.
         await session.flush()
         await self._start_dhcp_with_retry(session)
 
         logger.info(f"Managed LAN: reconcile complete (iface={iface}, net={network_cidr})")
 
-    # --- DHCP sync on interface network change ---
+    # --- DHCP resync from the live interface IP ---
 
-    async def sync_dhcp_to_interface(self, session: AsyncSession, address_cidr: str) -> None:
+    async def resync_managed_dhcp(self, session: AsyncSession) -> None:
         """
-        Called when the user changes the managed interface network (Network page).
-        Recompute the managed subnet and re-apply DHCP config.
+        Recompute the managed DHCP subnet from the interface's CURRENT live IP
+        (set externally) and re-apply the DHCP config. Called after a DHCP-level
+        tweak (DNS/pool) and reusable whenever the bound IP may have changed.
         """
         settings = await self.get_or_create_settings(session)
         if not (settings.enabled and settings.interface):
             return
 
-        network_cidr, gateway_ip, default_start, default_end = self.derive_network(address_cidr)
-        settings.address_cidr = address_cidr
-        # Reset stored pool so it is re-derived for the new network
-        settings.dhcp_range_start = default_start
-        settings.dhcp_range_end = default_end
+        live_cidr = self.get_live_interface_cidr(settings.interface)
+        if not live_cidr:
+            logger.warning(
+                f"Managed LAN: cannot resync DHCP, interface "
+                f"'{settings.interface}' has no live IPv4"
+            )
+            return
+
+        network_cidr, gateway_ip, default_start, default_end = self.derive_network(live_cidr)
+        range_start, range_end = self._pool_within(
+            network_cidr, settings.dhcp_range_start, settings.dhcp_range_end,
+            default_start, default_end,
+        )
+        settings.address_cidr = live_cidr
         session.add(settings)
 
         await self._ensure_managed_subnet(
             session, settings.interface, network_cidr, gateway_ip,
-            default_start, default_end, settings.dns_servers
+            range_start, range_end, settings.dns_servers
         )
         await session.flush()
         await self._apply_dhcp(session)
@@ -298,8 +336,9 @@ class ProvisioningService:
         await session.flush()
 
     async def _ensure_masquerade(self, session: AsyncSession, iface: str) -> None:
-        """Ensure a MASQUERADE rule iface->eth0 exists and is enabled (sentinel-tagged)."""
+        """Ensure a MASQUERADE rule iface->WAN exists and is enabled (sentinel-tagged)."""
         from core.firewall.models import MachineFirewallRule
+        from core.network.utils import get_default_interface
 
         result = await session.execute(
             select(MachineFirewallRule).where(
@@ -308,7 +347,9 @@ class ProvisioningService:
         )
         rule = result.scalar_one_or_none()
 
-        wan = next(iter(WAN_INTERFACES))
+        # Real WAN = default-route interface (e.g. ens18), falling back to the
+        # legacy eth0 name. Re-resolved each reconcile so the NAT egress self-heals.
+        wan = get_default_interface() or next(iter(WAN_INTERFACES))
         if rule is None:
             max_order = (await session.execute(
                 select(func.max(MachineFirewallRule.order)).where(

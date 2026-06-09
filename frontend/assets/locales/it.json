@@ -388,8 +388,8 @@
         "secondaryIpv4": "IPv4 secondario {index}",
         "wanReadOnly": "Interfaccia in sola lettura — gestita esternamente",
         "managed": "Gestita",
-        "managedHint": "Interfaccia LAN gestita: deve restare statica. Il DHCP associato segue l'IP impostato qui.",
-        "managedNote": "Interfaccia LAN gestita: mantienila statica. Cambiando l'IP il DHCP associato si aggiorna automaticamente. Non può essere impostata come client DHCP né rimossa.",
+        "managedHint": "Interfaccia LAN gestita: in sola lettura. L'IP è assegnato esternamente; il DHCP associato segue automaticamente l'IP dell'interfaccia.",
+        "managedNote": "Interfaccia LAN gestita: in sola lettura. L'IP/subnet è assegnato esternamente (dal software che gestisce la WAN); il DHCP associato acquisisce subnet e gateway dall'IP dell'interfaccia. Non modificabile né rimovibile.",
         "secondaryIps": "{count} IP secondari aggiuntivi",
         "up": "Attiva",
         "down": "Inattiva"

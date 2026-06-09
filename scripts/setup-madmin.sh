@@ -467,7 +467,9 @@ else
 fi
 
 # Managed LAN auto-provisioning (opt-in, used by automations such as madmin-hub).
-# Sets up the LAN interface + DHCP + NAT so VMs behind the router get connectivity right away.
+# Binds DHCP + NAT to the LAN interface so VMs behind the router get connectivity
+# right away. The interface IP is NOT set here: it is assigned externally by the
+# WAN-managing software, and DHCP derives its subnet/gateway from that live IP.
 if [ "$PROVISION_LAN" = "true" ]; then
     if [ -n "$JWT_TOKEN" ]; then
         log_info "Enabling managed LAN provisioning (interface + DHCP + NAT)..."
@@ -475,7 +477,15 @@ if [ "$PROVISION_LAN" = "true" ]; then
             "http://localhost:8000/api/provisioning/managed-lan/enable" \
             -H "Authorization: Bearer $JWT_TOKEN")
         if [ "$PROV_HTTP" = "200" ]; then
-            log_success "Managed LAN configured: $(cat /tmp/madmin_prov.json)"
+            # enabled=false means no known LAN interface (eth1/ens19) was found:
+            # provisioning was skipped, as if --provision-lan had not been passed.
+            PROV_ENABLED=$(python3 -c "import json,sys; print(str(json.load(open('/tmp/madmin_prov.json')).get('enabled', False)).lower())" 2>/dev/null)
+            PROV_IFACE=$(python3 -c "import json,sys; print(json.load(open('/tmp/madmin_prov.json')).get('interface') or '')" 2>/dev/null)
+            if [ "$PROV_ENABLED" = "true" ]; then
+                log_success "Managed LAN configured on interface '$PROV_IFACE'."
+            else
+                log_warning "Managed LAN NOT configured: no known LAN interface (eth1/ens19) found. DHCP/NAT not set up."
+            fi
         else
             log_warning "Managed LAN provisioning failed (HTTP $PROV_HTTP): $(cat /tmp/madmin_prov.json)"
         fi
