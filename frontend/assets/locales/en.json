@@ -389,7 +389,7 @@
         "wanReadOnly": "Read-only interface — externally managed",
         "managed": "Managed",
         "managedHint": "Managed LAN interface: read-only. The IP is assigned externally; the bound DHCP automatically follows the interface IP.",
-        "managedNote": "Managed LAN interface: read-only. The IP/subnet is assigned externally (by the WAN-managing software); the bound DHCP derives its subnet and gateway from the interface IP. It cannot be modified or removed.",
+        "managedNote": "Managed LAN interface, read-only — IP assigned externally, DHCP follows the interface IP",
         "secondaryIps": "{count} additional secondary IPs",
         "up": "Up",
         "down": "Down"

@@ -389,7 +389,7 @@
         "wanReadOnly": "Interfaccia in sola lettura — gestita esternamente",
         "managed": "Gestita",
         "managedHint": "Interfaccia LAN gestita: in sola lettura. L'IP è assegnato esternamente; il DHCP associato segue automaticamente l'IP dell'interfaccia.",
-        "managedNote": "Interfaccia LAN gestita: in sola lettura. L'IP/subnet è assegnato esternamente (dal software che gestisce la WAN); il DHCP associato acquisisce subnet e gateway dall'IP dell'interfaccia. Non modificabile né rimovibile.",
+        "managedNote": "Interfaccia LAN gestita in sola lettura — IP assegnato esternamente, il DHCP segue l'IP dell'interfaccia",
         "secondaryIps": "{count} IP secondari aggiuntivi",
         "up": "Attiva",
         "down": "Inattiva"
