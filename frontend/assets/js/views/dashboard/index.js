@@ -22,8 +22,8 @@ import {
     renderQuickActions,
 } from './core-widgets.js';
 import {
-    renderResourceGraphs, loadResourceGraphs,
-    renderNetTraffic, loadNetTrafficGraph, loadNetTraffic,
+    renderResourceGraphs, loadResourceGraphs, fillResourceGraphs,
+    renderNetTraffic, loadNetTrafficGraph, loadNetTraffic, fillNetTraffic,
     destroyCharts,
 } from './charts.js';
 import { loadModuleWidgets } from './module-widgets.js';
@@ -184,6 +184,27 @@ export async function render(container) {
             apiGet('/auth/users').then(d => { preData.users = d; }).catch(() => { preData.users = null; }),
         );
     }
+    if (enabledIds.has('resource_graphs')) {
+        preFetches.push(
+            apiGet('/system/stats/history?hours=1').then(d => { preData.chartHistory = d; }).catch(() => { preData.chartHistory = null; }),
+            apiGet('/system/stats').then(d => { preData.chartStats = d; }).catch(() => { preData.chartStats = null; }),
+        );
+    }
+    if (enabledIds.has('net_traffic')) {
+        preFetches.push(
+            (async () => {
+                try {
+                    const netData = await apiGet('/system/network');
+                    preData.netData = netData;
+                    const interfaces = Object.keys(netData.interfaces || {});
+                    preData.firstIface = interfaces[0] || null;
+                    if (preData.firstIface) {
+                        preData.trafficHistory = await apiGet(`/system/network/history?hours=1&interface=${preData.firstIface}`).catch(() => null);
+                    }
+                } catch { preData.netData = null; }
+            })()
+        );
+    }
 
     await Promise.all(preFetches);
 
@@ -206,23 +227,24 @@ export async function render(container) {
 
     setupEventListeners();
 
-    // Sync fills — no yield between these; browser paints the final state
+    // Sync fills — no yield between these; browser paints the final state once
     if (enabledIds.has('welcome')) fillWelcome(preData.uptime, preData.sysSettings);
     if (enabledIds.has('system_stats')) fillSystemStats(preData.stats);
     if (enabledIds.has('services') && preData.services) fillServicesStatus(preData.services);
     if (enabledIds.has('alerts')) fillAlerts(preData.alerts);
     if (enabledIds.has('backup_status')) fillBackupStatus(preData.backupHistory || [], preData.backupSettings || null);
     if (enabledIds.has('stat_cards')) fillStatCards({ health: preData.health, rules: preData.rules, modules: preData.modules, users: preData.users });
+    if (enabledIds.has('resource_graphs')) fillResourceGraphs(preData.chartHistory, preData.chartStats);
+    if (enabledIds.has('net_traffic')) fillNetTraffic(preData.netData, preData.trafficHistory, preData.firstIface);
 
-    // Chart widgets + module widgets need async loading (DOM required for chart init)
-    const ASYNC_LOAD_IDS = new Set(['resource_graphs', 'net_traffic', ..._moduleWidgetIds]);
-    const loadPromises = [];
+    // Module widgets only — they have unknown data sources, load after paint
+    const moduleLoadPromises = [];
     for (const { widget, enabled } of ordered) {
         if (!enabled || !widget.load) continue;
-        if (!ASYNC_LOAD_IDS.has(widget.id)) continue;
-        loadPromises.push(widget.load().catch(e => console.error(`Widget ${widget.id} error:`, e)));
+        if (!_moduleWidgetIds.includes(widget.id)) continue;
+        moduleLoadPromises.push(widget.load().catch(e => console.error(`Widget ${widget.id} error:`, e)));
     }
-    await Promise.all(loadPromises);
+    if (moduleLoadPromises.length) await Promise.all(moduleLoadPromises);
 }
 
 /**

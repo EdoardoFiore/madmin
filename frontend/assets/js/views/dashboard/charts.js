@@ -3,11 +3,15 @@
  *
  * Resource trend (CPU/RAM/disk) and network traffic charts. Chart instances
  * are tracked here so destroyCharts() can free them on route change.
+ *
+ * Each widget exposes:
+ *   render()              → HTML string for the card shell (empty chart containers)
+ *   fillXxx(data)         → sync: builds and renders the ApexChart instance in-place
+ *   loadXxx()             → async: fetch + fillXxx (used for range/interface changes)
  */
 
 import { apiGet } from '../../api.js';
 import { t } from '../../i18n.js';
-import { skeletonChart } from '../../components/skeleton.js';
 
 let netTrafficChart = null;
 let cpuChart = null;
@@ -46,15 +50,15 @@ export function renderResourceGraphs() {
                 <div class="row">
                     <div class="col-md-4">
                         <h4 class="subheader">CPU</h4>
-                        <div id="chart-cpu" style="height: 150px;">${skeletonChart(130)}</div>
+                        <div id="chart-cpu" style="height: 150px;"></div>
                     </div>
                     <div class="col-md-4">
                         <h4 class="subheader">RAM</h4>
-                        <div id="chart-ram" style="height: 150px;">${skeletonChart(130)}</div>
+                        <div id="chart-ram" style="height: 150px;"></div>
                     </div>
                     <div class="col-md-4">
                         <h4 class="subheader">${t('dashboard.disk')}</h4>
-                        <div id="chart-disk" style="height: 150px;">${skeletonChart(130)}</div>
+                        <div id="chart-disk" style="height: 150px;"></div>
                     </div>
                 </div>
             </div>
@@ -84,11 +88,143 @@ export function renderNetTraffic() {
                 </div>
             </div>
             <div class="card-body">
-                <div id="chart-net-traffic" style="height: 200px;">${skeletonChart(180)}</div>
+                <div id="chart-net-traffic" style="height: 200px;"></div>
             </div>
         </div>
     `;
 }
+
+// ---- sync fill helpers ----
+
+export function fillResourceGraphs(history, currentStats) {
+    if (!history || history.length === 0) {
+        ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.dataNotYetAvailable')}</div>`;
+        });
+        return;
+    }
+
+    const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+    const cpuData = history.map(h => parseFloat(h.cpu.toFixed(1)));
+
+    const ramTotalGB = (currentStats && currentStats.available) ? (currentStats.memory.total / (1024 ** 3)) : 2;
+    const diskTotalGB = (currentStats && currentStats.available) ? (currentStats.disk.total / (1024 ** 3)) : 50;
+    const ramDataGB = history.map(h => parseFloat(((h.ram_used || 0) / (1024 ** 3)).toFixed(2)));
+    const diskDataGB = history.map(h => parseFloat(((h.disk_used || 0) / (1024 ** 3)).toFixed(2)));
+
+    const cpuMinMax = { min: Math.min(...cpuData).toFixed(1), max: Math.max(...cpuData).toFixed(1) };
+    const ramMinMax = { min: Math.min(...ramDataGB).toFixed(1), max: Math.max(...ramDataGB).toFixed(1) };
+    const diskMinMax = { min: Math.min(...diskDataGB).toFixed(1), max: Math.max(...diskDataGB).toFixed(1) };
+
+    const baseOptions = (data, color, categories) => ({
+        series: [{ data }],
+        chart: { type: 'area', height: 120, sparkline: { enabled: false }, animations: { enabled: false }, toolbar: { show: false }, zoom: { enabled: false } },
+        dataLabels: { enabled: false },
+        stroke: { curve: 'smooth', width: 2 },
+        fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1 } },
+        colors: [color],
+        xaxis: { categories, labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
+        grid: { show: true, borderColor: '#e0e0e0', strokeDashArray: 3, padding: { left: 5, right: 5 } }
+    });
+
+    const cpuOptions = { ...baseOptions(cpuData, '#206bc4', timestamps), yaxis: { min: 0, max: 100, labels: { show: true, formatter: v => v.toFixed(0) + '%' } }, tooltip: { y: { formatter: v => v.toFixed(1) + '%' } } };
+    const ramOptions = { ...baseOptions(ramDataGB, '#2fb344', timestamps), yaxis: { min: 0, max: Math.ceil(ramTotalGB), labels: { show: true, formatter: v => v.toFixed(0) + ' GB' } }, tooltip: { y: { formatter: v => v.toFixed(1) + ' GB' } } };
+    const diskOptions = { ...baseOptions(diskDataGB, '#f76707', timestamps), yaxis: { min: 0, max: Math.ceil(diskTotalGB), labels: { show: true, formatter: v => v.toFixed(0) + ' GB' } }, tooltip: { y: { formatter: v => v.toFixed(1) + ' GB' } } };
+
+    if (cpuChart) cpuChart.destroy();
+    if (ramChart) ramChart.destroy();
+    if (diskChart) diskChart.destroy();
+
+    document.getElementById('chart-cpu').innerHTML = '';
+    document.getElementById('chart-ram').innerHTML = '';
+    document.getElementById('chart-disk').innerHTML = '';
+
+    cpuChart = new ApexCharts(document.getElementById('chart-cpu'), cpuOptions);
+    ramChart = new ApexCharts(document.getElementById('chart-ram'), ramOptions);
+    diskChart = new ApexCharts(document.getElementById('chart-disk'), diskOptions);
+
+    cpuChart.render();
+    ramChart.render();
+    diskChart.render();
+
+    document.getElementById('cpu-minmax')?.remove();
+    document.getElementById('ram-minmax')?.remove();
+    document.getElementById('disk-minmax')?.remove();
+
+    document.getElementById('chart-cpu')?.insertAdjacentHTML('afterend',
+        `<div id="cpu-minmax" class="text-muted small mt-1">Min: ${cpuMinMax.min}% | Max: ${cpuMinMax.max}%</div>`);
+    document.getElementById('chart-ram')?.insertAdjacentHTML('afterend',
+        `<div id="ram-minmax" class="text-muted small mt-1">Min: ${ramMinMax.min} GB | Max: ${ramMinMax.max} GB (${ramTotalGB.toFixed(0)} GB tot)</div>`);
+    document.getElementById('chart-disk')?.insertAdjacentHTML('afterend',
+        `<div id="disk-minmax" class="text-muted small mt-1">Min: ${diskMinMax.min} GB | Max: ${diskMinMax.max} GB (${diskTotalGB.toFixed(0)} GB tot)</div>`);
+}
+
+export function fillNetTraffic(netData, trafficHistory, firstIface) {
+    const select = document.getElementById('net-interface-select');
+    const container = document.getElementById('chart-net-traffic');
+
+    if (!netData || !netData.available) {
+        if (container) container.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.dataNotAvailable')}</div>`;
+        return;
+    }
+
+    const interfaces = Object.keys(netData.interfaces || {});
+    if (select) {
+        select.innerHTML = interfaces.map((iface, i) =>
+            `<option value="${iface}" ${i === 0 ? 'selected' : ''}>${iface}</option>`
+        ).join('');
+    }
+
+    if (!trafficHistory || trafficHistory.length === 0) {
+        if (container) container.innerHTML = `<div class="text-muted text-center py-4"><i class="ti ti-clock me-2"></i>${t('dashboard.waitingForTrafficData')}</div>`;
+        return;
+    }
+
+    if (!container) return;
+
+    const history = trafficHistory;
+    const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+
+    const toBits = v => parseFloat(((v * 8) / 1_000_000).toFixed(3));
+    let txData = history.map(h => toBits(h.tx_rate));
+    let rxData = history.map(h => toBits(h.rx_rate));
+
+    const maxVal = Math.max(...txData, ...rxData);
+    let unit = 'Mb/s';
+    let txDisplay = txData;
+    let rxDisplay = rxData;
+    if (maxVal < 0.01) {
+        unit = 'Kb/s';
+        txDisplay = txData.map(v => parseFloat((v * 1000).toFixed(2)));
+        rxDisplay = rxData.map(v => parseFloat((v * 1000).toFixed(2)));
+    }
+
+    if (netTrafficChart) netTrafficChart.destroy();
+    container.innerHTML = '';
+
+    const options = {
+        series: [
+            { name: `TX (${unit})`, data: txDisplay },
+            { name: `RX (${unit})`, data: rxDisplay }
+        ],
+        chart: { type: 'area', height: 180, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+        dataLabels: { enabled: false },
+        stroke: { curve: 'smooth', width: 2 },
+        fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.3, opacityTo: 0.05 } },
+        colors: ['#f76707', '#206bc4'],
+        xaxis: { categories: timestamps, labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
+        yaxis: { min: 0, labels: { show: true, formatter: v => v.toFixed(0) + ' ' + unit } },
+        tooltip: { y: { formatter: v => v.toFixed(2) + ' ' + unit } },
+        grid: { show: true, borderColor: '#e0e0e0', strokeDashArray: 3 },
+        legend: { position: 'top', horizontalAlign: 'right' }
+    };
+
+    netTrafficChart = new ApexCharts(container, options);
+    netTrafficChart.render();
+}
+
+// ---- async load helpers (used for range / interface change events) ----
 
 export async function loadResourceGraphs(hours) {
     if (typeof hours !== 'number') hours = 1;
@@ -97,70 +233,7 @@ export async function loadResourceGraphs(hours) {
             apiGet(`/system/stats/history?hours=${hours}`),
             apiGet('/system/stats')
         ]);
-
-        if (history.length === 0) {
-            ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
-                const el = document.getElementById(id);
-                if (el) el.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.dataNotYetAvailable')}</div>`;
-            });
-            return;
-        }
-
-        const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
-        const cpuData = history.map(h => parseFloat(h.cpu.toFixed(1)));
-
-        const ramTotalGB = currentStats.available ? (currentStats.memory.total / (1024 ** 3)) : 2;
-        const diskTotalGB = currentStats.available ? (currentStats.disk.total / (1024 ** 3)) : 50;
-        const ramDataGB = history.map(h => parseFloat(((h.ram_used || 0) / (1024 ** 3)).toFixed(2)));
-        const diskDataGB = history.map(h => parseFloat(((h.disk_used || 0) / (1024 ** 3)).toFixed(2)));
-
-        const cpuMinMax = { min: Math.min(...cpuData).toFixed(1), max: Math.max(...cpuData).toFixed(1) };
-        const ramMinMax = { min: Math.min(...ramDataGB).toFixed(1), max: Math.max(...ramDataGB).toFixed(1) };
-        const diskMinMax = { min: Math.min(...diskDataGB).toFixed(1), max: Math.max(...diskDataGB).toFixed(1) };
-
-        const baseOptions = (data, color, categories) => ({
-            series: [{ data }],
-            chart: { type: 'area', height: 120, sparkline: { enabled: false }, animations: { enabled: false }, toolbar: { show: false }, zoom: { enabled: false } },
-            dataLabels: { enabled: false },
-            stroke: { curve: 'smooth', width: 2 },
-            fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1 } },
-            colors: [color],
-            xaxis: { categories, labels: { show: false }, axisBorder: { show: false }, axisTicks: { show: false } },
-            grid: { show: true, borderColor: '#e0e0e0', strokeDashArray: 3, padding: { left: 5, right: 5 } }
-        });
-
-        const cpuOptions = { ...baseOptions(cpuData, '#206bc4', timestamps), yaxis: { min: 0, max: 100, labels: { show: true, formatter: v => v.toFixed(0) + '%' } }, tooltip: { y: { formatter: v => v.toFixed(1) + '%' } } };
-        const ramOptions = { ...baseOptions(ramDataGB, '#2fb344', timestamps), yaxis: { min: 0, max: Math.ceil(ramTotalGB), labels: { show: true, formatter: v => v.toFixed(0) + ' GB' } }, tooltip: { y: { formatter: v => v.toFixed(1) + ' GB' } } };
-        const diskOptions = { ...baseOptions(diskDataGB, '#f76707', timestamps), yaxis: { min: 0, max: Math.ceil(diskTotalGB), labels: { show: true, formatter: v => v.toFixed(0) + ' GB' } }, tooltip: { y: { formatter: v => v.toFixed(1) + ' GB' } } };
-
-        if (cpuChart) cpuChart.destroy();
-        if (ramChart) ramChart.destroy();
-        if (diskChart) diskChart.destroy();
-
-        document.getElementById('chart-cpu').innerHTML = '';
-        document.getElementById('chart-ram').innerHTML = '';
-        document.getElementById('chart-disk').innerHTML = '';
-
-        cpuChart = new ApexCharts(document.getElementById('chart-cpu'), cpuOptions);
-        ramChart = new ApexCharts(document.getElementById('chart-ram'), ramOptions);
-        diskChart = new ApexCharts(document.getElementById('chart-disk'), diskOptions);
-
-        cpuChart.render();
-        ramChart.render();
-        diskChart.render();
-
-        // Min/max labels
-        document.getElementById('cpu-minmax')?.remove();
-        document.getElementById('ram-minmax')?.remove();
-        document.getElementById('disk-minmax')?.remove();
-
-        document.getElementById('chart-cpu')?.insertAdjacentHTML('afterend',
-            `<div id="cpu-minmax" class="text-muted small mt-1">Min: ${cpuMinMax.min}% | Max: ${cpuMinMax.max}%</div>`);
-        document.getElementById('chart-ram')?.insertAdjacentHTML('afterend',
-            `<div id="ram-minmax" class="text-muted small mt-1">Min: ${ramMinMax.min} GB | Max: ${ramMinMax.max} GB (${ramTotalGB.toFixed(0)} GB tot)</div>`);
-        document.getElementById('chart-disk')?.insertAdjacentHTML('afterend',
-            `<div id="disk-minmax" class="text-muted small mt-1">Min: ${diskMinMax.min} GB | Max: ${diskMinMax.max} GB (${diskTotalGB.toFixed(0)} GB tot)</div>`);
-
+        fillResourceGraphs(history, currentStats);
     } catch (error) {
         console.error('Error loading resource graphs:', error);
         ['chart-cpu', 'chart-ram', 'chart-disk'].forEach(id => {
@@ -173,27 +246,23 @@ export async function loadResourceGraphs(hours) {
 export async function loadNetTraffic() {
     const select = document.getElementById('net-interface-select');
     if (!select) return;
-
     try {
-        // Populate interface dropdown
         const netData = await apiGet('/system/network');
         if (!netData.available) {
-            document.getElementById('chart-net-traffic').innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.dataNotAvailable')}</div>`;
+            const container = document.getElementById('chart-net-traffic');
+            if (container) container.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.dataNotAvailable')}</div>`;
             return;
         }
-
-        const interfaces = Object.keys(netData.interfaces);
-        select.innerHTML = interfaces.map((iface, i) =>
-            `<option value="${iface}" ${i === 0 ? 'selected' : ''}>${iface}</option>`
-        ).join('');
-
-        // Load graph for first interface
-        if (interfaces.length > 0) {
-            await loadNetTrafficGraph(interfaces[0], 1);
-        }
+        const interfaces = Object.keys(netData.interfaces || {});
+        const firstIface = interfaces[0] || null;
+        const trafficHistory = firstIface
+            ? await apiGet(`/system/network/history?hours=1&interface=${firstIface}`).catch(() => null)
+            : null;
+        fillNetTraffic(netData, trafficHistory, firstIface);
     } catch (error) {
         console.error('Error loading net traffic:', error);
-        document.getElementById('chart-net-traffic').innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.loadingError')}</div>`;
+        const container = document.getElementById('chart-net-traffic');
+        if (container) container.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.loadingError')}</div>`;
     }
 }
 
@@ -211,18 +280,15 @@ export async function loadNetTrafficGraph(iface, hours) {
 
         const timestamps = history.map(h => new Date(h.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
 
-        // Convert bytes/s → Mbit/s  (bytes × 8 ÷ 1,000,000)
         const toBits = v => parseFloat(((v * 8) / 1_000_000).toFixed(3));
         let txData = history.map(h => toBits(h.tx_rate));
         let rxData = history.map(h => toBits(h.rx_rate));
 
-        // Auto-scale: if values are very small, fall back to Kb/s
         const maxVal = Math.max(...txData, ...rxData);
         let unit = 'Mb/s';
         let txDisplay = txData;
         let rxDisplay = rxData;
         if (maxVal < 0.01) {
-            // Show in Kb/s instead
             unit = 'Kb/s';
             txDisplay = txData.map(v => parseFloat((v * 1000).toFixed(2)));
             rxDisplay = rxData.map(v => parseFloat((v * 1000).toFixed(2)));
