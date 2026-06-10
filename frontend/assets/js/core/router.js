@@ -15,7 +15,7 @@ import { updateActiveMenuItem, setPageTitle, setPageActions } from './shell.js';
 
 // View registry - maps routes to view modules
 const views = {
-    'dashboard': () => import('../views/dashboard.js'),
+    'dashboard': () => import('../views/dashboard/index.js'),
     'users': () => import('../views/users/index.js'),
     'firewall': () => import('../views/firewall.js'),
     'network': () => import('../views/network.js'),
