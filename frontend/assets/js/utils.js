@@ -11,6 +11,7 @@
  */
 
 import { t, getLang } from './i18n.js';
+import { openModal, confirm as modalConfirm } from './components/modal.js';
 
 /**
  * Show a toast notification
@@ -173,46 +174,8 @@ export function debounce(func, wait) {
  * @returns {Promise<boolean>}
  */
 export function confirmDialog(title, message, confirmText = null, confirmClass = 'btn-danger', htmlContent = false, size = 'sm') {
-    if (confirmText === null) confirmText = t('common.confirm');
-    return new Promise((resolve) => {
-        const modalId = `confirm-modal-${Date.now()}`;
-        const sizeClass = size ? ` modal-${size}` : '';
-        const modalHtml = `
-            <div class="modal modal-blur fade" id="${modalId}" tabindex="-1">
-                <div class="modal-dialog${sizeClass}">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title">${escapeHtml(title)}</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">${htmlContent ? message : escapeHtml(message)}</div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
-                            <button type="button" class="btn ${confirmClass}" id="${modalId}-confirm">${escapeHtml(confirmText)}</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-        const modalEl = document.getElementById(modalId);
-        const modal = new bootstrap.Modal(modalEl);
-
-        const confirmBtn = document.getElementById(`${modalId}-confirm`);
-        confirmBtn.addEventListener('click', () => {
-            resolve(true);
-            modal.hide();
-        });
-
-        modalEl.addEventListener('hidden.bs.modal', () => {
-            resolve(false);
-            modalEl.remove();
-        });
-
-        modal.show();
-    });
+    // Thin delegate to components/modal.js — signature and behavior are frozen.
+    return modalConfirm({ title, message, html: htmlContent, confirmText, confirmClass, size });
 }
 
 /**
@@ -278,61 +241,38 @@ export function statusBadge(active) {
  * @returns {Promise<string|null>} - Input value or null if cancelled
  */
 export function inputDialog(title, label, placeholder = '', type = 'text') {
+    // Thin delegate to components/modal.js — signature and behavior are frozen.
     return new Promise((resolve) => {
-        const modalId = `input-modal-${Date.now()}`;
-        const inputId = `${modalId}-input`;
-        const modalHtml = `
-            <div class="modal modal-blur fade" id="${modalId}" tabindex="-1">
-                <div class="modal-dialog modal-sm">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title">${escapeHtml(title)}</h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <div class="mb-3">
-                                <label class="form-label">${escapeHtml(label)}</label>
-                                <input type="${type}" class="form-control" id="${inputId}" placeholder="${escapeHtml(placeholder)}">
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
-                            <button type="button" class="btn btn-primary" id="${modalId}-confirm">${t('common.confirm')}</button>
-                        </div>
-                    </div>
+        const ctx = openModal({
+            title,
+            size: 'sm',
+            body: `
+                <div class="mb-3">
+                    <label class="form-label">${escapeHtml(label)}</label>
+                    <input type="${escapeHtml(type)}" class="form-control" data-input placeholder="${escapeHtml(placeholder)}">
                 </div>
-            </div>
-        `;
-
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-        const modalEl = document.getElementById(modalId);
-        const modal = new bootstrap.Modal(modalEl);
-        const inputEl = document.getElementById(inputId);
-        const confirmBtn = document.getElementById(`${modalId}-confirm`);
-
-        // Confirm on button click
-        confirmBtn.addEventListener('click', () => {
-            resolve(inputEl.value || null);
-            modal.hide();
+            `,
+            footer: `
+                <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
+                <button type="button" class="btn btn-primary" data-action="confirm">${t('common.confirm')}</button>
+            `,
+            onAction(action, mctx) {
+                if (action === 'confirm') {
+                    resolve(mctx.bodyEl.querySelector('[data-input]').value || null);
+                    mctx.hide();
+                }
+            },
+            onHidden() {
+                if (!ctx.bodyEl.querySelector('[data-input]').value) resolve(null);
+            },
         });
 
-        // Confirm on Enter key
-        inputEl.addEventListener('keypress', (e) => {
+        ctx.bodyEl.querySelector('[data-input]').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
-                resolve(inputEl.value || null);
-                modal.hide();
+                resolve(e.target.value || null);
+                ctx.hide();
             }
         });
-
-        // Cancel on modal close
-        modalEl.addEventListener('hidden.bs.modal', () => {
-            if (!inputEl.value) resolve(null);
-            modalEl.remove();
-        });
-
-        modal.show();
-        setTimeout(() => inputEl.focus(), 300);
     });
 }
 

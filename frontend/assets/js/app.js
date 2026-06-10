@@ -15,6 +15,7 @@
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
 import { showToast, loadingSpinner, copyToClipboard } from './utils.js';
 import { init as i18nInit, t, getLang, detectLang, translateDOM, loadModuleTranslations } from './i18n.js';
+import { installErrorBoundary } from './core/errors.js';
 
 // View registry - maps routes to view modules
 const views = {
@@ -36,6 +37,8 @@ let currentUser = null;
  */
 async function init() {
     console.log('MADMIN initializing...');
+
+    installErrorBoundary();
 
     // Check authentication
     if (!isAuthenticated()) {

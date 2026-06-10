@@ -45,7 +45,11 @@
         "of": "di",
         "total": "totali",
         "results": "risultati",
-        "configure": "Configura"
+        "configure": "Configura",
+        "requiredField": "Campo obbligatorio",
+        "invalidValue": "Valore non valido",
+        "networkError": "Errore di rete: impossibile raggiungere il server",
+        "pageOf": "Pagina {current} di {total} ({items} totali)"
     },
     "auth": {
         "login": "Accedi",

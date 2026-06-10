@@ -45,7 +45,11 @@
         "of": "of",
         "total": "total",
         "results": "results",
-        "configure": "Configure"
+        "configure": "Configure",
+        "requiredField": "This field is required",
+        "invalidValue": "Invalid value",
+        "networkError": "Network error: unable to reach the server",
+        "pageOf": "Page {current} of {total} ({items} total)"
     },
     "auth": {
         "login": "Sign in",
