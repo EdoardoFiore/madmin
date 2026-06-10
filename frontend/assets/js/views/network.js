@@ -6,7 +6,7 @@
  */
 
 import { apiGet, apiPost, apiDelete } from '../api.js';
-import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml } from '../utils.js';
+import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml, emptyState } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
 
@@ -210,12 +210,7 @@ async function loadInterfaces() {
         }
 
         if (interfaces.length === 0) {
-            container.innerHTML = `
-                <div class="text-center py-4 text-muted">
-                    <i class="ti ti-network-off" style="font-size: 2rem;"></i>
-                    <p class="mt-2">${t('network.noInterfaces')}</p>
-                </div>
-            `;
+            container.innerHTML = emptyState('ti-network-off', t('network.noInterfaces'));
             return;
         }
 

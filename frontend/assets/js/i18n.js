@@ -142,8 +142,32 @@ export function translateDOM(root = document) {
     root.querySelectorAll('[data-i18n-html]').forEach(el => {
         const key = el.getAttribute('data-i18n-html');
         const val = t(key);
-        if (val !== key) el.innerHTML = val;
+        if (val !== key) el.innerHTML = _sanitizeHtml(val);
     });
+}
+
+/**
+ * Strip script/style/iframe/object/embed tags and all on*/javascript: handlers
+ * from translation HTML before it is assigned via innerHTML. Locale files are
+ * repo-controlled, but module locale files merge into the same dictionary, so
+ * this is defense-in-depth for the one place i18n trusts markup.
+ * @param {string} html
+ * @returns {string}
+ */
+function _sanitizeHtml(html) {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    tpl.content.querySelectorAll('script, style, iframe, object, embed').forEach(n => n.remove());
+    tpl.content.querySelectorAll('*').forEach(node => {
+        for (const attr of [...node.attributes]) {
+            const name = attr.name.toLowerCase();
+            const value = attr.value.replace(/\s+/g, '').toLowerCase();
+            if (name.startsWith('on') || ((name === 'href' || name === 'src') && value.startsWith('javascript:'))) {
+                node.removeAttribute(attr.name);
+            }
+        }
+    });
+    return tpl.innerHTML;
 }
 
 /**

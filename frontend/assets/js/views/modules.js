@@ -52,6 +52,20 @@ export async function render(container) {
         </div>
     `;
 
+    // One delegated listener for the cards grid: open detail / activate / deactivate
+    document.getElementById('modules-grid')?.addEventListener('click', (e) => {
+        const actionBtn = e.target.closest('[data-action]');
+        if (actionBtn) {
+            e.stopPropagation();
+            const { action, id, name } = actionBtn.dataset;
+            if (action === 'activate') confirmActivate(id, name);
+            else if (action === 'deactivate') confirmDeactivate(id, name);
+            return;
+        }
+        const card = e.target.closest('[data-module-id]');
+        if (card) openModuleDetail(card.dataset.moduleId);
+    });
+
     await loadModules();
     await loadModuleChains();
 }
@@ -94,7 +108,7 @@ function renderModuleCards() {
         <div class="col-md-6 col-xl-4">
             <div class="card card-sm h-100 module-card ${m.enabled ? 'border-primary border-2' : ''}"
                  id="module-card-${m.id}" style="cursor: pointer;"
-                 onclick="window._openModuleDetail('${m.id}')">
+                 data-module-id="${escapeHtml(m.id)}">
                 <div class="card-body">
                     <div class="d-flex align-items-start mb-3">
                         <span class="avatar ${m.enabled ? 'bg-primary' : 'bg-secondary-lt'} me-3" style="min-width: 42px;">
@@ -147,11 +161,11 @@ function getStatusInfo(mod) {
 
 function getActionButton(mod) {
     if (mod.enabled) {
-        return `<button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); window._confirmDeactivate('${mod.id}', '${escapeHtml(mod.name)}')">
+        return `<button class="btn btn-sm btn-outline-danger" data-action="deactivate" data-id="${escapeHtml(mod.id)}" data-name="${escapeHtml(mod.name)}">
             <i class="ti ti-player-stop me-1"></i>${t('modules.deactivate')}
         </button>`;
     } else {
-        return `<button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); window._confirmActivate('${mod.id}', '${escapeHtml(mod.name)}')">
+        return `<button class="btn btn-sm btn-primary" data-action="activate" data-id="${escapeHtml(mod.id)}" data-name="${escapeHtml(mod.name)}">
             <i class="ti ti-player-play me-1"></i>${t('modules.activate')}
         </button>`;
     }
@@ -159,7 +173,7 @@ function getActionButton(mod) {
 
 // === Confirmation Dialogs ===
 
-window._confirmActivate = async (moduleId, moduleName) => {
+async function confirmActivate(moduleId, moduleName) {
     const message = t('modules.activateConfirmMsg', { name: `<strong>${moduleName}</strong>` });
 
     const confirmed = await confirmDialog(
@@ -190,9 +204,9 @@ window._confirmActivate = async (moduleId, moduleName) => {
     } finally {
         try { await loadModules(); await loadModuleChains(); } catch (_) { }
     }
-};
+}
 
-window._confirmDeactivate = async (moduleId, moduleName) => {
+async function confirmDeactivate(moduleId, moduleName) {
     const confirmed = await confirmDialog(
         t('modules.deactivateConfirmTitle', { name: moduleName }),
         `<div class="alert alert-warning">
@@ -242,7 +256,7 @@ window._confirmDeactivate = async (moduleId, moduleName) => {
 
 // === Module Detail Modal ===
 
-window._openModuleDetail = async (moduleId) => {
+async function openModuleDetail(moduleId) {
     const mod = availableModules.find(m => m.id === moduleId);
     if (!mod) return;
     const canManage = checkPermission('modules.manage');
@@ -303,10 +317,10 @@ window._openModuleDetail = async (moduleId) => {
         ${canManage ? `
         <div class="modal-footer">
             ${mod.enabled
-                ? `<button class="btn btn-danger" onclick="bootstrap.Modal.getInstance(document.getElementById('module-detail-modal')).hide(); window._confirmDeactivate('${mod.id}', '${escapeHtml(mod.name)}')">
+                ? `<button class="btn btn-danger" data-detail-action="deactivate">
                     <i class="ti ti-player-stop me-1"></i>${t('modules.deactivateModule')}
                 </button>`
-                : `<button class="btn btn-primary" onclick="bootstrap.Modal.getInstance(document.getElementById('module-detail-modal')).hide(); window._confirmActivate('${mod.id}', '${escapeHtml(mod.name)}')">
+                : `<button class="btn btn-primary" data-detail-action="activate">
                     <i class="ti ti-player-play me-1"></i>${t('modules.activateModule')}
                 </button>`
             }
@@ -317,6 +331,13 @@ window._openModuleDetail = async (moduleId) => {
     // Show modal
     const modal = new bootstrap.Modal(document.getElementById('module-detail-modal'));
     modal.show();
+
+    // Footer activate/deactivate button (delegated, no inline onclick)
+    content.querySelector('[data-detail-action]')?.addEventListener('click', (e) => {
+        modal.hide();
+        if (e.currentTarget.dataset.detailAction === 'deactivate') confirmDeactivate(mod.id, mod.name);
+        else confirmActivate(mod.id, mod.name);
+    });
 
     // Load README on tab switch
     if (mod.has_readme) {
@@ -338,7 +359,7 @@ window._openModuleDetail = async (moduleId) => {
             });
         }
     }
-};
+}
 
 function renderDetailInfoTab(mod) {
     const chainsCount = mod.firewall_chains?.length || 0;

@@ -147,9 +147,24 @@ export function emptyState(icon, title, subtitle = '') {
 }
 
 /**
+ * Create an error state HTML (sibling of emptyState, danger-colored).
+ * @param {string} icon - Tabler icon class (default ti-alert-circle)
+ * @param {string} message
+ * @returns {string}
+ */
+export function errorState(message, icon = 'ti-alert-circle') {
+    return `
+        <div class="text-center py-4 text-danger">
+            <i class="ti ${icon}" style="font-size: 2rem;"></i>
+            <p class="mt-2 mb-0">${escapeHtml(message)}</p>
+        </div>
+    `;
+}
+
+/**
  * Debounce a function
- * @param {Function} func 
- * @param {number} wait 
+ * @param {Function} func
+ * @param {number} wait
  * @returns {Function}
  */
 export function debounce(func, wait) {
