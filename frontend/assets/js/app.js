@@ -3,6 +3,13 @@
  *
  * Handles routing, menu loading, and view rendering.
  * Uses ES modules for dynamic view loading.
+ *
+ * FROZEN MODULE CONTRACT — installable modules import this file by URL
+ * (/static/js/app.js). Do NOT rename, remove, or change the signature of:
+ *   checkPermission
+ * The router must keep importing /static/modules/{id}/views/main.js and
+ * calling its exported render(container, params).
+ * Additive changes only.
  */
 
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';

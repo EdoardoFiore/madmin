@@ -3,6 +3,11 @@
  * 
  * Provides authenticated fetch wrapper and common API utilities.
  * All API requests pass through this module for consistent auth handling.
+ *
+ * FROZEN MODULE CONTRACT — installable modules import this file by URL
+ * (/static/js/api.js). Do NOT rename, remove, or change the signature of:
+ *   apiGet, apiPost, apiPatch, apiPut, apiDelete
+ * Additive changes only.
  */
 
 const API_BASE = '/api';

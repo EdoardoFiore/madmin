@@ -387,7 +387,17 @@ def create_app() -> FastAPI:
     if os.path.exists(frontend_dir):
         # Note: Static assets (/static/*) are served directly by Nginx
         # Module static files are mounted at /static/modules/{module_id} by module_loader
-        
+
+        if settings.debug:
+            # Dev only: serve core assets without Nginx. Each subdir is mounted
+            # individually — a blanket /static mount would shadow the
+            # /static/modules/{id} mounts registered later during lifespan.
+            assets_dir = os.path.join(frontend_dir, "assets")
+            for sub in ("js", "css", "img", "locales"):
+                sub_dir = os.path.join(assets_dir, sub)
+                if os.path.exists(sub_dir):
+                    app.mount(f"/static/{sub}", StaticFiles(directory=sub_dir), name=f"static_{sub}")
+
         @app.get("/", include_in_schema=False)
         async def serve_index():
             return FileResponse(os.path.join(frontend_dir, "index.html"))

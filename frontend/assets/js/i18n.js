@@ -3,6 +3,12 @@
  *
  * Lightweight i18n for vanilla JS with JSON locale files.
  * Supports dot-namespaced keys, {placeholder} interpolation, and DOM translation.
+ *
+ * FROZEN MODULE CONTRACT — installable modules import this file by URL
+ * (/static/js/i18n.js). Do NOT rename, remove, or change the signature of:
+ *   t, loadModuleTranslations
+ * Module locale files are fetched from /static/modules/{id}/locales/{lang}.json.
+ * Additive changes only.
  */
 
 let _translations = {};

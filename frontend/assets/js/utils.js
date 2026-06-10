@@ -2,6 +2,12 @@
  * MADMIN - Utilities Module
  *
  * Common utility functions used across the application.
+ *
+ * FROZEN MODULE CONTRACT — installable modules import this file by URL
+ * (/static/js/utils.js). Do NOT rename, remove, or change the signature of:
+ *   showToast, confirmDialog, loadingSpinner, escapeHtml, emptyState,
+ *   statusBadge, formatDate, isValidCIDR, isValidIP
+ * Additive changes only.
  */
 
 import { t, getLang } from './i18n.js';
