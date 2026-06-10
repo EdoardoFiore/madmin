@@ -2,12 +2,16 @@
  * MADMIN - Crontab Management View
  *
  * UI for viewing and managing crontab entries.
+ * Pilot view for the shared component layer (modal, data-table, skeleton).
  */
 
 import { apiGet, apiPost, apiDelete, apiPatch } from '../api.js';
-import { showToast, escapeHtml, confirmDialog } from '../utils.js';
+import { showToast, escapeHtml, confirmDialog, emptyState, statusBadge } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
+import { openModal } from '../components/modal.js';
+import { createTable } from '../components/data-table.js';
+import { skeletonTable } from '../components/skeleton.js';
 
 let presets = {};
 
@@ -37,137 +41,21 @@ export async function render(container) {
                         </div>
                     </div>
                     <div class="card-body" id="cron-container">
-                        <div class="text-center py-4 text-muted">
-                            <i class="ti ti-loader ti-spin" style="font-size: 2rem;"></i>
-                            <p class="mt-2">${t('crontab.loadingCrontab')}</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Add Cron Modal -->
-        <div class="modal" id="modal-add-cron" tabindex="-1">
-            <div class="modal-dialog modal-lg">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">${t('crontab.newCronJob')}</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="row g-3">
-                            <div class="col-12">
-                                <label class="form-label">${t('crontab.preset')}</label>
-                                <select class="form-select" id="cron-preset">
-                                    <option value="">${t('crontab.custom')}</option>
-                                </select>
-                            </div>
-                            <div class="col-12">
-                                <label class="form-label">${t('crontab.schedule')}</label>
-                                <div class="row g-2">
-                                    <div class="col">
-                                        <input type="text" class="form-control" id="cron-minute" placeholder="*" value="*">
-                                        <small class="form-hint text-center">${t('crontab.minute')}</small>
-                                    </div>
-                                    <div class="col">
-                                        <input type="text" class="form-control" id="cron-hour" placeholder="*" value="*">
-                                        <small class="form-hint text-center">${t('crontab.hour')}</small>
-                                    </div>
-                                    <div class="col">
-                                        <input type="text" class="form-control" id="cron-day" placeholder="*" value="*">
-                                        <small class="form-hint text-center">${t('crontab.day')}</small>
-                                    </div>
-                                    <div class="col">
-                                        <input type="text" class="form-control" id="cron-month" placeholder="*" value="*">
-                                        <small class="form-hint text-center">${t('crontab.month')}</small>
-                                    </div>
-                                    <div class="col">
-                                        <input type="text" class="form-control" id="cron-weekday" placeholder="*" value="*">
-                                        <small class="form-hint text-center">${t('crontab.weekday')}</small>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-12">
-                                <div class="alert alert-info mb-0" id="cron-preview">
-                                    <i class="ti ti-clock me-2"></i>
-                                    <code id="cron-preview-text">* * * * *</code>
-                                </div>
-                            </div>
-                            <div class="col-12">
-                                <label class="form-label">${t('common.command')}</label>
-                                <input type="text" class="form-control" id="cron-command" placeholder="/usr/bin/script.sh">
-                            </div>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${t('common.cancel')}</button>
-                        <button type="button" class="btn btn-primary" id="btn-save-cron">${t('common.save')}</button>
+                        ${skeletonTable(4, 4)}
                     </div>
                 </div>
             </div>
         </div>
     `;
 
-    // Setup event listeners
-    setupEventListeners();
+    document.getElementById('btn-refresh-cron')?.addEventListener('click', loadCrontab);
+    document.getElementById('btn-add-cron')?.addEventListener('click', openAddCronModal);
 
-    // Load crontab
     await loadCrontab();
 }
 
 /**
- * Setup event listeners
- */
-function setupEventListeners() {
-    // Refresh button
-    document.getElementById('btn-refresh-cron')?.addEventListener('click', loadCrontab);
-
-    // Add button
-    document.getElementById('btn-add-cron')?.addEventListener('click', () => {
-        const modal = new bootstrap.Modal(document.getElementById('modal-add-cron'));
-        modal.show();
-    });
-
-    // Preset selector
-    document.getElementById('cron-preset')?.addEventListener('change', (e) => {
-        const value = e.target.value;
-        if (value && presets[value]) {
-            const parts = presets[value].split(' ');
-            document.getElementById('cron-minute').value = parts[0];
-            document.getElementById('cron-hour').value = parts[1];
-            document.getElementById('cron-day').value = parts[2];
-            document.getElementById('cron-month').value = parts[3];
-            document.getElementById('cron-weekday').value = parts[4];
-            updatePreview();
-        }
-    });
-
-    // Schedule field changes
-    ['cron-minute', 'cron-hour', 'cron-day', 'cron-month', 'cron-weekday'].forEach(id => {
-        document.getElementById(id)?.addEventListener('input', updatePreview);
-    });
-
-    // Save button
-    document.getElementById('btn-save-cron')?.addEventListener('click', saveCronJob);
-}
-
-/**
- * Update schedule preview
- */
-function updatePreview() {
-    const schedule = [
-        document.getElementById('cron-minute')?.value || '*',
-        document.getElementById('cron-hour')?.value || '*',
-        document.getElementById('cron-day')?.value || '*',
-        document.getElementById('cron-month')?.value || '*',
-        document.getElementById('cron-weekday')?.value || '*'
-    ].join(' ');
-
-    document.getElementById('cron-preview-text').textContent = schedule;
-}
-
-/**
- * Load crontab entries
+ * Load crontab entries and render the table
  */
 async function loadCrontab() {
     const container = document.getElementById('cron-container');
@@ -175,57 +63,61 @@ async function loadCrontab() {
 
     try {
         const data = await apiGet('/cron/entries');
-        const entries = data.entries || [];
         presets = data.presets || {};
-
-        // Populate preset dropdown
-        const presetSelect = document.getElementById('cron-preset');
-        if (presetSelect) {
-            presetSelect.innerHTML = `<option value="">${t('crontab.custom')}</option>`;
-            for (const [key, value] of Object.entries(presets)) {
-                const label = t(`crontab.presetLabels.${key}`) || key;
-                presetSelect.innerHTML += `<option value="${key}">${label} (${value})</option>`;
-            }
-        }
-
-        if (entries.length === 0) {
-            container.innerHTML = `
-                <div class="text-center py-4 text-muted">
-                    <i class="ti ti-clock-off" style="font-size: 2rem;"></i>
-                    <p class="mt-2">${t('crontab.noCronJobs')}</p>
-                </div>
-            `;
-            return;
-        }
-
         const canManage = checkPermission('settings.manage');
+        // The backend addresses entries by their position in the list
+        const entries = (data.entries || []).map((entry, index) => ({ ...entry, _index: index }));
 
-        container.innerHTML = `
-            <div class="table-responsive">
-                <table class="table table-vcenter">
-                    <thead>
-                        <tr>
-                            <th>${t('crontab.state')}</th>
-                            <th>${t('crontab.schedule')}</th>
-                            <th>${t('common.description')}</th>
-                            <th>${t('common.command')}</th>
-                            ${canManage ? `<th class="w-1">${t('common.actions')}</th>` : ''}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${entries.map((entry, index) => renderCronRow(entry, index, canManage)).join('')}
-                    </tbody>
-                </table>
-            </div>
-        `;
-
-        // Setup row actions
-        document.querySelectorAll('[data-toggle-cron]').forEach(btn => {
-            btn.addEventListener('click', () => toggleCronJob(parseInt(btn.dataset.toggleCron)));
+        const table = createTable({
+            columns: [
+                { key: 'enabled', label: t('crontab.state'), render: (e) => statusBadge(e.enabled) },
+                { key: 'schedule', label: t('crontab.schedule'), render: (e) => `<code>${escapeHtml(e.schedule || e.raw || '')}</code>` },
+                { key: 'description', label: t('common.description'), render: (e) => `<small class="text-muted">${escapeHtml(e.description || '')}</small>` },
+                {
+                    key: 'command', label: t('common.command'),
+                    render: (e) => `<code class="text-truncate d-inline-block" style="max-width: 300px;" title="${escapeHtml(e.command || '')}">${escapeHtml(e.command || '')}</code>`,
+                },
+            ],
+            rows: entries,
+            rowKey: '_index',
+            rowClass: (e) => e.enabled ? '' : 'table-secondary',
+            rowRender: (e, idx, colCount) => {
+                if (e.comment && !e.schedule) {
+                    return `
+                        <tr class="text-muted">
+                            <td colspan="${colCount}">
+                                <i class="ti ti-message-circle me-1"></i> ${escapeHtml(e.comment)}
+                            </td>
+                        </tr>`;
+                }
+                return null;
+            },
+            rowActions: canManage ? [
+                {
+                    action: 'toggle',
+                    icon: 'ti-player-pause',
+                    className: 'btn-outline-warning',
+                    title: t('crontab.disable'),
+                    visible: (e) => e.enabled,
+                },
+                {
+                    action: 'toggle',
+                    icon: 'ti-player-play',
+                    className: 'btn-outline-success',
+                    title: t('crontab.enable'),
+                    visible: (e) => !e.enabled,
+                },
+                { action: 'delete', icon: 'ti-trash', className: 'btn-outline-danger', title: t('common.delete') },
+            ] : null,
+            empty: { icon: 'ti-clock-off', title: t('crontab.noCronJobs') },
         });
 
-        document.querySelectorAll('[data-delete-cron]').forEach(btn => {
-            btn.addEventListener('click', () => deleteCronJob(parseInt(btn.dataset.deleteCron)));
+        container.innerHTML = table.html;
+        table.mount(container, {
+            onAction(action, entry) {
+                if (action === 'toggle') toggleCronJob(entry._index);
+                else if (action === 'delete') deleteCronJob(entry._index);
+            },
         });
 
     } catch (error) {
@@ -233,91 +125,104 @@ async function loadCrontab() {
         container.innerHTML = `
             <div class="text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2">${t('crontab.errorLoadingCrontab', { error: error.message })}</p>
+                <p class="mt-2">${t('crontab.errorLoadingCrontab', { error: escapeHtml(error.message) })}</p>
             </div>
         `;
     }
 }
 
 /**
- * Render a cron entry row
+ * Open the add-job modal: preset selector, 5 schedule fields, live preview
  */
-function renderCronRow(entry, index, canManage) {
-    const isEnabled = entry.enabled;
-    const statusClass = isEnabled ? 'bg-success-lt' : 'bg-secondary-lt';
-    const statusText = isEnabled ? t('common.active') : t('common.disabled');
+function openAddCronModal() {
+    const presetOptions = Object.entries(presets).map(([key, value]) => {
+        const label = t(`crontab.presetLabels.${key}`) || key;
+        return `<option value="${escapeHtml(key)}">${escapeHtml(label)} (${escapeHtml(value)})</option>`;
+    }).join('');
 
-    if (entry.comment && !entry.schedule) {
-        // Comment-only row
-        return `
-            <tr class="text-muted">
-                <td colspan="${canManage ? 5 : 4}">
-                    <i class="ti ti-message-circle me-1"></i> ${escapeHtml(entry.comment)}
-                </td>
-            </tr>
-        `;
-    }
+    const scheduleField = (id, hint) => `
+        <div class="col">
+            <input type="text" class="form-control" data-cron="${id}" placeholder="*" value="*">
+            <small class="form-hint text-center">${hint}</small>
+        </div>`;
 
-    return `
-        <tr class="${isEnabled ? '' : 'table-secondary'}">
-            <td>
-                <span class="badge ${statusClass}">${statusText}</span>
-            </td>
-            <td>
-                <code>${escapeHtml(entry.schedule || entry.raw || '')}</code>
-            </td>
-            <td>
-                <small class="text-muted">${escapeHtml(entry.description || '')}</small>
-            </td>
-            <td>
-                <code class="text-truncate d-inline-block" style="max-width: 300px;" title="${escapeHtml(entry.command || '')}">
-                    ${escapeHtml(entry.command || '')}
-                </code>
-            </td>
-            ${canManage ? `
-            <td>
-                <div class="btn-group">
-                    <button class="btn btn-sm btn-outline-${isEnabled ? 'warning' : 'success'}"
-                            data-toggle-cron="${index}" title="${isEnabled ? t('crontab.disable') : t('crontab.enable')}">
-                        <i class="ti ti-${isEnabled ? 'player-pause' : 'player-play'}"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-danger" data-delete-cron="${index}" title="${t('common.delete')}">
-                        <i class="ti ti-trash"></i>
-                    </button>
+    openModal({
+        title: t('crontab.newCronJob'),
+        size: 'lg',
+        body: `
+            <div class="row g-3">
+                <div class="col-12">
+                    <label class="form-label">${t('crontab.preset')}</label>
+                    <select class="form-select" data-cron="preset">
+                        <option value="">${t('crontab.custom')}</option>
+                        ${presetOptions}
+                    </select>
                 </div>
-            </td>
-            ` : ''}
-        </tr>
-    `;
-}
+                <div class="col-12">
+                    <label class="form-label">${t('crontab.schedule')}</label>
+                    <div class="row g-2">
+                        ${scheduleField('minute', t('crontab.minute'))}
+                        ${scheduleField('hour', t('crontab.hour'))}
+                        ${scheduleField('day', t('crontab.day'))}
+                        ${scheduleField('month', t('crontab.month'))}
+                        ${scheduleField('weekday', t('crontab.weekday'))}
+                    </div>
+                </div>
+                <div class="col-12">
+                    <div class="alert alert-info mb-0">
+                        <i class="ti ti-clock me-2"></i>
+                        <code data-cron="preview">* * * * *</code>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <label class="form-label">${t('common.command')}</label>
+                    <input type="text" class="form-control" data-cron="command" placeholder="/usr/bin/script.sh">
+                </div>
+            </div>
+        `,
+        footer: `
+            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
+            <button type="button" class="btn btn-primary" data-action="save">${t('common.save')}</button>
+        `,
+        onShown(ctx) {
+            const field = (id) => ctx.bodyEl.querySelector(`[data-cron="${id}"]`);
+            const parts = ['minute', 'hour', 'day', 'month', 'weekday'];
+            const updatePreview = () => {
+                field('preview').textContent = parts.map(p => field(p).value || '*').join(' ');
+            };
 
-/**
- * Save a new cron job
- */
-async function saveCronJob() {
-    const schedule = [
-        document.getElementById('cron-minute')?.value || '*',
-        document.getElementById('cron-hour')?.value || '*',
-        document.getElementById('cron-day')?.value || '*',
-        document.getElementById('cron-month')?.value || '*',
-        document.getElementById('cron-weekday')?.value || '*'
-    ].join(' ');
+            field('preset').addEventListener('change', (e) => {
+                const preset = presets[e.target.value];
+                if (!preset) return;
+                preset.split(' ').forEach((value, i) => { field(parts[i]).value = value; });
+                updatePreview();
+            });
+            parts.forEach(p => field(p).addEventListener('input', updatePreview));
+        },
+        async onAction(action, ctx) {
+            if (action !== 'save') return;
+            const field = (id) => ctx.bodyEl.querySelector(`[data-cron="${id}"]`);
+            const schedule = ['minute', 'hour', 'day', 'month', 'weekday']
+                .map(p => field(p).value || '*').join(' ');
+            const command = field('command').value.trim();
 
-    const command = document.getElementById('cron-command')?.value.trim();
+            if (!command) {
+                showToast(t('crontab.enterCommand'), 'error');
+                return;
+            }
 
-    if (!command) {
-        showToast(t('crontab.enterCommand'), 'error');
-        return;
-    }
-
-    try {
-        await apiPost('/cron/entries', { schedule, command });
-        showToast(t('crontab.cronJobAdded'), 'success');
-        bootstrap.Modal.getInstance(document.getElementById('modal-add-cron'))?.hide();
-        await loadCrontab();
-    } catch (error) {
-        showToast(t('common.errorPrefix') + error.message, 'error');
-    }
+            ctx.setBusy('[data-action="save"]', true);
+            try {
+                await apiPost('/cron/entries', { schedule, command });
+                showToast(t('crontab.cronJobAdded'), 'success');
+                ctx.hide();
+                await loadCrontab();
+            } catch (error) {
+                ctx.setBusy('[data-action="save"]', false);
+                showToast(t('common.errorPrefix') + error.message, 'error');
+            }
+        },
+    });
 }
 
 /**

@@ -25,6 +25,10 @@ import { t } from '../i18n.js';
  * @param {Array} [opts.rowActions] - [{ action, icon, label?, className?,
  *   title?, visible?: (row)=>bool }] rendered as a btn-list in the last column
  * @param {Object} [opts.empty] - { icon, title, subtitle? } shown when rows is empty
+ * @param {Function} [opts.rowRender] - (row, idx, colCount) => html|null. Full-row
+ *   override returning a complete <tr> (raw HTML — caller escapes); return
+ *   null/undefined to fall back to column rendering. For special rows like
+ *   section comments or separators.
  * @param {boolean} [opts.responsive] - Wrap in .table-responsive (default true)
  * @returns {{html: string, mount: Function}} mount(rootEl, { onAction }) binds
  *   ONE delegated click listener; onAction(action, row, event).
@@ -36,6 +40,7 @@ export function createTable({
     rowClass = null,
     rowActions = null,
     empty = null,
+    rowRender = null,
     responsive = true,
 } = {}) {
     const visibleCols = columns.filter(c => !c.hidden);
@@ -48,7 +53,12 @@ export function createTable({
             `<th ${c.width ? `style="width:${c.width}"` : ''} class="${c.className || ''}">${escapeHtml(c.label ?? '')}</th>`
         ).join('') + (rowActions ? `<th class="w-1 text-end">${escapeHtml(t('common.actions'))}</th>` : '');
 
+        const colCount = visibleCols.length + (rowActions ? 1 : 0);
         const body = rows.map((row, idx) => {
+            if (rowRender) {
+                const custom = rowRender(row, idx, colCount);
+                if (custom != null) return custom;
+            }
             const cells = visibleCols.map(c => {
                 const content = c.render
                     ? c.render(row)
@@ -84,20 +94,27 @@ export function createTable({
     return {
         html,
         /**
-         * Bind one delegated listener on the mounted region.
+         * Bind one delegated listener on the mounted region. Idempotent: a
+         * previous table listener on the same element is replaced, so views
+         * can re-render and re-mount into a persistent container freely.
          * @param {HTMLElement} rootEl - Element that contains the table HTML
          * @param {Object} [handlers]
          * @param {Function} [handlers.onAction] - (action, row, event) => {}
          */
         mount(rootEl, { onAction } = {}) {
             if (!onAction) return;
-            rootEl.addEventListener('click', (e) => {
+            if (rootEl._madminTableHandler) {
+                rootEl.removeEventListener('click', rootEl._madminTableHandler);
+            }
+            const handler = (e) => {
                 const btn = e.target.closest('[data-action]');
                 if (!btn || !rootEl.contains(btn)) return;
                 const row = rows[Number(btn.dataset.row)];
                 if (row === undefined) return;
                 onAction(btn.dataset.action, row, e);
-            });
+            };
+            rootEl._madminTableHandler = handler;
+            rootEl.addEventListener('click', handler);
         },
     };
 }

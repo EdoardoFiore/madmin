@@ -61,16 +61,22 @@ export function pagination({ page, pages, total, windowSize = 2, summaryKey = 'c
 }
 
 /**
- * Bind one delegated click listener for [data-page] links.
+ * Bind one delegated click listener for [data-page] links. Idempotent: a
+ * previous pagination listener on the same element is replaced.
  * @param {HTMLElement} rootEl
  * @param {Function} onPage - (pageNumber) => {}
  */
 export function bindPagination(rootEl, onPage) {
-    rootEl.addEventListener('click', (e) => {
+    if (rootEl._madminPaginationHandler) {
+        rootEl.removeEventListener('click', rootEl._madminPaginationHandler);
+    }
+    const handler = (e) => {
         const link = e.target.closest('[data-page]');
         if (!link || !rootEl.contains(link)) return;
         e.preventDefault();
         if (link.closest('.page-item')?.classList.contains('disabled')) return;
         onPage(Number(link.dataset.page));
-    });
+    };
+    rootEl._madminPaginationHandler = handler;
+    rootEl.addEventListener('click', handler);
 }

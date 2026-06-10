@@ -33,13 +33,17 @@ export function tabs({ id, items, active } = {}) {
 }
 
 /**
- * Bind one delegated click listener for [data-tab] links.
+ * Bind one delegated click listener for [data-tab] links. Idempotent: a
+ * previous tabs listener on the same element is replaced.
  * Toggles .active and calls onChange(tabId) only when the tab changes.
  * @param {HTMLElement} rootEl
  * @param {Function} onChange - (tabId) => {}
  */
 export function bindTabs(rootEl, onChange) {
-    rootEl.addEventListener('click', (e) => {
+    if (rootEl._madminTabsHandler) {
+        rootEl.removeEventListener('click', rootEl._madminTabsHandler);
+    }
+    const handler = (e) => {
         const link = e.target.closest('[data-tab]');
         if (!link || !rootEl.contains(link)) return;
         e.preventDefault();
@@ -47,5 +51,7 @@ export function bindTabs(rootEl, onChange) {
         rootEl.querySelectorAll('[data-tab].active').forEach(el => el.classList.remove('active'));
         link.classList.add('active');
         onChange(link.dataset.tab);
-    });
+    };
+    rootEl._madminTabsHandler = handler;
+    rootEl.addEventListener('click', handler);
 }
