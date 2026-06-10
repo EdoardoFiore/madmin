@@ -8,7 +8,6 @@
 import { apiGet } from '../../api.js';
 import { escapeHtml } from '../../utils.js';
 import { t } from '../../i18n.js';
-import { skeletonLines } from '../../components/skeleton.js';
 
 export async function renderSystemTab(state) {
     const content = state.contentEl;
@@ -39,9 +38,7 @@ export async function renderSystemTab(state) {
                 </button>
             </div>
         </div>
-        <div id="syslog-container">
-            ${skeletonLines(12)}
-        </div>
+        <div id="syslog-container"></div>
     `;
 
     document.getElementById('btn-syslog-load')?.addEventListener('click', loadSystemLog);

@@ -10,7 +10,6 @@ import { apiGet } from '../../api.js';
 import { showToast } from '../../utils.js';
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
-import { skeletonTable } from '../../components/skeleton.js';
 import { renderUsers } from './list.js';
 import { bindUserModal, openUserModal } from './user-modal.js';
 import { load2FAStatus } from './twofa.js';
@@ -34,6 +33,12 @@ export async function render(container) {
             </button>
         `);
     }
+
+    // Pre-fetch before rendering so users table appears complete
+    [state.users, state.permissions] = await Promise.all([
+        apiGet('/auth/users'),
+        apiGet('/auth/permissions').catch(() => [])
+    ]);
 
     container.innerHTML = `
         <!-- My Profile Security Section -->
@@ -72,11 +77,7 @@ export async function render(container) {
                     <!-- 2FA Management -->
                     <div class="col-lg-6">
                         <h4><i class="ti ti-shield-lock me-2"></i>${t('users.auth2fa')}</h4>
-                        <div id="2fa-status-container" class="mt-3">
-                            <div class="d-flex justify-content-center py-3">
-                                <div class="spinner-border spinner-border-sm text-primary"></div>
-                            </div>
-                        </div>
+                        <div id="2fa-status-container" class="mt-3"></div>
                     </div>
                 </div>
             </div>
@@ -89,7 +90,7 @@ export async function render(container) {
                     <i class="ti ti-users me-2"></i>${t('users.registeredUsers')}
                 </h3>
             </div>
-            <div id="users-table-container">${skeletonTable(4, 6)}</div>
+            <div id="users-table-container"></div>
         </div>
 
         <!-- 2FA Setup Modal -->
@@ -228,9 +229,9 @@ export async function render(container) {
     document.getElementById('btn-add-user')?.addEventListener('click', () => openUserModal(state));
     bindUserModal(state);
     bindPasswordChangeForm();
-    load2FAStatus(state);
+    load2FAStatus(state); // fire-and-forget: has own fetch, fills #2fa-status-container
 
-    await loadData(state);
+    renderUsers(state); // data already in state from pre-fetch above
 
     async function loadData() {
         try {

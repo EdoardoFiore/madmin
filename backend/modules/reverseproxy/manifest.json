@@ -2,9 +2,9 @@
     "id": "reverseproxy",
     "name": "Reverse Proxy",
     "version": "1.0.0",
-    "description": "Reverse proxy manager (nginx) con access list HTTP basic + IP allow/deny e certificati Let's Encrypt",
+    "description": "Reverse proxy manager (nginx) with HTTP basic access lists, IP allow/deny rules, and Let's Encrypt certificates",
     "author": "MADMIN Team",
-    "openapi_tag_description": "Reverse Proxy — gestione proxy host nginx, access list (auth + IP) e certificati Let's Encrypt.",
+    "openapi_tag_description": "Reverse Proxy — manage nginx proxy hosts, access lists (auth + IP rules), and Let's Encrypt certificates.",
     "system_dependencies": {
         "apt": [
             "nginx",
@@ -28,19 +28,19 @@
     "permissions": [
         {
             "slug": "reverseproxy.view",
-            "description": "Visualizza proxy host, access list e certificati"
+            "description": "View proxy hosts, access lists, and certificates"
         },
         {
             "slug": "reverseproxy.manage",
-            "description": "Crea, modifica ed elimina proxy host"
+            "description": "Create, edit, and delete proxy hosts"
         },
         {
             "slug": "reverseproxy.access_lists",
-            "description": "Gestione access list (auth e IP rules)"
+            "description": "Manage access lists (HTTP basic auth and IP allow/deny rules)"
         },
         {
             "slug": "reverseproxy.certs",
-            "description": "Emissione e revoca certificati Let's Encrypt"
+            "description": "Issue and revoke Let's Encrypt certificates"
         }
     ],
     "menu": [

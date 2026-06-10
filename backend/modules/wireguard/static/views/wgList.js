@@ -4,7 +4,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiDelete } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
+import { showToast, confirmDialog, escapeHtml } from '/static/js/utils.js';
 
 const MODULE_API = '/modules/wireguard';
 
@@ -45,7 +45,7 @@ export async function renderWgList(container, canManage) {
                     </ul>
                 </div>` : ''}
             </div>
-            <div class="card-body" id="instances-list">${loadingSpinner()}</div>
+            <div class="card-body" id="instances-list"></div>
         </div>
 
         <!-- New Server Modal -->

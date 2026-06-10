@@ -9,7 +9,6 @@ import { apiGet, apiPost, apiDelete } from '../api.js';
 import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml, emptyState } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
-import { skeletonCards } from '../components/skeleton.js';
 
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -52,9 +51,7 @@ export async function render(container) {
                             </button>
                         </div>
                     </div>
-                    <div class="card-body p-2" id="interfaces-container" style="background: var(--tblr-bg-surface-secondary, #e9ecef)">
-                        ${skeletonCards(3, { col: 'col-md-6', lines: 2 })}
-                    </div>
+                    <div class="card-body p-2" id="interfaces-container" style="background: var(--tblr-bg-surface-secondary, #e9ecef)"></div>
                 </div>
             </div>
         </div>

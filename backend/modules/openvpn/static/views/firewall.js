@@ -7,8 +7,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner, isValidCIDR, escapeHtml } from '/static/js/utils.js';
-import { skeletonTable, skeletonCards } from '/static/js/components/skeleton.js';
+import { showToast, confirmDialog, isValidCIDR, escapeHtml } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 
 const MODULE_API = '/modules/openvpn';
@@ -28,7 +27,6 @@ export async function init(container, instanceId) {
     currentInstanceId = instanceId;
     firewallContainer = container;
     canManageGroups = checkPermission('openvpn.groups');
-    container.innerHTML = skeletonCards(3, { col: 'col-md-6', lines: 3 });
 
     try {
         // Load instance, groups, and clients
@@ -46,9 +44,8 @@ export async function init(container, instanceId) {
         render(container);
         setupGroupOrdering();
 
-        // Load group details if a group is selected
         if (currentGroupId) {
-            loadGroupDetails();
+            await loadGroupDetails();
         }
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
@@ -269,7 +266,7 @@ function renderGroupDetails() {
                     <i class="ti ti-user-plus me-1"></i>${t('openvpn.addMember')}
                 </button>` : ''}
             </div>
-            <div class="card-body" id="members-container">${skeletonTable(3, 3)}</div>
+            <div class="card-body" id="members-container"></div>
         </div>
         
         <!-- Rules -->
@@ -281,7 +278,7 @@ function renderGroupDetails() {
                     <i class="ti ti-plus me-1"></i>${t('openvpn.newRule')}
                 </button>` : ''}
             </div>
-            <div class="card-body" id="rules-container">${skeletonTable(3, 3)}</div>
+            <div class="card-body" id="rules-container"></div>
         </div>
     `;
 }

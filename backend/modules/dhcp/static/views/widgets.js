@@ -27,11 +27,7 @@ export const widgets = {
                             </a>
                         </div>
                     </div>
-                    <div class="card-body p-0" id="dhcp-widget-body">
-                        <div class="text-muted text-center py-4">
-                            <span class="spinner-border spinner-border-sm"></span> ${t('dhcp.loading')}
-                        </div>
-                    </div>
+                    <div class="card-body p-0" id="dhcp-widget-body"></div>
                 </div>
             `;
         },

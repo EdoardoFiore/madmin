@@ -5,8 +5,7 @@
  * shows a banner if the module is blocked by a port conflict.
  */
 import { apiGet } from '/static/js/api.js';
-import { showToast, loadingSpinner } from '/static/js/utils.js';
-import { skeletonTable } from '/static/js/components/skeleton.js';
+import { showToast } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
 
@@ -61,13 +60,13 @@ export async function render(container, params) {
             </div>
             <div class="tab-content">
                 <div class="tab-pane fade ${activeTab === 'hosts' ? 'show active' : ''}" id="revproxy-pane-hosts">
-                    <div id="revproxy-hosts-body">${skeletonTable(4, 4)}</div>
+                    <div id="revproxy-hosts-body"></div>
                 </div>
                 <div class="tab-pane fade ${activeTab === 'access-lists' ? 'show active' : ''}" id="revproxy-pane-acls">
-                    <div id="revproxy-acls-body">${skeletonTable(3, 3)}</div>
+                    <div id="revproxy-acls-body"></div>
                 </div>
                 <div class="tab-pane fade ${activeTab === 'certs' ? 'show active' : ''}" id="revproxy-pane-certs">
-                    <div id="revproxy-certs-body">${skeletonTable(3, 4)}</div>
+                    <div id="revproxy-certs-body"></div>
                 </div>
             </div>
         </div>

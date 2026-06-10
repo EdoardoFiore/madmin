@@ -137,6 +137,10 @@ export async function loadResourceGraphs(hours) {
         if (ramChart) ramChart.destroy();
         if (diskChart) diskChart.destroy();
 
+        document.getElementById('chart-cpu').innerHTML = '';
+        document.getElementById('chart-ram').innerHTML = '';
+        document.getElementById('chart-disk').innerHTML = '';
+
         cpuChart = new ApexCharts(document.getElementById('chart-cpu'), cpuOptions);
         ramChart = new ApexCharts(document.getElementById('chart-ram'), ramOptions);
         diskChart = new ApexCharts(document.getElementById('chart-disk'), diskOptions);

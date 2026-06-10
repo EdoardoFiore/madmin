@@ -2,7 +2,7 @@
  * Reverse Proxy - Proxy Hosts tab
  */
 import { apiGet, apiPost, apiPatch, apiDelete } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner, escapeHtml, emptyState, formatDate } from '/static/js/utils.js';
+import { showToast, confirmDialog, escapeHtml, emptyState, formatDate } from '/static/js/utils.js';
 import { t } from '/static/js/i18n.js';
 import { openHostForm } from './hostForm.js';
 
@@ -26,7 +26,7 @@ export async function renderHostsTab(container, perms) {
                     <i class="ti ti-plus me-1"></i>${t('reverseproxy.addProxyHost')}
                 </button>` : ''}
         </div>
-        <div id="revproxy-hosts-table"><div class="px-3 pb-3">${loadingSpinner()}</div></div>
+        <div id="revproxy-hosts-table"></div>
     `;
 
     if (perms.manage) {

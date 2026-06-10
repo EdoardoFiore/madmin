@@ -6,8 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
-import { skeletonCards } from '/static/js/components/skeleton.js';
+import { showToast, confirmDialog } from '/static/js/utils.js';
 import { renderDnsZonesTab } from '/static/modules/dns/views/dnsZones.js';
 import { renderDnsSettingsTab, renderDnsTestTab } from '/static/modules/dns/views/dnsSettings.js';
 
@@ -18,8 +17,6 @@ const MODE_LABELS = {
 };
 
 export async function renderDnsStatus(container, perms) {
-    container.innerHTML = skeletonCards(3, { col: 'col-md-6', lines: 4 });
-
     try {
         const [status, zones, settings] = await Promise.all([
             apiGet('/modules/dns/status'),

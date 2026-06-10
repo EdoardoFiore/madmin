@@ -7,13 +7,12 @@
 import {
     apiGet, apiPost, apiDelete,
     showToast, confirmDialog, escapeHtml,
-    statusBadge, loadingSpinner, parseProposal
+    statusBadge, parseProposal
 } from '/static/modules/strongswan/views/utils.js';
 import { showTunnelForm } from '/static/modules/strongswan/views/tunnelForm.js';
 import { renderChildSaForm, setupChildSaFormEvents } from '/static/modules/strongswan/views/childSaForm.js';
 import { renderFirewallManagement } from '/static/modules/strongswan/views/firewallManagement.js';
 import { t } from '/static/js/i18n.js';
-import { skeletonCards } from '/static/js/components/skeleton.js';
 
 let tunnel = null;
 let children = [];
@@ -25,8 +24,6 @@ export async function renderTunnelDetail(container, tunnelId, permissions) {
     if (statusInterval) clearInterval(statusInterval);
 
     canManage = permissions.manage;
-
-    container.innerHTML = skeletonCards(3, { col: 'col-md-6', lines: 3 });
 
     try {
         tunnel = await apiGet(`/modules/strongswan/tunnels/${tunnelId}`);

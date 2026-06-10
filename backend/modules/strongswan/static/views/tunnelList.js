@@ -7,7 +7,7 @@
 import {
     apiGet, apiPost, apiDelete,
     showToast, confirmDialog, escapeHtml,
-    statusBadge, loadingSpinner, emptyState
+    statusBadge, emptyState
 } from '/static/modules/strongswan/views/utils.js';
 import { showTunnelForm } from '/static/modules/strongswan/views/tunnelForm.js';
 import { t } from '/static/js/i18n.js';
@@ -29,9 +29,7 @@ export async function renderTunnelList(container, permissions) {
                     <i class="ti ti-plus me-1"></i>${t('strongswan.newTunnel')}
                 </button>` : ''}
             </div>
-            <div class="card-body p-0" id="tunnels-container">
-                ${loadingSpinner()}
-            </div>
+            <div class="card-body p-0" id="tunnels-container"></div>
         </div>
     `;
 

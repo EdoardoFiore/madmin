@@ -11,8 +11,6 @@ import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
 import { openModal } from '../components/modal.js';
 import { createTable } from '../components/data-table.js';
-import { skeletonTable } from '../components/skeleton.js';
-
 let presets = {};
 
 /**
@@ -40,9 +38,7 @@ export async function render(container) {
                             </button>
                         </div>
                     </div>
-                    <div class="card-body" id="cron-container">
-                        ${skeletonTable(4, 4)}
-                    </div>
+                    <div class="card-body" id="cron-container"></div>
                 </div>
             </div>
         </div>

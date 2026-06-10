@@ -6,8 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
-import { skeletonCards } from '/static/js/components/skeleton.js';
+import { showToast, confirmDialog } from '/static/js/utils.js';
 
 let networkInterfaces = [];
 
@@ -16,8 +15,6 @@ let networkInterfaces = [];
 // ============================================================
 
 export async function renderDhcpDashboard(container, canManage) {
-    container.innerHTML = skeletonCards(4, { col: 'col-md-6', lines: 3 });
-
     try {
         const [status, subnets] = await Promise.all([
             apiGet('/modules/dhcp/status'),

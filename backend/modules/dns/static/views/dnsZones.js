@@ -6,8 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
-import { skeletonTable } from '/static/js/components/skeleton.js';
+import { showToast, confirmDialog, escapeHtml } from '/static/js/utils.js';
 
 const RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'PTR'];
 
@@ -217,10 +216,6 @@ async function createZone(container, perms) {
 export async function renderDnsZoneDetail(container, zoneId, perms) {
     _container = container;
     _perms = perms;
-    if (currentSearchTerm === '' && currentTypeFilter === '' && !currentZoneRecords.length) {
-        container.innerHTML = skeletonTable(5, 4);
-    }
-
     try {
         const zone = await apiGet(`/modules/dns/zones/${zoneId}`);
         currentZoneRecords = zone.records || [];

@@ -6,7 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner, isValidCIDR, escapeHtml } from '/static/js/utils.js';
+import { showToast, confirmDialog, isValidCIDR, escapeHtml } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 
 let currentInstanceId = null;
@@ -21,7 +21,6 @@ export async function init(container, instanceId) {
     currentInstanceId = instanceId;
     firewallContainer = container;
     canManageGroups = checkPermission('wireguard.groups');
-    container.innerHTML = loadingSpinner();
 
     try {
         [instance, groups, clients] = await Promise.all([
@@ -38,7 +37,7 @@ export async function init(container, instanceId) {
         setupGroupOrdering();
 
         if (currentGroupId) {
-            loadGroupDetails();
+            await loadGroupDetails();
         }
     } catch (err) {
         container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
@@ -259,7 +258,7 @@ function renderGroupDetails() {
                     <i class="ti ti-user-plus me-1"></i>${t('wireguard.addMember')}
                 </button>` : ''}
             </div>
-            <div class="card-body" id="members-container">${loadingSpinner()}</div>
+            <div class="card-body" id="members-container"></div>
         </div>
 
         <!-- Rules -->
@@ -271,7 +270,7 @@ function renderGroupDetails() {
                     <i class="ti ti-plus me-1"></i>${t('wireguard.newRule')}
                 </button>` : ''}
             </div>
-            <div class="card-body" id="rules-container">${loadingSpinner()}</div>
+            <div class="card-body" id="rules-container"></div>
         </div>
     `;
 }

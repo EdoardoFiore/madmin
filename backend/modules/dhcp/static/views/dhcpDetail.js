@@ -6,8 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
-import { skeletonTable } from '/static/js/components/skeleton.js';
+import { showToast, confirmDialog } from '/static/js/utils.js';
 
 let networkInterfaces = [];
 
@@ -16,8 +15,6 @@ let networkInterfaces = [];
 // ============================================================
 
 export async function renderDhcpDetail(container, subnetId, canManage, canReservations) {
-    container.innerHTML = skeletonTable(5, 4);
-
     try {
         const [subnet, hosts, leases] = await Promise.all([
             apiGet(`/modules/dhcp/subnets/${subnetId}`),

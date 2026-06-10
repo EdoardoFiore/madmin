@@ -9,7 +9,6 @@ import { showToast, escapeHtml, debounce } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { openModal } from '../../components/modal.js';
 import { pagination, bindPagination } from '../../components/pagination.js';
-import { skeletonTable } from '../../components/skeleton.js';
 
 // Detail payloads for the currently rendered page, keyed by log id.
 // Module-level Map instead of the old window._auditPayloads/_auditErrors.
@@ -57,7 +56,7 @@ export async function renderAuditTab(state) {
                 </button>
             </div>
         </div>
-        <div id="audit-table-container">${skeletonTable(8, 6)}</div>
+        <div id="audit-table-container"></div>
     `;
 
     const applyFilters = () => applyAuditFilters(state);
