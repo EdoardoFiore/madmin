@@ -20,7 +20,7 @@ const views = {
     'firewall': () => import('../views/firewall/index.js'),
     'network': () => import('../views/network.js'),
     'crontab': () => import('../views/crontab.js'),
-    'settings': () => import('../views/settings.js'),
+    'settings': () => import('../views/settings/index.js'),
     'modules': () => import('../views/modules.js'),
     'logs': () => import('../views/logs/index.js'),
 };
