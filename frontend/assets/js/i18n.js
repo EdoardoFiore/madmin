@@ -147,7 +147,7 @@ export function translateDOM(root = document) {
 }
 
 /**
- * Strip script/style/iframe/object/embed tags and all on*/javascript: handlers
+ * Strip script/style/iframe/object/embed tags and all on* and javascript: handlers
  * from translation HTML before it is assigned via innerHTML. Locale files are
  * repo-controlled, but module locale files merge into the same dictionary, so
  * this is defense-in-depth for the one place i18n trusts markup.

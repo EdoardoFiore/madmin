@@ -7,6 +7,7 @@
 
 import { apiGet } from '../../api.js';
 import { t } from '../../i18n.js';
+import { skeletonChart } from '../../components/skeleton.js';
 
 let netTrafficChart = null;
 let cpuChart = null;
@@ -45,15 +46,15 @@ export function renderResourceGraphs() {
                 <div class="row">
                     <div class="col-md-4">
                         <h4 class="subheader">CPU</h4>
-                        <div id="chart-cpu" style="height: 150px;"></div>
+                        <div id="chart-cpu" style="height: 150px;">${skeletonChart(130)}</div>
                     </div>
                     <div class="col-md-4">
                         <h4 class="subheader">RAM</h4>
-                        <div id="chart-ram" style="height: 150px;"></div>
+                        <div id="chart-ram" style="height: 150px;">${skeletonChart(130)}</div>
                     </div>
                     <div class="col-md-4">
                         <h4 class="subheader">${t('dashboard.disk')}</h4>
-                        <div id="chart-disk" style="height: 150px;"></div>
+                        <div id="chart-disk" style="height: 150px;">${skeletonChart(130)}</div>
                     </div>
                 </div>
             </div>
@@ -83,11 +84,7 @@ export function renderNetTraffic() {
                 </div>
             </div>
             <div class="card-body">
-                <div id="chart-net-traffic" style="height: 200px;">
-                    <div class="text-muted text-center py-5">
-                        <span class="spinner-border spinner-border-sm"></span> ${t('common.loading')}
-                    </div>
-                </div>
+                <div id="chart-net-traffic" style="height: 200px;">${skeletonChart(180)}</div>
             </div>
         </div>
     `;

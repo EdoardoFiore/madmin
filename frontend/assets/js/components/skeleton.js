@@ -79,3 +79,38 @@ export function skeletonStat() {
             </div>
         </div>`;
 }
+
+/**
+ * List rows skeleton: avatar + title + optional subtext.
+ * Used for alerts, backup status, any avatar+text list.
+ * @param {number} count
+ * @param {boolean} subtext - Show a second shorter line per row
+ * @returns {string}
+ */
+export function skeletonListRows(count = 3, subtext = true) {
+    const widths = [7, 5, 8, 6, 9, 7];
+    return Array.from({ length: count }, (_, i) => `
+        <div class="d-flex align-items-center py-2 placeholder-glow${i > 0 ? ' border-top' : ''}">
+            <span class="placeholder avatar avatar-sm me-3 rounded"></span>
+            <div class="flex-fill">
+                <div class="placeholder col-${widths[i % widths.length]} d-block mb-1 placeholder-sm"></div>
+                ${subtext ? `<div class="placeholder col-${widths[(i + 2) % widths.length] - 2} placeholder-xs"></div>` : ''}
+            </div>
+        </div>`
+    ).join('');
+}
+
+/**
+ * Terminal/log output skeleton: varying-width monospace lines.
+ * @param {number} count
+ * @returns {string}
+ */
+export function skeletonLines(count = 10) {
+    const widths = [10, 8, 11, 7, 10, 9, 6, 11, 8, 10, 7, 9];
+    return `
+        <div class="placeholder-glow p-3 font-monospace">
+            ${Array.from({ length: count }, (_, i) =>
+                `<div class="placeholder col-${widths[i % widths.length]} d-block mb-2 placeholder-sm"></div>`
+            ).join('')}
+        </div>`;
+}

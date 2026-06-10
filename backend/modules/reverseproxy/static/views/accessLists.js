@@ -6,6 +6,7 @@
  */
 import { apiGet, apiPost, apiPatch, apiDelete } from '/static/js/api.js';
 import { showToast, confirmDialog, loadingSpinner, escapeHtml, emptyState } from '/static/js/utils.js';
+import { skeletonTable } from '/static/js/components/skeleton.js';
 import { t } from '/static/js/i18n.js';
 
 const MODULE_API = '/modules/reverseproxy';
@@ -21,7 +22,7 @@ export async function renderAccessListsTab(container, perms) {
                     <i class="ti ti-plus me-1"></i>${t('reverseproxy.addAccessList')}
                 </button>` : ''}
         </div>
-        <div id="revproxy-acls-table"><div class="px-3 pb-3">${loadingSpinner()}</div></div>
+        <div id="revproxy-acls-table">${skeletonTable(3, 3)}</div>
     `;
     if (perms.accessLists) {
         document.getElementById('revproxy-btn-new-acl').addEventListener('click', () => openAclForm({}));

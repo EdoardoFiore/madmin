@@ -9,6 +9,7 @@ import { apiGet, apiPost, apiDelete } from '../api.js';
 import { showToast, confirmDialog, isValidCIDR, isValidIP, escapeHtml, emptyState } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
+import { skeletonCards } from '../components/skeleton.js';
 
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -52,10 +53,7 @@ export async function render(container) {
                         </div>
                     </div>
                     <div class="card-body p-2" id="interfaces-container" style="background: var(--tblr-bg-surface-secondary, #e9ecef)">
-                        <div class="text-center py-4 text-muted">
-                            <i class="ti ti-loader ti-spin" style="font-size: 2rem;"></i>
-                            <p class="mt-2">${t('network.loadingInterfaces')}</p>
-                        </div>
+                        ${skeletonCards(3, { col: 'col-md-6', lines: 2 })}
                     </div>
                 </div>
             </div>

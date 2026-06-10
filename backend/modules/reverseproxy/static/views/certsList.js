@@ -3,6 +3,7 @@
  */
 import { apiGet, apiPost, apiDelete } from '/static/js/api.js';
 import { showToast, confirmDialog, loadingSpinner, escapeHtml, emptyState, formatDate } from '/static/js/utils.js';
+import { skeletonTable } from '/static/js/components/skeleton.js';
 import { t } from '/static/js/i18n.js';
 
 const MODULE_API = '/modules/reverseproxy';
@@ -11,7 +12,7 @@ let _hosts = [];
 
 export async function renderCertsTab(container, perms) {
     _perms = perms;
-    container.innerHTML = `<div id="revproxy-certs-table"><div class="px-3 pb-3">${loadingSpinner()}</div></div>`;
+    container.innerHTML = `<div id="revproxy-certs-table">${skeletonTable(3, 4)}</div>`;
     await reloadCerts();
 }
 

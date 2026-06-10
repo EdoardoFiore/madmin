@@ -8,6 +8,7 @@
 import { apiGet } from '../../api.js';
 import { escapeHtml } from '../../utils.js';
 import { t } from '../../i18n.js';
+import { skeletonListRows } from '../../components/skeleton.js';
 
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -39,7 +40,7 @@ export function renderWelcome() {
                     </div>
                     <div class="d-flex align-items-center gap-3">
                         <div class="text-end" id="uptime-display">
-                            <span class="spinner-border spinner-border-sm"></span>
+                            <span class="placeholder placeholder-glow d-block" style="width:7rem;height:.85rem;background:rgba(255,255,255,.4)"></span>
                         </div>
                         <button class="btn btn-sm px-2 py-1" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3);"
                                 id="btn-widget-config" title="${t('app.widgetManagement')}">
@@ -213,8 +214,8 @@ export function renderServices() {
                                             <span class="avatar ${bg} me-3"><i class="${icon}"></i></span>
                                             <div>
                                                 <div class="font-weight-medium">${name}</div>
-                                                <div id="svc-${id}" class="text-muted">
-                                                    <span class="spinner-border spinner-border-sm"></span>
+                                                <div id="svc-${id}" class="text-muted placeholder-glow">
+                                                    <span class="placeholder col-8 placeholder-sm"></span>
                                                 </div>
                                             </div>
                                         </div>
@@ -263,9 +264,7 @@ export function renderAlerts() {
                 </h3>
             </div>
             <div class="card-body" id="alerts-container">
-                <div class="text-muted text-center py-3">
-                    <span class="spinner-border spinner-border-sm"></span> ${t('common.loading')}
-                </div>
+                ${skeletonListRows(3)}
             </div>
         </div>
     `;
@@ -321,9 +320,7 @@ export function renderBackupStatus() {
                 </div>
             </div>
             <div class="card-body" id="backup-status-container">
-                <div class="text-muted text-center py-3">
-                    <span class="spinner-border spinner-border-sm"></span> ${t('common.loading')}
-                </div>
+                ${skeletonListRows(1, false)}
             </div>
         </div>
     `;
@@ -444,12 +441,12 @@ export function renderStatCards() {
                                     <div class="d-flex align-items-center">
                                         <div class="subheader">${c.title}</div>
                                     </div>
-                                    <div class="h1 mb-3" id="${c.id}">
-                                        <span class="spinner-border spinner-border-sm"></span>
+                                    <div class="h1 mb-3 placeholder-glow" id="${c.id}">
+                                        <span class="placeholder col-5" style="height:2rem"></span>
                                     </div>
                                     <div class="d-flex mb-2">
                                         <div class="text-muted">${c.sub}</div>
-                                        ${c.subId ? `<div class="ms-auto" id="${c.subId}"><span class="spinner-border spinner-border-sm"></span></div>` : ''}
+                                        ${c.subId ? `<div class="ms-auto placeholder-glow" id="${c.subId}"><span class="placeholder col-6 placeholder-sm"></span></div>` : ''}
                                     </div>
                                 </div>
                             </div>

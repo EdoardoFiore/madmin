@@ -7,6 +7,7 @@
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
 import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
+import { skeletonTable } from '/static/js/components/skeleton.js';
 
 const RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'PTR'];
 
@@ -217,7 +218,7 @@ export async function renderDnsZoneDetail(container, zoneId, perms) {
     _container = container;
     _perms = perms;
     if (currentSearchTerm === '' && currentTypeFilter === '' && !currentZoneRecords.length) {
-        container.innerHTML = `<div class="text-center py-5">${loadingSpinner()}</div>`;
+        container.innerHTML = skeletonTable(5, 4);
     }
 
     try {

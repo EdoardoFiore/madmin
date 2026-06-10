@@ -9,6 +9,7 @@ import { apiGet, apiPost, apiPut } from '../api.js';
 import { showToast, escapeHtml, emptyState, confirmDialog } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
+import { skeletonCards } from '../components/skeleton.js';
 
 /**
  * Render icon - supports both Tabler icon names and custom URLs (SVG/PNG)
@@ -34,10 +35,7 @@ export async function render(container) {
             </div>
             <div class="card-body">
                 <div id="modules-grid" class="row g-3">
-                    <div class="col-12 text-center py-4">
-                        <div class="spinner-border spinner-border-sm"></div>
-                        <p class="text-muted mt-2">${t('modules.loadingModules')}</p>
-                    </div>
+                    ${skeletonCards(4, { col: 'col-md-6 col-lg-4', lines: 3 })}
                 </div>
             </div>
         </div>

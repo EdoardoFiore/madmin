@@ -8,6 +8,7 @@ import { apiGet, apiPost, apiDelete } from '../../api.js';
 import { showToast, escapeHtml } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { openModal } from '../../components/modal.js';
+import { skeletonTable } from '../../components/skeleton.js';
 import { GW_VIRTUAL_PREFIXES, GW_WAN_IFACE } from './constants.js';
 
 /**
@@ -30,9 +31,7 @@ export function openGatewayModal() {
                 </div>
             </div>
             <div id="gw-matrix-content">
-                <div class="text-center py-4">
-                    <div class="spinner-border text-primary"></div>
-                </div>
+                ${skeletonTable(3, 3)}
             </div>
         `,
         footer: `<button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.close')}</button>`,

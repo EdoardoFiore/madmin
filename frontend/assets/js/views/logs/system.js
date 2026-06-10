@@ -8,6 +8,7 @@
 import { apiGet } from '../../api.js';
 import { escapeHtml } from '../../utils.js';
 import { t } from '../../i18n.js';
+import { skeletonLines } from '../../components/skeleton.js';
 
 export async function renderSystemTab(state) {
     const content = state.contentEl;
@@ -39,10 +40,7 @@ export async function renderSystemTab(state) {
             </div>
         </div>
         <div id="syslog-container">
-            <div class="card-body text-center py-4 text-muted">
-                <div class="spinner-border spinner-border-sm me-2"></div>
-                ${t('common.loading')}
-            </div>
+            ${skeletonLines(12)}
         </div>
     `;
 
