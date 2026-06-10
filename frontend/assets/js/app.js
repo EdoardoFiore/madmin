@@ -26,7 +26,7 @@ const views = {
     'crontab': () => import('./views/crontab.js'),
     'settings': () => import('./views/settings.js'),
     'modules': () => import('./views/modules.js'),
-    'logs': () => import('./views/logs.js'),
+    'logs': () => import('./views/logs/index.js'),
 };
 
 // Current user data
