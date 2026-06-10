@@ -11,8 +11,14 @@ let _hosts = [];
 
 export async function renderCertsTab(container, perms) {
     _perms = perms;
+
+    // Pre-fetch before any DOM write
+    try { _hosts = await apiGet(`${MODULE_API}/hosts`); } catch { _hosts = []; }
+
     container.innerHTML = `<div id="revproxy-certs-table"></div>`;
-    await reloadCerts();
+
+    // Sync: no await between innerHTML and renderTable
+    renderTable();
 }
 
 async function reloadCerts() {

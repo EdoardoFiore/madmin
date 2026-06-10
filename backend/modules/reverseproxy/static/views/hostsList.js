@@ -14,6 +14,15 @@ let _acls = [];
 
 export async function renderHostsTab(container, perms) {
     _perms = perms;
+
+    // Pre-fetch before any DOM write
+    try {
+        [_hosts, _acls] = await Promise.all([
+            apiGet(`${MODULE_API}/hosts`),
+            apiGet(`${MODULE_API}/access_lists`).catch(() => []),
+        ]);
+    } catch { _hosts = []; }
+
     container.innerHTML = `
         <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-3">
             <div class="input-icon" style="max-width: 320px;">
@@ -29,14 +38,14 @@ export async function renderHostsTab(container, perms) {
         <div id="revproxy-hosts-table"></div>
     `;
 
+    // Sync: no await between innerHTML and these calls
     if (perms.manage) {
         document.getElementById('revproxy-btn-new-host').addEventListener('click', () => {
             openHostForm({ onSaved: reloadHosts, perms: _perms });
         });
     }
     document.getElementById('revproxy-host-search').addEventListener('input', renderTable);
-
-    await Promise.all([loadAcls(), reloadHosts()]);
+    renderTable();
 }
 
 async function loadAcls() {

@@ -33,6 +33,10 @@ async function apiPostForm(path, formData) {
 export async function renderOvpnList(container, canManage) {
     _canManage = canManage;
 
+    // Pre-fetch before any DOM write
+    let _instances = [];
+    try { _instances = await apiGet(`${MODULE_API}/instances`); } catch (e) { /* shown inline */ }
+
     container.innerHTML = `
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -241,7 +245,8 @@ export async function renderOvpnList(container, canManage) {
         ddToggle.addEventListener('click', () => dd.toggle());
     }
 
-    await loadInstances();
+    // Sync: no await between innerHTML and _fillInstancesList, so no intermediate paint
+    _fillInstancesList(document.getElementById('instances-list'), _instances);
     setupCreateForm();
     setupImportForm();
 }
@@ -250,21 +255,19 @@ export async function renderOvpnList(container, canManage) {
 //  LOAD & RENDER INSTANCES
 // ============================================================
 
-async function loadInstances() {
-    const listEl = document.getElementById('instances-list');
-    try {
-        const instances = await apiGet(`${MODULE_API}/instances`);
+function _fillInstancesList(listEl, instances) {
+    if (!listEl) return;
 
-        if (instances.length === 0) {
-            listEl.innerHTML = `<div class="text-center py-5 text-muted">
-                <i class="ti ti-server-off" style="font-size: 3rem;"></i>
-                <p class="mt-2">${t('openvpn.noInstances')}</p>
-                <small>${t('openvpn.noInstancesHint')}</small>
-            </div>`;
-            return;
-        }
+    if (instances.length === 0) {
+        listEl.innerHTML = `<div class="text-center py-5 text-muted">
+            <i class="ti ti-server-off" style="font-size: 3rem;"></i>
+            <p class="mt-2">${t('openvpn.noInstances')}</p>
+            <small>${t('openvpn.noInstancesHint')}</small>
+        </div>`;
+        return;
+    }
 
-        listEl.innerHTML = `<div class="table-responsive"><table class="table table-vcenter card-table table-hover">
+    listEl.innerHTML = `<div class="table-responsive"><table class="table table-vcenter card-table table-hover">
             <thead><tr>
                 <th style="width: 30px;"></th>
                 <th>${t('openvpn.instanceName')}</th>
@@ -326,9 +329,17 @@ async function loadInstances() {
             }).join('')}</tbody>
         </table></div>`;
 
-        setupInstanceRowActions();
+    setupInstanceRowActions();
+}
+
+async function loadInstances() {
+    const listEl = document.getElementById('instances-list');
+    if (!listEl) return;
+    try {
+        const instances = await apiGet(`${MODULE_API}/instances`);
+        _fillInstancesList(listEl, instances);
     } catch (err) {
-        listEl.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+        listEl.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
     }
 }
 

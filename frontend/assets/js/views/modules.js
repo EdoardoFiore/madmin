@@ -25,7 +25,13 @@ let availableModules = [];
 let moduleChains = [];
 
 export async function render(container) {
-    const canManage = checkPermission('modules.manage');
+    checkPermission('modules.manage');
+
+    // Pre-fetch before any DOM write — data in module vars, sync render after innerHTML
+    [availableModules, moduleChains] = await Promise.all([
+        apiGet('/modules/available').catch(() => []),
+        apiGet('/modules/chains/priority').catch(() => []),
+    ]);
 
     container.innerHTML = `
         <div class="card mb-3">
@@ -61,8 +67,8 @@ export async function render(container) {
         if (card) openModuleDetail(card.dataset.moduleId);
     });
 
-    await loadModules();
-    await loadModuleChains();
+    renderModuleCards();
+    renderFirewallPriority();
 }
 
 async function loadModules() {

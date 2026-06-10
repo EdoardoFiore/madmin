@@ -26,6 +26,10 @@ async function apiPostForm(path, formData) {
 }
 
 export async function renderWgList(container, canManage) {
+    // Pre-fetch before any DOM write
+    let _instances = [];
+    try { _instances = await apiGet(`${MODULE_API}/instances`); } catch (e) { /* shown inline */ }
+
     container.innerHTML = `
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -185,7 +189,8 @@ export async function renderWgList(container, canManage) {
         ddToggle.addEventListener('click', () => dd.toggle());
     }
 
-    await loadInstances(canManage);
+    // Sync: no await between innerHTML and _fillInstancesList, so no intermediate paint
+    _fillInstancesList(document.getElementById('instances-list'), _instances, canManage);
     setupCreateForm(canManage);
     setupImportForm(canManage);
 }
@@ -194,21 +199,19 @@ export async function renderWgList(container, canManage) {
 //  LOAD & RENDER INSTANCES
 // ============================================================
 
-async function loadInstances(canManage) {
-    const listEl = document.getElementById('instances-list');
-    try {
-        const instances = await apiGet(`${MODULE_API}/instances`);
+function _fillInstancesList(listEl, instances, canManage) {
+    if (!listEl) return;
 
-        if (instances.length === 0) {
-            listEl.innerHTML = `<div class="text-center py-5 text-muted">
-                <i class="ti ti-server-off" style="font-size: 3rem;"></i>
-                <p class="mt-2">${t('wireguard.noInstances')}</p>
-                <small>${t('wireguard.noInstancesHint')}</small>
-            </div>`;
-            return;
-        }
+    if (instances.length === 0) {
+        listEl.innerHTML = `<div class="text-center py-5 text-muted">
+            <i class="ti ti-server-off" style="font-size: 3rem;"></i>
+            <p class="mt-2">${t('wireguard.noInstances')}</p>
+            <small>${t('wireguard.noInstancesHint')}</small>
+        </div>`;
+        return;
+    }
 
-        listEl.innerHTML = `<div class="table-responsive"><table class="table table-vcenter card-table table-hover">
+    listEl.innerHTML = `<div class="table-responsive"><table class="table table-vcenter card-table table-hover">
             <thead><tr>
                 <th style="width: 30px;"></th>
                 <th>${t('wireguard.name')}</th>
@@ -220,6 +223,7 @@ async function loadInstances(canManage) {
                 <th class="w-1"></th>
             </tr></thead>
             <tbody>${instances.map(i => {
+
                 const isClient = i.direction === 'client';
                 const portCell = isClient
                     ? `<span class="text-muted">–</span>`
@@ -270,9 +274,17 @@ async function loadInstances(canManage) {
             }).join('')}</tbody>
         </table></div>`;
 
-        setupInstanceRowActions(canManage);
+    setupInstanceRowActions(canManage);
+}
+
+async function loadInstances(canManage) {
+    const listEl = document.getElementById('instances-list');
+    if (!listEl) return;
+    try {
+        const instances = await apiGet(`${MODULE_API}/instances`);
+        _fillInstancesList(listEl, instances, canManage);
     } catch (err) {
-        listEl.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+        listEl.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
     }
 }
 

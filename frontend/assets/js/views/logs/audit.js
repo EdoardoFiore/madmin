@@ -19,6 +19,15 @@ export async function renderAuditTab(state) {
     const content = state.contentEl;
     if (!content) return;
 
+    // Pre-fetch with current filter state before any DOM write
+    let _data = null;
+    let _fetchError = null;
+    try {
+        _data = await apiGet(`/logs/audit?${_buildAuditParams(state)}`);
+    } catch (e) {
+        _fetchError = e;
+    }
+
     const userOptions = state.auditUsers.map(u =>
         `<option value="${escapeHtml(u)}" ${state.auditFilters.user === u ? 'selected' : ''}>${escapeHtml(u)}</option>`
     ).join('');
@@ -59,8 +68,8 @@ export async function renderAuditTab(state) {
         <div id="audit-table-container"></div>
     `;
 
+    // Sync: event wiring + delegated listener + pagination
     const applyFilters = () => applyAuditFilters(state);
-
     document.getElementById('audit-search')?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') applyFilters();
     });
@@ -72,7 +81,6 @@ export async function renderAuditTab(state) {
     document.getElementById('btn-audit-refresh')?.addEventListener('click', () => loadAuditData(state));
     document.getElementById('btn-audit-export')?.addEventListener('click', () => exportAuditCsv(state));
 
-    // One delegated listener for payload/error detail buttons (idempotent per render)
     const tableContainer = document.getElementById('audit-table-container');
     tableContainer.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-detail]');
@@ -86,7 +94,17 @@ export async function renderAuditTab(state) {
         loadAuditData(state);
     });
 
-    await loadAuditData(state);
+    // Fill table sync — no intermediate paint
+    if (_fetchError) {
+        tableContainer.innerHTML = `
+            <div class="card-body text-center py-4 text-danger">
+                <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
+                <p class="mt-2 mb-0">${t('common.errorPrefix')}${escapeHtml(_fetchError.message)}</p>
+            </div>
+        `;
+    } else {
+        _fillAuditTable(tableContainer, _data, state);
+    }
 }
 
 /**
@@ -135,58 +153,61 @@ function applyAuditFilters(state) {
     loadAuditData(state);
 }
 
+function _buildAuditParams(state) {
+    const params = new URLSearchParams();
+    params.set('page', state.auditPage);
+    params.set('per_page', '50');
+    params.set('category', state.auditFilters.category);
+    if (state.auditFilters.user) params.set('user', state.auditFilters.user);
+    if (state.auditFilters.search) params.set('search', state.auditFilters.search);
+    if (state.auditFilters.from_date) params.set('from_date', state.auditFilters.from_date);
+    if (state.auditFilters.to_date) params.set('to_date', state.auditFilters.to_date);
+    return params;
+}
+
+function _fillAuditTable(container, data, state) {
+    const items = data.items || [];
+    _payloads.clear();
+    _errors.clear();
+
+    if (items.length === 0) {
+        container.innerHTML = `
+            <div class="card-body text-center py-4 text-muted">
+                <i class="ti ti-list-search" style="font-size: 2rem;"></i>
+                <p class="mt-2 mb-0">${t('logs.noLogsFound')}</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-hover table-sm">
+                <thead>
+                    <tr>
+                        <th>${t('logs.timestamp')}</th>
+                        <th>${t('logs.user')}</th>
+                        <th>${t('logs.request')}</th>
+                        <th>Status</th>
+                        <th>${t('logs.duration')}</th>
+                        <th>${t('logs.ip')}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${items.map(renderAuditRow).join('')}
+                </tbody>
+            </table>
+        </div>
+        ${pagination({ page: data.page, pages: data.pages, total: data.total, summaryKey: 'logs.pageOf' })}
+    `;
+}
+
 async function loadAuditData(state) {
     const container = document.getElementById('audit-table-container');
     if (!container) return;
-
     try {
-        const params = new URLSearchParams();
-        params.set('page', state.auditPage);
-        params.set('per_page', '50');
-        // Always send category — empty string = all
-        params.set('category', state.auditFilters.category);
-        if (state.auditFilters.user) params.set('user', state.auditFilters.user);
-        if (state.auditFilters.search) params.set('search', state.auditFilters.search);
-        if (state.auditFilters.from_date) params.set('from_date', state.auditFilters.from_date);
-        if (state.auditFilters.to_date) params.set('to_date', state.auditFilters.to_date);
-
-        const data = await apiGet(`/logs/audit?${params.toString()}`);
-        const items = data.items || [];
-
-        _payloads.clear();
-        _errors.clear();
-
-        if (items.length === 0) {
-            container.innerHTML = `
-                <div class="card-body text-center py-4 text-muted">
-                    <i class="ti ti-list-search" style="font-size: 2rem;"></i>
-                    <p class="mt-2 mb-0">${t('logs.noLogsFound')}</p>
-                </div>
-            `;
-            return;
-        }
-
-        container.innerHTML = `
-            <div class="table-responsive">
-                <table class="table table-vcenter card-table table-hover table-sm">
-                    <thead>
-                        <tr>
-                            <th>${t('logs.timestamp')}</th>
-                            <th>${t('logs.user')}</th>
-                            <th>${t('logs.request')}</th>
-                            <th>Status</th>
-                            <th>${t('logs.duration')}</th>
-                            <th>${t('logs.ip')}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${items.map(renderAuditRow).join('')}
-                    </tbody>
-                </table>
-            </div>
-            ${pagination({ page: data.page, pages: data.pages, total: data.total, summaryKey: 'logs.pageOf' })}
-        `;
-
+        const data = await apiGet(`/logs/audit?${_buildAuditParams(state)}`);
+        _fillAuditTable(container, data, state);
     } catch (error) {
         container.innerHTML = `
             <div class="card-body text-center py-4 text-danger">

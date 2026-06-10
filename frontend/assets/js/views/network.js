@@ -32,6 +32,23 @@ let wanProtectionEnabled = false;
 export async function render(container) {
     const canManage = checkPermission('settings.manage');
 
+    // Pre-fetch all 3 in parallel before any DOM write
+    let _ifaces = [];
+    let _fetchError = null;
+    try {
+        const [ifacesResp, provResp, sysResp] = await Promise.all([
+            apiGet('/network/interfaces'),
+            apiGet('/provisioning/managed-lan').catch(() => null),
+            apiGet('/settings/system').catch(() => null),
+        ]);
+        _ifaces = ifacesResp.interfaces || [];
+        managedIface = provResp?.enabled ? provResp.interface : null;
+        lockedIfaces = new Set(provResp?.enabled ? (provResp.locked_interfaces || []) : []);
+        wanProtectionEnabled = !!sysResp?.wan_protection_enabled;
+    } catch (e) {
+        _fetchError = e;
+    }
+
     container.innerHTML = `
         <div class="row row-deck row-cards">
             <div class="col-12">
@@ -175,7 +192,18 @@ export async function render(container) {
         });
     });
 
-    await loadInterfaces();
+    // Sync: no await between innerHTML above and _applyInterfaces, so no intermediate paint
+    const ifacesContainer = document.getElementById('interfaces-container');
+    if (_fetchError) {
+        ifacesContainer.innerHTML = `
+            <div class="text-center py-4 text-danger">
+                <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
+                <p class="mt-2">${t('network.loadError', { error: escapeHtml(_fetchError.message) })}</p>
+            </div>
+        `;
+    } else {
+        _applyInterfaces(ifacesContainer, _ifaces);
+    }
 }
 
 async function loadInterfaces() {
@@ -183,60 +211,16 @@ async function loadInterfaces() {
     if (!container) return;
 
     try {
-        const response = await apiGet('/network/interfaces');
-        const interfaces = response.interfaces || [];
-
-        // Resolve the managed LAN interface + the full locked set (if provisioning is enabled)
-        try {
-            const prov = await apiGet('/provisioning/managed-lan');
-            managedIface = prov?.enabled ? prov.interface : null;
-            lockedIfaces = new Set(prov?.enabled ? (prov.locked_interfaces || []) : []);
-        } catch (e) {
-            managedIface = null;
-            lockedIfaces = new Set();
-        }
-
-        // Resolve WAN edit-protection state (mirror of managed-LAN resolution)
-        try {
-            const sys = await apiGet('/settings/system');
-            wanProtectionEnabled = !!sys?.wan_protection_enabled;
-        } catch (e) {
-            wanProtectionEnabled = false;
-        }
-
-        if (interfaces.length === 0) {
-            container.innerHTML = emptyState('ti-network-off', t('network.noInterfaces'));
-            return;
-        }
-
-        // Natural numeric sort: eth1 < eth2 < eth10 (not lexicographic)
-        interfaces.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-        container.innerHTML = interfaces.map(iface => renderInterfaceRow(iface)).join('');
-
-        // Row click: toggle collapse manually so stopPropagation on child buttons works reliably
-        container.querySelectorAll('.iface-row').forEach(row => {
-            const collapseEl = document.getElementById(row.dataset.collapseTarget);
-            if (!collapseEl) return;
-            row.addEventListener('click', () => {
-                bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).toggle();
-            });
-            collapseEl.addEventListener('show.bs.collapse', () => {
-                container.querySelector(`.iface-chevron[data-iface-chevron="${collapseEl.id}"]`)?.classList.add('rotated');
-            });
-            collapseEl.addEventListener('hide.bs.collapse', () => {
-                container.querySelector(`.iface-chevron[data-iface-chevron="${collapseEl.id}"]`)?.classList.remove('rotated');
-            });
-        });
-
-        container.querySelectorAll('[data-configure-iface]').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openNetplanModal(btn.dataset.configureIface);
-            });
-        });
-
+        const [ifacesResp, provResp, sysResp] = await Promise.all([
+            apiGet('/network/interfaces'),
+            apiGet('/provisioning/managed-lan').catch(() => null),
+            apiGet('/settings/system').catch(() => null),
+        ]);
+        managedIface = provResp?.enabled ? provResp.interface : null;
+        lockedIfaces = new Set(provResp?.enabled ? (provResp.locked_interfaces || []) : []);
+        wanProtectionEnabled = !!sysResp?.wan_protection_enabled;
+        _applyInterfaces(container, ifacesResp.interfaces || []);
     } catch (error) {
-        console.error('Error loading interfaces:', error);
         container.innerHTML = `
             <div class="text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
@@ -244,6 +228,39 @@ async function loadInterfaces() {
             </div>
         `;
     }
+}
+
+function _applyInterfaces(container, interfaces) {
+    if (interfaces.length === 0) {
+        container.innerHTML = emptyState('ti-network-off', t('network.noInterfaces'));
+        return;
+    }
+
+    // Natural numeric sort: eth1 < eth2 < eth10 (not lexicographic)
+    interfaces.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    container.innerHTML = interfaces.map(iface => renderInterfaceRow(iface)).join('');
+
+    // Row click: toggle collapse manually so stopPropagation on child buttons works reliably
+    container.querySelectorAll('.iface-row').forEach(row => {
+        const collapseEl = document.getElementById(row.dataset.collapseTarget);
+        if (!collapseEl) return;
+        row.addEventListener('click', () => {
+            bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).toggle();
+        });
+        collapseEl.addEventListener('show.bs.collapse', () => {
+            container.querySelector(`.iface-chevron[data-iface-chevron="${collapseEl.id}"]`)?.classList.add('rotated');
+        });
+        collapseEl.addEventListener('hide.bs.collapse', () => {
+            container.querySelector(`.iface-chevron[data-iface-chevron="${collapseEl.id}"]`)?.classList.remove('rotated');
+        });
+    });
+
+    container.querySelectorAll('[data-configure-iface]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openNetplanModal(btn.dataset.configureIface);
+        });
+    });
 }
 
 function renderInterfaceRow(iface) {

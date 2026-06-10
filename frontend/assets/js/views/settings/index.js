@@ -27,6 +27,20 @@ import { importModalHtml, bindImportModal } from './export-import.js';
 export async function render(container) {
     const canManage = checkPermission('settings.manage');
 
+    // Pre-fetch all settings before any DOM write
+    let system = null, smtp = null, backup = null, network = null;
+    let fetchError = null;
+    try {
+        [system, smtp, backup, network] = await Promise.all([
+            apiGet('/settings/system'),
+            apiGet('/settings/smtp'),
+            apiGet('/settings/backup'),
+            apiGet('/settings/network'),
+        ]);
+    } catch (e) {
+        fetchError = e;
+    }
+
     container.innerHTML = `
         <div class="row row-deck row-cards">
             ${appearanceHtml(canManage)}
@@ -40,7 +54,16 @@ export async function render(container) {
         ${sslModalHtml()}
     `;
 
-    await loadSettings();
+    // Sync: fill form fields and wire up all buttons in one shot — no intermediate paint
+    if (!fetchError) {
+        fillAppearance(system);
+        fillPreferences();
+        fillSecurity(system, network);
+        fillSmtp(smtp);
+        fillBackup(backup);
+    } else {
+        showToast(t('settings.settingsLoadError'), 'error');
+    }
 
     bindAppearance();
     bindPreferences();
@@ -50,29 +73,10 @@ export async function render(container) {
     bindRemoteBackup({ onLocalHistoryChanged: loadBackupHistory });
     bindImportModal();
     bindSystemManagement();
-}
 
-async function loadSettings() {
-    try {
-        const [system, smtp, backup, network] = await Promise.all([
-            apiGet('/settings/system'),
-            apiGet('/settings/smtp'),
-            apiGet('/settings/backup'),
-            apiGet('/settings/network')
-        ]);
-
-        fillAppearance(system);
-        fillPreferences();
-        fillSecurity(system, network);
-        fillSmtp(smtp);
-        fillBackup(backup);
-
-        await loadBackupHistory();
-        await loadRemoteBackupHistory();
-
-    } catch (error) {
-        showToast(t('settings.settingsLoadError'), 'error');
-    }
+    // History tables start empty — fill them after bind (non-blocking)
+    loadBackupHistory();
+    loadRemoteBackupHistory();
 }
 
 // ============== SYSTEM MANAGEMENT (service restart) ==============

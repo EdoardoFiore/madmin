@@ -14,6 +14,10 @@ let _acls = [];
 
 export async function renderAccessListsTab(container, perms) {
     _perms = perms;
+
+    // Pre-fetch before any DOM write
+    try { _acls = await apiGet(`${MODULE_API}/access_lists`); } catch { _acls = []; }
+
     container.innerHTML = `
         <div class="d-flex justify-content-end px-3 pt-3 pb-3">
             ${perms.accessLists ? `
@@ -23,10 +27,12 @@ export async function renderAccessListsTab(container, perms) {
         </div>
         <div id="revproxy-acls-table"></div>
     `;
+
+    // Sync: no await between innerHTML and these calls
     if (perms.accessLists) {
         document.getElementById('revproxy-btn-new-acl').addEventListener('click', () => openAclForm({}));
     }
-    await reloadAcls();
+    renderTable();
 }
 
 async function reloadAcls() {

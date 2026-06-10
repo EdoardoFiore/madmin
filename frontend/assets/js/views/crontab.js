@@ -19,6 +19,18 @@ let presets = {};
 export async function render(container) {
     const canManage = checkPermission('settings.manage');
 
+    // Pre-fetch before any DOM write
+    let table = null;
+    let fetchError = null;
+    try {
+        const data = await apiGet('/cron/entries');
+        presets = data.presets || {};
+        const entries = (data.entries || []).map((entry, index) => ({ ...entry, _index: index }));
+        table = _buildCronTable(entries, canManage);
+    } catch (error) {
+        fetchError = error;
+    }
+
     container.innerHTML = `
         <div class="row row-deck row-cards">
             <div class="col-12">
@@ -38,21 +50,77 @@ export async function render(container) {
                             </button>
                         </div>
                     </div>
-                    <div class="card-body" id="cron-container"></div>
+                    <div class="card-body" id="cron-container">
+                        ${fetchError ? `
+                        <div class="text-center py-4 text-danger">
+                            <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
+                            <p class="mt-2">${t('crontab.errorLoadingCrontab', { error: escapeHtml(fetchError.message) })}</p>
+                        </div>` : table ? table.html : ''}
+                    </div>
                 </div>
             </div>
         </div>
     `;
 
+    // Sync: no await between innerHTML above and these calls, so no intermediate paint
+    if (table) {
+        table.mount(document.getElementById('cron-container'), {
+            onAction(action, entry) {
+                if (action === 'toggle') toggleCronJob(entry._index);
+                else if (action === 'delete') deleteCronJob(entry._index);
+            },
+        });
+    }
     document.getElementById('btn-refresh-cron')?.addEventListener('click', loadCrontab);
     document.getElementById('btn-add-cron')?.addEventListener('click', openAddCronModal);
-
-    await loadCrontab();
 }
 
-/**
- * Load crontab entries and render the table
- */
+function _buildCronTable(entries, canManage) {
+    return createTable({
+        columns: [
+            { key: 'enabled', label: t('crontab.state'), render: (e) => statusBadge(e.enabled) },
+            { key: 'schedule', label: t('crontab.schedule'), render: (e) => `<code>${escapeHtml(e.schedule || e.raw || '')}</code>` },
+            { key: 'description', label: t('common.description'), render: (e) => `<small class="text-muted">${escapeHtml(e.description || '')}</small>` },
+            {
+                key: 'command', label: t('common.command'),
+                render: (e) => `<code class="text-truncate d-inline-block" style="max-width: 300px;" title="${escapeHtml(e.command || '')}">${escapeHtml(e.command || '')}</code>`,
+            },
+        ],
+        rows: entries,
+        rowKey: '_index',
+        rowClass: (e) => e.enabled ? '' : 'table-secondary',
+        rowRender: (e, idx, colCount) => {
+            if (e.comment && !e.schedule) {
+                return `
+                    <tr class="text-muted">
+                        <td colspan="${colCount}">
+                            <i class="ti ti-message-circle me-1"></i> ${escapeHtml(e.comment)}
+                        </td>
+                    </tr>`;
+            }
+            return null;
+        },
+        rowActions: canManage ? [
+            {
+                action: 'toggle',
+                icon: 'ti-player-pause',
+                className: 'btn-outline-warning',
+                title: t('crontab.disable'),
+                visible: (e) => e.enabled,
+            },
+            {
+                action: 'toggle',
+                icon: 'ti-player-play',
+                className: 'btn-outline-success',
+                title: t('crontab.enable'),
+                visible: (e) => !e.enabled,
+            },
+            { action: 'delete', icon: 'ti-trash', className: 'btn-outline-danger', title: t('common.delete') },
+        ] : null,
+        empty: { icon: 'ti-clock-off', title: t('crontab.noCronJobs') },
+    });
+}
+
 async function loadCrontab() {
     const container = document.getElementById('cron-container');
     if (!container) return;
@@ -61,53 +129,8 @@ async function loadCrontab() {
         const data = await apiGet('/cron/entries');
         presets = data.presets || {};
         const canManage = checkPermission('settings.manage');
-        // The backend addresses entries by their position in the list
         const entries = (data.entries || []).map((entry, index) => ({ ...entry, _index: index }));
-
-        const table = createTable({
-            columns: [
-                { key: 'enabled', label: t('crontab.state'), render: (e) => statusBadge(e.enabled) },
-                { key: 'schedule', label: t('crontab.schedule'), render: (e) => `<code>${escapeHtml(e.schedule || e.raw || '')}</code>` },
-                { key: 'description', label: t('common.description'), render: (e) => `<small class="text-muted">${escapeHtml(e.description || '')}</small>` },
-                {
-                    key: 'command', label: t('common.command'),
-                    render: (e) => `<code class="text-truncate d-inline-block" style="max-width: 300px;" title="${escapeHtml(e.command || '')}">${escapeHtml(e.command || '')}</code>`,
-                },
-            ],
-            rows: entries,
-            rowKey: '_index',
-            rowClass: (e) => e.enabled ? '' : 'table-secondary',
-            rowRender: (e, idx, colCount) => {
-                if (e.comment && !e.schedule) {
-                    return `
-                        <tr class="text-muted">
-                            <td colspan="${colCount}">
-                                <i class="ti ti-message-circle me-1"></i> ${escapeHtml(e.comment)}
-                            </td>
-                        </tr>`;
-                }
-                return null;
-            },
-            rowActions: canManage ? [
-                {
-                    action: 'toggle',
-                    icon: 'ti-player-pause',
-                    className: 'btn-outline-warning',
-                    title: t('crontab.disable'),
-                    visible: (e) => e.enabled,
-                },
-                {
-                    action: 'toggle',
-                    icon: 'ti-player-play',
-                    className: 'btn-outline-success',
-                    title: t('crontab.enable'),
-                    visible: (e) => !e.enabled,
-                },
-                { action: 'delete', icon: 'ti-trash', className: 'btn-outline-danger', title: t('common.delete') },
-            ] : null,
-            empty: { icon: 'ti-clock-off', title: t('crontab.noCronJobs') },
-        });
-
+        const table = _buildCronTable(entries, canManage);
         container.innerHTML = table.html;
         table.mount(container, {
             onAction(action, entry) {
@@ -115,7 +138,6 @@ async function loadCrontab() {
                 else if (action === 'delete') deleteCronJob(entry._index);
             },
         });
-
     } catch (error) {
         console.error('Error loading crontab:', error);
         container.innerHTML = `

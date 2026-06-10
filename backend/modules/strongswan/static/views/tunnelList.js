@@ -18,6 +18,14 @@ let canManage = false;
 export async function renderTunnelList(container, permissions) {
     canManage = permissions.manage;
 
+    // Pre-fetch before any DOM write
+    try {
+        tunnels = await apiGet('/modules/strongswan/tunnels');
+    } catch (e) {
+        container.innerHTML = `<div class="card"><div class="card-body p-0"><div class="alert alert-danger m-3">${escapeHtml(e.message)}</div></div></div>`;
+        return;
+    }
+
     container.innerHTML = `
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
@@ -33,14 +41,11 @@ export async function renderTunnelList(container, permissions) {
         </div>
     `;
 
-    // Event listeners
+    // Sync: no await between innerHTML above and these, so no intermediate paint
     document.getElementById('btn-new-tunnel')?.addEventListener('click', () => {
-        showTunnelForm(null, async () => {
-            await loadTunnels();
-        });
+        showTunnelForm(null, async () => { await loadTunnels(); });
     });
-
-    await loadTunnels();
+    renderTable();
 }
 
 async function loadTunnels() {

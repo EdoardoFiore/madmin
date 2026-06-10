@@ -13,6 +13,12 @@ export async function renderSystemTab(state) {
     const content = state.contentEl;
     if (!content) return;
 
+    // Pre-fetch with defaults (200 lines, no grep, hide audit) before any DOM write
+    let _logData = null;
+    try {
+        _logData = await apiGet('/logs/system?lines=200');
+    } catch { /* shown inline */ }
+
     content.innerHTML = `
         <div class="card-body border-bottom py-3">
             <div class="d-flex flex-wrap gap-2 align-items-center">
@@ -41,13 +47,52 @@ export async function renderSystemTab(state) {
         <div id="syslog-container"></div>
     `;
 
+    // Sync: wire up controls
     document.getElementById('btn-syslog-load')?.addEventListener('click', loadSystemLog);
     document.getElementById('syslog-search')?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') loadSystemLog();
     });
     document.getElementById('syslog-hide-audit')?.addEventListener('change', loadSystemLog);
 
-    await loadSystemLog();
+    // Fill log container sync — no intermediate paint
+    const syslogContainer = document.getElementById('syslog-container');
+    if (_logData) {
+        _fillSystemLog(syslogContainer, _logData, /* hideAudit = */ true);
+    }
+}
+
+function _fillSystemLog(container, data, hideAudit) {
+    let logLines = data.lines || [];
+    if (hideAudit) {
+        logLines = logLines.filter(line => !/\bAUDIT\b/.test(line));
+    }
+
+    if (logLines.length === 0) {
+        container.innerHTML = `
+            <div class="card-body text-center py-4 text-muted">
+                <i class="ti ti-file-off" style="font-size: 2rem;"></i>
+                <p class="mt-2 mb-0">${t('logs.noLogFound')}</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="card-body p-0">
+            <pre id="syslog-output" style="
+                max-height: 600px; overflow-y: auto; margin: 0; padding: 1rem;
+                font-size: 0.75rem; line-height: 1.6;
+                background: #1e293b; color: #c8d3e0;
+                border-radius: 0;
+            ">${logLines.map(formatSystemLogLine).join('\n')}</pre>
+        </div>
+        <div class="card-footer">
+            <small class="text-muted">${t('logs.linesLabel', { count: logLines.length })} — <code>journalctl -u madmin</code></small>
+        </div>
+    `;
+
+    const output = document.getElementById('syslog-output');
+    if (output) output.scrollTop = output.scrollHeight;
 }
 
 async function loadSystemLog() {
@@ -62,44 +107,8 @@ async function loadSystemLog() {
         const params = new URLSearchParams();
         params.set('lines', lines);
         if (search) params.set('search', search);
-
         const data = await apiGet(`/logs/system?${params.toString()}`);
-        let logLines = data.lines || [];
-
-        // Filter out AUDIT lines if toggle is on
-        if (hideAudit) {
-            logLines = logLines.filter(line => !/\bAUDIT\b/.test(line));
-        }
-
-        if (logLines.length === 0) {
-            container.innerHTML = `
-                <div class="card-body text-center py-4 text-muted">
-                    <i class="ti ti-file-off" style="font-size: 2rem;"></i>
-                    <p class="mt-2 mb-0">${t('logs.noLogFound')}</p>
-                </div>
-            `;
-            return;
-        }
-
-        // Use a dark background for the terminal-like viewer regardless of theme
-        container.innerHTML = `
-            <div class="card-body p-0">
-                <pre id="syslog-output" style="
-                    max-height: 600px; overflow-y: auto; margin: 0; padding: 1rem;
-                    font-size: 0.75rem; line-height: 1.6;
-                    background: #1e293b; color: #c8d3e0;
-                    border-radius: 0;
-                ">${logLines.map(formatSystemLogLine).join('\n')}</pre>
-            </div>
-            <div class="card-footer">
-                <small class="text-muted">${t('logs.linesLabel', { count: logLines.length })} — <code>journalctl -u madmin</code></small>
-            </div>
-        `;
-
-        // Scroll to bottom
-        const output = document.getElementById('syslog-output');
-        if (output) output.scrollTop = output.scrollHeight;
-
+        _fillSystemLog(container, data, hideAudit);
     } catch (error) {
         container.innerHTML = `
             <div class="card-body text-center py-4 text-danger">

@@ -51,6 +51,12 @@ export async function render(container) {
         `);
     }
 
+    // Pre-fetch column prefs + rules in parallel before any DOM write
+    await Promise.all([
+        loadUserPreferences(state),
+        apiGet('/firewall/rules').then(r => { state.rules = r; }).catch(() => {}),
+    ]);
+
     container.innerHTML = `
         <div class="row">
             <div class="col-12">
@@ -116,9 +122,9 @@ export async function render(container) {
         });
     });
 
+    // Sync: chain tabs create the DOM containers, renderRules fills them — no intermediate paint
     renderChainTabs(state);
-    await loadUserPreferences(state); // Load preferences before rules
-    await loadRules();
+    renderRules(state);
 
     async function loadRules() {
         try {

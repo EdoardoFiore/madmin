@@ -23,6 +23,14 @@ export async function render(container) {
         contentEl: null,
     };
 
+    // Pre-fetch user list for audit filter dropdown before any DOM write
+    try {
+        const usersData = await apiGet('/logs/audit/users');
+        state.auditUsers = usersData.users || [];
+    } catch (e) {
+        state.auditUsers = [];
+    }
+
     container.innerHTML = `
         <div class="row row-deck row-cards">
             <div class="col-12">
@@ -49,14 +57,6 @@ export async function render(container) {
         if (tabId === 'audit') renderAuditTab(state);
         else renderSystemTab(state);
     });
-
-    // Load user list for the audit filter
-    try {
-        const usersData = await apiGet('/logs/audit/users');
-        state.auditUsers = usersData.users || [];
-    } catch (e) {
-        state.auditUsers = [];
-    }
 
     await renderAuditTab(state);
 }
