@@ -89,7 +89,14 @@
         "settingPassword": "Impostazione password...",
         "fillAllFields": "Compila tutti i campi",
         "passwordsDoNotMatch": "Le password non coincidono",
-        "passwordChangeFailed": "Impossibile cambiare la password"
+        "passwordChangeFailed": "Impossibile cambiare la password",
+        "sessionExpired": "La sessione è scaduta, effettua di nuovo l'accesso"
+    },
+    "session": {
+        "expireSoonTitle": "Sessione in scadenza",
+        "expireSoonBody": "La sessione sta per scadere.",
+        "expireSoonHint": "Salva il tuo lavoro: alla scadenza verrai reindirizzato alla pagina di login.",
+        "expireSoonAck": "Ho capito"
     },
     "menu": {
         "dashboard": "Dashboard",
@@ -108,6 +115,7 @@
         "backToDashboard": "Torna alla Dashboard",
         "loadingError": "Errore di caricamento",
         "reload": "Ricarica",
+        "retry": "Riprova",
         "generating": "Generazione...",
         "2faGenerationError": "Errore generazione 2FA",
         "configure2fa": "Configura 2FA",

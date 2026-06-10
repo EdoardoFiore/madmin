@@ -10,7 +10,19 @@
  * Additive changes only.
  */
 
+import { t } from './i18n.js';
+
 const API_BASE = '/api';
+const DEFAULT_TIMEOUT_MS = 30000;
+
+/**
+ * Human network-error message with a fallback for pages where translations
+ * are not loaded yet (e.g. before i18n init).
+ */
+function _networkErrorMessage() {
+    const msg = t('common.networkError');
+    return msg === 'common.networkError' ? 'Network error: unable to reach the server' : msg;
+}
 
 /**
  * Extract a human-readable message from a FastAPI error response body.
@@ -57,11 +69,19 @@ export function isAuthenticated() {
 }
 
 /**
- * Redirect to login page
+ * Redirect to login page.
+ * @param {boolean} expired - When true (session expired / 401), the login
+ *   page shows an "expired" notice and returns to the current hash after
+ *   the next successful login.
  */
-export function redirectToLogin() {
+export function redirectToLogin(expired = false) {
     clearToken();
-    window.location.href = '/login';
+    if (expired) {
+        const next = encodeURIComponent(window.location.hash || '');
+        window.location.href = `/login?expired=1${next ? `&next=${next}` : ''}`;
+    } else {
+        window.location.href = '/login';
+    }
 }
 
 /**
@@ -92,14 +112,32 @@ export async function apiFetch(endpoint, options = {}) {
         headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-        ...options,
-        headers,
-    });
+    // Abort hung requests; callers may pass options.timeout (ms) to override.
+    const controller = new AbortController();
+    const timeoutMs = options.timeout ?? DEFAULT_TIMEOUT_MS;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    let response;
+    try {
+        response = await fetch(`${API_BASE}${endpoint}`, {
+            signal: controller.signal,
+            ...options,
+            headers,
+        });
+    } catch (err) {
+        // TypeError = network down/unreachable; AbortError = timeout.
+        // Both become a human message instead of "Failed to fetch".
+        if (err instanceof TypeError || err.name === 'AbortError') {
+            throw new Error(_networkErrorMessage());
+        }
+        throw err;
+    } finally {
+        clearTimeout(timeoutId);
+    }
 
     // Handle 401 Unauthorized
     if (response.status === 401) {
-        redirectToLogin();
+        redirectToLogin(true);
         throw new Error('Session expired');
     }
 

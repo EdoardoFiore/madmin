@@ -89,7 +89,14 @@
         "settingPassword": "Setting password...",
         "fillAllFields": "Please fill in all fields",
         "passwordsDoNotMatch": "Passwords do not match",
-        "passwordChangeFailed": "Could not change password"
+        "passwordChangeFailed": "Could not change password",
+        "sessionExpired": "Your session has expired, please sign in again"
+    },
+    "session": {
+        "expireSoonTitle": "Session expiring",
+        "expireSoonBody": "Your session is about to expire.",
+        "expireSoonHint": "Save your work: you will be redirected to the login page when the session expires.",
+        "expireSoonAck": "Got it"
     },
     "menu": {
         "dashboard": "Dashboard",
@@ -108,6 +115,7 @@
         "backToDashboard": "Back to Dashboard",
         "loadingError": "Loading error",
         "reload": "Reload",
+        "retry": "Retry",
         "generating": "Generating...",
         "2faGenerationError": "2FA generation error",
         "configure2fa": "Configure 2FA",

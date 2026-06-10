@@ -652,3 +652,24 @@ html {
 .transition-all {
     transition: all 0.2s ease;
 }
+/* == View enter transition (applied by the router on each route render) == */
+@keyframes view-enter {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+.view-enter {
+    animation: view-enter 0.15s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .view-enter {
+        animation: none;
+    }
+}

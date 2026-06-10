@@ -81,6 +81,11 @@
                     <span id="login-error"></span>
                 </div>
 
+                <div id="expired-alert" class="alert alert-warning">
+                    <i class="ti ti-clock-exclamation me-1"></i>
+                    <span data-i18n="auth.sessionExpired">Your session has expired, please sign in again</span>
+                </div>
+
                 <!-- Login Form -->
                 <form id="login-form">
                     <div class="mb-3">
@@ -233,6 +238,17 @@
             window.location.href = '/';
         }
 
+        // Session-expired flow: show notice and return to the previous view
+        // after the next successful login (?expired=1&next=%23hash)
+        const _loginParams = new URLSearchParams(window.location.search);
+        if (_loginParams.get('expired') === '1') {
+            document.getElementById('expired-alert').classList.add('show');
+        }
+        function postLoginUrl() {
+            const next = _loginParams.get('next') || '';
+            return next.startsWith('#') ? `/${next}` : '/';
+        }
+
         // Elements
         const form = document.getElementById('login-form');
         const alertBox = document.getElementById('login-alert');
@@ -326,7 +342,7 @@
             }
             // Final login
             localStorage.setItem('madmin_token', data.access_token);
-            window.location.href = '/';
+            window.location.href = postLoginUrl();
             return false;
         }
 
@@ -436,7 +452,7 @@
                 if (response.ok) {
                     const data = await response.json();
                     localStorage.setItem('madmin_token', data.access_token);
-                    window.location.href = '/';
+                    window.location.href = postLoginUrl();
                 } else {
                     const error = await response.json();
                     showError(error.detail || _t('auth.passwordChangeFailed'));
