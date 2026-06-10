@@ -12,16 +12,21 @@ let _perms = null;
 let _hosts = [];
 let _acls = [];
 
-export async function renderHostsTab(container, perms) {
+export async function renderHostsTab(container, perms, preData = null) {
     _perms = perms;
 
-    // Pre-fetch before any DOM write
-    try {
-        [_hosts, _acls] = await Promise.all([
-            apiGet(`${MODULE_API}/hosts`),
-            apiGet(`${MODULE_API}/access_lists`).catch(() => []),
-        ]);
-    } catch { _hosts = []; }
+    if (preData) {
+        _hosts = preData.hosts || [];
+        _acls = preData.acls || [];
+    } else {
+        // Pre-fetch before any DOM write
+        try {
+            [_hosts, _acls] = await Promise.all([
+                apiGet(`${MODULE_API}/hosts`),
+                apiGet(`${MODULE_API}/access_lists`).catch(() => []),
+            ]);
+        } catch { _hosts = []; }
+    }
 
     container.innerHTML = `
         <div class="d-flex justify-content-between align-items-center px-3 pt-3 pb-3">

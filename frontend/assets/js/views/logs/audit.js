@@ -15,17 +15,19 @@ import { pagination, bindPagination } from '../../components/pagination.js';
 const _payloads = new Map();
 const _errors = new Map();
 
-export async function renderAuditTab(state) {
+export async function renderAuditTab(state, preData = null) {
     const content = state.contentEl;
     if (!content) return;
 
-    // Pre-fetch with current filter state before any DOM write
-    let _data = null;
+    // Use pre-fetched data if provided; otherwise fetch now
+    let _data = preData;
     let _fetchError = null;
-    try {
-        _data = await apiGet(`/logs/audit?${_buildAuditParams(state)}`);
-    } catch (e) {
-        _fetchError = e;
+    if (!_data) {
+        try {
+            _data = await apiGet(`/logs/audit?${_buildAuditParams(state)}`);
+        } catch (e) {
+            _fetchError = e;
+        }
     }
 
     const userOptions = state.auditUsers.map(u =>

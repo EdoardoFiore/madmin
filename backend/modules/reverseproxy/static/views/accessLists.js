@@ -12,11 +12,15 @@ const MODULE_API = '/modules/reverseproxy';
 let _perms = null;
 let _acls = [];
 
-export async function renderAccessListsTab(container, perms) {
+export async function renderAccessListsTab(container, perms, preData = null) {
     _perms = perms;
 
-    // Pre-fetch before any DOM write
-    try { _acls = await apiGet(`${MODULE_API}/access_lists`); } catch { _acls = []; }
+    if (preData) {
+        _acls = preData.acls || [];
+    } else {
+        // Pre-fetch before any DOM write
+        try { _acls = await apiGet(`${MODULE_API}/access_lists`); } catch { _acls = []; }
+    }
 
     container.innerHTML = `
         <div class="d-flex justify-content-end px-3 pt-3 pb-3">

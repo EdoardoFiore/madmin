@@ -9,11 +9,15 @@ const MODULE_API = '/modules/reverseproxy';
 let _perms = null;
 let _hosts = [];
 
-export async function renderCertsTab(container, perms) {
+export async function renderCertsTab(container, perms, preData = null) {
     _perms = perms;
 
-    // Pre-fetch before any DOM write
-    try { _hosts = await apiGet(`${MODULE_API}/hosts`); } catch { _hosts = []; }
+    if (preData) {
+        _hosts = preData.hosts || [];
+    } else {
+        // Pre-fetch before any DOM write
+        try { _hosts = await apiGet(`${MODULE_API}/hosts`); } catch { _hosts = []; }
+    }
 
     container.innerHTML = `<div id="revproxy-certs-table"></div>`;
 

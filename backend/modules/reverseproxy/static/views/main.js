@@ -5,7 +5,6 @@
  * shows a banner if the module is blocked by a port conflict.
  */
 import { apiGet } from '/static/js/api.js';
-import { showToast } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
 
@@ -28,6 +27,13 @@ export async function render(container, params) {
     const activeTab = params && params[0] === 'access-lists' ? 'access-lists'
         : params && params[0] === 'certs' ? 'certs'
         : 'hosts';
+
+    // Pre-fetch all tab data + service status before any DOM write
+    const [serviceStatus, hosts, acls] = await Promise.all([
+        apiGet(`${MODULE_API}/service/status`).catch(() => null),
+        apiGet(`${MODULE_API}/hosts`).catch(() => []),
+        apiGet(`${MODULE_API}/access_lists`).catch(() => []),
+    ]);
 
     container.innerHTML = `
         <div id="revproxy-block-banner" class="mb-3" style="display:none;"></div>
@@ -72,12 +78,16 @@ export async function render(container, params) {
         </div>
     `;
 
-    await refreshServiceStatus();
-    await renderHostsTab(document.getElementById('revproxy-hosts-body'), perms);
-    await renderAccessListsTab(document.getElementById('revproxy-acls-body'), perms);
-    await renderCertsTab(document.getElementById('revproxy-certs-body'), perms);
+    // Sync: fill service badge immediately — no fetch needed, data already available
+    _applyServiceStatus(serviceStatus);
 
-    // Sync route hash when user switches tab manually
+    // Sub-renderers receive preData → no internal await → run synchronously.
+    // All three pane bodies are filled before the browser gets a chance to paint.
+    renderHostsTab(document.getElementById('revproxy-hosts-body'), perms, { hosts, acls });
+    renderAccessListsTab(document.getElementById('revproxy-acls-body'), perms, { acls });
+    renderCertsTab(document.getElementById('revproxy-certs-body'), perms, { hosts });
+
+    // Sync: wire tab hash change events
     container.querySelectorAll('button[data-bs-toggle="tab"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', (e) => {
             const target = e.target.getAttribute('data-bs-target');
@@ -92,14 +102,19 @@ export async function render(container, params) {
     });
 }
 
-async function refreshServiceStatus() {
+function _applyServiceStatus(s) {
     const badge = document.getElementById('revproxy-service-badge');
     const banner = document.getElementById('revproxy-block-banner');
-    try {
-        const s = await apiGet(`${MODULE_API}/service/status`);
-        if (s.blocked) {
-            badge.className = 'badge bg-danger-lt';
-            badge.textContent = t('reverseproxy.blockedTitle');
+    if (!badge) return;
+    if (!s) {
+        badge.className = 'badge bg-secondary-lt';
+        badge.textContent = '–';
+        return;
+    }
+    if (s.blocked) {
+        badge.className = 'badge bg-danger-lt';
+        badge.textContent = t('reverseproxy.blockedTitle');
+        if (banner) {
             banner.style.display = '';
             banner.innerHTML = `
                 <div class="alert alert-danger mb-0">
@@ -107,18 +122,15 @@ async function refreshServiceStatus() {
                     <div class="small">${escapeText(s.block_reason || '')}</div>
                     <div class="small text-muted mt-1">${t('reverseproxy.blockedHint')}</div>
                 </div>`;
-        } else if (s.active) {
-            badge.className = 'badge bg-success-lt';
-            badge.textContent = t('reverseproxy.serviceActive');
-            banner.style.display = 'none';
-        } else {
-            badge.className = 'badge bg-warning-lt';
-            badge.textContent = t('reverseproxy.serviceInactive');
-            banner.style.display = 'none';
         }
-    } catch {
-        badge.className = 'badge bg-secondary-lt';
-        badge.textContent = '–';
+    } else if (s.active) {
+        badge.className = 'badge bg-success-lt';
+        badge.textContent = t('reverseproxy.serviceActive');
+        if (banner) banner.style.display = 'none';
+    } else {
+        badge.className = 'badge bg-warning-lt';
+        badge.textContent = t('reverseproxy.serviceInactive');
+        if (banner) banner.style.display = 'none';
     }
 }
 

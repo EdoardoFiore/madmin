@@ -23,13 +23,12 @@ export async function render(container) {
         contentEl: null,
     };
 
-    // Pre-fetch user list for audit filter dropdown before any DOM write
-    try {
-        const usersData = await apiGet('/logs/audit/users');
-        state.auditUsers = usersData.users || [];
-    } catch (e) {
-        state.auditUsers = [];
-    }
+    // Pre-fetch user list + initial audit page in parallel before any DOM write
+    const [usersData, auditPreData] = await Promise.all([
+        apiGet('/logs/audit/users').catch(() => ({ users: [] })),
+        apiGet('/logs/audit?page=1&per_page=50&category=write').catch(() => null),
+    ]);
+    state.auditUsers = usersData.users || [];
 
     container.innerHTML = `
         <div class="row row-deck row-cards">
@@ -58,5 +57,5 @@ export async function render(container) {
         else renderSystemTab(state);
     });
 
-    await renderAuditTab(state);
+    await renderAuditTab(state, auditPreData);
 }

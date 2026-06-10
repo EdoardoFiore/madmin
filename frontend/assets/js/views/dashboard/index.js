@@ -13,12 +13,12 @@ import { apiGet, apiPatch } from '../../api.js';
 import { t } from '../../i18n.js';
 import { openModal } from '../../components/modal.js';
 import {
-    renderWelcome, loadWelcome,
-    renderSystemStats, loadSystemStats,
-    renderServices, loadServicesStatus,
-    renderAlerts, loadAlerts,
-    renderBackupStatus, loadBackupStatus,
-    renderStatCards, loadStatCards,
+    renderWelcome, loadWelcome, fillWelcome,
+    renderSystemStats, loadSystemStats, fillSystemStats,
+    renderServices, loadServicesStatus, fillServicesStatus,
+    renderAlerts, loadAlerts, fillAlerts,
+    renderBackupStatus, loadBackupStatus, fillBackupStatus,
+    renderStatCards, loadStatCards, fillStatCards,
     renderQuickActions,
 } from './core-widgets.js';
 import {
@@ -141,16 +141,51 @@ function getOrderedWidgets() {
 // ============== MAIN RENDER ==============
 
 export async function render(container) {
-    // Load module widgets first (registers them in WIDGET_MAP)
     const newIds = await loadModuleWidgets(WIDGET_MAP);
     _moduleWidgetIds.push(...newIds);
 
-    // Load prefs from server only on first render (when cache is empty)
     if (!_widgetPrefsCache) {
         await loadWidgetPrefsFromServer();
     }
 
     const ordered = getOrderedWidgets();
+    const enabledIds = new Set(ordered.filter(({ enabled }) => enabled).map(({ widget }) => widget.id));
+
+    // Pre-fetch all non-chart core widget data before any DOM write
+    const preData = {};
+    const preFetches = [];
+
+    if (enabledIds.has('welcome')) {
+        preFetches.push(
+            apiGet('/system/uptime').then(d => { preData.uptime = d; }).catch(() => { preData.uptime = null; }),
+            apiGet('/settings/system').then(d => { preData.sysSettings = d; }).catch(() => { preData.sysSettings = null; }),
+        );
+    }
+    if (enabledIds.has('system_stats')) {
+        preFetches.push(apiGet('/system/stats').then(d => { preData.stats = d; }).catch(() => { preData.stats = null; }));
+    }
+    if (enabledIds.has('services')) {
+        preFetches.push(apiGet('/system/services').then(d => { preData.services = d; }).catch(() => { preData.services = null; }));
+    }
+    if (enabledIds.has('alerts')) {
+        preFetches.push(apiGet('/system/alerts').then(d => { preData.alerts = d; }).catch(() => { preData.alerts = null; }));
+    }
+    if (enabledIds.has('backup_status')) {
+        preFetches.push(
+            apiGet('/backup/history').then(d => { preData.backupHistory = d; }).catch(() => { preData.backupHistory = []; }),
+            apiGet('/settings/backup').then(d => { preData.backupSettings = d; }).catch(() => { preData.backupSettings = null; }),
+        );
+    }
+    if (enabledIds.has('stat_cards')) {
+        preFetches.push(
+            apiGet('/health').then(d => { preData.health = d; }).catch(() => { preData.health = null; }),
+            apiGet('/firewall/rules').then(d => { preData.rules = d; }).catch(() => { preData.rules = null; }),
+            apiGet('/modules/available').then(d => { preData.modules = d; }).catch(() => { preData.modules = null; }),
+            apiGet('/auth/users').then(d => { preData.users = d; }).catch(() => { preData.users = null; }),
+        );
+    }
+
+    await Promise.all(preFetches);
 
     // Build widget HTML (only enabled)
     let widgetsHtml = '';
@@ -171,10 +206,20 @@ export async function render(container) {
 
     setupEventListeners();
 
-    // Load data for all visible widgets
+    // Sync fills — no yield between these; browser paints the final state
+    if (enabledIds.has('welcome')) fillWelcome(preData.uptime, preData.sysSettings);
+    if (enabledIds.has('system_stats')) fillSystemStats(preData.stats);
+    if (enabledIds.has('services') && preData.services) fillServicesStatus(preData.services);
+    if (enabledIds.has('alerts')) fillAlerts(preData.alerts);
+    if (enabledIds.has('backup_status')) fillBackupStatus(preData.backupHistory || [], preData.backupSettings || null);
+    if (enabledIds.has('stat_cards')) fillStatCards({ health: preData.health, rules: preData.rules, modules: preData.modules, users: preData.users });
+
+    // Chart widgets + module widgets need async loading (DOM required for chart init)
+    const ASYNC_LOAD_IDS = new Set(['resource_graphs', 'net_traffic', ..._moduleWidgetIds]);
     const loadPromises = [];
     for (const { widget, enabled } of ordered) {
         if (!enabled || !widget.load) continue;
+        if (!ASYNC_LOAD_IDS.has(widget.id)) continue;
         loadPromises.push(widget.load().catch(e => console.error(`Widget ${widget.id} error:`, e)));
     }
     await Promise.all(loadPromises);
