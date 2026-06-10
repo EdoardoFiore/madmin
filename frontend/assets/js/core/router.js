@@ -17,7 +17,7 @@ import { updateActiveMenuItem, setPageTitle, setPageActions } from './shell.js';
 const views = {
     'dashboard': () => import('../views/dashboard/index.js'),
     'users': () => import('../views/users/index.js'),
-    'firewall': () => import('../views/firewall.js'),
+    'firewall': () => import('../views/firewall/index.js'),
     'network': () => import('../views/network.js'),
     'crontab': () => import('../views/crontab.js'),
     'settings': () => import('../views/settings.js'),
