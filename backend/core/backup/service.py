@@ -376,18 +376,24 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
                     rows = await _import_module_tables(session, data_file)
                     mod_result["tables_imported"] = rows
                 
-                # Restore irrecoverable files
+                # Load the (trusted, on-disk) module manifest once: it bounds where
+                # this module is allowed to restore files and may declare a post_restore hook.
+                mod_manifest = _load_module_manifest(module_id)
+                config_export = (mod_manifest or {}).get("config_export", {})
+
+                # Restore irrecoverable files — constrained to the destination roots
+                # the module itself declares in its manifest (config_export.irrecoverable_files).
+                # A tampered/cross-instance archive cannot write outside those roots.
                 files_dir = os.path.join(module_dir, "files")
                 if os.path.isdir(files_dir):
-                    _restore_irrecoverable_files(files_dir)
+                    allowed_roots = _allowed_restore_roots(config_export.get("irrecoverable_files", []))
+                    _restore_irrecoverable_files(files_dir, allowed_roots)
                     mod_result["files_restored"] = True
-                
+
                 await session.commit()
-                
+
                 # Execute post_restore hook
-                mod_manifest = _load_module_manifest(module_id)
                 if mod_manifest:
-                    config_export = mod_manifest.get("config_export", {})
                     post_restore = config_export.get("post_restore")
                     if post_restore:
                         module_path = Path(settings.modules_dir) / module_id
@@ -1523,18 +1529,58 @@ async def _get_sorted_tables(session: AsyncSession, table_names: list) -> list:
     return sorted_list
 
 
-def _restore_irrecoverable_files(files_dir: str):
-    """Restore irrecoverable files from backup to their original paths."""
+def _allowed_restore_roots(patterns: List[str]) -> List[str]:
+    """Derive the absolute destination roots a module is allowed to restore into.
+
+    `patterns` are the glob patterns the module declares under
+    config_export.irrecoverable_files (e.g. "/etc/openvpn/server/*/pki"). For each
+    pattern we take its static prefix directory — the leading components before the
+    first glob metacharacter — which bounds where restored files may land.
+
+    Returns a list of realpath'd directories. Empty if no (valid, absolute) pattern,
+    in which case nothing may be restored.
+    """
+    roots: List[str] = []
+    for pattern in patterns or []:
+        if not pattern or not str(pattern).startswith("/"):
+            # Only absolute, system-path patterns are meaningful here.
+            continue
+        # Split off everything from the first glob metachar onwards.
+        static_prefix = re.split(r"[*?\[]", str(pattern), maxsplit=1)[0]
+        # The containing directory of the static prefix is the allowed root.
+        root = os.path.dirname(static_prefix.rstrip("/"))
+        if root and root != "/":
+            roots.append(os.path.realpath(root))
+    return roots
+
+
+def _restore_irrecoverable_files(files_dir: str, allowed_roots: List[str]):
+    """Restore irrecoverable files from backup to their original absolute paths.
+
+    Each destination is reconstructed from the archive layout and must resolve
+    inside one of `allowed_roots` (derived from the module manifest). Anything that
+    would land outside is dropped — this is the boundary that stops a tampered
+    archive from writing to arbitrary root-owned system paths (RCE).
+    """
+    if not allowed_roots:
+        logger.warning(
+            "Backup: nessuna destinazione consentita per questo modulo; "
+            "ripristino file irrecuperabili saltato"
+        )
+        return
+
     for root, dirs, files in os.walk(files_dir):
         for filename in files:
             src = os.path.join(root, filename)
             # Reconstruct original path
             rel_path = os.path.relpath(src, files_dir)
-            # Block path traversal attempts
-            if ".." in rel_path.split(os.sep):
-                logger.warning(f"Backup: percorso non sicuro ignorato: {rel_path}")
-                continue
             dest = os.path.realpath(os.path.join("/", rel_path))
+
+            # Containment check against the manifest-declared roots (realpath-based,
+            # so it survives '..' and symlink tricks — not a textual filter).
+            if not any(dest == r or dest.startswith(r + os.sep) for r in allowed_roots):
+                logger.warning(f"Backup: destinazione fuori perimetro ignorata: {dest}")
+                continue
 
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copy2(src, dest)

@@ -6,10 +6,16 @@ Provides network interface information using psutil and netplan management.
 import logging
 import subprocess
 import os
+import re
 import glob
 from typing import List, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Linux interface name token (letters/digits/.-_, max 15). The name is interpolated
+# into the netplan filename, so this guards the file write against path traversal
+# even if a caller forgets to validate (defense in depth).
+_IFACE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,15}$")
 
 # Try to import psutil
 try:
@@ -253,7 +259,10 @@ class NetplanService:
         """
         if not YAML_AVAILABLE:
             return False, "PyYAML not installed"
-        
+
+        if not _IFACE_NAME_RE.match(interface or ""):
+            return False, "Invalid interface name"
+
         # Build interface config
         iface_config = {}
         
@@ -342,9 +351,12 @@ class NetplanService:
         Returns:
             Tuple of (success, message)
         """
+        if not _IFACE_NAME_RE.match(interface or ""):
+            return False, "Invalid interface name"
+
         filename = f"99-madmin-{interface}.yaml"
         filepath = os.path.join(NETPLAN_DIR, filename)
-        
+
         if not os.path.exists(filepath):
             return False, f"No MADMIN config found for {interface}"
         

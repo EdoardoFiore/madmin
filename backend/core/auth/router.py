@@ -31,6 +31,7 @@ from .totp import (
 )
 from .dependencies import (
     get_current_user,
+    get_setup_user,
     require_permission,
     require_superuser,
     oauth2_scheme
@@ -656,7 +657,7 @@ async def get_2fa_status(
 
 @router.post("/me/2fa/setup", response_model=TwoFactorSetupResponse)
 async def setup_2fa(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_setup_user),
     session: AsyncSession = Depends(get_session)
 ):
     """
@@ -691,7 +692,7 @@ async def setup_2fa(
 @router.post("/me/2fa/enable")
 async def enable_2fa(
     data: TwoFactorVerifyRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_setup_user),
     session: AsyncSession = Depends(get_session)
 ):
     """

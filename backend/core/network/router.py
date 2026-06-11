@@ -5,6 +5,7 @@ API endpoints for network interface information and netplan configuration.
 """
 import ipaddress
 import logging
+import re
 from typing import List, Optional, Set
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -24,6 +25,20 @@ router = APIRouter(prefix="/api/network", tags=["Network"])
 
 # WAN interface fallback when the default route can't be resolved (e.g. cloud-init eth0).
 WAN_INTERFACE_FALLBACK = "eth0"
+
+# Linux interface names: letters/digits/.-_ only, max IFNAMSIZ-1 (15) chars.
+# Enforced because the name is interpolated into the netplan filename
+# (99-madmin-{interface}.yaml) — anything else is a path-traversal write vector.
+_IFACE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,15}$")
+
+
+def _validate_interface_name(interface: str) -> None:
+    """Reject interface names that aren't a valid Linux iface token (400)."""
+    if not _IFACE_NAME_RE.match(interface or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid interface name."
+        )
 
 
 async def _locked_interfaces(session: AsyncSession) -> Set[str]:
@@ -143,6 +158,7 @@ async def get_interface_config(
     _user: User = Depends(require_permission("network.view"))
 ):
     """Get netplan configuration for a specific interface."""
+    _validate_interface_name(interface)
     config = netplan_service.get_interface_config(interface)
     return {
         "interface": interface,
@@ -164,6 +180,7 @@ async def set_interface_config(
     Creates a new config file: /etc/netplan/99-madmin-{interface}.yaml
     Does NOT apply automatically - use /apply endpoint.
     """
+    _validate_interface_name(interface)
     if interface in await _locked_interfaces(session):
         raise HTTPException(
             status_code=403,
@@ -197,6 +214,7 @@ async def delete_interface_config(
     Only deletes 99-madmin-{interface}.yaml files.
     Does NOT apply automatically - use /apply endpoint.
     """
+    _validate_interface_name(interface)
     if interface in await _locked_interfaces(session):
         raise HTTPException(
             status_code=403,

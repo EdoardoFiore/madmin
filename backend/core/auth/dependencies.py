@@ -18,6 +18,50 @@ from .token_blacklist import token_blacklist
 # OAuth2 scheme for Bearer token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 
+# Flags carried by the *temporary* tokens issued during incomplete login flows
+# (2FA verification, forced 2FA setup, forced/expired password change). A token
+# carrying any of these is NOT a full session and must be rejected by
+# get_current_user — otherwise it would bypass the very gate that issued it.
+PENDING_FLAGS = ("2fa_pending", "2fa_setup_required", "pwd_change_pending")
+
+
+async def _resolve_user_from_payload(
+    payload: dict,
+    session: AsyncSession,
+    credentials_exception: HTTPException,
+) -> User:
+    """Resolve and validate the User referenced by a decoded JWT payload.
+
+    Shared by get_current_user and get_setup_user: checks sub/user_id presence,
+    token-revocation blacklist, and active status. Does NOT inspect pending flags.
+    """
+    username: str = payload.get("sub")
+    user_id_str: str = payload.get("user_id")
+
+    if username is None or user_id_str is None:
+        raise credentials_exception
+
+    try:
+        user_id = uuid.UUID(user_id_str)
+    except ValueError:
+        raise credentials_exception
+
+    # Fast-path: check if user's tokens have been revoked (disable/delete)
+    if token_blacklist.is_revoked(user_id):
+        raise credentials_exception
+
+    user = await service.get_user_by_id(session, user_id)
+
+    if user is None:
+        raise credentials_exception
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is disabled"
+        )
+
+    return user
+
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -25,7 +69,7 @@ async def get_current_user(
 ) -> User:
     """
     Dependency to get the current authenticated user.
-    
+
     Validates the JWT token and returns the User object.
     Raises 401 Unauthorized if token is invalid or user not found.
     """
@@ -34,37 +78,50 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
     payload = service.decode_access_token(token)
     if payload is None:
         raise credentials_exception
-    
-    username: str = payload.get("sub")
-    user_id_str: str = payload.get("user_id")
-    
-    if username is None or user_id_str is None:
+
+    # Reject temporary tokens from incomplete login flows: they carry a valid
+    # sub/user_id but must never grant a full session (2FA / forced-password-change bypass).
+    if any(payload.get(flag) for flag in PENDING_FLAGS):
         raise credentials_exception
-    
-    try:
-        user_id = uuid.UUID(user_id_str)
-    except ValueError:
+
+    return await _resolve_user_from_payload(payload, session, credentials_exception)
+
+
+async def get_setup_user(
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session)
+) -> User:
+    """
+    Dependency for the 2FA setup endpoints (/me/2fa/setup, /me/2fa/enable).
+
+    These serve two legitimate callers:
+    - a fully-authenticated user enabling 2FA voluntarily (token with no pending flag);
+    - a user whose 2FA is enforced-but-not-configured, holding a temporary
+      `2fa_setup_required` token, completing the forced setup.
+
+    Accepts either of the above. Rejects `2fa_pending` (2FA already configured —
+    must verify OTP first) and `pwd_change_pending` (must change password first),
+    so this remains a narrow exception to get_current_user's blanket rejection.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    payload = service.decode_access_token(token)
+    if payload is None:
         raise credentials_exception
-    
-    # Fast-path: check if user's tokens have been revoked (disable/delete)
-    if token_blacklist.is_revoked(user_id):
+
+    # Never allow the other incomplete-flow tokens onto the setup endpoints.
+    if payload.get("2fa_pending") or payload.get("pwd_change_pending"):
         raise credentials_exception
-    
-    user = await service.get_user_by_id(session, user_id)
-    
-    if user is None:
-        raise credentials_exception
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is disabled"
-        )
-    
-    return user
+
+    return await _resolve_user_from_payload(payload, session, credentials_exception)
 
 
 async def get_current_active_user(
