@@ -3,7 +3,7 @@
  */
 
 import { apiGet, apiPost, apiPatch, apiDelete, apiDeleteWithBody, apiPut } from '../api.js';
-import { showToast, confirmDialog, formatDate, emptyState, escapeHtml, statusBadge, copyToClipboard } from '../utils.js';
+import { showToast, confirmDialog, formatDate, emptyState, escapeHtml, escapeAttr, statusBadge, copyToClipboard } from '../utils.js';
 import { setPageActions, checkPermission, getUser } from '../app.js';
 import { t } from '../i18n.js';
 
@@ -442,10 +442,10 @@ function renderUsers() {
                 <td>
                     ${showActions ? `
                         <div class="btn-group btn-group-sm">
-                            <button class="btn btn-ghost-primary btn-edit" data-username="${user.username}" title="${t('common.edit')}">
+                            <button class="btn btn-ghost-primary btn-edit" data-username="${escapeAttr(user.username)}" title="${t('common.edit')}">
                                 <i class="ti ti-edit"></i>
                             </button>
-                            <button class="btn btn-ghost-danger btn-delete" data-username="${user.username}" title="${t('common.delete')}">
+                            <button class="btn btn-ghost-danger btn-delete" data-username="${escapeAttr(user.username)}" title="${t('common.delete')}">
                                 <i class="ti ti-trash"></i>
                             </button>
                         </div>

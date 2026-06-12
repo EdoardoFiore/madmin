@@ -1262,7 +1262,7 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
     // Build core section
     const coreUsers = (preview.core?.users || []).map(u =>
         `<tr>
-            <td><i class="ti ti-user me-1"></i>${u.username}</td>
+            <td><i class="ti ti-user me-1"></i>${escapeHtml(u.username)}</td>
             <td>${u.is_superuser ? '<span class="badge bg-red-lt">Super Admin</span>' : `<span class="badge bg-blue-lt">${t('menu.users')}</span>`}</td>
             <td>${u.is_active ? `<span class="badge bg-green-lt">${t('common.active')}</span>` : `<span class="badge bg-secondary-lt">${t('common.inactive')}</span>`}</td>
         </tr>`
@@ -1511,7 +1511,7 @@ function showRestorePreviewModal(preview, filename) {
         const roleLabel = u.is_superuser ? 'Super Admin' : t('logs.user');
         const roleColor = u.is_superuser ? 'bg-red-lt' : 'bg-blue-lt';
         return `<tr>
-            <td><i class="ti ti-user me-1"></i>${u.username}</td>
+            <td><i class="ti ti-user me-1"></i>${escapeHtml(u.username)}</td>
             <td><span class="badge ${roleColor}">${roleLabel}</span></td>
         </tr>`;
     }).join('');

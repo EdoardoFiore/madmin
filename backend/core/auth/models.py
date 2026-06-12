@@ -5,8 +5,10 @@ Defines User, Permission, and UserPermission tables for granular access control.
 Superusers bypass all permission checks. Regular users need explicit permissions.
 """
 from sqlmodel import SQLModel, Field, Relationship
+from pydantic import field_validator
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
+import re
 import uuid
 
 if TYPE_CHECKING:
@@ -128,6 +130,15 @@ class LoginAttempt(SQLModel, table=True):
 class UserCreate(SQLModel):
     """Schema for creating a new user."""
     username: str = Field(min_length=3, max_length=50)
+
+    @field_validator("username")
+    @classmethod
+    def _validate_username_charset(cls, v: str) -> str:
+        # Defense in depth: charset is also enforced in the auth service layer.
+        # Restricts username to chars safe in HTML text/attribute contexts.
+        if not re.match(r'^[a-zA-Z0-9._-]+$', v or ""):
+            raise ValueError("Username non valido: usa solo lettere, numeri, '.', '_' o '-'")
+        return v
     password: str  # strength validated in service layer
     email: Optional[str] = None
     is_superuser: bool = False

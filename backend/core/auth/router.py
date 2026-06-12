@@ -104,6 +104,9 @@ async def init_first_user(
     Crea il primo utente superuser. Funziona solo se non esistono ancora utenti.
     Chiamato dallo script di installazione — non richiede autenticazione.
     """
+    ok, msg = service.validate_username(data.username)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     ok, msg = service.validate_password_strength(data.password)
     if not ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)

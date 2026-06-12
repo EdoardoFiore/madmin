@@ -71,6 +71,21 @@ async def _compute_password_expiry(session: AsyncSession, changed_at: datetime) 
     return changed_at + timedelta(days=max_age) if max_age > 0 else None
 
 
+USERNAME_PATTERN = re.compile(r'^[a-zA-Z0-9._-]{3,50}$')
+
+
+def validate_username(username: str) -> Tuple[bool, str]:
+    """
+    Validate username charset to prevent injection into HTML contexts.
+
+    Only allows letters, digits, dot, underscore and hyphen (3-50 chars).
+    Returns (True, "") if valid, (False, error_message) otherwise.
+    """
+    if not USERNAME_PATTERN.match(username or ""):
+        return False, "Username non valido: usa solo lettere, numeri, '.', '_' o '-' (3-50 caratteri)"
+    return True, ""
+
+
 def validate_password_strength(password: str) -> Tuple[bool, str]:
     """
     Validate password strength requirements.
@@ -209,6 +224,10 @@ async def create_user(session: AsyncSession, user_data: UserCreate) -> User:
     Raises:
         ValueError: If username already exists or password is too weak.
     """
+    ok, msg = validate_username(user_data.username)
+    if not ok:
+        raise ValueError(msg)
+
     ok, msg = validate_password_strength(user_data.password)
     if not ok:
         raise ValueError(msg)
@@ -400,6 +419,10 @@ async def create_first_user(
     Create the first superuser. Fails if any users already exist.
     Called by POST /api/auth/init during initial setup.
     """
+    ok, msg = validate_username(username)
+    if not ok:
+        raise ValueError(msg)
+
     result = await session.execute(select(User).limit(1))
     if result.scalar_one_or_none() is not None:
         raise ValueError("Setup already completed: users already exist")

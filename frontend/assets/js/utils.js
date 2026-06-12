@@ -66,6 +66,21 @@ export function escapeHtml(text) {
 }
 
 /**
+ * Escape a string for safe interpolation inside a double-quoted HTML attribute.
+ * Unlike escapeHtml, this also escapes quotes to prevent attribute breakout.
+ * @param {string} text
+ * @returns {string}
+ */
+export function escapeAttr(text) {
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+/**
  * Format a date for display
  * @param {string|Date} date 
  * @returns {string}
