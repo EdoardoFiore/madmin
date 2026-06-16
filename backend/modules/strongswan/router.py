@@ -24,7 +24,6 @@ from .models import (
     IpsecTunnelStatus,
     IpsecFirewallRuleCreate, IpsecFirewallRuleRead, IpsecFirewallRuleUpdate,
     IpsecChildSaFirewallPolicyUpdate, IpsecFirewallRulesOrderUpdate,
-    IKE_ENCRYPTION_OPTIONS, IKE_INTEGRITY_OPTIONS, DH_GROUP_OPTIONS
 )
 from .service import strongswan_service
 from . import tasks
@@ -37,20 +36,6 @@ try:
     tasks.start_collector()
 except Exception as e:
     logger.warning(f"Could not start traffic collector: {e}")
-
-
-# --- CRYPTO OPTIONS ---
-
-@router.get("/crypto-options")
-async def get_crypto_options(
-    _user: User = Depends(require_permission("ipsec.view"))
-):
-    """Get available cryptographic algorithm options for UI."""
-    return {
-        "encryption": IKE_ENCRYPTION_OPTIONS,
-        "integrity": IKE_INTEGRITY_OPTIONS,
-        "dh_groups": DH_GROUP_OPTIONS
-    }
 
 
 # --- TUNNELS ---

@@ -59,15 +59,18 @@ export const CRYPTO_OPTIONS = {
             { value: 'modp8192', label: 'Group 18 (8192-bit)', number: 18, security: 5 }
         ],
         ikev2: [
+            { value: 'modp768', label: 'Group 1 (768-bit)', number: 1, security: 1, legacy: true },
+            { value: 'modp1024', label: 'Group 2 (1024-bit)', number: 2, security: 2, legacy: true },
+            { value: 'modp1536', label: 'Group 5 (1536-bit)', number: 5, security: 3 },
             { value: 'modp2048', label: 'Group 14 (2048-bit)', number: 14, security: 4 },
             { value: 'modp3072', label: 'Group 15 (3072-bit)', number: 15, security: 5 },
             { value: 'modp4096', label: 'Group 16 (4096-bit)', number: 16, security: 5 },
             { value: 'modp6144', label: 'Group 17 (6144-bit)', number: 17, security: 5 },
             { value: 'modp8192', label: 'Group 18 (8192-bit)', number: 18, security: 5 },
-            { value: 'ecp256', label: 'ECP-256 (Group 19)', number: 19, security: 5 },
-            { value: 'ecp384', label: 'ECP-384 (Group 20)', number: 20, security: 5 },
-            { value: 'ecp521', label: 'ECP-521 (Group 21)', number: 21, security: 5 },
-            { value: 'curve25519', label: 'Curve25519 (Group 31)', number: 31, security: 5 }
+            { value: 'ecp256', label: 'Group 19 (ECP-256)', number: 19, security: 5 },
+            { value: 'ecp384', label: 'Group 20 (ECP-384)', number: 20, security: 5 },
+            { value: 'ecp521', label: 'Group 21 (ECP-521)', number: 21, security: 5 },
+            { value: 'curve25519', label: 'Group 31 (Curve25519)', number: 31, security: 5 }
         ]
     },
     dpdAction: [

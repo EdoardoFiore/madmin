@@ -430,49 +430,8 @@ function renderPhase2Table() {
 }
 
 function setupDetailEvents(tunnelId) {
-    // Start Child SA
-    document.querySelectorAll('.btn-start-child').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const childId = btn.dataset.id;
-            const icon = btn.querySelector('i');
-            const originalClass = icon.className;
-
-            btn.disabled = true;
-            icon.className = 'spinner-border spinner-border-sm';
-
-            try {
-                await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/start`);
-                showToast(t('strongswan.childSaStarted'), 'success');
-            } catch (e) {
-                showToast(e.message, 'error');
-            } finally {
-                btn.disabled = false;
-                icon.className = originalClass;
-            }
-        });
-    });
-
-    // Stop Child SA
-    document.querySelectorAll('.btn-stop-child').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const childId = btn.dataset.id;
-            const icon = btn.querySelector('i');
-            const originalClass = icon.className;
-
-            btn.disabled = true;
-            icon.className = 'spinner-border spinner-border-sm';
-
-            try {
-                await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/stop`);
-                showToast(t('strongswan.childSaStopped'), 'success');
-            } catch (e) {
-                showToast(e.message, 'error');
-            } finally {
-                btn.disabled = false;
-                icon.className = originalClass;
-            }
-        });
-    });
+    // Child SA row events (start/stop/edit/delete) — rebound after table re-render
+    setupChildRowEvents(tunnelId);
 
     // Start tunnel
     document.getElementById('btn-start')?.addEventListener('click', async () => {
@@ -538,7 +497,66 @@ function setupDetailEvents(tunnelId) {
         const formContainer = document.getElementById('phase2-form-container');
         formContainer.innerHTML = renderChildSaForm(tunnelId);
         document.getElementById('btn-add-phase2').classList.add('d-none');
-        setupChildSaFormEvents(tunnelId, () => location.reload());
+        setupChildSaFormEvents(tunnelId, () => refreshPhase2Section(tunnelId));
+    });
+
+    // Refresh logs button
+    document.getElementById('btn-refresh-logs')?.addEventListener('click', () => {
+        loadLogs(tunnelId);
+    });
+
+    // Traffic period selector
+    document.getElementById('traffic-period')?.addEventListener('change', () => {
+        loadTrafficStats(tunnelId);
+    });
+}
+
+// Bind start/stop/edit/delete handlers for Child SA rows.
+// Separated from setupDetailEvents so it can be rebound after the Phase 2
+// table is re-rendered in place (no full page reload).
+function setupChildRowEvents(tunnelId) {
+    // Start Child SA
+    document.querySelectorAll('.btn-start-child').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const childId = btn.dataset.id;
+            const icon = btn.querySelector('i');
+            const originalClass = icon.className;
+
+            btn.disabled = true;
+            icon.className = 'spinner-border spinner-border-sm';
+
+            try {
+                await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/start`);
+                showToast(t('strongswan.childSaStarted'), 'success');
+            } catch (e) {
+                showToast(e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                icon.className = originalClass;
+            }
+        });
+    });
+
+    // Stop Child SA
+    document.querySelectorAll('.btn-stop-child').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const childId = btn.dataset.id;
+            const icon = btn.querySelector('i');
+            const originalClass = icon.className;
+
+            btn.disabled = true;
+            icon.className = 'spinner-border spinner-border-sm';
+
+            try {
+                await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/stop`);
+                showToast(t('strongswan.childSaStopped'), 'success');
+            } catch (e) {
+                showToast(e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                icon.className = originalClass;
+            }
+        });
     });
 
     // Delete Phase 2
@@ -559,7 +577,7 @@ function setupDetailEvents(tunnelId) {
                 try {
                     await apiDelete(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}`);
                     showToast(t('strongswan.phase2Deleted'), 'success');
-                    location.reload();
+                    refreshPhase2Section(tunnelId);
                 } catch (e) {
                     showToast(e.message, 'error');
                 }
@@ -578,23 +596,47 @@ function setupDetailEvents(tunnelId) {
                 // Pass child data for editing
                 formContainer.innerHTML = renderChildSaForm(tunnelId, null, child);
                 document.getElementById('btn-add-phase2')?.classList.add('d-none');
-                setupChildSaFormEvents(tunnelId, () => location.reload());
+                setupChildSaFormEvents(tunnelId, () => refreshPhase2Section(tunnelId));
 
                 // Scroll to form
                 formContainer.scrollIntoView({ behavior: 'smooth' });
             }
         });
     });
+}
 
-    // Refresh logs button
-    document.getElementById('btn-refresh-logs')?.addEventListener('click', () => {
-        loadLogs(tunnelId);
-    });
+// Re-fetch children and re-render just the Phase 2 table + firewall section,
+// without reloading the whole page. Used after create/edit/delete of a Child SA.
+async function refreshPhase2Section(tunnelId) {
+    try {
+        children = await apiGet(`/modules/strongswan/tunnels/${tunnelId}/children`);
+    } catch (e) {
+        showToast(e.message, 'error');
+        return;
+    }
 
-    // Traffic period selector
-    document.getElementById('traffic-period')?.addEventListener('change', () => {
-        loadTrafficStats(tunnelId);
-    });
+    // Clear inline form and restore the Add button
+    const formContainer = document.getElementById('phase2-form-container');
+    if (formContainer) formContainer.innerHTML = '';
+    document.getElementById('btn-add-phase2')?.classList.remove('d-none');
+
+    // Re-render the Phase 2 table and rebind its row events
+    const phase2Container = document.getElementById('phase2-container');
+    if (phase2Container) {
+        phase2Container.innerHTML = renderPhase2Table();
+        setupChildRowEvents(tunnelId);
+    }
+
+    // A Child SA change adds/removes firewall chains — refresh that section too
+    loadFirewallManagement(tunnelId);
+
+    // Pull fresh status to repaint the per-child status dots
+    try {
+        const status = await apiGet(`/modules/strongswan/tunnels/${tunnelId}/status`);
+        updateStatusUI(status);
+    } catch (e) {
+        // Status refresh is best-effort; ignore failures
+    }
 }
 
 // Traffic stats history for chart

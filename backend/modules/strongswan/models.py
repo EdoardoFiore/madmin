@@ -381,30 +381,3 @@ class IpsecChildSaFirewallPolicyUpdate(SQLModel):
 class IpsecFirewallRulesOrderUpdate(SQLModel):
     """Schema for reordering firewall rules."""
     rules: List[dict]  # [{"id": uuid, "order": int}, ...]
-
-
-# --- Algorithm Options for UI ---
-
-IKE_ENCRYPTION_OPTIONS = [
-    {"value": "aes256", "label": "AES-256", "security": 5},
-    {"value": "aes128", "label": "AES-128", "security": 4},
-    {"value": "aes256gcm16", "label": "AES-256-GCM (IKEv2)", "security": 5},
-    {"value": "chacha20poly1305", "label": "ChaCha20-Poly1305 (IKEv2)", "security": 5},
-    {"value": "3des", "label": "3DES (Legacy)", "security": 2},
-]
-
-IKE_INTEGRITY_OPTIONS = [
-    {"value": "sha256", "label": "SHA-256", "security": 5},
-    {"value": "sha384", "label": "SHA-384", "security": 5},
-    {"value": "sha512", "label": "SHA-512", "security": 5},
-    {"value": "sha1", "label": "SHA-1 (Legacy)", "security": 3},
-]
-
-DH_GROUP_OPTIONS = [
-    {"value": "modp2048", "label": "MODP 2048-bit", "security": 4},
-    {"value": "modp3072", "label": "MODP 3072-bit", "security": 5},
-    {"value": "modp4096", "label": "MODP 4096-bit", "security": 5},
-    {"value": "ecp256", "label": "ECP 256-bit", "security": 5},
-    {"value": "ecp384", "label": "ECP 384-bit", "security": 5},
-    {"value": "curve25519", "label": "Curve25519", "security": 5},
-]
