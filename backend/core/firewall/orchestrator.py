@@ -14,8 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
 import uuid
 
-from .models import MachineFirewallRule, ModuleChain
-from . import iptables
+import json
+
+from .models import (
+    MachineFirewallRule, ModuleChain,
+    AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
+)
+from . import iptables, addresses
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +273,45 @@ class FirewallOrchestrator:
             select(MachineFirewallRule).where(MachineFirewallRule.id == rule_id)
         )
         return result.scalar_one_or_none()
+
+    async def _set_rule_addresses(
+        self,
+        session: AsyncSession,
+        rule_id: uuid.UUID,
+        refs: Optional[List[Dict]],
+        direction: str,
+    ) -> bool:
+        """
+        Replace the object/group references for a rule direction.
+
+        `refs` is a list of {"object_id"|"group_id"} dicts (None = leave as is).
+        Returns True if at least one non-empty reference was written (so the
+        caller can null the literal source/destination column for that direction).
+        """
+        if refs is None:
+            return False
+        await session.execute(
+            delete(FirewallRuleAddress).where(
+                FirewallRuleAddress.rule_id == rule_id,
+                FirewallRuleAddress.direction == direction,
+            )
+        )
+        wrote = False
+        for i, ref in enumerate(refs):
+            obj_id = ref.get("object_id")
+            grp_id = ref.get("group_id")
+            if not obj_id and not grp_id:
+                continue
+            session.add(FirewallRuleAddress(
+                rule_id=rule_id,
+                direction=direction,
+                object_id=uuid.UUID(obj_id) if obj_id else None,
+                group_id=uuid.UUID(grp_id) if grp_id else None,
+                order=i,
+            ))
+            wrote = True
+        await session.flush()
+        return wrote
     
     async def create_rule(
         self,
@@ -317,10 +361,19 @@ class FirewallOrchestrator:
         session.add(rule)
         await session.flush()
         await session.refresh(rule)
-        
+
+        # Object/group references (multi-select). When present they take
+        # precedence over the literal source/destination column.
+        if await self._set_rule_addresses(session, rule.id, rule_data.get("source_refs"), "source"):
+            rule.source = None
+        if await self._set_rule_addresses(session, rule.id, rule_data.get("destination_refs"), "destination"):
+            rule.destination = None
+        session.add(rule)
+        await session.flush()
+
         # Apply rules
         await self.apply_rules(session)
-        
+
         logger.info(f"Created firewall rule {rule.id}")
         return rule
     
@@ -335,19 +388,30 @@ class FirewallOrchestrator:
         if not rule:
             return None
         
-        # Update fields
+        # Update fields (source_refs/destination_refs are not model columns and
+        # are handled separately below)
         for key, value in rule_data.items():
             if hasattr(rule, key):
                 setattr(rule, key, value)
-        
+
         rule.updated_at = datetime.utcnow()
         session.add(rule)
         await session.flush()
+
+        # Object/group references: replace when explicitly provided
+        if "source_refs" in rule_data:
+            if await self._set_rule_addresses(session, rule.id, rule_data.get("source_refs"), "source"):
+                rule.source = None
+        if "destination_refs" in rule_data:
+            if await self._set_rule_addresses(session, rule.id, rule_data.get("destination_refs"), "destination"):
+                rule.destination = None
+        session.add(rule)
+        await session.flush()
         await session.refresh(rule)
-        
+
         # Apply rules
         await self.apply_rules(session)
-        
+
         logger.info(f"Updated firewall rule {rule.id}")
         return rule
     
@@ -362,9 +426,13 @@ class FirewallOrchestrator:
             return False
         
         chain = rule.chain
+        # Remove the rule's object/group references first (no DB-level cascade)
+        await session.execute(
+            delete(FirewallRuleAddress).where(FirewallRuleAddress.rule_id == rule_id)
+        )
         await session.delete(rule)
         await session.flush()
-        
+
         # Reorder remaining rules in chain
         result = await session.execute(
             select(MachineFirewallRule)
@@ -385,6 +453,7 @@ class FirewallOrchestrator:
         Delete ALL firewall rules.
         Used for full config restore/replace.
         """
+        await session.execute(delete(FirewallRuleAddress))
         await session.execute(delete(MachineFirewallRule))
         await session.flush()
         
@@ -462,6 +531,103 @@ class FirewallOrchestrator:
             for ip in ips:
                 iptables.ipset_add(setname, ip)
 
+    async def _build_address_plan(self, session: AsyncSession, rules):
+        """
+        Assemble the ipset materialization plan and resolve each rule direction's
+        address references into an effective 'set:<ipset>' token.
+
+        Every address object and group is materialized for as long as it exists
+        (independent of rule references), so its set is visible/populated even
+        before any policy uses it. Per-rule aggregate list:sets are added only
+        for directions with >1 reference.
+
+        Returns (eff_map, plan):
+          eff_map: {rule_id: (eff_source|None, eff_destination|None)}
+          plan:    {"objects": {ref_key: {...}}, "groups": {...}, "rule_sets": {...}}
+        """
+        # --- All objects and groups (so every set is materialized) ---
+        ores = await session.execute(select(AddressObject))
+        obj_by_id: Dict[uuid.UUID, AddressObject] = {o.id: o for o in ores.scalars().all()}
+
+        gres = await session.execute(select(AddressGroup))
+        group_objs: Dict[uuid.UUID, AddressGroup] = {g.id: g for g in gres.scalars().all()}
+
+        group_members: Dict[uuid.UUID, List[uuid.UUID]] = {}
+        if group_objs:
+            mres = await session.execute(select(AddressGroupMember))
+            for m in mres.scalars().all():
+                if m.member_object_id:
+                    group_members.setdefault(m.group_id, []).append(m.member_object_id)
+
+        def _obj_dict(o: AddressObject) -> dict:
+            ips = None
+            if o.resolved_ips:
+                try:
+                    ips = json.loads(o.resolved_ips)
+                except Exception:
+                    ips = None
+            return {"ref_key": o.ref_key, "type": o.type, "value": o.value,
+                    "enabled": o.enabled, "resolved_ips": ips}
+
+        plan_objects = {o.ref_key: _obj_dict(o) for o in obj_by_id.values()}
+        plan_groups = {
+            g.ref_key: {
+                "enabled": g.enabled,
+                "member_object_keys": [
+                    obj_by_id[mid].ref_key for mid in group_members.get(gid, [])
+                    if mid in obj_by_id
+                ],
+            }
+            for gid, g in group_objs.items()
+        }
+        plan_rule_sets: Dict[str, list] = {}
+        eff: Dict[uuid.UUID, list] = {}
+
+        # --- Effective per-direction tokens from rule references ---
+        rule_ids = [r.id for r in rules]
+        if rule_ids:
+            ra_result = await session.execute(
+                select(FirewallRuleAddress)
+                .where(FirewallRuleAddress.rule_id.in_(rule_ids))
+                .order_by(FirewallRuleAddress.order)
+            )
+            by_dir: Dict[tuple, list] = {}
+            for ra in ra_result.scalars().all():
+                by_dir.setdefault((ra.rule_id, ra.direction), []).append(ra)
+
+            for (rid, direction), ra_list in by_dir.items():
+                valid = [
+                    ra for ra in ra_list
+                    if (ra.object_id in obj_by_id) or (ra.group_id in group_objs)
+                ]
+                if not valid:
+                    continue
+                if len(valid) == 1:
+                    ra = valid[0]
+                    if ra.object_id:
+                        set_name = addresses.object_leaf_set_name(obj_by_id[ra.object_id].ref_key)
+                    else:
+                        set_name = addresses.group_set_name(group_objs[ra.group_id].ref_key)
+                else:
+                    # per-rule aggregate: flatten everything to leaf object sets
+                    set_name = addresses.rule_set_name(rid, direction)
+                    leaf_names, seen = [], set()
+                    for ra in valid:
+                        member_ids = [ra.object_id] if ra.object_id else group_members.get(ra.group_id, [])
+                        for mid in member_ids:
+                            if mid in obj_by_id:
+                                nm = addresses.object_leaf_set_name(obj_by_id[mid].ref_key)
+                                if nm not in seen:
+                                    seen.add(nm)
+                                    leaf_names.append(nm)
+                    plan_rule_sets[set_name] = leaf_names
+                slot = eff.setdefault(rid, [None, None])
+                slot[0 if direction == "source" else 1] = f"set:{set_name}"
+
+        eff_map = {rid: (s, d) for rid, (s, d) in eff.items()}
+        plan = {"objects": plan_objects, "groups": plan_groups, "rule_sets": plan_rule_sets}
+        return eff_map, plan
+
     async def apply_rules(self, session: AsyncSession) -> bool:
         """
         Apply all rules from database to iptables atomically.
@@ -487,23 +653,17 @@ class FirewallOrchestrator:
         )
         rules = result.scalars().all()
 
-        # --- Geo-IP: per-country ipsets referenced by rules (tokens live in
-        # rule.source / rule.destination as "geo:<cc>"). ---
-        # 1) Create the (possibly empty) sets synchronously so the iptables
-        #    --match-set references in restore_chains() are always valid — this
-        #    is instant (no download / no bulk load).
-        # 2) Download + populate the CIDR lists off the request path in a worker
-        #    thread, so rule create/update returns immediately. The set simply
-        #    matches nothing until the background load finishes a moment later.
-        from . import geoip
-        geo_ccs = set()
-        for r in rules:
-            for val in (r.source, r.destination):
-                cc = iptables.parse_geo(val)
-                if cc:
-                    geo_ccs.add(cc)
-        geoip.ensure_sets_exist(geo_ccs)
-        asyncio.create_task(asyncio.to_thread(geoip.sync_referenced_ipsets, geo_ccs))
+        # --- Address objects/groups: resolve each rule direction's references
+        #     to an effective "set:<ipset>" token and materialize the backing
+        #     ipsets. ---
+        # 1) ensure_sets_exist creates the (possibly empty) sets synchronously so
+        #    the --match-set references in restore_chains() are always valid.
+        # 2) sync_referenced resolves/builds the set contents off the request
+        #    path in a worker thread (network for fqdn/geo), so create/update
+        #    returns immediately; the set matches nothing until it finishes.
+        eff_map, addr_plan = await self._build_address_plan(session, rules)
+        addresses.ensure_sets_exist(addr_plan)
+        asyncio.create_task(asyncio.to_thread(addresses.sync_referenced, addr_plan))
 
         # Build per-table chain rules: {table: {madmin_chain: [restore-format lines]}}
         chain_rules: Dict[str, Dict[str, List[str]]] = {}
@@ -532,9 +692,17 @@ class FirewallOrchestrator:
             if not madmin_chain:
                 logger.warning(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id}")
                 continue
-            chain_rules[rule.table_name][madmin_chain].append(
-                iptables.rule_to_restore_line(madmin_chain, rule)
-            )
+            eff = eff_map.get(rule.id)
+            if eff:
+                eff_src, eff_dst = eff
+                line = iptables.rule_to_restore_line(
+                    madmin_chain, rule,
+                    source=eff_src if eff_src is not None else rule.source,
+                    destination=eff_dst if eff_dst is not None else rule.destination,
+                )
+            else:
+                line = iptables.rule_to_restore_line(madmin_chain, rule)
+            chain_rules[rule.table_name][madmin_chain].append(line)
 
         # --- Auto-generate FORWARD ACCEPT for DNAT rules ---
         # A DNAT in PREROUTING/OUTPUT rewrites the destination to an internal host;
@@ -546,13 +714,17 @@ class FirewallOrchestrator:
         for rule in rules:
             if rule.table_name != "nat" or rule.action != "DNAT" or not rule.to_destination:
                 continue
+            fields = dnat_forward_fields(rule)
+            eff = eff_map.get(rule.id)
+            if eff and eff[0] is not None:
+                fields["source"] = eff[0]   # honor object/group source refs
             auto_forward_lines.append(
                 " ".join(iptables.build_rule_args(
                     chain=iptables.MADMIN_FORWARD_CHAIN,
                     action="ACCEPT",
                     comment=f"MADMIN_AUTO_DNAT_{rule.id}",
                     operation="-A",
-                    **dnat_forward_fields(rule),
+                    **fields,
                 ))
             )
         if auto_forward_lines:
@@ -579,6 +751,22 @@ class FirewallOrchestrator:
             )
 
         return success
+
+    async def resync_addresses(self, session: AsyncSession) -> bool:
+        """
+        Rebuild address-object/group/per-rule ipsets WITHOUT touching iptables
+        chains. Used after address-object/group CRUD: the --match-set names
+        referenced by rules are unchanged, only set membership/content changes,
+        so a full apply_rules() (chain rebuild) is unnecessary.
+        """
+        result = await session.execute(
+            select(MachineFirewallRule).where(MachineFirewallRule.enabled == True)
+        )
+        rules = result.scalars().all()
+        _, plan = await self._build_address_plan(session, rules)
+        addresses.ensure_sets_exist(plan)
+        asyncio.create_task(asyncio.to_thread(addresses.sync_referenced, plan))
+        return True
 
 
 # Singleton instance

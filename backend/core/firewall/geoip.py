@@ -1,10 +1,11 @@
 """
 MADMIN Geo-IP data service.
 
-Downloads per-country aggregated CIDR lists from ipdeny.com, caches them on disk,
-and loads them into per-country ipsets (MADMIN_GEO_<CC>, type hash:net) so the
-firewall rule engine can match a rule's source/destination by geographic area
-via `-m set --match-set MADMIN_GEO_<CC> src|dst`.
+Downloads per-country aggregated CIDR lists from ipdeny.com and caches them on
+disk. This module is a pure *data provider*: it exposes the ISO country catalog
+and the per-country CIDR lists (country_cidrs), which core.firewall.addresses
+uses to materialize geo-type address objects under the uniform MADMIN_AO_<ref_key>
+naming. geoip itself no longer owns or names any ipset.
 
 Design goals:
 - No new pip dependency (uses stdlib urllib).
@@ -16,10 +17,9 @@ import logging
 import re
 import urllib.request
 from pathlib import Path
-from typing import List, Set, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple
 
 from config import get_settings
-from . import iptables
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -353,89 +353,17 @@ def download_country(cc: str) -> bool:
         return False
 
 
-def ensure_sets_exist(country_codes: Set[str]) -> None:
+def country_cidrs(cc: str, force_reload: bool = False) -> List[str]:
     """
-    Synchronously create an EMPTY hash:net ipset for every referenced country
-    if it does not exist yet. Fast (no download, no bulk load) — its only job is
-    to make the iptables `--match-set MADMIN_GEO_<CC>` reference valid so that
-    apply_rules()'s restore_chains() never fails on a missing set.
+    Return the aggregated CIDR list for a country, downloading + caching it on
+    first use (or when force_reload is True). Fail-soft: on download error the
+    last good cached copy is reused; returns [] only if nothing is available.
 
-    Actual CIDR population is done off the request path by sync_referenced_ipsets().
-    """
-    for cc in {c.lower() for c in country_codes}:
-        setname = iptables.geo_set_name(cc)
-        if not iptables.ipset_exists(setname):
-            iptables.ipset_create_net(setname)
-
-
-def ensure_country_ipset(cc: str, force_reload: bool = False) -> bool:
-    """
-    Ensure MADMIN_GEO_<CC> exists and is populated from the cached zone.
-
-    Downloads the zone first if there is no cache yet (or force_reload is True),
-    then bulk-loads the CIDRs in a single `ipset restore`. Re-loading from cache
-    is cheap and idempotent. Never raises (fail-soft / fail-open).
+    This is the data-provider entry point used by core.firewall.addresses to
+    materialize geo-type address objects under the uniform MADMIN_AO_<ref_key>
+    naming. geoip no longer owns any ipset — it only provides country data.
     """
     cc = cc.lower()
-    setname = iptables.geo_set_name(cc)
-
     if force_reload or not _cache_file(cc).exists():
         download_country(cc)
-
-    cidrs = _read_cached_cidrs(cc)
-    if not cidrs:
-        logger.warning(
-            f"Geo: no CIDRs available for {cc}; leaving ipset {setname} empty "
-            f"(rule will match nothing until the list is downloaded)"
-        )
-        if not iptables.ipset_exists(setname):
-            iptables.ipset_create_net(setname)
-        return False
-
-    # Bulk-load all CIDRs in a single `ipset restore` transaction (fast).
-    ok = iptables.ipset_restore_net(setname, cidrs)
-    if ok:
-        logger.info(f"Geo: loaded {len(cidrs)} CIDRs into {setname}")
-    return ok
-
-
-def sync_referenced_ipsets(country_codes: Set[str], destroy_unreferenced: bool = True) -> None:
-    """
-    Ensure an ipset exists and is populated for every referenced country code.
-    Optionally destroy MADMIN_GEO_* sets no longer referenced by any rule.
-
-    Called from apply_rules() before restore_chains() so every --match-set
-    reference points at an existing set.
-    """
-    referenced = {cc.lower() for cc in country_codes}
-    for cc in referenced:
-        ensure_country_ipset(cc)
-
-    if destroy_unreferenced:
-        _destroy_unreferenced(referenced)
-
-
-def _destroy_unreferenced(referenced: Set[str]) -> None:
-    """Destroy MADMIN_GEO_<CC> sets whose country is no longer referenced by any rule."""
-    if settings.mock_iptables:
-        return
-    keep = {iptables.geo_set_name(cc) for cc in referenced}
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["ipset", "list", "-name"], capture_output=True, text=True
-        )
-    except FileNotFoundError:
-        return
-    if result.returncode != 0:
-        return
-    for name in result.stdout.split():
-        if name.startswith("MADMIN_GEO_") and name not in keep:
-            iptables.ipset_destroy(name)
-            logger.info(f"Geo: destroyed unreferenced ipset {name}")
-
-
-def refresh_all(country_codes: Set[str]) -> None:
-    """Re-download and reload every referenced country set (background / on-demand refresh)."""
-    for cc in {cc.lower() for cc in country_codes}:
-        ensure_country_ipset(cc, force_reload=True)
+    return _read_cached_cidrs(cc)

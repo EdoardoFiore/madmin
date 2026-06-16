@@ -98,6 +98,14 @@ async def export_config(session: AsyncSession) -> str:
         firewall_data = await _export_firewall_rules(session)
         _write_json(os.path.join(core_dir, "firewall.json"), firewall_data)
         logger.info(f"Exported {len(firewall_data)} firewall rules")
+
+        # Address objects & groups
+        address_data = await _export_address_catalog(session)
+        _write_json(os.path.join(core_dir, "addresses.json"), address_data)
+        logger.info(
+            f"Exported {len(address_data['objects'])} address objects, "
+            f"{len(address_data['groups'])} groups"
+        )
         
         # Settings
         settings_data = await _export_settings(session)
@@ -310,7 +318,18 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
             result["users_imported"] = count
             logger.info(f"Imported {count} users")
         
-        # 2. Firewall rules
+        # 2a. Address objects & groups (must precede firewall rules so refs resolve)
+        addresses_file = os.path.join(core_path, "addresses.json")
+        if os.path.exists(addresses_file):
+            addr_counts = await _import_address_catalog(session, addresses_file)
+            result["address_objects_imported"] = addr_counts["objects"]
+            result["address_groups_imported"] = addr_counts["groups"]
+            logger.info(
+                f"Imported {addr_counts['objects']} address objects, "
+                f"{addr_counts['groups']} groups"
+            )
+
+        # 2b. Firewall rules
         firewall_file = os.path.join(core_path, "firewall.json")
         if os.path.exists(firewall_file):
             count = await _import_firewall_rules(session, firewall_file)
@@ -951,14 +970,40 @@ async def _export_users(session: AsyncSession) -> List[dict]:
 
 
 async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
-    """Export machine firewall rules using the orchestrator."""
-    from core.firewall.models import MachineFirewallRule
-    
+    """Export machine firewall rules, including address-object/group references
+    (serialized by name so they survive id changes on restore)."""
+    from core.firewall.models import (
+        MachineFirewallRule, FirewallRuleAddress, AddressObject, AddressGroup,
+    )
+
     result = await session.execute(
         select(MachineFirewallRule).order_by(MachineFirewallRule.order)
     )
     rules = result.scalars().all()
-    
+
+    ra_res = await session.execute(
+        select(FirewallRuleAddress).order_by(FirewallRuleAddress.order)
+    )
+    ras = ra_res.scalars().all()
+    obj_ids = {r.object_id for r in ras if r.object_id}
+    grp_ids = {r.group_id for r in ras if r.group_id}
+    obj_name, grp_name = {}, {}
+    if obj_ids:
+        ores = await session.execute(select(AddressObject).where(AddressObject.id.in_(obj_ids)))
+        obj_name = {o.id: o.name for o in ores.scalars().all()}
+    if grp_ids:
+        gres = await session.execute(select(AddressGroup).where(AddressGroup.id.in_(grp_ids)))
+        grp_name = {g.id: g.name for g in gres.scalars().all()}
+    refs_by: dict = {}
+    for r in ras:
+        if r.object_id in obj_name:
+            item = {"kind": "object", "name": obj_name[r.object_id]}
+        elif r.group_id in grp_name:
+            item = {"kind": "group", "name": grp_name[r.group_id]}
+        else:
+            continue
+        refs_by.setdefault((r.rule_id, r.direction), []).append(item)
+
     return [
         {
             "chain": r.chain,
@@ -981,10 +1026,56 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
             "comment": r.comment,
             "table_name": r.table_name,
             "order": r.order,
-            "enabled": r.enabled
+            "enabled": r.enabled,
+            "source_refs": refs_by.get((r.id, "source"), []),
+            "destination_refs": refs_by.get((r.id, "destination"), []),
         }
         for r in rules
     ]
+
+
+async def _unique_addr_key(session: AsyncSession, model) -> str:
+    """Generate a ref_key not already used by `model`."""
+    from core.firewall import addresses as addr_mod
+    for _ in range(12):
+        key = addr_mod.new_ref_key()
+        r = await session.execute(select(model).where(model.ref_key == key))
+        if r.scalar_one_or_none() is None:
+            return key
+    raise RuntimeError("Impossibile generare ref_key univoco")
+
+
+async def _export_address_catalog(session: AsyncSession) -> dict:
+    """Export address objects and groups (with object members, by name)."""
+    from core.firewall.models import AddressObject, AddressGroup, AddressGroupMember
+
+    ores = await session.execute(select(AddressObject).order_by(AddressObject.name))
+    objects = [
+        {"name": o.name, "type": o.type, "value": o.value,
+         "description": o.description, "enabled": o.enabled}
+        for o in ores.scalars().all()
+    ]
+
+    gres = await session.execute(select(AddressGroup).order_by(AddressGroup.name))
+    group_rows = gres.scalars().all()
+    mres = await session.execute(select(AddressGroupMember))
+    members = mres.scalars().all()
+    m_obj_ids = {m.member_object_id for m in members if m.member_object_id}
+    m_obj_name = {}
+    if m_obj_ids:
+        o2 = await session.execute(select(AddressObject).where(AddressObject.id.in_(m_obj_ids)))
+        m_obj_name = {o.id: o.name for o in o2.scalars().all()}
+    members_by_group: dict = {}
+    for m in members:
+        if m.member_object_id in m_obj_name:
+            members_by_group.setdefault(m.group_id, []).append(
+                {"kind": "object", "name": m_obj_name[m.member_object_id]})
+    groups = [
+        {"name": g.name, "description": g.description, "enabled": g.enabled,
+         "members": members_by_group.get(g.id, [])}
+        for g in group_rows
+    ]
+    return {"objects": objects, "groups": groups}
 
 
 async def _export_settings(session: AsyncSession) -> dict:
@@ -1201,25 +1292,94 @@ async def _import_users(session: AsyncSession, users_file: str) -> int:
     return count
 
 
+async def _import_address_catalog(session: AsyncSession, addresses_file: str) -> dict:
+    """Import address objects and groups, replacing the existing catalog.
+
+    Must run BEFORE _import_firewall_rules so rule references resolve by name.
+    """
+    from core.firewall.models import (
+        AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
+    )
+
+    with open(addresses_file) as f:
+        data = json.load(f)
+
+    # Replace catalog (rule refs + members first due to FKs)
+    await session.execute(delete(FirewallRuleAddress))
+    await session.execute(delete(AddressGroupMember))
+    await session.execute(delete(AddressGroup))
+    await session.execute(delete(AddressObject))
+    await session.flush()
+
+    obj_by_name = {}
+    for o in data.get("objects", []):
+        ref_key = await _unique_addr_key(session, AddressObject)
+        obj = AddressObject(
+            ref_key=ref_key, name=o["name"], type=o["type"], value=o["value"],
+            description=o.get("description"), enabled=o.get("enabled", True),
+        )
+        session.add(obj)
+        await session.flush()
+        obj_by_name[obj.name] = obj
+
+    for g in data.get("groups", []):
+        ref_key = await _unique_addr_key(session, AddressGroup)
+        grp = AddressGroup(
+            ref_key=ref_key, name=g["name"], description=g.get("description"),
+            enabled=g.get("enabled", True),
+        )
+        session.add(grp)
+        await session.flush()
+        for m in g.get("members", []):
+            if m.get("kind") == "object" and m.get("name") in obj_by_name:
+                session.add(AddressGroupMember(
+                    group_id=grp.id, member_object_id=obj_by_name[m["name"]].id))
+    await session.flush()
+    return {"objects": len(data.get("objects", [])), "groups": len(data.get("groups", []))}
+
+
 async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> int:
-    """Import firewall rules. Replaces all existing rules."""
-    from core.firewall.models import MachineFirewallRule
-    
+    """Import firewall rules. Replaces all existing rules and their address refs.
+
+    Resolves source_refs/destination_refs (by name) against the already-imported
+    address catalog; missing names are skipped.
+    """
+    from core.firewall.models import (
+        MachineFirewallRule, FirewallRuleAddress, AddressObject, AddressGroup,
+    )
+
     with open(firewall_file) as f:
         rules_data = json.load(f)
-    
-    # Delete existing rules
+
+    # Delete existing rules + their refs
+    await session.execute(delete(FirewallRuleAddress))
     await session.execute(delete(MachineFirewallRule))
-    
+    await session.flush()
+
+    obj_by_name = {o.name: o.id for o in (await session.execute(select(AddressObject))).scalars().all()}
+    grp_by_name = {g.name: g.id for g in (await session.execute(select(AddressGroup))).scalars().all()}
+
     count = 0
-    exclude_fields = {"id", "created_at", "updated_at"}
-    
+    exclude_fields = {"id", "created_at", "updated_at", "source_refs", "destination_refs"}
+
     for rule_dict in rules_data:
         clean_data = {k: v for k, v in rule_dict.items() if k not in exclude_fields}
         rule = MachineFirewallRule(**clean_data)
         session.add(rule)
+        await session.flush()
+        for direction in ("source", "destination"):
+            for i, ref in enumerate(rule_dict.get(f"{direction}_refs", []) or []):
+                kind, name = ref.get("kind"), ref.get("name")
+                if kind == "object" and name in obj_by_name:
+                    session.add(FirewallRuleAddress(
+                        rule_id=rule.id, direction=direction,
+                        object_id=obj_by_name[name], order=i))
+                elif kind == "group" and name in grp_by_name:
+                    session.add(FirewallRuleAddress(
+                        rule_id=rule.id, direction=direction,
+                        group_id=grp_by_name[name], order=i))
         count += 1
-    
+
     return count
 
 

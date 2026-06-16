@@ -16,15 +16,33 @@ import uuid
 from core.database import get_session
 from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
+from sqlalchemy import select, delete
+from sqlalchemy.exc import IntegrityError
+from datetime import datetime
+
 from .models import (
     MachineFirewallRuleCreate,
     MachineFirewallRuleUpdate,
     MachineFirewallRuleResponse,
     RuleOrderUpdate,
-    ModuleChainResponse
+    ModuleChainResponse,
+    RuleAddressRefResponse,
+    AddressObject,
+    AddressGroup,
+    AddressGroupMember,
+    FirewallRuleAddress,
+    AddressObjectCreate,
+    AddressObjectUpdate,
+    AddressObjectResponse,
+    AddressGroupCreate,
+    AddressGroupUpdate,
+    AddressGroupResponse,
+    AddressGroupMemberResponse,
+    ADDRESS_OBJECT_TYPES,
 )
 from .orchestrator import firewall_orchestrator, dnat_forward_fields
 from .iptables import IptablesError, flush_conntrack_for_rule
+from . import addresses, geoip
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +62,75 @@ _NAT_TARGET_HOOK = {
 }
 
 
-def _validate_geo_tokens(source: Optional[str], destination: Optional[str]) -> None:
-    """Reject geo:<cc> tokens whose country code is not a known ISO 3166-1 alpha-2."""
-    from . import geoip
-    from .iptables import parse_geo
-    for val in (source, destination):
-        cc = parse_geo(val)
-        if cc and not geoip.is_valid_country_code(cc):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Codice paese non valido nel filtro geografico: '{cc}'."
-            )
+def _uuid(value) -> uuid.UUID:
+    """Parse a UUID, raising HTTP 400 on bad input."""
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail=f"ID non valido: {value}")
+
+
+async def _validate_rule_refs(session: AsyncSession, *ref_lists) -> None:
+    """Validate object/group references attached to a rule direction: each must
+    name exactly one existing, enabled object or group."""
+    for refs in ref_lists:
+        if not refs:
+            continue
+        for ref in refs:
+            oid = getattr(ref, "object_id", None)
+            gid = getattr(ref, "group_id", None)
+            if bool(oid) == bool(gid):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Ogni riferimento deve indicare un oggetto OPPURE un gruppo."
+                )
+            if oid:
+                o = await session.get(AddressObject, _uuid(oid))
+                if not o:
+                    raise HTTPException(status_code=400, detail=f"Oggetto indirizzo non trovato: {oid}")
+                if not o.enabled:
+                    raise HTTPException(status_code=400, detail=f"Oggetto indirizzo disabilitato: {o.name}")
+            else:
+                g = await session.get(AddressGroup, _uuid(gid))
+                if not g:
+                    raise HTTPException(status_code=400, detail=f"Gruppo indirizzi non trovato: {gid}")
+                if not g.enabled:
+                    raise HTTPException(status_code=400, detail=f"Gruppo indirizzi disabilitato: {g.name}")
+
+
+async def _rule_refs_map(session: AsyncSession, rule_ids) -> dict:
+    """Return {(rule_id, direction): [RuleAddressRefResponse, ...]} for the rules."""
+    if not rule_ids:
+        return {}
+    res = await session.execute(
+        select(FirewallRuleAddress)
+        .where(FirewallRuleAddress.rule_id.in_(rule_ids))
+        .order_by(FirewallRuleAddress.order)
+    )
+    refs = res.scalars().all()
+    if not refs:
+        return {}
+    obj_ids = {r.object_id for r in refs if r.object_id}
+    grp_ids = {r.group_id for r in refs if r.group_id}
+    objs, grps = {}, {}
+    if obj_ids:
+        ores = await session.execute(select(AddressObject).where(AddressObject.id.in_(obj_ids)))
+        objs = {o.id: o for o in ores.scalars().all()}
+    if grp_ids:
+        gres = await session.execute(select(AddressGroup).where(AddressGroup.id.in_(grp_ids)))
+        grps = {g.id: g for g in gres.scalars().all()}
+    out: dict = {}
+    for r in refs:
+        if r.object_id and r.object_id in objs:
+            o = objs[r.object_id]
+            item = RuleAddressRefResponse(object_id=str(o.id), name=o.name, kind="object", type=o.type)
+        elif r.group_id and r.group_id in grps:
+            g = grps[r.group_id]
+            item = RuleAddressRefResponse(group_id=str(g.id), name=g.name, kind="group")
+        else:
+            continue
+        out.setdefault((r.rule_id, r.direction), []).append(item)
+    return out
 
 
 def _validate_rule_constraints(chain: str, action: str,
@@ -80,8 +156,9 @@ def _validate_rule_constraints(chain: str, action: str,
         )
 
 
-def _rule_to_response(rule) -> MachineFirewallRuleResponse:
-    """Convert database model to API response."""
+def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
+    """Convert database model to API response, including resolved address refs."""
+    refs_map = refs_map or {}
     return MachineFirewallRuleResponse(
         id=str(rule.id),
         chain=rule.chain,
@@ -89,6 +166,8 @@ def _rule_to_response(rule) -> MachineFirewallRuleResponse:
         protocol=rule.protocol,
         source=rule.source,
         destination=rule.destination,
+        source_refs=refs_map.get((rule.id, "source"), []),
+        destination_refs=refs_map.get((rule.id, "destination"), []),
         port=rule.port,
         in_interface=rule.in_interface,
         out_interface=rule.out_interface,
@@ -150,7 +229,8 @@ async def list_rules(
 ):
     """List all firewall rules, optionally filtered by chain."""
     rules = await firewall_orchestrator.get_all_rules(session, chain)
-    responses = [_rule_to_response(r) for r in rules]
+    refs_map = await _rule_refs_map(session, [r.id for r in rules])
+    responses = [_rule_to_response(r, refs_map) for r in rules]
     # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
@@ -173,8 +253,9 @@ async def get_rule(
     rule = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
-    
-    return _rule_to_response(rule)
+
+    refs_map = await _rule_refs_map(session, [rule.id])
+    return _rule_to_response(rule, refs_map)
 
 
 @router.post("/rules", response_model=MachineFirewallRuleResponse, status_code=status.HTTP_201_CREATED)
@@ -220,12 +301,13 @@ async def create_rule(
         rule_data.chain, rule_data.action,
         rule_data.in_interface, rule_data.out_interface
     )
-    _validate_geo_tokens(rule_data.source, rule_data.destination)
+    await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
     try:
         rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
         await session.commit()
-        return _rule_to_response(rule)
+        refs_map = await _rule_refs_map(session, [rule.id])
+        return _rule_to_response(rule, refs_map)
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -272,10 +354,7 @@ async def update_rule(
         update_data.get("in_interface", existing.in_interface),
         update_data.get("out_interface", existing.out_interface),
     )
-    _validate_geo_tokens(
-        update_data.get("source", existing.source),
-        update_data.get("destination", existing.destination),
-    )
+    await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
     try:
         rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)
@@ -284,7 +363,8 @@ async def update_rule(
 
         await session.commit()
 
-        return _rule_to_response(rule)
+        refs_map = await _rule_refs_map(session, [rule.id])
+        return _rule_to_response(rule, refs_map)
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -486,9 +566,356 @@ async def apply_rules(
 async def list_geo_countries(
     current_user: User = Depends(require_permission("firewall.view")),
 ):
-    """List ISO 3166-1 alpha-2 countries available for geo-IP source/destination filtering."""
-    from . import geoip
+    """List ISO 3166-1 alpha-2 countries available for geo-type address objects."""
     return [{"code": code.lower(), "name": name} for code, name in geoip.country_choices()]
+
+
+# =============================================================================
+# ADDRESS OBJECTS & GROUPS
+# =============================================================================
+
+def _validate_object_value(obj_type: str, value: str) -> str:
+    """Validate + normalize an address object value by type (IPv4 only)."""
+    if obj_type not in ADDRESS_OBJECT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Tipo oggetto non valido: {obj_type}")
+    v = (value or "").strip()
+    if not v:
+        raise HTTPException(status_code=400, detail="Il valore è obbligatorio")
+    try:
+        if obj_type == "cidr":
+            return addresses.normalize_cidr(v)
+        if obj_type == "range":
+            addresses.range_to_cidrs(v)   # validates, raises ValueError
+            return v
+        if obj_type == "fqdn":
+            if not addresses.is_valid_fqdn(v):
+                raise ValueError("FQDN non valido")
+            return v.lower()
+        if obj_type == "geo":
+            cc = v.lower()
+            if not geoip.is_valid_country_code(cc):
+                raise ValueError(f"Codice paese non valido: {v}")
+            return cc
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    raise HTTPException(status_code=400, detail="Tipo oggetto non valido")
+
+
+async def _unique_ref_key(session: AsyncSession, model) -> str:
+    for _ in range(12):
+        key = addresses.new_ref_key()
+        res = await session.execute(select(model).where(model.ref_key == key))
+        if res.scalar_one_or_none() is None:
+            return key
+    raise HTTPException(status_code=500, detail="Impossibile generare una chiave univoca")
+
+
+def _seed_fqdn_resolution(obj: AddressObject) -> None:
+    """Best-effort initial DNS resolution for an fqdn object so its set has
+    content immediately. geo lists are downloaded off the request path."""
+    if obj.type == "fqdn":
+        ips = addresses._resolve_fqdn(obj.value)
+        if ips:
+            obj.resolved_ips = json.dumps(ips)
+            obj.resolved_at = datetime.utcnow()
+
+
+def _object_to_response(o: AddressObject) -> AddressObjectResponse:
+    ips = None
+    if o.resolved_ips:
+        try:
+            ips = json.loads(o.resolved_ips)
+        except Exception:
+            ips = None
+    return AddressObjectResponse(
+        id=str(o.id), ref_key=o.ref_key, name=o.name, type=o.type, value=o.value,
+        description=o.description, enabled=o.enabled, resolved_ips=ips,
+        resolved_at=o.resolved_at, set_name=addresses.object_leaf_set_name(o.ref_key),
+        created_at=o.created_at, updated_at=o.updated_at,
+    )
+
+
+async def _group_to_response(session: AsyncSession, g: AddressGroup) -> AddressGroupResponse:
+    mres = await session.execute(
+        select(AddressGroupMember).where(AddressGroupMember.group_id == g.id)
+    )
+    members = mres.scalars().all()
+    obj_ids = {m.member_object_id for m in members if m.member_object_id}
+    grp_ids = {m.member_group_id for m in members if m.member_group_id}
+    objs, grps = {}, {}
+    if obj_ids:
+        ores = await session.execute(select(AddressObject).where(AddressObject.id.in_(obj_ids)))
+        objs = {o.id: o for o in ores.scalars().all()}
+    if grp_ids:
+        gres = await session.execute(select(AddressGroup).where(AddressGroup.id.in_(grp_ids)))
+        grps = {gg.id: gg for gg in gres.scalars().all()}
+    member_resp = []
+    for m in members:
+        if m.member_object_id and m.member_object_id in objs:
+            o = objs[m.member_object_id]
+            member_resp.append(AddressGroupMemberResponse(
+                object_id=str(o.id), name=o.name, kind="object", type=o.type))
+        elif m.member_group_id and m.member_group_id in grps:
+            gg = grps[m.member_group_id]
+            member_resp.append(AddressGroupMemberResponse(
+                group_id=str(gg.id), name=gg.name, kind="group"))
+    return AddressGroupResponse(
+        id=str(g.id), ref_key=g.ref_key, name=g.name, description=g.description,
+        enabled=g.enabled, set_name=addresses.group_set_name(g.ref_key),
+        members=member_resp, created_at=g.created_at, updated_at=g.updated_at,
+    )
+
+
+async def _set_group_members(session: AsyncSession, group_id, members) -> None:
+    """Replace a group's members (v1: only object members)."""
+    await session.execute(
+        delete(AddressGroupMember).where(AddressGroupMember.group_id == group_id)
+    )
+    for m in (members or []):
+        oid = getattr(m, "object_id", None)
+        gid = getattr(m, "group_id", None)
+        if gid:
+            raise HTTPException(status_code=400, detail="Gruppi annidati non supportati in questa versione.")
+        if not oid:
+            continue
+        ouid = _uuid(oid)
+        obj = await session.get(AddressObject, ouid)
+        if not obj:
+            raise HTTPException(status_code=400, detail=f"Oggetto indirizzo non trovato: {oid}")
+        session.add(AddressGroupMember(group_id=group_id, member_object_id=ouid))
+
+
+# --- Address object endpoints ---
+
+@router.get("/addresses", response_model=List[AddressObjectResponse])
+async def list_address_objects(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    res = await session.execute(select(AddressObject).order_by(AddressObject.name))
+    return [_object_to_response(o) for o in res.scalars().all()]
+
+
+@router.post("/addresses", response_model=AddressObjectResponse, status_code=status.HTTP_201_CREATED)
+async def create_address_object(
+    payload: AddressObjectCreate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Il nome è obbligatorio")
+    value = _validate_object_value(payload.type, payload.value)
+    ref_key = await _unique_ref_key(session, AddressObject)
+    obj = AddressObject(
+        ref_key=ref_key, name=name, type=payload.type, value=value,
+        description=payload.description, enabled=payload.enabled,
+    )
+    _seed_fqdn_resolution(obj)
+    session.add(obj)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=f"Esiste già un oggetto con nome '{name}'")
+    await session.refresh(obj)
+    await firewall_orchestrator.resync_addresses(session)
+    await session.commit()
+    return _object_to_response(obj)
+
+
+@router.get("/addresses/{obj_id}", response_model=AddressObjectResponse)
+async def get_address_object(
+    obj_id: str,
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    o = await session.get(AddressObject, _uuid(obj_id))
+    if not o:
+        raise HTTPException(status_code=404, detail="Oggetto non trovato")
+    return _object_to_response(o)
+
+
+@router.patch("/addresses/{obj_id}", response_model=AddressObjectResponse)
+async def update_address_object(
+    obj_id: str,
+    payload: AddressObjectUpdate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    obj = await session.get(AddressObject, _uuid(obj_id))
+    if not obj:
+        raise HTTPException(status_code=404, detail="Oggetto non trovato")
+    data = payload.model_dump(exclude_unset=True)
+    if "type" in data or "value" in data:
+        new_type = data.get("type", obj.type)
+        obj.value = _validate_object_value(new_type, data.get("value", obj.value))
+        obj.type = new_type
+        obj.resolved_ips = None
+        obj.resolved_at = None
+        _seed_fqdn_resolution(obj)
+    if "name" in data:
+        nm = (data["name"] or "").strip()
+        if not nm:
+            raise HTTPException(status_code=400, detail="Il nome è obbligatorio")
+        obj.name = nm
+    if "description" in data:
+        obj.description = data["description"]
+    if "enabled" in data:
+        obj.enabled = data["enabled"]
+    obj.updated_at = datetime.utcnow()
+    session.add(obj)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Nome oggetto già in uso")
+    await session.refresh(obj)
+    await firewall_orchestrator.resync_addresses(session)
+    await session.commit()
+    return _object_to_response(obj)
+
+
+@router.delete("/addresses/{obj_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_address_object(
+    obj_id: str,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    oid = _uuid(obj_id)
+    obj = await session.get(AddressObject, oid)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Oggetto non trovato")
+    in_group = await session.execute(
+        select(AddressGroupMember).where(AddressGroupMember.member_object_id == oid).limit(1)
+    )
+    if in_group.scalar_one_or_none():
+        raise HTTPException(status_code=409,
+            detail=f"Oggetto '{obj.name}' usato in un gruppo: rimuovilo prima dal gruppo.")
+    in_rule = await session.execute(
+        select(FirewallRuleAddress).where(FirewallRuleAddress.object_id == oid).limit(1)
+    )
+    if in_rule.scalar_one_or_none():
+        raise HTTPException(status_code=409,
+            detail=f"Oggetto '{obj.name}' usato in una regola: rimuovilo prima dalla regola.")
+    await session.delete(obj)
+    await session.flush()
+    await firewall_orchestrator.resync_addresses(session)
+    await session.commit()
+
+
+# --- Address group endpoints ---
+
+@router.get("/address-groups", response_model=List[AddressGroupResponse])
+async def list_address_groups(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    res = await session.execute(select(AddressGroup).order_by(AddressGroup.name))
+    return [await _group_to_response(session, g) for g in res.scalars().all()]
+
+
+@router.post("/address-groups", response_model=AddressGroupResponse, status_code=status.HTTP_201_CREATED)
+async def create_address_group(
+    payload: AddressGroupCreate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Il nome è obbligatorio")
+    ref_key = await _unique_ref_key(session, AddressGroup)
+    group = AddressGroup(
+        ref_key=ref_key, name=name, description=payload.description, enabled=payload.enabled,
+    )
+    session.add(group)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=f"Esiste già un gruppo con nome '{name}'")
+    await _set_group_members(session, group.id, payload.members)
+    await session.flush()
+    await firewall_orchestrator.resync_addresses(session)
+    await session.commit()
+    await session.refresh(group)
+    return await _group_to_response(session, group)
+
+
+@router.get("/address-groups/{group_id}", response_model=AddressGroupResponse)
+async def get_address_group(
+    group_id: str,
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    g = await session.get(AddressGroup, _uuid(group_id))
+    if not g:
+        raise HTTPException(status_code=404, detail="Gruppo non trovato")
+    return await _group_to_response(session, g)
+
+
+@router.patch("/address-groups/{group_id}", response_model=AddressGroupResponse)
+async def update_address_group(
+    group_id: str,
+    payload: AddressGroupUpdate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    g = await session.get(AddressGroup, _uuid(group_id))
+    if not g:
+        raise HTTPException(status_code=404, detail="Gruppo non trovato")
+    data = payload.model_dump(exclude_unset=True)
+    if "name" in data:
+        nm = (data["name"] or "").strip()
+        if not nm:
+            raise HTTPException(status_code=400, detail="Il nome è obbligatorio")
+        g.name = nm
+    if "description" in data:
+        g.description = data["description"]
+    if "enabled" in data:
+        g.enabled = data["enabled"]
+    g.updated_at = datetime.utcnow()
+    session.add(g)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Nome gruppo già in uso")
+    if payload.members is not None:
+        await _set_group_members(session, g.id, payload.members)
+        await session.flush()
+    await firewall_orchestrator.resync_addresses(session)
+    await session.commit()
+    await session.refresh(g)
+    return await _group_to_response(session, g)
+
+
+@router.delete("/address-groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_address_group(
+    group_id: str,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    gid = _uuid(group_id)
+    g = await session.get(AddressGroup, gid)
+    if not g:
+        raise HTTPException(status_code=404, detail="Gruppo non trovato")
+    in_rule = await session.execute(
+        select(FirewallRuleAddress).where(FirewallRuleAddress.group_id == gid).limit(1)
+    )
+    if in_rule.scalar_one_or_none():
+        raise HTTPException(status_code=409,
+            detail=f"Gruppo '{g.name}' usato in una regola: rimuovilo prima dalla regola.")
+    in_group = await session.execute(
+        select(AddressGroupMember).where(AddressGroupMember.member_group_id == gid).limit(1)
+    )
+    if in_group.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"Gruppo '{g.name}' usato in un altro gruppo.")
+    await session.execute(delete(AddressGroupMember).where(AddressGroupMember.group_id == gid))
+    await session.delete(g)
+    await session.flush()
+    await firewall_orchestrator.resync_addresses(session)
+    await session.commit()
 
 
 @router.get("/export", response_class=JSONResponse)
@@ -500,12 +927,39 @@ async def export_rules(
     Export all firewall rules as JSON.
     """
     rules = await firewall_orchestrator.get_all_rules(session)
-    export_data = [_rule_to_response(r).model_dump() for r in rules]
-    
+    refs_map = await _rule_refs_map(session, [r.id for r in rules])
+    export_data = [_rule_to_response(r, refs_map).model_dump() for r in rules]
+
     return JSONResponse(
         content=jsonable_encoder(export_data),
         headers={"Content-Disposition": "attachment; filename=firewall_rules.json"}
     )
+
+
+async def _resolve_imported_refs(session: AsyncSession, exported_refs, errors, label) -> list:
+    """Map exported address refs ({kind, name}) to {object_id|group_id} on this
+    system by name. Missing names are reported and skipped."""
+    resolved = []
+    for ref in (exported_refs or []):
+        kind = ref.get("kind")
+        name = ref.get("name")
+        if kind == "object":
+            o = (await session.execute(
+                select(AddressObject).where(AddressObject.name == name)
+            )).scalar_one_or_none()
+            if o:
+                resolved.append({"object_id": str(o.id)})
+            else:
+                errors.append(f"{label}: oggetto indirizzo '{name}' non trovato, riferimento saltato")
+        elif kind == "group":
+            g = (await session.execute(
+                select(AddressGroup).where(AddressGroup.name == name)
+            )).scalar_one_or_none()
+            if g:
+                resolved.append({"group_id": str(g.id)})
+            else:
+                errors.append(f"{label}: gruppo indirizzi '{name}' non trovato, riferimento saltato")
+    return resolved
 
 
 @router.post("/import", status_code=status.HTTP_200_OK)
@@ -547,15 +1001,22 @@ async def import_rules(
             try:
                 # Sanitize input (remove ID, dates, etc to treat as new rule)
                 clean_data = {
-                    k: v for k, v in rule_dict.items() 
+                    k: v for k, v in rule_dict.items()
                     if k in MachineFirewallRuleCreate.model_fields
                 }
-                
+
                 # Check required fields
                 if "chain" not in clean_data or "action" not in clean_data:
                     errors.append(f"Rule #{i+1}: Missing chain or action")
                     continue
-                    
+
+                # Address object/group references are exported by name; remap them
+                # to local ids (missing names are reported and skipped).
+                clean_data["source_refs"] = await _resolve_imported_refs(
+                    session, rule_dict.get("source_refs"), errors, f"Rule #{i+1} (source)")
+                clean_data["destination_refs"] = await _resolve_imported_refs(
+                    session, rule_dict.get("destination_refs"), errors, f"Rule #{i+1} (destination)")
+
                 # Create rule (validates data implicitly via Pydantic model in orchestrator or here)
                 # Orchestrator create_rule accepts dict and creates model
                 await firewall_orchestrator.create_rule(session, clean_data)

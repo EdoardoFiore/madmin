@@ -80,6 +80,68 @@ async def lifespan(app: FastAPI):
         await module_loader.load_all_modules(app, session)
         await session.commit()
     
+    # One-shot migration (idempotent): convert legacy inline geo:<cc> rule tokens
+    # into geo address objects + rule references, so the uniform address-object
+    # path fully replaces the old inline geo path.
+    async with async_session_maker() as session:
+        try:
+            import re as _geo_re_mod
+            from core.firewall.models import (
+                MachineFirewallRule, AddressObject, FirewallRuleAddress,
+            )
+            from core.firewall import addresses as fw_addresses
+            geo_re = _geo_re_mod.compile(r'^geo:([a-z]{2})$', _geo_re_mod.IGNORECASE)
+            migrated = 0
+            rows = (await session.execute(select(MachineFirewallRule))).scalars().all()
+            for rule in rows:
+                for direction in ("source", "destination"):
+                    m = geo_re.match(getattr(rule, direction) or "")
+                    if not m:
+                        continue
+                    cc = m.group(1).lower()
+                    obj = (await session.execute(
+                        select(AddressObject).where(
+                            AddressObject.type == "geo", AddressObject.value == cc
+                        )
+                    )).scalars().first()
+                    if not obj:
+                        ref_key = None
+                        for _ in range(12):
+                            k = fw_addresses.new_ref_key()
+                            if (await session.execute(
+                                select(AddressObject).where(AddressObject.ref_key == k)
+                            )).scalar_one_or_none() is None:
+                                ref_key = k
+                                break
+                        name, base, n = f"Geo {cc.upper()}", f"Geo {cc.upper()}", 2
+                        while (await session.execute(
+                            select(AddressObject).where(AddressObject.name == name)
+                        )).scalar_one_or_none() is not None:
+                            name, n = f"{base} ({n})", n + 1
+                        obj = AddressObject(ref_key=ref_key, name=name, type="geo",
+                                            value=cc, enabled=True)
+                        session.add(obj)
+                        await session.flush()
+                    has_ref = (await session.execute(
+                        select(FirewallRuleAddress).where(
+                            FirewallRuleAddress.rule_id == rule.id,
+                            FirewallRuleAddress.direction == direction,
+                            FirewallRuleAddress.object_id == obj.id,
+                        )
+                    )).scalar_one_or_none()
+                    if has_ref is None:
+                        session.add(FirewallRuleAddress(
+                            rule_id=rule.id, direction=direction, object_id=obj.id, order=0))
+                    setattr(rule, direction, None)
+                    session.add(rule)
+                    migrated += 1
+            if migrated:
+                await session.commit()
+                logger.info(f"Migrated {migrated} legacy geo: rule tokens to geo address objects")
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Legacy geo: migration failed: {e}", exc_info=True)
+
     # Apply firewall rules from database
     async with async_session_maker() as session:
         try:
@@ -236,13 +298,14 @@ async def lifespan(app: FastAPI):
     audit_task = asyncio.create_task(audit_cleanup_task())
     logger.info("Audit log cleanup task started (every 24h)")
 
-    # Start geo-IP CIDR list refresh task (daily at midnight)
-    from core.firewall import geoip
-    from core.firewall.iptables import parse_geo
-    from core.firewall.models import MachineFirewallRule
+    # Start address-object dynamic refresh task (daily at midnight): re-resolve
+    # fqdn objects and re-download geo country lists, rebuilding their ipsets.
+    import json as _json
+    from core.firewall import addresses as fw_addresses
+    from core.firewall.models import AddressObject
     from datetime import timedelta
 
-    geo_refresh_running = True
+    address_refresh_running = True
 
     def _seconds_until_midnight() -> float:
         now = datetime.now()
@@ -251,33 +314,50 @@ async def lifespan(app: FastAPI):
         )
         return (next_midnight - now).total_seconds()
 
-    async def geo_refresh_task():
-        """Refresh ipdeny country CIDR lists for referenced rules every day at midnight."""
-        while geo_refresh_running:
+    async def address_refresh_task():
+        """Refresh fqdn/geo address-object ipsets every day at midnight."""
+        while address_refresh_running:
             try:
                 await asyncio.sleep(_seconds_until_midnight())
                 async with async_session_maker() as session:
                     result = await session.execute(
-                        select(MachineFirewallRule).where(MachineFirewallRule.enabled == True)
+                        select(AddressObject).where(
+                            AddressObject.enabled == True,
+                            AddressObject.type.in_(("fqdn", "geo")),
+                        )
                     )
-                    geo_ccs = set()
-                    for r in result.scalars().all():
-                        for val in (r.source, r.destination):
-                            cc = parse_geo(val)
-                            if cc:
-                                geo_ccs.add(cc)
-                    if geo_ccs:
-                        geoip.refresh_all(geo_ccs)
-                        await firewall_orchestrator.apply_rules(session)
+                    objs = result.scalars().all()
+                    if not objs:
+                        continue
+                    obj_dicts = []
+                    for o in objs:
+                        ips = None
+                        if o.resolved_ips:
+                            try:
+                                ips = _json.loads(o.resolved_ips)
+                            except Exception:
+                                ips = None
+                        obj_dicts.append({
+                            "ref_key": o.ref_key, "type": o.type, "value": o.value,
+                            "enabled": o.enabled, "resolved_ips": ips,
+                        })
+                    fresh = await asyncio.to_thread(fw_addresses.refresh_dynamic, obj_dicts)
+                    if fresh:
+                        now = datetime.utcnow()
+                        for o in objs:
+                            if o.ref_key in fresh:
+                                o.resolved_ips = _json.dumps(fresh[o.ref_key])
+                                o.resolved_at = now
+                                session.add(o)
                         await session.commit()
-                        logger.info(f"Geo-IP lists refreshed for {len(geo_ccs)} countries")
+                    logger.info(f"Address: refreshed {len(objs)} dynamic objects (fqdn/geo)")
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Geo-IP refresh task error: {e}")
+                logger.error(f"Address refresh task error: {e}")
 
-    geo_task = asyncio.create_task(geo_refresh_task())
-    logger.info("Geo-IP refresh task started (daily at midnight)")
+    address_task = asyncio.create_task(address_refresh_task())
+    logger.info("Address dynamic refresh task started (daily at midnight)")
 
     logger.info("MADMIN ready!")
     
@@ -288,11 +368,11 @@ async def lifespan(app: FastAPI):
     stats_task_running = False
     backup_task_running = False
     audit_cleanup_running = False
-    geo_refresh_running = False
+    address_refresh_running = False
     stats_task.cancel()
     backup_task.cancel()
     audit_task.cancel()
-    geo_task.cancel()
+    address_task.cancel()
     restore_task.cancel()
     try:
         await restore_task
@@ -311,7 +391,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     try:
-        await geo_task
+        await address_task
     except asyncio.CancelledError:
         pass
 

@@ -5,7 +5,7 @@ Database models for machine firewall rules and module chain registration.
 """
 from sqlmodel import SQLModel, Field
 from pydantic import field_validator
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import uuid
 import re
@@ -119,10 +119,10 @@ class _FirewallRuleValidators(SQLModel):
         if v is None or v == "":
             return v
         s = str(v).strip()
-        # Geo token: "geo:<2-letter cc>" (country validity checked in the router)
-        if re.match(r'^geo:[A-Za-z]{2}$', s):
-            return s.lower()
-        # Otherwise an IP / CIDR / hostname-ish literal (chars allowed by iptables -s/-d)
+        # Only literal IP / CIDR / hostname-ish (chars allowed by iptables -s/-d).
+        # Object/group references live in firewall_rule_address, not here. Legacy
+        # "geo:<cc>" tokens are migrated to geo address objects at startup
+        # (see backend/main.py), so they are no longer accepted on this field.
         if not re.match(r'^[\w.:/\-]+$', s):
             raise ValueError(f"Sorgente/destinazione non valida: {v}")
         return s
@@ -138,6 +138,15 @@ class _FirewallRuleValidators(SQLModel):
             if not p.isdigit() or not (1 <= int(p) <= 65535):
                 raise ValueError(f"Porta non valida: {p} (range 1-65535)")
         return v
+
+
+class RuleAddressRef(SQLModel):
+    """Object/group reference in a rule create/update payload (per direction).
+
+    Exactly one of object_id / group_id must be set.
+    """
+    object_id: Optional[str] = None
+    group_id: Optional[str] = None
 
 
 class MachineFirewallRuleCreate(_FirewallRuleValidators):
@@ -162,6 +171,10 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: str = "filter"
     enabled: bool = True
+    # Object/group references (multi-select, OR semantics). When non-empty for a
+    # direction they take precedence over the literal source/destination field.
+    source_refs: Optional[List[RuleAddressRef]] = None
+    destination_refs: Optional[List[RuleAddressRef]] = None
 
 
 class MachineFirewallRuleUpdate(_FirewallRuleValidators):
@@ -186,6 +199,17 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: Optional[str] = None
     enabled: Optional[bool] = None
+    source_refs: Optional[List[RuleAddressRef]] = None
+    destination_refs: Optional[List[RuleAddressRef]] = None
+
+
+class RuleAddressRefResponse(SQLModel):
+    """A resolved object/group reference, for rendering rule chips in the UI."""
+    object_id: Optional[str] = None
+    group_id: Optional[str] = None
+    name: str
+    kind: str                    # "object" | "group"
+    type: Optional[str] = None   # object type (cidr/range/fqdn/geo) when kind=object
 
 
 class MachineFirewallRuleResponse(SQLModel):
@@ -196,6 +220,8 @@ class MachineFirewallRuleResponse(SQLModel):
     protocol: Optional[str]
     source: Optional[str]
     destination: Optional[str]
+    source_refs: List[RuleAddressRefResponse] = []
+    destination_refs: List[RuleAddressRefResponse] = []
     port: Optional[str]
     in_interface: Optional[str]
     out_interface: Optional[str]
@@ -231,3 +257,168 @@ class ModuleChainResponse(SQLModel):
     parent_chain: str
     priority: int
     table_name: str
+
+
+# =============================================================================
+# ADDRESS OBJECTS, GROUPS & RULE REFERENCES
+# =============================================================================
+
+# Supported address object types.
+ADDRESS_OBJECT_TYPES = ("cidr", "range", "fqdn", "geo")
+
+
+class AddressObject(SQLModel, table=True):
+    """
+    Reusable address object usable in firewall policies.
+
+    type / value:
+    - cidr : "10.0.0.0/24" (a /32 host is allowed)
+    - range: "10.0.0.10-10.0.0.50"
+    - fqdn : "example.com" (resolved to A records, refreshed daily)
+    - geo  : ISO 3166-1 alpha-2 country code (CIDR list from geoip data)
+
+    Every object — geo included — is materialized as a hash:net ipset named
+    MADMIN_AO_<ref_key> (uniform naming). resolved_ips caches the last good
+    resolution for the dynamic types (fqdn, geo) so a transient failure never
+    empties a live set.
+    """
+    __tablename__ = "firewall_address_object"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    ref_key: str = Field(max_length=12, unique=True, index=True)
+    name: str = Field(max_length=64, unique=True, index=True)
+    type: str = Field(max_length=10)          # cidr | range | fqdn | geo
+    value: str = Field(max_length=255)
+    description: Optional[str] = Field(default=None, max_length=255)
+    enabled: bool = Field(default=True)
+    resolved_ips: Optional[str] = Field(default=None)   # JSON list (fqdn/geo cache)
+    resolved_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AddressGroup(SQLModel, table=True):
+    """Named aggregation of address objects, materialized as a list:set ipset
+    (MADMIN_AG_<ref_key>) whose members are the leaf object hash:net sets."""
+    __tablename__ = "firewall_address_group"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    ref_key: str = Field(max_length=12, unique=True, index=True)
+    name: str = Field(max_length=64, unique=True, index=True)
+    description: Optional[str] = Field(default=None, max_length=255)
+    enabled: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AddressGroupMember(SQLModel, table=True):
+    """Membership of an object (or, future, a group) in an address group.
+    Exactly one of member_object_id / member_group_id is set."""
+    __tablename__ = "firewall_address_group_member"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    group_id: uuid.UUID = Field(foreign_key="firewall_address_group.id", index=True)
+    member_object_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_address_object.id"
+    )
+    member_group_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_address_group.id"
+    )  # reserved for nested groups (inactive in v1)
+
+
+class FirewallRuleAddress(SQLModel, table=True):
+    """
+    Object/group reference attached to a rule's source or destination.
+
+    Multiple rows per (rule, direction) implement multi-select with OR
+    semantics. When rows exist here for a direction they are the source of
+    truth and the rule's literal source/destination column is ignored for that
+    direction. Exactly one of object_id / group_id is set.
+    """
+    __tablename__ = "firewall_rule_address"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    rule_id: uuid.UUID = Field(foreign_key="machine_firewall_rule.id", index=True)
+    direction: str = Field(max_length=12)     # "source" | "destination"
+    object_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_address_object.id"
+    )
+    group_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_address_group.id"
+    )
+    order: int = Field(default=0)
+
+
+# --- Address object schemas ---
+
+class AddressObjectCreate(SQLModel):
+    name: str
+    type: str
+    value: str
+    description: Optional[str] = None
+    enabled: bool = True
+
+
+class AddressObjectUpdate(SQLModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    value: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class AddressObjectResponse(SQLModel):
+    id: str
+    ref_key: str
+    name: str
+    type: str
+    value: str
+    description: Optional[str]
+    enabled: bool
+    resolved_ips: Optional[List[str]] = None
+    resolved_at: Optional[datetime] = None
+    set_name: str             # MADMIN_AO_<ref_key>
+    created_at: datetime
+    updated_at: datetime
+
+
+# --- Address group schemas ---
+
+class AddressGroupMemberRef(SQLModel):
+    """A member reference in a group create/update payload (object or group)."""
+    object_id: Optional[str] = None
+    group_id: Optional[str] = None
+
+
+class AddressGroupMemberResponse(SQLModel):
+    object_id: Optional[str] = None
+    group_id: Optional[str] = None
+    name: str                 # member display name
+    kind: str                 # "object" | "group"
+    type: Optional[str] = None  # object type when kind == "object"
+
+
+class AddressGroupCreate(SQLModel):
+    name: str
+    description: Optional[str] = None
+    enabled: bool = True
+    members: List[AddressGroupMemberRef] = []
+
+
+class AddressGroupUpdate(SQLModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    members: Optional[List[AddressGroupMemberRef]] = None
+
+
+class AddressGroupResponse(SQLModel):
+    id: str
+    ref_key: str
+    name: str
+    description: Optional[str]
+    enabled: bool
+    set_name: str             # MADMIN_AG_<ref_key>
+    members: List[AddressGroupMemberResponse] = []
+    created_at: datetime
+    updated_at: datetime

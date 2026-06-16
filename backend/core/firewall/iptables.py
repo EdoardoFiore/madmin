@@ -86,26 +86,24 @@ def get_madmin_chain(table: str, parent_chain: str) -> Optional[str]:
 
 
 # =============================================================================
-# GEO-IP MATCH HELPERS
+# IPSET MATCH HELPERS
 # =============================================================================
 
-# A firewall rule's source/destination may carry a geo token "geo:<cc>" instead
-# of an IP/CIDR. It is translated at rule-build time into an ipset match against
-# the per-country set produced by core.firewall.geoip.
-_GEO_TOKEN_RE = re.compile(r'^geo:([a-z]{2})$')
+# A firewall rule's source/destination may carry a "set:<ipset_name>" token
+# instead of a literal IP/CIDR. The orchestrator resolves a rule direction's
+# address object/group references to a concrete ipset (a leaf hash:net, a group
+# list:set, or a per-rule aggregate list:set) and passes this token to
+# build_rule_args, which translates it into `-m set --match-set <name> src|dst`.
+# This keeps the rule-build path free of any DB access.
+_SET_TOKEN_RE = re.compile(r'^set:([A-Za-z0-9_]+)$')
 
 
-def parse_geo(value: Optional[str]) -> Optional[str]:
-    """Return the lowercase 2-letter country code if value is a geo token, else None."""
+def parse_set(value: Optional[str]) -> Optional[str]:
+    """Return the ipset name if value is a 'set:<name>' token, else None."""
     if not value:
         return None
-    m = _GEO_TOKEN_RE.match(value.strip())
+    m = _SET_TOKEN_RE.match(value.strip())
     return m.group(1) if m else None
-
-
-def geo_set_name(cc: str) -> str:
-    """ipset name for a country code, e.g. 'it' -> 'MADMIN_GEO_IT' (<= 31 chars)."""
-    return f"MADMIN_GEO_{cc.upper()}"
 
 
 # =============================================================================
@@ -257,14 +255,22 @@ def split_ip_port(value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     return value, None
 
 
-def rule_to_restore_line(madmin_chain: str, rule) -> str:
-    """Convert a MachineFirewallRule to an iptables-restore format line (-A ...)."""
+_UNSET = object()
+
+
+def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET) -> str:
+    """Convert a MachineFirewallRule to an iptables-restore format line (-A ...).
+
+    `source`/`destination` may be overridden with an effective value (e.g. a
+    'set:<ipset>' token resolved from the rule's address-object references)
+    without mutating the ORM object; if omitted, the rule's own columns are used.
+    """
     args = build_rule_args(
         chain=madmin_chain,
         action=rule.action,
         protocol=rule.protocol,
-        source=rule.source,
-        destination=rule.destination,
+        source=rule.source if source is _UNSET else source,
+        destination=rule.destination if destination is _UNSET else destination,
         port=rule.port,
         in_interface=rule.in_interface,
         out_interface=rule.out_interface,
@@ -614,18 +620,18 @@ def build_rule_args(
     if protocol:
         args.extend(["-p", protocol])
 
-    # Source/destination may be a literal IP/CIDR or a geo token ("geo:it").
-    # A geo token translates to an ipset match against the per-country set
-    # MADMIN_GEO_<CC> instead of a plain -s/-d.
-    src_cc = parse_geo(source)
-    if src_cc:
-        args.extend(["-m", "set", "--match-set", geo_set_name(src_cc), "src"])
+    # Source/destination may be a literal IP/CIDR or a "set:<name>" token. The
+    # token translates to an ipset match against the resolved set (address
+    # object/group, or per-rule aggregate) instead of a plain -s/-d.
+    src_set = parse_set(source)
+    if src_set:
+        args.extend(["-m", "set", "--match-set", src_set, "src"])
     elif source:
         args.extend(["-s", source])
 
-    dst_cc = parse_geo(destination)
-    if dst_cc:
-        args.extend(["-m", "set", "--match-set", geo_set_name(dst_cc), "dst"])
+    dst_set = parse_set(destination)
+    if dst_set:
+        args.extend(["-m", "set", "--match-set", dst_set, "dst"])
     elif destination:
         args.extend(["-d", destination])
     
@@ -984,6 +990,53 @@ def ipset_restore_net(setname: str, cidrs: List[str]) -> bool:
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"ipset restore failed for {setname}: {e.stderr.strip()}")
+        return False
+    except FileNotFoundError:
+        logger.error("ipset command not found — install ipset package")
+        return False
+
+
+def ipset_create_list(setname: str, size: int = 1024) -> bool:
+    """Create an ipset of type list:set (a set whose members are other ipsets)."""
+    success = _run_ipset(["create", setname, "list:set", "size", str(size)])
+    if success:
+        logger.debug(f"Created ipset {setname} (list:set)")
+    return success
+
+
+def ipset_restore_list(setname: str, member_sets: List[str]) -> bool:
+    """
+    Atomically (re)create a list:set ipset and load all member set names in a
+    single `ipset restore` transaction. Used for address groups and per-rule
+    aggregates. The member sets MUST already exist (the restore fails otherwise),
+    so callers build the leaf hash:net sets before the list:sets that reference
+    them.
+
+    Creates the set if missing, flushes it, then adds every member set.
+    """
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK ipset] Would restore {len(member_sets)} members into {setname}")
+        return True
+
+    lines = [
+        f"create {setname} list:set size 1024 -exist",
+        f"flush {setname}",
+    ]
+    lines.extend(f"add {setname} {m}" for m in member_sets)
+    restore_input = "\n".join(lines) + "\n"
+
+    try:
+        subprocess.run(
+            ["ipset", "restore"],
+            input=restore_input,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        logger.debug(f"ipset restore loaded {len(member_sets)} members into {setname}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ipset restore (list:set) failed for {setname}: {e.stderr.strip()}")
         return False
     except FileNotFoundError:
         logger.error("ipset command not found — install ipset package")
