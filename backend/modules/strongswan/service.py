@@ -240,7 +240,91 @@ connections {{
         """Reload all swanctl connections."""
         result = self._run_swanctl(['--load-all'])
         return result.returncode == 0
-    
+
+    def build_vici_conn(
+        self,
+        name: str,
+        ike_version: str,
+        local_address: str,
+        remote_address: str,
+        local_id: Optional[str],
+        remote_id: Optional[str],
+        auth_method: str,
+        ike_proposal: str,
+        ike_lifetime: int,
+        dpd_action: str,
+        dpd_delay: int,
+        nat_traversal: bool,
+        child_sas: List[Dict],
+    ) -> Dict[str, Any]:
+        """
+        Build the VICI connection message for a single tunnel.
+
+        Mirrors generate_tunnel_config() but produces the dict structure that
+        vici's load_conn expects, so we can load just this connection without
+        a global `swanctl --load-all` (which would re-evaluate start_action for
+        every other tunnel too).
+        """
+        conn_name = f"madmin_{name}"
+
+        children: Dict[str, Any] = {}
+        for child in child_sas:
+            child_name = child.get("name", "child1")
+            children[child_name] = {
+                "local_ts": self._split_ts(child.get("local_ts", "0.0.0.0/0")),
+                "remote_ts": self._split_ts(child.get("remote_ts", "0.0.0.0/0")),
+                "esp_proposals": [p.strip() for p in child.get("esp_proposal", "aes256-sha256-modp2048").split(",") if p.strip()],
+                "life_time": f"{child.get('esp_lifetime', 3600)}s",
+                "start_action": child.get("start_action", "trap"),
+                "close_action": child.get("close_action", "restart"),
+                "dpd_action": dpd_action,
+            }
+
+        local = {"auth": auth_method}
+        if local_id:
+            local["id"] = local_id
+        remote = {"auth": auth_method}
+        if remote_id:
+            remote["id"] = remote_id
+
+        return {
+            conn_name: {
+                "version": str(ike_version),
+                "local_addrs": [local_address if local_address else "%any"],
+                "remote_addrs": [remote_address],
+                "proposals": [p.strip() for p in ike_proposal.split(",") if p.strip()],
+                "rekey_time": f"{ike_lifetime}s",
+                "dpd_delay": f"{dpd_delay}s",
+                "encap": "yes" if nat_traversal else "no",
+                "local": local,
+                "remote": remote,
+                "children": children,
+            }
+        }
+
+    def load_single_connection(self, name: str, **conn_kwargs) -> bool:
+        """
+        Load a single tunnel into charon via VICI, leaving all other connections
+        untouched. Falls back gracefully when VICI is unavailable — the config
+        file is already on disk and will be picked up by the next full reload /
+        on_startup. Accepts the same keyword args as build_vici_conn().
+        """
+        session = self._get_vici_session()
+        if not session:
+            logger.warning(
+                f"VICI unavailable; connection madmin_{name} saved to disk only "
+                f"(will load on next reload)"
+            )
+            return False
+        try:
+            conn = self.build_vici_conn(name, **conn_kwargs)
+            session.load_conn(conn)
+            logger.info(f"Loaded single connection madmin_{name} via VICI")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load connection {name} via VICI: {e}")
+            return False
+
     def initiate_tunnel(self, name: str, child_name: Optional[str] = None) -> bool:
         """
         Initiate an IPsec tunnel.
@@ -361,37 +445,52 @@ connections {{
             logger.error(f"Failed to unload connection {name}: {e}")
             return False
 
-    def get_tunnel_status(self, name: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _disconnected_status() -> Dict[str, Any]:
+        """Status dict for a tunnel with no active SA (normal DOWN state)."""
+        return {
+            "ike_state": "DISCONNECTED",
+            "local_host": None,
+            "remote_host": None,
+            "initiator": False,
+            "established_time": None,
+            "rekey_time": None,
+            "child_sas": []
+        }
+
+    def get_tunnel_status(self, name: str) -> Dict[str, Any]:
         """
         Get real-time status of a tunnel via VICI.
-        
-        Returns:
-            Status dict or None if tunnel not found
+
+        Always returns a status dict. When no active SA exists (tunnel down),
+        VICI is unreachable, or an error occurs, returns a DISCONNECTED status
+        so callers (e.g. the status-polling endpoint) never see a hard failure
+        for the normal "tunnel not up" case.
         """
         session = self._get_vici_session()
         if not session:
-            return None
-        
+            return self._disconnected_status()
+
         conn_name = f"madmin_{name}"
-        
+
         try:
             # List Security Associations
             sas = list(session.list_sas())
-            
+
             # Find all matching SAs
             matches = []
-            
+
             for sa in sas:
                 for ike_name, ike_data in sa.items():
                     name_str = ike_name.decode('utf-8', errors='ignore') if isinstance(ike_name, bytes) else ike_name
-                    
+
                     if name_str == conn_name:
                         matches.append(ike_data)
-            
+
             if not matches:
-                # No SA found
-                return None
-                
+                # No active SA — tunnel is simply down
+                return self._disconnected_status()
+
             # Pick the best match (ESTABLISHED preferred, then CONNECTING)
             # Also prefer the one with children if states are equal
             best_sa = None
@@ -450,21 +549,10 @@ connections {{
                 "rekey_time": rekey_time,
                 "child_sas": child_sas
             }
-            
-            # Tunnel not found in active SAs
-            return {
-                "ike_state": "DISCONNECTED",
-                "local_host": None,
-                "remote_host": None,
-                "initiator": False,
-                "established_time": None,
-                "rekey_time": None,
-                "child_sas": []
-            }
-            
+
         except Exception as e:
             logger.error(f"Failed to get tunnel status via VICI: {e}")
-            return None
+            return self._disconnected_status()
     
     def list_all_sas(self) -> List[Dict]:
         """List all active Security Associations."""
@@ -762,9 +850,11 @@ connections {{
             for tunnel in tunnels:
                 # Get current traffic from VICI
                 status = self.get_tunnel_status(tunnel.name)
-                if not status:
+                # get_tunnel_status now always returns a dict; only record stats
+                # for established tunnels (skip DISCONNECTED/CONNECTING — no traffic).
+                if not status or status.get("ike_state") != "ESTABLISHED":
                     continue
-                
+
                 # Aggregate traffic from all child SAs
                 total_bytes_in = 0
                 total_bytes_out = 0

@@ -394,10 +394,7 @@ async def get_tunnel_status(
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
     status = await run_in_threadpool(strongswan_service.get_tunnel_status, tunnel.name)
-    
-    if status is None:
-        raise HTTPException(status_code=500, detail="Failed to get tunnel status")
-    
+
     # Update DB status based on VICI state
     if status["ike_state"] == "ESTABLISHED":
         tunnel.status = "established"
@@ -565,12 +562,27 @@ async def create_child_sa(
     )
     all_children = all_children_result.scalars().all()
     await strongswan_service.setup_tunnel_firewall_chains(tunnel, all_children, db)
-    
-    # Reload
-    await run_in_threadpool(strongswan_service.load_all_connections)
-    
+
+    # Load only this tunnel's connection (leaves other tunnels untouched)
+    await run_in_threadpool(
+        strongswan_service.load_single_connection,
+        tunnel.name,
+        ike_version=tunnel.ike_version,
+        local_address=tunnel.local_address,
+        remote_address=tunnel.remote_address,
+        local_id=tunnel.local_id,
+        remote_id=tunnel.remote_id,
+        auth_method=tunnel.auth_method,
+        ike_proposal=tunnel.ike_proposal,
+        ike_lifetime=tunnel.ike_lifetime,
+        dpd_action=tunnel.dpd_action,
+        dpd_delay=tunnel.dpd_delay,
+        nat_traversal=tunnel.nat_traversal,
+        child_sas=child_sas_data,
+    )
+
     await db.commit()
-    
+
     logger.info(f"Created Child SA {child.name} for tunnel {tunnel.name}")
     
     return child
@@ -655,13 +667,28 @@ async def update_child_sa(
         child_sas=child_sas_data
     )
     await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
-    
-    # Reload
-    await run_in_threadpool(strongswan_service.load_all_connections)
-    
+
+    # Load only this tunnel's connection (leaves other tunnels untouched)
+    await run_in_threadpool(
+        strongswan_service.load_single_connection,
+        tunnel.name,
+        ike_version=tunnel.ike_version,
+        local_address=tunnel.local_address,
+        remote_address=tunnel.remote_address,
+        local_id=tunnel.local_id,
+        remote_id=tunnel.remote_id,
+        auth_method=tunnel.auth_method,
+        ike_proposal=tunnel.ike_proposal,
+        ike_lifetime=tunnel.ike_lifetime,
+        dpd_action=tunnel.dpd_action,
+        dpd_delay=tunnel.dpd_delay,
+        nat_traversal=tunnel.nat_traversal,
+        child_sas=child_sas_data,
+    )
+
     await db.commit()
     await db.refresh(child)
-    
+
     logger.info(f"Updated Child SA {child.name}")
     
     return child
@@ -750,12 +777,27 @@ async def delete_child_sa(
             child_sas=child_sas_data
         )
         await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
-    
-    # Reload connections
-    await run_in_threadpool(strongswan_service.load_all_connections)
-    
+
+        # Load only this tunnel's connection (leaves other tunnels untouched)
+        await run_in_threadpool(
+            strongswan_service.load_single_connection,
+            tunnel.name,
+            ike_version=tunnel.ike_version,
+            local_address=tunnel.local_address,
+            remote_address=tunnel.remote_address,
+            local_id=tunnel.local_id,
+            remote_id=tunnel.remote_id,
+            auth_method=tunnel.auth_method,
+            ike_proposal=tunnel.ike_proposal,
+            ike_lifetime=tunnel.ike_lifetime,
+            dpd_action=tunnel.dpd_action,
+            dpd_delay=tunnel.dpd_delay,
+            nat_traversal=tunnel.nat_traversal,
+            child_sas=child_sas_data,
+        )
+
     await db.commit()
-    
+
     logger.info(f"Deleted Child SA {child.name}")
     
     return {"status": "deleted", "name": child.name}
