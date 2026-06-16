@@ -79,9 +79,6 @@ export async function render(container) {
                 <button class="btn btn-outline-secondary" id="btn-gw-access">
                     <i class="ti ti-network me-2"></i>${t('firewall.gatewayAccess')}
                 </button>
-                <button class="btn btn-outline-secondary" id="btn-geo-refresh" title="Aggiorna le liste CIDR per paese (ipdeny.com)">
-                    <i class="ti ti-world-download me-2"></i>Aggiorna liste Geo
-                </button>
                 <button class="btn btn-primary" id="btn-add-rule">
                     <i class="ti ti-plus me-2"></i>${t('firewall.newRule')}
                 </button>
@@ -613,9 +610,6 @@ function setupEventListeners() {
 
     // Gateway access button
     document.getElementById('btn-gw-access')?.addEventListener('click', openGatewayModal);
-
-    // Geo lists refresh button
-    document.getElementById('btn-geo-refresh')?.addEventListener('click', handleGeoRefresh);
 
     // Import form submit
     document.getElementById('import-form')?.addEventListener('submit', handleImportSubmit);
@@ -1168,24 +1162,6 @@ async function loadGeoCountries() {
         const sel = document.getElementById(id);
         if (sel) sel.innerHTML = options;
     });
-}
-
-/**
- * Re-download the ipdeny CIDR lists for referenced countries and re-apply rules.
- */
-async function handleGeoRefresh() {
-    const btn = document.getElementById('btn-geo-refresh');
-    const original = btn?.innerHTML;
-    try {
-        if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>...'; }
-        const res = await apiPost('/firewall/geo/refresh', {});
-        showToast(res.message || 'Liste Geo aggiornate', 'success');
-        await loadRules();
-    } catch (error) {
-        showToast(t('common.errorPrefix') + error.message, 'error');
-    } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = original; }
-    }
 }
 
 /**

@@ -236,18 +236,26 @@ async def lifespan(app: FastAPI):
     audit_task = asyncio.create_task(audit_cleanup_task())
     logger.info("Audit log cleanup task started (every 24h)")
 
-    # Start geo-IP CIDR list refresh task (weekly)
+    # Start geo-IP CIDR list refresh task (daily at midnight)
     from core.firewall import geoip
     from core.firewall.iptables import parse_geo
     from core.firewall.models import MachineFirewallRule
+    from datetime import timedelta
 
     geo_refresh_running = True
 
+    def _seconds_until_midnight() -> float:
+        now = datetime.now()
+        next_midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return (next_midnight - now).total_seconds()
+
     async def geo_refresh_task():
-        """Background task to refresh ipdeny country CIDR lists for referenced rules (weekly)."""
+        """Refresh ipdeny country CIDR lists for referenced rules every day at midnight."""
         while geo_refresh_running:
             try:
-                await asyncio.sleep(604800)  # Wait 7 days
+                await asyncio.sleep(_seconds_until_midnight())
                 async with async_session_maker() as session:
                     result = await session.execute(
                         select(MachineFirewallRule).where(MachineFirewallRule.enabled == True)
@@ -269,7 +277,7 @@ async def lifespan(app: FastAPI):
                 logger.error(f"Geo-IP refresh task error: {e}")
 
     geo_task = asyncio.create_task(geo_refresh_task())
-    logger.info("Geo-IP refresh task started (weekly)")
+    logger.info("Geo-IP refresh task started (daily at midnight)")
 
     logger.info("MADMIN ready!")
     

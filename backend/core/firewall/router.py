@@ -491,47 +491,6 @@ async def list_geo_countries(
     return [{"code": code.lower(), "name": name} for code, name in geoip.country_choices()]
 
 
-@router.post("/geo/refresh")
-async def refresh_geo_lists(
-    current_user: User = Depends(require_permission("firewall.manage")),
-    session: AsyncSession = Depends(get_session)
-):
-    """
-    Re-download the CIDR lists for every country currently referenced by an enabled
-    rule, then re-apply firewall rules so the updated ipsets take effect.
-    """
-    from sqlalchemy import select
-    from . import geoip
-    from .iptables import parse_geo
-    from .models import MachineFirewallRule
-
-    result = await session.execute(
-        select(MachineFirewallRule).where(MachineFirewallRule.enabled == True)
-    )
-    rules = result.scalars().all()
-
-    geo_ccs = set()
-    for r in rules:
-        for val in (r.source, r.destination):
-            cc = parse_geo(val)
-            if cc:
-                geo_ccs.add(cc)
-
-    if not geo_ccs:
-        return {"status": "ok", "message": "Nessun filtro geografico attivo", "countries": []}
-
-    geoip.refresh_all(geo_ccs)
-    try:
-        await firewall_orchestrator.apply_rules(session)
-        await session.commit()
-    except IptablesError as e:
-        await session.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-
-    return {"status": "ok", "message": f"Liste aggiornate per {len(geo_ccs)} paesi",
-            "countries": sorted(geo_ccs)}
-
-
 @router.get("/export", response_class=JSONResponse)
 async def export_rules(
     current_user: User = Depends(require_permission("firewall.view")),

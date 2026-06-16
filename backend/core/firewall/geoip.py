@@ -378,19 +378,15 @@ def ensure_country_ipset(cc: str, force_reload: bool = False) -> bool:
             iptables.ipset_create_net(setname)
         return False
 
-    existed = iptables.ipset_exists(setname)
-    if not existed:
-        iptables.ipset_create_net(setname)
-    elif force_reload:
-        iptables.ipset_flush(setname)
-    else:
-        # Set already present and we are not forcing a reload — assume current.
+    # Skip reload when the set is already present and we are not forcing one.
+    if iptables.ipset_exists(setname) and not force_reload:
         return True
 
-    for cidr in cidrs:
-        iptables.ipset_add(setname, cidr)
-    logger.info(f"Geo: loaded {len(cidrs)} CIDRs into {setname}")
-    return True
+    # Bulk-load all CIDRs in a single `ipset restore` transaction (fast).
+    ok = iptables.ipset_restore_net(setname, cidrs)
+    if ok:
+        logger.info(f"Geo: loaded {len(cidrs)} CIDRs into {setname}")
+    return ok
 
 
 def sync_referenced_ipsets(country_codes: Set[str], destroy_unreferenced: bool = True) -> None:

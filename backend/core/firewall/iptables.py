@@ -953,6 +953,43 @@ def ipset_flush(setname: str) -> bool:
     return _run_ipset(["flush", setname])
 
 
+def ipset_restore_net(setname: str, cidrs: List[str]) -> bool:
+    """
+    Atomically (re)create a hash:net ipset and load all CIDRs in a single
+    `ipset restore` transaction. Far faster than one `ipset add` subprocess per
+    entry (which made loading a country list of thousands of CIDRs very slow).
+
+    Creates the set if missing, flushes it, then adds every CIDR.
+    """
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK ipset] Would restore {len(cidrs)} CIDRs into {setname}")
+        return True
+
+    lines = [
+        f"create {setname} hash:net maxelem 131072 -exist",
+        f"flush {setname}",
+    ]
+    lines.extend(f"add {setname} {cidr}" for cidr in cidrs)
+    restore_input = "\n".join(lines) + "\n"
+
+    try:
+        subprocess.run(
+            ["ipset", "restore"],
+            input=restore_input,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        logger.debug(f"ipset restore loaded {len(cidrs)} CIDRs into {setname}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ipset restore failed for {setname}: {e.stderr.strip()}")
+        return False
+    except FileNotFoundError:
+        logger.error("ipset command not found — install ipset package")
+        return False
+
+
 def ipset_add(setname: str, ip: str) -> bool:
     """Add an IP to an ipset (idempotent via --exist)."""
     return _run_ipset(["add", setname, ip, "--exist"])
