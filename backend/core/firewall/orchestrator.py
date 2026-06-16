@@ -487,9 +487,14 @@ class FirewallOrchestrator:
         )
         rules = result.scalars().all()
 
-        # --- Geo-IP: ensure per-country ipsets referenced by rules exist & are
-        # populated BEFORE restore_chains(), so every --match-set reference is
-        # valid. Tokens live in rule.source / rule.destination as "geo:<cc>". ---
+        # --- Geo-IP: per-country ipsets referenced by rules (tokens live in
+        # rule.source / rule.destination as "geo:<cc>"). ---
+        # 1) Create the (possibly empty) sets synchronously so the iptables
+        #    --match-set references in restore_chains() are always valid — this
+        #    is instant (no download / no bulk load).
+        # 2) Download + populate the CIDR lists off the request path in a worker
+        #    thread, so rule create/update returns immediately. The set simply
+        #    matches nothing until the background load finishes a moment later.
         from . import geoip
         geo_ccs = set()
         for r in rules:
@@ -497,7 +502,8 @@ class FirewallOrchestrator:
                 cc = iptables.parse_geo(val)
                 if cc:
                     geo_ccs.add(cc)
-        geoip.sync_referenced_ipsets(geo_ccs)
+        geoip.ensure_sets_exist(geo_ccs)
+        asyncio.create_task(asyncio.to_thread(geoip.sync_referenced_ipsets, geo_ccs))
 
         # Build per-table chain rules: {table: {madmin_chain: [restore-format lines]}}
         chain_rules: Dict[str, Dict[str, List[str]]] = {}

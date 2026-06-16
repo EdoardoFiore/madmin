@@ -353,13 +353,28 @@ def download_country(cc: str) -> bool:
         return False
 
 
+def ensure_sets_exist(country_codes: Set[str]) -> None:
+    """
+    Synchronously create an EMPTY hash:net ipset for every referenced country
+    if it does not exist yet. Fast (no download, no bulk load) — its only job is
+    to make the iptables `--match-set MADMIN_GEO_<CC>` reference valid so that
+    apply_rules()'s restore_chains() never fails on a missing set.
+
+    Actual CIDR population is done off the request path by sync_referenced_ipsets().
+    """
+    for cc in {c.lower() for c in country_codes}:
+        setname = iptables.geo_set_name(cc)
+        if not iptables.ipset_exists(setname):
+            iptables.ipset_create_net(setname)
+
+
 def ensure_country_ipset(cc: str, force_reload: bool = False) -> bool:
     """
     Ensure MADMIN_GEO_<CC> exists and is populated from the cached zone.
 
-    Downloads the zone first if there is no cache yet. If force_reload is True the
-    zone is re-downloaded (used by the refresh endpoint / background task).
-    Never empties an existing populated set on failure (fail-open).
+    Downloads the zone first if there is no cache yet (or force_reload is True),
+    then bulk-loads the CIDRs in a single `ipset restore`. Re-loading from cache
+    is cheap and idempotent. Never raises (fail-soft / fail-open).
     """
     cc = cc.lower()
     setname = iptables.geo_set_name(cc)
@@ -370,17 +385,12 @@ def ensure_country_ipset(cc: str, force_reload: bool = False) -> bool:
     cidrs = _read_cached_cidrs(cc)
     if not cidrs:
         logger.warning(
-            f"Geo: no CIDRs available for {cc}; leaving ipset {setname} as-is "
-            f"(rule will match an empty/stale set)"
+            f"Geo: no CIDRs available for {cc}; leaving ipset {setname} empty "
+            f"(rule will match nothing until the list is downloaded)"
         )
-        # Still ensure the set exists so the iptables --match-set reference is valid.
         if not iptables.ipset_exists(setname):
             iptables.ipset_create_net(setname)
         return False
-
-    # Skip reload when the set is already present and we are not forcing one.
-    if iptables.ipset_exists(setname) and not force_reload:
-        return True
 
     # Bulk-load all CIDRs in a single `ipset restore` transaction (fast).
     ok = iptables.ipset_restore_net(setname, cidrs)
