@@ -113,6 +113,20 @@ class _FirewallRuleValidators(SQLModel):
             raise ValueError(f"Formato porta non valido: {v}")
         return v
 
+    @field_validator('source', 'destination', mode='before', check_fields=False)
+    @classmethod
+    def validate_source_destination(cls, v):
+        if v is None or v == "":
+            return v
+        s = str(v).strip()
+        # Geo token: "geo:<2-letter cc>" (country validity checked in the router)
+        if re.match(r'^geo:[A-Za-z]{2}$', s):
+            return s.lower()
+        # Otherwise an IP / CIDR / hostname-ish literal (chars allowed by iptables -s/-d)
+        if not re.match(r'^[\w.:/\-]+$', s):
+            raise ValueError(f"Sorgente/destinazione non valida: {v}")
+        return s
+
     @field_validator('port', mode='before', check_fields=False)
     @classmethod
     def validate_port(cls, v):

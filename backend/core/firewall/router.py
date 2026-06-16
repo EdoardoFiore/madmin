@@ -44,6 +44,19 @@ _NAT_TARGET_HOOK = {
 }
 
 
+def _validate_geo_tokens(source: Optional[str], destination: Optional[str]) -> None:
+    """Reject geo:<cc> tokens whose country code is not a known ISO 3166-1 alpha-2."""
+    from . import geoip
+    from .iptables import parse_geo
+    for val in (source, destination):
+        cc = parse_geo(val)
+        if cc and not geoip.is_valid_country_code(cc):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Codice paese non valido nel filtro geografico: '{cc}'."
+            )
+
+
 def _validate_rule_constraints(chain: str, action: str,
                                in_interface: Optional[str],
                                out_interface: Optional[str]) -> None:
@@ -207,6 +220,7 @@ async def create_rule(
         rule_data.chain, rule_data.action,
         rule_data.in_interface, rule_data.out_interface
     )
+    _validate_geo_tokens(rule_data.source, rule_data.destination)
 
     try:
         rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
@@ -257,6 +271,10 @@ async def update_rule(
         update_data.get("action", existing.action),
         update_data.get("in_interface", existing.in_interface),
         update_data.get("out_interface", existing.out_interface),
+    )
+    _validate_geo_tokens(
+        update_data.get("source", existing.source),
+        update_data.get("destination", existing.destination),
     )
 
     try:
@@ -462,6 +480,56 @@ async def apply_rules(
         return {"status": "ok", "message": "Rules applied successfully"}
     except IptablesError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/geo/countries")
+async def list_geo_countries(
+    current_user: User = Depends(require_permission("firewall.view")),
+):
+    """List ISO 3166-1 alpha-2 countries available for geo-IP source/destination filtering."""
+    from . import geoip
+    return [{"code": code.lower(), "name": name} for code, name in geoip.country_choices()]
+
+
+@router.post("/geo/refresh")
+async def refresh_geo_lists(
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Re-download the CIDR lists for every country currently referenced by an enabled
+    rule, then re-apply firewall rules so the updated ipsets take effect.
+    """
+    from sqlalchemy import select
+    from . import geoip
+    from .iptables import parse_geo
+    from .models import MachineFirewallRule
+
+    result = await session.execute(
+        select(MachineFirewallRule).where(MachineFirewallRule.enabled == True)
+    )
+    rules = result.scalars().all()
+
+    geo_ccs = set()
+    for r in rules:
+        for val in (r.source, r.destination):
+            cc = parse_geo(val)
+            if cc:
+                geo_ccs.add(cc)
+
+    if not geo_ccs:
+        return {"status": "ok", "message": "Nessun filtro geografico attivo", "countries": []}
+
+    geoip.refresh_all(geo_ccs)
+    try:
+        await firewall_orchestrator.apply_rules(session)
+        await session.commit()
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"status": "ok", "message": f"Liste aggiornate per {len(geo_ccs)} paesi",
+            "countries": sorted(geo_ccs)}
 
 
 @router.get("/export", response_class=JSONResponse)

@@ -235,7 +235,42 @@ async def lifespan(app: FastAPI):
     
     audit_task = asyncio.create_task(audit_cleanup_task())
     logger.info("Audit log cleanup task started (every 24h)")
-    
+
+    # Start geo-IP CIDR list refresh task (weekly)
+    from core.firewall import geoip
+    from core.firewall.iptables import parse_geo
+    from core.firewall.models import MachineFirewallRule
+
+    geo_refresh_running = True
+
+    async def geo_refresh_task():
+        """Background task to refresh ipdeny country CIDR lists for referenced rules (weekly)."""
+        while geo_refresh_running:
+            try:
+                await asyncio.sleep(604800)  # Wait 7 days
+                async with async_session_maker() as session:
+                    result = await session.execute(
+                        select(MachineFirewallRule).where(MachineFirewallRule.enabled == True)
+                    )
+                    geo_ccs = set()
+                    for r in result.scalars().all():
+                        for val in (r.source, r.destination):
+                            cc = parse_geo(val)
+                            if cc:
+                                geo_ccs.add(cc)
+                    if geo_ccs:
+                        geoip.refresh_all(geo_ccs)
+                        await firewall_orchestrator.apply_rules(session)
+                        await session.commit()
+                        logger.info(f"Geo-IP lists refreshed for {len(geo_ccs)} countries")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Geo-IP refresh task error: {e}")
+
+    geo_task = asyncio.create_task(geo_refresh_task())
+    logger.info("Geo-IP refresh task started (weekly)")
+
     logger.info("MADMIN ready!")
     
     yield
@@ -245,9 +280,11 @@ async def lifespan(app: FastAPI):
     stats_task_running = False
     backup_task_running = False
     audit_cleanup_running = False
+    geo_refresh_running = False
     stats_task.cancel()
     backup_task.cancel()
     audit_task.cancel()
+    geo_task.cancel()
     restore_task.cancel()
     try:
         await restore_task
@@ -263,6 +300,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await audit_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await geo_task
     except asyncio.CancelledError:
         pass
 

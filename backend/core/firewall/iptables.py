@@ -86,6 +86,29 @@ def get_madmin_chain(table: str, parent_chain: str) -> Optional[str]:
 
 
 # =============================================================================
+# GEO-IP MATCH HELPERS
+# =============================================================================
+
+# A firewall rule's source/destination may carry a geo token "geo:<cc>" instead
+# of an IP/CIDR. It is translated at rule-build time into an ipset match against
+# the per-country set produced by core.firewall.geoip.
+_GEO_TOKEN_RE = re.compile(r'^geo:([a-z]{2})$')
+
+
+def parse_geo(value: Optional[str]) -> Optional[str]:
+    """Return the lowercase 2-letter country code if value is a geo token, else None."""
+    if not value:
+        return None
+    m = _GEO_TOKEN_RE.match(value.strip())
+    return m.group(1) if m else None
+
+
+def geo_set_name(cc: str) -> str:
+    """ipset name for a country code, e.g. 'it' -> 'MADMIN_GEO_IT' (<= 31 chars)."""
+    return f"MADMIN_GEO_{cc.upper()}"
+
+
+# =============================================================================
 # LOW-LEVEL IPTABLES OPERATIONS
 # =============================================================================
 
@@ -587,14 +610,23 @@ def build_rule_args(
         List of command arguments
     """
     args = [operation, chain]
-    
+
     if protocol:
         args.extend(["-p", protocol])
-    
-    if source:
+
+    # Source/destination may be a literal IP/CIDR or a geo token ("geo:it").
+    # A geo token translates to an ipset match against the per-country set
+    # MADMIN_GEO_<CC> instead of a plain -s/-d.
+    src_cc = parse_geo(source)
+    if src_cc:
+        args.extend(["-m", "set", "--match-set", geo_set_name(src_cc), "src"])
+    elif source:
         args.extend(["-s", source])
-    
-    if destination:
+
+    dst_cc = parse_geo(destination)
+    if dst_cc:
+        args.extend(["-m", "set", "--match-set", geo_set_name(dst_cc), "dst"])
+    elif destination:
         args.extend(["-d", destination])
     
     if in_interface:
@@ -905,6 +937,14 @@ def ipset_create(setname: str) -> bool:
     success = _run_ipset(["create", setname, "hash:ip"])
     if success:
         logger.debug(f"Created ipset {setname}")
+    return success
+
+
+def ipset_create_net(setname: str, maxelem: int = 131072) -> bool:
+    """Create an ipset of type hash:net (CIDR ranges), used for geo-IP country sets."""
+    success = _run_ipset(["create", setname, "hash:net", "maxelem", str(maxelem)])
+    if success:
+        logger.debug(f"Created ipset {setname} (hash:net)")
     return success
 
 

@@ -487,6 +487,18 @@ class FirewallOrchestrator:
         )
         rules = result.scalars().all()
 
+        # --- Geo-IP: ensure per-country ipsets referenced by rules exist & are
+        # populated BEFORE restore_chains(), so every --match-set reference is
+        # valid. Tokens live in rule.source / rule.destination as "geo:<cc>". ---
+        from . import geoip
+        geo_ccs = set()
+        for r in rules:
+            for val in (r.source, r.destination):
+                cc = iptables.parse_geo(val)
+                if cc:
+                    geo_ccs.add(cc)
+        geoip.sync_referenced_ipsets(geo_ccs)
+
         # Build per-table chain rules: {table: {madmin_chain: [restore-format lines]}}
         chain_rules: Dict[str, Dict[str, List[str]]] = {}
         for table, chains in iptables.CHAIN_MAP.items():

@@ -52,6 +52,9 @@ const TABLES = {
     raw: { label: 'Raw', chains: ['PREROUTING', 'OUTPUT'], icon: 'bolt' }
 };
 
+// Geo-IP country list (loaded once from the API), cached for the dropdowns
+let geoCountries = null;
+
 // Actions available per table
 const TABLE_ACTIONS = {
     filter: ['ACCEPT', 'DROP', 'REJECT', 'LOG'],
@@ -75,6 +78,9 @@ export async function render(container) {
                 </button>
                 <button class="btn btn-outline-secondary" id="btn-gw-access">
                     <i class="ti ti-network me-2"></i>${t('firewall.gatewayAccess')}
+                </button>
+                <button class="btn btn-outline-secondary" id="btn-geo-refresh" title="Aggiorna le liste CIDR per paese (ipdeny.com)">
+                    <i class="ti ti-world-download me-2"></i>Aggiorna liste Geo
                 </button>
                 <button class="btn btn-primary" id="btn-add-rule">
                     <i class="ti ti-plus me-2"></i>${t('firewall.newRule')}
@@ -172,13 +178,27 @@ export async function render(container) {
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">${t('firewall.source')}</label>
-                                    <input type="text" class="form-control" id="rule-source"
-                                           placeholder="es. 192.168.1.0/24">
+                                    <div class="input-group">
+                                        <select class="form-select" id="rule-source-mode" style="max-width:140px;">
+                                            <option value="ip">IP / CIDR</option>
+                                            <option value="geo">Area geografica</option>
+                                        </select>
+                                        <input type="text" class="form-control" id="rule-source"
+                                               placeholder="es. 192.168.1.0/24">
+                                        <select class="form-select geo-country-select" id="rule-source-geo" style="display:none;"></select>
+                                    </div>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">${t('firewall.destination')}</label>
-                                    <input type="text" class="form-control" id="rule-destination"
-                                           placeholder="es. 10.0.0.0/8">
+                                    <div class="input-group">
+                                        <select class="form-select" id="rule-destination-mode" style="max-width:140px;">
+                                            <option value="ip">IP / CIDR</option>
+                                            <option value="geo">Area geografica</option>
+                                        </select>
+                                        <input type="text" class="form-control" id="rule-destination"
+                                               placeholder="es. 10.0.0.0/8">
+                                        <select class="form-select geo-country-select" id="rule-destination-geo" style="display:none;"></select>
+                                    </div>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">${t('firewall.inInterface')}</label>
@@ -594,6 +614,9 @@ function setupEventListeners() {
     // Gateway access button
     document.getElementById('btn-gw-access')?.addEventListener('click', openGatewayModal);
 
+    // Geo lists refresh button
+    document.getElementById('btn-geo-refresh')?.addEventListener('click', handleGeoRefresh);
+
     // Import form submit
     document.getElementById('import-form')?.addEventListener('submit', handleImportSubmit);
 
@@ -602,6 +625,18 @@ function setupEventListeners() {
 
     // Rule form submit
     document.getElementById('rule-form')?.addEventListener('submit', handleRuleSubmit);
+
+    // Geo source/destination mode toggles
+    ['source', 'destination'].forEach(field => {
+        document.getElementById(`rule-${field}-mode`)?.addEventListener('change', (e) => {
+            applyFieldMode(field, e.target.value);
+            updateIptablesPreview();
+        });
+        document.getElementById(`rule-${field}-geo`)?.addEventListener('change', updateIptablesPreview);
+    });
+
+    // Populate the country dropdowns (once)
+    loadGeoCountries();
 
     // Table selection
     document.querySelectorAll('input[name="fw-table"]').forEach(radio => {
@@ -739,8 +774,8 @@ function updateIptablesPreview() {
     const action = document.getElementById('rule-action')?.value || 'ACCEPT';
     const protocol = document.getElementById('rule-protocol')?.value;
     const port = document.getElementById('rule-port')?.value;
-    const source = document.getElementById('rule-source')?.value;
-    const destination = document.getElementById('rule-destination')?.value;
+    const source = getFieldValue('source');
+    const destination = getFieldValue('destination');
     const inIface = document.getElementById('rule-in-interface')?.value;
     const outIface = document.getElementById('rule-out-interface')?.value;
     const state = document.getElementById('rule-state')?.value;
@@ -757,9 +792,14 @@ function updateIptablesPreview() {
 
     let cmd = `iptables -t ${table} -A ${chain}`;
 
+    const geoSrc = /^geo:([a-z]{2})$/i.exec(source || '');
+    const geoDst = /^geo:([a-z]{2})$/i.exec(destination || '');
+
     if (protocol) cmd += ` -p ${protocol}`;
-    if (source) cmd += ` -s ${source}`;
-    if (destination) cmd += ` -d ${destination}`;
+    if (geoSrc) cmd += ` -m set --match-set MADMIN_GEO_${geoSrc[1].toUpperCase()} src`;
+    else if (source) cmd += ` -s ${source}`;
+    if (geoDst) cmd += ` -m set --match-set MADMIN_GEO_${geoDst[1].toUpperCase()} dst`;
+    else if (destination) cmd += ` -d ${destination}`;
     if (inIface) cmd += ` -i ${inIface}`;
     if (outIface) cmd += ` -o ${outIface}`;
     if (state) cmd += ` -m state --state ${state}`;
@@ -926,14 +966,28 @@ function renderRuleRow(rule, orderedColumns) {
 }
 
 /**
+ * Render a source/destination cell, showing a geo token ("geo:it") as a country
+ * label/badge instead of the raw token.
+ */
+function renderAddrCell(value) {
+    const m = /^geo:([a-z]{2})$/i.exec(value || '');
+    if (m) {
+        const cc = m[1].toLowerCase();
+        const name = (geoCountries || []).find(c => c.code === cc)?.name || cc.toUpperCase();
+        return `<span class="badge bg-azure-lt" title="${escapeHtml(name)}"><i class="ti ti-world me-1"></i>${escapeHtml(name)}</span>`;
+    }
+    return `<code>${escapeHtml(value)}</code>`;
+}
+
+/**
  * Render a cell based on column type
  */
 function renderCell(rule, column) {
     const esc = escapeHtml;
     switch (column) {
         case 'protocol': return rule.protocol ? `<code>${rule.protocol}</code>` : `<span class="text-muted">${t('firewall.allProtocols').toLowerCase()}</span>`;
-        case 'source': return rule.source ? `<code>${esc(rule.source)}</code>` : '<span class="text-muted">-</span>';
-        case 'destination': return rule.destination ? `<code>${esc(rule.destination)}</code>` : '<span class="text-muted">-</span>';
+        case 'source': return rule.source ? renderAddrCell(rule.source) : '<span class="text-muted">-</span>';
+        case 'destination': return rule.destination ? renderAddrCell(rule.destination) : '<span class="text-muted">-</span>';
         case 'port': return rule.port ? `<code>${esc(rule.port)}</code>` : '<span class="text-muted">-</span>';
         case 'state': return rule.state ? `<span class="badge bg-secondary-lt">${rule.state}</span>` : '-';
         case 'comment': return `<span class="text-muted">${rule.comment ? esc(rule.comment) : '-'}</span>`;
@@ -1095,6 +1149,90 @@ function setupRowEvents(container) {
 /**
  * Open rule modal for create/edit
  */
+/**
+ * Load the geo-IP country list once and populate both country dropdowns.
+ */
+async function loadGeoCountries() {
+    try {
+        if (!geoCountries) {
+            geoCountries = await apiGet('/firewall/geo/countries');
+        }
+    } catch (error) {
+        geoCountries = [];
+        return;
+    }
+    const options = geoCountries
+        .map(c => `<option value="${c.code}">${escapeHtml(c.name)} (${c.code.toUpperCase()})</option>`)
+        .join('');
+    ['rule-source-geo', 'rule-destination-geo'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (sel) sel.innerHTML = options;
+    });
+}
+
+/**
+ * Re-download the ipdeny CIDR lists for referenced countries and re-apply rules.
+ */
+async function handleGeoRefresh() {
+    const btn = document.getElementById('btn-geo-refresh');
+    const original = btn?.innerHTML;
+    try {
+        if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>...'; }
+        const res = await apiPost('/firewall/geo/refresh', {});
+        showToast(res.message || 'Liste Geo aggiornate', 'success');
+        await loadRules();
+    } catch (error) {
+        showToast(t('common.errorPrefix') + error.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    }
+}
+
+/**
+ * Toggle a source/destination field between IP/CIDR text input and geo country select.
+ */
+function applyFieldMode(field, mode) {
+    const input = document.getElementById(`rule-${field}`);
+    const geo = document.getElementById(`rule-${field}-geo`);
+    if (!input || !geo) return;
+    const isGeo = mode === 'geo';
+    input.style.display = isGeo ? 'none' : '';
+    geo.style.display = isGeo ? '' : 'none';
+}
+
+/**
+ * Effective value of a source/destination field, accounting for geo mode.
+ * Returns "geo:<cc>", the IP/CIDR text, or null.
+ */
+function getFieldValue(field) {
+    const mode = document.getElementById(`rule-${field}-mode`)?.value;
+    if (mode === 'geo') {
+        const cc = document.getElementById(`rule-${field}-geo`)?.value;
+        return cc ? `geo:${cc}` : null;
+    }
+    return document.getElementById(`rule-${field}`)?.value || null;
+}
+
+/**
+ * Initialise a source/destination field from a stored rule value (geo token or IP).
+ */
+function setFieldFromValue(field, value) {
+    const modeSel = document.getElementById(`rule-${field}-mode`);
+    const input = document.getElementById(`rule-${field}`);
+    const geo = document.getElementById(`rule-${field}-geo`);
+    const m = /^geo:([a-z]{2})$/i.exec(value || '');
+    if (m) {
+        if (modeSel) modeSel.value = 'geo';
+        input.value = '';
+        if (geo) geo.value = m[1].toLowerCase();
+        applyFieldMode(field, 'geo');
+    } else {
+        if (modeSel) modeSel.value = 'ip';
+        input.value = value || '';
+        applyFieldMode(field, 'ip');
+    }
+}
+
 function openRuleModal(rule = null, isDuplicate = false) {
     editingRule = isDuplicate ? null : rule;   // duplica => submit fa POST (nuova regola)
 
@@ -1112,8 +1250,8 @@ function openRuleModal(rule = null, isDuplicate = false) {
     document.getElementById('rule-action').value = rule?.action || TABLE_ACTIONS[tableSelect.value][0];
     document.getElementById('rule-protocol').value = rule?.protocol || '';
     document.getElementById('rule-port').value = rule?.port || '';
-    document.getElementById('rule-source').value = rule?.source || '';
-    document.getElementById('rule-destination').value = rule?.destination || '';
+    setFieldFromValue('source', rule?.source);
+    setFieldFromValue('destination', rule?.destination);
     document.getElementById('rule-in-interface').value = rule?.in_interface || '';
     document.getElementById('rule-out-interface').value = rule?.out_interface || '';
     document.getElementById('rule-state').value = rule?.state || '';
@@ -1155,8 +1293,8 @@ async function handleRuleSubmit(e) {
         action: document.getElementById('rule-action').value,
         protocol: document.getElementById('rule-protocol').value || null,
         port: document.getElementById('rule-port').value || null,
-        source: document.getElementById('rule-source').value || null,
-        destination: document.getElementById('rule-destination').value || null,
+        source: getFieldValue('source'),
+        destination: getFieldValue('destination'),
         in_interface: document.getElementById('rule-in-interface').value || null,
         out_interface: document.getElementById('rule-out-interface').value || null,
         state: document.getElementById('rule-state').value || null,
