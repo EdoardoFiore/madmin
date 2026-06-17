@@ -9,6 +9,7 @@ import { apiGet, apiPost, apiPatch, apiDelete, apiPut, apiFetch } from '../api.j
 import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../utils.js';
 import { setPageActions, checkPermission } from '../app.js';
 import { t } from '../i18n.js';
+import { buildAddressPicker } from './firewall-addresses.js';
 
 // Sentinel comment marking the protected managed-LAN MASQUERADE rule (mirrors backend)
 const MANAGED_NAT_SENTINEL = 'MADMIN_MANAGED_LAN_NAT';
@@ -20,12 +21,11 @@ let currentChain = 'INPUT';
 let userPreferences = {};
 let visibleColumns = [];
 
-// Address objects & groups (loaded once, reused by the rule modal multi-select
-// and the Address manager modal)
+// Address objects & groups (loaded once, reused by the rule modal picker)
 let addressObjects = [];
 let addressGroups = [];
-let editingAddressObject = null;
-let editingAddressGroup = null;
+// Per-direction picker state: getSelected() functions injected by buildAddressPicker
+const _pickerGet = { source: null, destination: null };
 
 // Column definitions
 const ALL_COLUMNS = {
@@ -59,9 +59,6 @@ const TABLES = {
     raw: { label: 'Raw', chains: ['PREROUTING', 'OUTPUT'], icon: 'bolt' }
 };
 
-// Geo-IP country list (loaded once from the API), cached for the dropdowns
-let geoCountries = null;
-
 // Actions available per table
 const TABLE_ACTIONS = {
     filter: ['ACCEPT', 'DROP', 'REJECT', 'LOG'],
@@ -85,9 +82,6 @@ export async function render(container) {
                 </button>
                 <button class="btn btn-outline-secondary" id="btn-gw-access">
                     <i class="ti ti-network me-2"></i>${t('firewall.gatewayAccess')}
-                </button>
-                <button class="btn btn-outline-secondary" id="btn-addresses">
-                    <i class="ti ti-address-book me-2"></i>Address
                 </button>
                 <button class="btn btn-primary" id="btn-add-rule">
                     <i class="ti ti-plus me-2"></i>${t('firewall.newRule')}
@@ -185,7 +179,7 @@ export async function render(container) {
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">${t('firewall.source')}</label>
-                                    <div class="input-group">
+                                    <div class="input-group mb-1">
                                         <select class="form-select" id="rule-source-mode" style="max-width:170px;">
                                             <option value="ip">IP / CIDR</option>
                                             <option value="refs">Oggetti / Gruppi</option>
@@ -193,12 +187,11 @@ export async function render(container) {
                                         <input type="text" class="form-control" id="rule-source"
                                                placeholder="es. 192.168.1.0/24">
                                     </div>
-                                    <select class="form-select mt-1 address-ref-select" id="rule-source-refs"
-                                            multiple size="4" style="display:none;"></select>
+                                    <div id="rule-source-picker" style="display:none;"></div>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">${t('firewall.destination')}</label>
-                                    <div class="input-group">
+                                    <div class="input-group mb-1">
                                         <select class="form-select" id="rule-destination-mode" style="max-width:170px;">
                                             <option value="ip">IP / CIDR</option>
                                             <option value="refs">Oggetti / Gruppi</option>
@@ -206,8 +199,7 @@ export async function render(container) {
                                         <input type="text" class="form-control" id="rule-destination"
                                                placeholder="es. 10.0.0.0/8">
                                     </div>
-                                    <select class="form-select mt-1 address-ref-select" id="rule-destination-refs"
-                                            multiple size="4" style="display:none;"></select>
+                                    <div id="rule-destination-picker" style="display:none;"></div>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">${t('firewall.inInterface')}</label>
@@ -430,132 +422,6 @@ iptables -t filter -A INPUT -j ACCEPT
             </div>
         </div>
 
-        <!-- Address Manager Modal -->
-        <div class="modal modal-blur fade" id="address-manager-modal" tabindex="-1">
-            <div class="modal-dialog modal-lg modal-dialog-scrollable">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title"><i class="ti ti-address-book me-2"></i>Gestione Address</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <ul class="nav nav-tabs mb-3" role="tablist">
-                            <li class="nav-item">
-                                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#addr-tab-objects" type="button">Oggetti</button>
-                            </li>
-                            <li class="nav-item">
-                                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#addr-tab-groups" type="button">Gruppi</button>
-                            </li>
-                        </ul>
-                        <div class="tab-content">
-                            <div class="tab-pane active show" id="addr-tab-objects">
-                                <div class="d-flex justify-content-end mb-2">
-                                    <button class="btn btn-sm btn-primary" id="btn-add-address-object">
-                                        <i class="ti ti-plus me-1"></i>Nuovo oggetto
-                                    </button>
-                                </div>
-                                <div id="address-objects-list"></div>
-                            </div>
-                            <div class="tab-pane" id="addr-tab-groups">
-                                <div class="d-flex justify-content-end mb-2">
-                                    <button class="btn btn-sm btn-primary" id="btn-add-address-group">
-                                        <i class="ti ti-plus me-1"></i>Nuovo gruppo
-                                    </button>
-                                </div>
-                                <div id="address-groups-list"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.close')}</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Address Object Editor Modal -->
-        <div class="modal modal-blur fade" id="address-object-modal" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title" id="address-object-modal-title">Nuovo oggetto</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <form id="address-object-form">
-                        <div class="modal-body">
-                            <div class="mb-3">
-                                <label class="form-label required">Nome</label>
-                                <input type="text" class="form-control" id="ao-name" required>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label required">Tipo</label>
-                                <select class="form-select" id="ao-type" required>
-                                    <option value="cidr">CIDR / IP</option>
-                                    <option value="range">Intervallo IP</option>
-                                    <option value="fqdn">FQDN</option>
-                                    <option value="geo">Area geografica</option>
-                                </select>
-                            </div>
-                            <div class="mb-3" id="ao-value-group">
-                                <label class="form-label required">Valore</label>
-                                <input type="text" class="form-control" id="ao-value" placeholder="es. 192.168.1.0/24">
-                                <select class="form-select geo-country-select" id="ao-value-geo" style="display:none;"></select>
-                                <small class="form-hint" id="ao-value-hint">Indirizzo o rete in formato CIDR (es. 10.0.0.0/24 o 1.2.3.4/32).</small>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Descrizione</label>
-                                <input type="text" class="form-control" id="ao-description">
-                            </div>
-                            <label class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="ao-enabled" checked>
-                                <span class="form-check-label">Abilitato</span>
-                            </label>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
-                            <button type="submit" class="btn btn-primary">${t('common.save')}</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-
-        <!-- Address Group Editor Modal -->
-        <div class="modal modal-blur fade" id="address-group-modal" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title" id="address-group-modal-title">Nuovo gruppo</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <form id="address-group-form">
-                        <div class="modal-body">
-                            <div class="mb-3">
-                                <label class="form-label required">Nome</label>
-                                <input type="text" class="form-control" id="ag-name" required>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Descrizione</label>
-                                <input type="text" class="form-control" id="ag-description">
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Oggetti membri</label>
-                                <select class="form-select" id="ag-members" multiple size="6"></select>
-                                <small class="form-hint">Tieni premuto Ctrl/Cmd per selezionare più oggetti.</small>
-                            </div>
-                            <label class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="ag-enabled" checked>
-                                <span class="form-check-label">Abilitato</span>
-                            </label>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-link" data-bs-dismiss="modal">${t('common.cancel')}</button>
-                            <button type="submit" class="btn btn-primary">${t('common.save')}</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
     `;
 
     setupEventListeners();
@@ -766,19 +632,7 @@ function setupEventListeners() {
             applyFieldMode(field, e.target.value);
             updateIptablesPreview();
         });
-        document.getElementById(`rule-${field}-refs`)?.addEventListener('change', updateIptablesPreview);
     });
-
-    // Address manager + editors
-    document.getElementById('btn-addresses')?.addEventListener('click', openAddressManager);
-    document.getElementById('btn-add-address-object')?.addEventListener('click', () => openAddressObjectModal());
-    document.getElementById('btn-add-address-group')?.addEventListener('click', () => openAddressGroupModal());
-    document.getElementById('address-object-form')?.addEventListener('submit', handleAddressObjectSubmit);
-    document.getElementById('address-group-form')?.addEventListener('submit', handleAddressGroupSubmit);
-    document.getElementById('ao-type')?.addEventListener('change', (e) => applyObjectTypeUI(e.target.value));
-
-    // Populate the geo country dropdown in the object editor (once)
-    loadGeoCountries();
 
     // Table selection
     document.querySelectorAll('input[name="fw-table"]').forEach(radio => {
@@ -1025,6 +879,13 @@ function renderRules() {
         // Setup row event listeners and drag-drop
         setupRowEvents(container);
         setupDragDrop(container.querySelector('.sortable-container'));
+
+        // Init popovers on address ref chips
+        container.querySelectorAll('.addr-ref-chip[data-bs-toggle="popover"]').forEach(el => {
+            bootstrap.Popover.getOrCreateInstance(el, {
+                html: true, trigger: 'hover focus', placement: 'top', container: 'body',
+            });
+        });
     }
 }
 
@@ -1101,6 +962,28 @@ function renderRuleRow(rule, orderedColumns) {
 }
 
 /**
+ * Build Bootstrap popover content for an address ref chip.
+ */
+function _addrRefPopover(r) {
+    if (r.kind === 'group') {
+        return `<b>${escapeHtml(r.name)}</b><br><small class="text-muted">gruppo address</small>`;
+    }
+    const typeLabel = { cidr: 'CIDR', range: 'Range', fqdn: 'FQDN', geo: 'Geo' }[r.type] || r.type;
+    let body = `<b>${escapeHtml(r.name)}</b> <span class="badge bg-secondary-lt">${typeLabel}</span><br>`;
+    if (r.value) body += `<code>${escapeHtml(r.value)}</code>`;
+    if ((r.type === 'fqdn' || r.type === 'geo') && r.resolved_ips && r.resolved_ips.length) {
+        const preview = r.resolved_ips.slice(0, 5).map(ip => escapeHtml(ip)).join(', ');
+        const more = r.resolved_ips.length > 5 ? ` <small>+${r.resolved_ips.length - 5}</small>` : '';
+        body += `<br><small class="text-muted">→ ${preview}${more}</small>`;
+    }
+    return body;
+}
+
+function _escAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
  * Render a source/destination cell. Shows object/group references as chips when
  * present, otherwise the literal IP/CIDR.
  */
@@ -1108,8 +991,13 @@ function renderAddrCellMulti(literal, refs) {
     if (refs && refs.length) {
         return refs.map(r => {
             const icon = r.kind === 'group' ? 'ti-stack-2' : 'ti-box';
-            const typeHint = r.type ? ` ${r.type}` : '';
-            return `<span class="badge bg-azure-lt me-1" title="${escapeHtml(r.kind)}${escapeHtml(typeHint)}"><i class="ti ${icon} me-1"></i>${escapeHtml(r.name)}</span>`;
+            const pop  = _escAttr(_addrRefPopover(r));
+            return `<span class="badge bg-azure-lt me-1 addr-ref-chip" style="cursor:help"
+                         data-bs-toggle="popover" data-bs-html="true"
+                         data-bs-trigger="hover focus" data-bs-placement="top"
+                         data-bs-content="${pop}">
+                        <i class="ti ${icon} me-1"></i>${escapeHtml(r.name)}
+                    </span>`;
         }).join(' ');
     }
     if (literal) return `<code>${escapeHtml(literal)}</code>`;
@@ -1286,54 +1174,48 @@ function setupRowEvents(container) {
 /**
  * Open rule modal for create/edit
  */
-/**
- * Load the geo-IP country list once and populate both country dropdowns.
- */
-async function loadGeoCountries() {
-    try {
-        if (!geoCountries) {
-            geoCountries = await apiGet('/firewall/geo/countries');
-        }
-    } catch (error) {
-        geoCountries = [];
-        return;
-    }
-    const options = geoCountries
-        .map(c => `<option value="${c.code}">${escapeHtml(c.name)} (${c.code.toUpperCase()})</option>`)
-        .join('');
-    const sel = document.getElementById('ao-value-geo');
-    if (sel) sel.innerHTML = options;
-}
 
 /**
- * Toggle a source/destination field between a literal IP/CIDR input and the
- * object/group multi-select.
+ * Toggle a source/destination field between literal IP/CIDR input and the
+ * address-object picker.
  */
 function applyFieldMode(field, mode) {
-    const input = document.getElementById(`rule-${field}`);
-    const refs = document.getElementById(`rule-${field}-refs`);
-    if (!input || !refs) return;
+    const input  = document.getElementById(`rule-${field}`);
+    const picker = document.getElementById(`rule-${field}-picker`);
+    if (!input || !picker) return;
     const isRefs = mode === 'refs';
-    input.style.display = isRefs ? 'none' : '';
-    refs.style.display = isRefs ? '' : 'none';
+    input.style.display   = isRefs ? 'none' : '';
+    picker.style.display  = isRefs ? ''     : 'none';
 }
 
 /**
- * Populate a rule-modal object/group multi-select from the loaded catalog.
- * Option value is "obj:<id>" or "grp:<id>".
+ * Mount the address-object picker for a rule-modal direction.
+ * selectedRefs is the rule's existing refs array (RuleAddressRefResponse[]).
  */
-function populateRefSelect(id) {
-    const sel = document.getElementById(id);
-    if (!sel) return;
-    const objOpts = addressObjects
-        .map(o => `<option value="obj:${o.id}">${escapeHtml(o.name)} (${escapeHtml(o.type)})</option>`)
-        .join('');
-    const grpOpts = addressGroups
-        .map(g => `<option value="grp:${g.id}">${escapeHtml(g.name)}</option>`)
-        .join('');
-    sel.innerHTML =
-        (objOpts ? `<optgroup label="Oggetti">${objOpts}</optgroup>` : '') +
-        (grpOpts ? `<optgroup label="Gruppi">${grpOpts}</optgroup>` : '');
+function mountDirectionPicker(field, selectedRefs) {
+    const container = document.getElementById(`rule-${field}-picker`);
+    if (!container) return;
+
+    const items = [
+        ...addressObjects.map(o => ({
+            id:       `obj:${o.id}`,
+            label:    o.name,
+            subtitle: o.type,
+            icon:     o.type,
+        })),
+        ...addressGroups.map(g => ({
+            id:       `grp:${g.id}`,
+            label:    g.name,
+            subtitle: 'gruppo',
+            icon:     'group',
+        })),
+    ];
+
+    const preselected = new Set(
+        (selectedRefs || []).map(r => r.object_id ? `obj:${r.object_id}` : `grp:${r.group_id}`)
+    );
+
+    _pickerGet[field] = buildAddressPicker(container, items, preselected);
 }
 
 /**
@@ -1342,9 +1224,9 @@ function populateRefSelect(id) {
 function getDirectionPayload(field) {
     const mode = document.getElementById(`rule-${field}-mode`)?.value;
     if (mode === 'refs') {
-        const sel = document.getElementById(`rule-${field}-refs`);
-        const refs = Array.from(sel?.selectedOptions || []).map(opt => {
-            const [kind, id] = opt.value.split(':');
+        const ids = _pickerGet[field]?.() || [];
+        const refs = ids.map(compositeId => {
+            const [kind, id] = compositeId.split(':');
             return kind === 'obj' ? { object_id: id } : { group_id: id };
         });
         return { literal: null, refs };
@@ -1357,19 +1239,17 @@ function getDirectionPayload(field) {
  */
 function setDirectionFromRule(field, rule) {
     const modeSel = document.getElementById(`rule-${field}-mode`);
-    const input = document.getElementById(`rule-${field}`);
-    const refsSel = document.getElementById(`rule-${field}-refs`);
-    const refs = rule ? rule[`${field}_refs`] : null;
+    const input   = document.getElementById(`rule-${field}`);
+    const refs    = rule ? rule[`${field}_refs`] : null;
     if (refs && refs.length) {
         if (modeSel) modeSel.value = 'refs';
-        if (input) input.value = '';
-        const wanted = new Set(refs.map(r => r.object_id ? `obj:${r.object_id}` : `grp:${r.group_id}`));
-        Array.from(refsSel?.options || []).forEach(opt => { opt.selected = wanted.has(opt.value); });
+        if (input)   input.value  = '';
+        mountDirectionPicker(field, refs);
         applyFieldMode(field, 'refs');
     } else {
         if (modeSel) modeSel.value = 'ip';
-        if (input) input.value = (rule && rule[field]) || '';
-        Array.from(refsSel?.options || []).forEach(opt => { opt.selected = false; });
+        if (input)   input.value  = (rule && rule[field]) || '';
+        mountDirectionPicker(field, []);
         applyFieldMode(field, 'ip');
     }
 }
@@ -1391,8 +1271,6 @@ function openRuleModal(rule = null, isDuplicate = false) {
     document.getElementById('rule-action').value = rule?.action || TABLE_ACTIONS[tableSelect.value][0];
     document.getElementById('rule-protocol').value = rule?.protocol || '';
     document.getElementById('rule-port').value = rule?.port || '';
-    populateRefSelect('rule-source-refs');
-    populateRefSelect('rule-destination-refs');
     setDirectionFromRule('source', rule);
     setDirectionFromRule('destination', rule);
     document.getElementById('rule-in-interface').value = rule?.in_interface || '';
@@ -1698,11 +1576,10 @@ async function loadAddresses() {
 function directionPreview(field, flag) {
     const mode = document.getElementById(`rule-${field}-mode`)?.value;
     if (mode === 'refs') {
-        const sel = document.getElementById(`rule-${field}-refs`);
-        const opts = Array.from(sel?.selectedOptions || []);
-        if (!opts.length) return '';
-        if (opts.length === 1) {
-            const [kind, id] = opts[0].value.split(':');
+        const ids = _pickerGet[field]?.() || [];
+        if (!ids.length) return '';
+        if (ids.length === 1) {
+            const [kind, id] = ids[0].split(':');
             const item = kind === 'obj'
                 ? addressObjects.find(o => o.id === id)
                 : addressGroups.find(g => g.id === id);
@@ -1714,211 +1591,3 @@ function directionPreview(field, flag) {
     return v ? ` -${flag === 'src' ? 's' : 'd'} ${v}` : '';
 }
 
-/**
- * Open the Address manager modal (objects + groups).
- */
-async function openAddressManager() {
-    await loadAddresses();
-    renderAddressManager();
-    new bootstrap.Modal(document.getElementById('address-manager-modal')).show();
-}
-
-/**
- * Render the object and group lists inside the Address manager modal.
- */
-function renderAddressManager() {
-    const canManage = checkPermission('firewall.manage');
-    const objList = document.getElementById('address-objects-list');
-    const grpList = document.getElementById('address-groups-list');
-
-    if (objList) {
-        objList.innerHTML = addressObjects.length ? `
-            <table class="table table-sm table-vcenter">
-                <thead><tr><th>Nome</th><th>Tipo</th><th>Valore</th><th>Stato</th><th></th></tr></thead>
-                <tbody>
-                ${addressObjects.map(o => `
-                    <tr>
-                        <td>${escapeHtml(o.name)}</td>
-                        <td><span class="badge bg-secondary-lt">${escapeHtml(o.type)}</span></td>
-                        <td><code>${escapeHtml(o.value)}</code></td>
-                        <td>${o.enabled ? '<span class="badge bg-success-lt">attivo</span>' : '<span class="badge bg-secondary-lt">disattivo</span>'}</td>
-                        <td class="text-end">${canManage ? `
-                            <button class="btn btn-sm btn-ghost-primary ao-edit" data-id="${o.id}" title="${t('common.edit')}"><i class="ti ti-edit"></i></button>
-                            <button class="btn btn-sm btn-ghost-danger ao-del" data-id="${o.id}" title="${t('common.delete')}"><i class="ti ti-trash"></i></button>` : ''}
-                        </td>
-                    </tr>`).join('')}
-                </tbody>
-            </table>` : emptyState('ti-box', 'Nessun oggetto', 'Crea il primo address object.');
-        objList.querySelectorAll('.ao-edit').forEach(b => b.addEventListener('click', () => {
-            const o = addressObjects.find(x => x.id === b.dataset.id);
-            if (o) openAddressObjectModal(o);
-        }));
-        objList.querySelectorAll('.ao-del').forEach(b => b.addEventListener('click', () => deleteAddressObject(b.dataset.id)));
-    }
-
-    if (grpList) {
-        grpList.innerHTML = addressGroups.length ? `
-            <table class="table table-sm table-vcenter">
-                <thead><tr><th>Nome</th><th>Membri</th><th>Stato</th><th></th></tr></thead>
-                <tbody>
-                ${addressGroups.map(g => `
-                    <tr>
-                        <td>${escapeHtml(g.name)}</td>
-                        <td>${(g.members || []).map(m => `<span class="badge bg-azure-lt me-1">${escapeHtml(m.name)}</span>`).join(' ') || '<span class="text-muted">-</span>'}</td>
-                        <td>${g.enabled ? '<span class="badge bg-success-lt">attivo</span>' : '<span class="badge bg-secondary-lt">disattivo</span>'}</td>
-                        <td class="text-end">${canManage ? `
-                            <button class="btn btn-sm btn-ghost-primary ag-edit" data-id="${g.id}" title="${t('common.edit')}"><i class="ti ti-edit"></i></button>
-                            <button class="btn btn-sm btn-ghost-danger ag-del" data-id="${g.id}" title="${t('common.delete')}"><i class="ti ti-trash"></i></button>` : ''}
-                        </td>
-                    </tr>`).join('')}
-                </tbody>
-            </table>` : emptyState('ti-stack-2', 'Nessun gruppo', 'Crea il primo address group.');
-        grpList.querySelectorAll('.ag-edit').forEach(b => b.addEventListener('click', () => {
-            const g = addressGroups.find(x => x.id === b.dataset.id);
-            if (g) openAddressGroupModal(g);
-        }));
-        grpList.querySelectorAll('.ag-del').forEach(b => b.addEventListener('click', () => deleteAddressGroup(b.dataset.id)));
-    }
-}
-
-/**
- * Adjust the object editor value field for the selected type.
- */
-function applyObjectTypeUI(type) {
-    const input = document.getElementById('ao-value');
-    const geo = document.getElementById('ao-value-geo');
-    const hint = document.getElementById('ao-value-hint');
-    const isGeo = type === 'geo';
-    if (input) input.style.display = isGeo ? 'none' : '';
-    if (geo) geo.style.display = isGeo ? '' : 'none';
-    const hints = {
-        cidr: 'Indirizzo o rete in formato CIDR (es. 10.0.0.0/24 o 1.2.3.4/32).',
-        range: 'Intervallo IPv4 (es. 10.0.0.10-10.0.0.50).',
-        fqdn: 'Nome a dominio (es. example.com), risolto periodicamente.',
-        geo: 'Seleziona la nazione (lista CIDR aggiornata automaticamente).',
-    };
-    if (hint) hint.textContent = hints[type] || '';
-    if (input) {
-        input.placeholder = type === 'range' ? 'es. 10.0.0.10-10.0.0.50'
-            : type === 'fqdn' ? 'es. example.com' : 'es. 192.168.1.0/24';
-    }
-}
-
-function openAddressObjectModal(obj = null) {
-    editingAddressObject = obj;
-    document.getElementById('address-object-modal-title').textContent = obj ? 'Modifica oggetto' : 'Nuovo oggetto';
-    document.getElementById('ao-name').value = obj?.name || '';
-    document.getElementById('ao-type').value = obj?.type || 'cidr';
-    document.getElementById('ao-description').value = obj?.description || '';
-    document.getElementById('ao-enabled').checked = obj ? obj.enabled : true;
-    applyObjectTypeUI(obj?.type || 'cidr');
-    if (obj?.type === 'geo') {
-        document.getElementById('ao-value-geo').value = obj.value;
-        document.getElementById('ao-value').value = '';
-    } else {
-        document.getElementById('ao-value').value = obj?.value || '';
-    }
-    new bootstrap.Modal(document.getElementById('address-object-modal')).show();
-}
-
-async function handleAddressObjectSubmit(e) {
-    e.preventDefault();
-    const type = document.getElementById('ao-type').value;
-    const value = type === 'geo'
-        ? document.getElementById('ao-value-geo').value
-        : document.getElementById('ao-value').value.trim();
-    const payload = {
-        name: document.getElementById('ao-name').value.trim(),
-        type,
-        value,
-        description: document.getElementById('ao-description').value.trim() || null,
-        enabled: document.getElementById('ao-enabled').checked,
-    };
-    try {
-        if (editingAddressObject) {
-            await apiPatch(`/firewall/addresses/${editingAddressObject.id}`, payload);
-            showToast('Oggetto aggiornato', 'success');
-        } else {
-            await apiPost('/firewall/addresses', payload);
-            showToast('Oggetto creato', 'success');
-        }
-        bootstrap.Modal.getInstance(document.getElementById('address-object-modal')).hide();
-        await loadAddresses();
-        renderAddressManager();
-        await loadRules();   // refresh chips on existing rules
-    } catch (error) {
-        showToast(t('common.errorPrefix') + error.message, 'error');
-    }
-}
-
-async function deleteAddressObject(id) {
-    const o = addressObjects.find(x => x.id === id);
-    const confirmed = await confirmDialog('Elimina oggetto',
-        `Eliminare l'oggetto "${o?.name || ''}"?`, t('common.delete'), 'btn-danger');
-    if (!confirmed) return;
-    try {
-        await apiDelete(`/firewall/addresses/${id}`);
-        showToast('Oggetto eliminato', 'success');
-        await loadAddresses();
-        renderAddressManager();
-    } catch (error) {
-        showToast(t('common.errorPrefix') + error.message, 'error');
-    }
-}
-
-function openAddressGroupModal(group = null) {
-    editingAddressGroup = group;
-    document.getElementById('address-group-modal-title').textContent = group ? 'Modifica gruppo' : 'Nuovo gruppo';
-    document.getElementById('ag-name').value = group?.name || '';
-    document.getElementById('ag-description').value = group?.description || '';
-    document.getElementById('ag-enabled').checked = group ? group.enabled : true;
-    const sel = document.getElementById('ag-members');
-    sel.innerHTML = addressObjects
-        .map(o => `<option value="${o.id}">${escapeHtml(o.name)} (${escapeHtml(o.type)})</option>`)
-        .join('');
-    const memberIds = new Set((group?.members || []).filter(m => m.object_id).map(m => m.object_id));
-    Array.from(sel.options).forEach(opt => { opt.selected = memberIds.has(opt.value); });
-    new bootstrap.Modal(document.getElementById('address-group-modal')).show();
-}
-
-async function handleAddressGroupSubmit(e) {
-    e.preventDefault();
-    const sel = document.getElementById('ag-members');
-    const members = Array.from(sel.selectedOptions).map(opt => ({ object_id: opt.value }));
-    const payload = {
-        name: document.getElementById('ag-name').value.trim(),
-        description: document.getElementById('ag-description').value.trim() || null,
-        enabled: document.getElementById('ag-enabled').checked,
-        members,
-    };
-    try {
-        if (editingAddressGroup) {
-            await apiPatch(`/firewall/address-groups/${editingAddressGroup.id}`, payload);
-            showToast('Gruppo aggiornato', 'success');
-        } else {
-            await apiPost('/firewall/address-groups', payload);
-            showToast('Gruppo creato', 'success');
-        }
-        bootstrap.Modal.getInstance(document.getElementById('address-group-modal')).hide();
-        await loadAddresses();
-        renderAddressManager();
-        await loadRules();
-    } catch (error) {
-        showToast(t('common.errorPrefix') + error.message, 'error');
-    }
-}
-
-async function deleteAddressGroup(id) {
-    const g = addressGroups.find(x => x.id === id);
-    const confirmed = await confirmDialog('Elimina gruppo',
-        `Eliminare il gruppo "${g?.name || ''}"?`, t('common.delete'), 'btn-danger');
-    if (!confirmed) return;
-    try {
-        await apiDelete(`/firewall/address-groups/${id}`);
-        showToast('Gruppo eliminato', 'success');
-        await loadAddresses();
-        renderAddressManager();
-    } catch (error) {
-        showToast(t('common.errorPrefix') + error.message, 'error');
-    }
-}

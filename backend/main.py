@@ -474,6 +474,7 @@ def create_app() -> FastAPI:
             {"label": "menu.dashboard", "icon": "home", "route": "#dashboard", "permission": None},
             {"label": "menu.users", "icon": "users", "route": "#users", "permission": "users.view"},
             {"label": "menu.firewall", "icon": "shield", "route": "#firewall", "permission": "firewall.view"},
+            {"label": "menu.firewallAddresses", "icon": "address-book", "route": "#firewall-addresses", "permission": "firewall.view"},
             {"label": "menu.network", "icon": "network", "route": "#network", "permission": "network.view"},
             {"label": "menu.crontab", "icon": "clock", "route": "#crontab", "permission": "settings.view"},
             {"label": "menu.logs", "icon": "file-text", "route": "#logs", "permission": "logs.view"},

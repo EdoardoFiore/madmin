@@ -123,7 +123,11 @@ async def _rule_refs_map(session: AsyncSession, rule_ids) -> dict:
     for r in refs:
         if r.object_id and r.object_id in objs:
             o = objs[r.object_id]
-            item = RuleAddressRefResponse(object_id=str(o.id), name=o.name, kind="object", type=o.type)
+            item = RuleAddressRefResponse(
+                object_id=str(o.id), name=o.name, kind="object", type=o.type,
+                value=o.value,
+                resolved_ips=json.loads(o.resolved_ips) if o.resolved_ips else None,
+            )
         elif r.group_id and r.group_id in grps:
             g = grps[r.group_id]
             item = RuleAddressRefResponse(group_id=str(g.id), name=g.name, kind="group")

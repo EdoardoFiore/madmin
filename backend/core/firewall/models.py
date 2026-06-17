@@ -210,6 +210,8 @@ class RuleAddressRefResponse(SQLModel):
     name: str
     kind: str                    # "object" | "group"
     type: Optional[str] = None   # object type (cidr/range/fqdn/geo) when kind=object
+    value: Optional[str] = None  # raw value (CIDR, FQDN, range, country code)
+    resolved_ips: Optional[List[str]] = None  # cached resolution for fqdn/geo
 
 
 class MachineFirewallRuleResponse(SQLModel):
