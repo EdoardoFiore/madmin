@@ -884,6 +884,7 @@ function renderRules() {
         container.querySelectorAll('.addr-ref-chip[data-bs-toggle="popover"]').forEach(el => {
             bootstrap.Popover.getOrCreateInstance(el, {
                 html: true, trigger: 'hover focus', placement: 'top', container: 'body',
+                delay: { show: 500, hide: 100 },
             });
         });
     }
@@ -966,7 +967,25 @@ function renderRuleRow(rule, orderedColumns) {
  */
 function _addrRefPopover(r) {
     if (r.kind === 'group') {
-        return `<b>${escapeHtml(r.name)}</b><br><small class="text-muted">gruppo address</small>`;
+        const grp = addressGroups.find(g => g.id === r.group_id);
+        const members = grp?.members || [];
+        if (!members.length)
+            return `<b>${escapeHtml(r.name)}</b> <span class="badge bg-azure-lt">gruppo</span><br><small class="text-muted">nessun membro</small>`;
+        const typeIcon = { cidr: '🌐', range: '↔', fqdn: '🔗', geo: '🌍' };
+        const lines = members.slice(0, 6).map(m => {
+            const ico = typeIcon[m.type] || '•';
+            const obj = m.object_id ? addressObjects.find(o => o.id === m.object_id) : null;
+            let line = `${ico} <b>${escapeHtml(m.name)}</b>`;
+            if (obj?.value) line += ` — <code>${escapeHtml(obj.value)}</code>`;
+            if (obj?.resolved_ips && obj.resolved_ips.length) {
+                const ips = obj.resolved_ips.slice(0, 3).map(ip => escapeHtml(ip)).join(', ');
+                const plus = obj.resolved_ips.length > 3 ? ` +${obj.resolved_ips.length - 3}` : '';
+                line += `<br><small class="text-muted ms-2">→ ${ips}${plus}</small>`;
+            }
+            return line;
+        }).join('<br>');
+        const more = members.length > 6 ? `<br><small class="text-muted">…e altri ${members.length - 6}</small>` : '';
+        return `<b>${escapeHtml(r.name)}</b> <span class="badge bg-azure-lt">gruppo</span><br>${lines}${more}`;
     }
     const typeLabel = { cidr: 'CIDR', range: 'Range', fqdn: 'FQDN', geo: 'Geo' }[r.type] || r.type;
     let body = `<b>${escapeHtml(r.name)}</b> <span class="badge bg-secondary-lt">${typeLabel}</span><br>`;
@@ -1198,16 +1217,24 @@ function mountDirectionPicker(field, selectedRefs) {
 
     const items = [
         ...addressObjects.map(o => ({
-            id:       `obj:${o.id}`,
-            label:    o.name,
-            subtitle: o.type,
-            icon:     o.type,
+            id:          `obj:${o.id}`,
+            label:       o.name,
+            subtitle:    o.type,
+            icon:        o.type,
+            kind:        'object',
+            value:       o.value,
+            resolved_ips: o.resolved_ips,
         })),
         ...addressGroups.map(g => ({
-            id:       `grp:${g.id}`,
-            label:    g.name,
+            id:      `grp:${g.id}`,
+            label:   g.name,
             subtitle: 'gruppo',
-            icon:     'group',
+            icon:    'group',
+            kind:    'group',
+            members: (g.members || []).map(m => {
+                const obj = m.object_id ? addressObjects.find(o => o.id === m.object_id) : null;
+                return { ...m, value: obj?.value, resolved_ips: obj?.resolved_ips };
+            }),
         })),
     ];
 
@@ -1215,7 +1242,7 @@ function mountDirectionPicker(field, selectedRefs) {
         (selectedRefs || []).map(r => r.object_id ? `obj:${r.object_id}` : `grp:${r.group_id}`)
     );
 
-    _pickerGet[field] = buildAddressPicker(container, items, preselected);
+    _pickerGet[field] = buildAddressPicker(container, items, preselected, updateIptablesPreview);
 }
 
 /**
@@ -1578,14 +1605,15 @@ function directionPreview(field, flag) {
     if (mode === 'refs') {
         const ids = _pickerGet[field]?.() || [];
         if (!ids.length) return '';
-        if (ids.length === 1) {
-            const [kind, id] = ids[0].split(':');
+        const names = ids.map(compositeId => {
+            const [kind, id] = compositeId.split(':');
             const item = kind === 'obj'
                 ? addressObjects.find(o => o.id === id)
                 : addressGroups.find(g => g.id === id);
-            return ` -m set --match-set ${item?.set_name || '<set>'} ${flag}`;
-        }
-        return ` -m set --match-set <aggregato> ${flag}`;
+            return item?.name || (kind === 'obj' ? 'oggetto' : 'gruppo');
+        });
+        if (names.length === 1) return ` -m set --match-set «${names[0]}» ${flag}`;
+        return ` -m set --match-set «${names.join('», «')}» ${flag}`;
     }
     const v = document.getElementById(`rule-${field}`)?.value;
     return v ? ` -${flag === 'src' ? 's' : 'd'} ${v}` : '';

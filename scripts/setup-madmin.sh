@@ -45,23 +45,24 @@ reenable_unattended_upgrades() {
 
 # --- Wait for apt/dpkg lock to be released ---
 wait_for_apt() {
-    local max_wait=60
+    local max_wait=300
     local waited=0
     while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
           fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
           fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
           fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
         if [ $waited -eq 0 ]; then
-            log_warning "apt lock still held, waiting..."
+            log_warning "apt lock still held, waiting (max ${max_wait}s)..."
         fi
-        sleep 2
-        waited=$((waited + 2))
+        sleep 5
+        waited=$((waited + 5))
         if [ $waited -ge $max_wait ]; then
-            log_error "Timeout: could not acquire apt lock after ${max_wait}s."
-            exit 1
+            log_warning "apt lock still held after ${max_wait}s — proceeding anyway (apt may fail)."
+            log_warning "If installation fails, re-run this script to retry: sudo bash setup-madmin.sh"
+            break
         fi
     done
-    if [ $waited -gt 0 ]; then
+    if [ $waited -gt 0 ] && [ $waited -lt $max_wait ]; then
         log_info "apt lock released after ${waited}s."
     fi
 }
@@ -203,9 +204,13 @@ mkdir -p $INSTALL_DIR/data
 # Copy backend files
 cp -r "$PROJECT_DIR/backend/"* $INSTALL_DIR/backend/
 
-# Create virtual environment
-log_info "Creating virtual environment..."
-python3 -m venv $INSTALL_DIR/venv
+# Create virtual environment (skip if already functional)
+if [ ! -x "$INSTALL_DIR/venv/bin/python3" ]; then
+    log_info "Creating virtual environment..."
+    python3 -m venv $INSTALL_DIR/venv
+else
+    log_info "Virtual environment already exists, skipping creation."
+fi
 
 # Install dependencies
 log_info "Installing Python dependencies..."
@@ -423,7 +428,7 @@ fi
 
 # --- Start service ---
 log_info "Starting MADMIN service..."
-systemctl start madmin.service
+systemctl restart madmin.service 2>/dev/null || systemctl start madmin.service
 
 # Wait for the backend to be ready
 log_info "Waiting for backend to start..."
@@ -444,6 +449,8 @@ INIT_HTTP=$(curl -s -o /tmp/madmin_init.json -w "%{http_code}" -X POST http://lo
     -d "$INIT_BODY")
 if [ "$INIT_HTTP" = "201" ]; then
     log_success "Administrator user created: $ADMIN_USERNAME"
+elif [ "$INIT_HTTP" = "400" ] || [ "$INIT_HTTP" = "409" ]; then
+    log_info "Administrator user '$ADMIN_USERNAME' already exists, skipping."
 else
     log_error "Failed to create administrator user (HTTP $INIT_HTTP): $(cat /tmp/madmin_init.json)"
 fi

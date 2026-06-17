@@ -113,10 +113,6 @@ export async function render(container) {
                                 <label class="form-label">${t('common.description')}</label>
                                 <input type="text" class="form-control" id="ao-description">
                             </div>
-                            <label class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="ao-enabled" checked>
-                                <span class="form-check-label">${t('common.enabled')}</span>
-                            </label>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-link"
@@ -150,10 +146,6 @@ export async function render(container) {
                                 <label class="form-label">${t('firewall.addr.labelMembers')}</label>
                                 <div id="ag-picker"></div>
                             </div>
-                            <label class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="ag-enabled" checked>
-                                <span class="form-check-label">${t('common.enabled')}</span>
-                            </label>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-link"
@@ -228,7 +220,6 @@ function renderObjects() {
                     <th>${t('firewall.addr.colType')}</th>
                     <th>${t('firewall.addr.colValue')}</th>
                     <th>${t('firewall.addr.colResolved')}</th>
-                    <th>${t('common.status')}</th>
                     <th></th>
                 </tr>
             </thead>
@@ -260,9 +251,6 @@ function renderObjects() {
 
 function objectRow(o, canManage) {
     const color = TYPE_COLOR[o.type] || 'bg-secondary-lt';
-    const statusBadge = o.enabled
-        ? `<span class="badge bg-success-lt">${t('firewall.addr.statusActive')}</span>`
-        : `<span class="badge bg-secondary-lt">${t('firewall.addr.statusInactive')}</span>`;
 
     let resolvedCell = '<span class="text-muted small">—</span>';
     if ((o.type === 'fqdn' || o.type === 'geo') && o.resolved_ips && o.resolved_ips.length) {
@@ -306,7 +294,6 @@ function objectRow(o, canManage) {
             <td><span class="badge ${color}">${typeLabel(o.type)}</span></td>
             <td><code>${escapeHtml(o.value)}</code></td>
             <td>${resolvedCell}</td>
-            <td>${statusBadge}</td>
             <td class="text-end">${actions}</td>
         </tr>
     `;
@@ -331,7 +318,6 @@ function renderGroups() {
                     <th>${t('firewall.addr.colName')}</th>
                     <th>${t('common.description')}</th>
                     <th>${t('firewall.addr.colMembers')}</th>
-                    <th>${t('common.status')}</th>
                     <th></th>
                 </tr>
             </thead>
@@ -340,6 +326,13 @@ function renderGroups() {
             </tbody>
         </table>
     `;
+
+    wrap.querySelectorAll('.grp-member-chip[data-bs-toggle="popover"]').forEach(el =>
+        bootstrap.Popover.getOrCreateInstance(el, {
+            html: true, trigger: 'hover focus', placement: 'top', container: 'body',
+            delay: { show: 500, hide: 100 },
+        })
+    );
 
     wrap.querySelectorAll('.ag-edit').forEach(btn =>
         btn.addEventListener('click', () => {
@@ -352,13 +345,29 @@ function renderGroups() {
     );
 }
 
+function _memberChipPopover(m) {
+    const obj = m.object_id ? addressObjects.find(o => o.id === m.object_id) : null;
+    const labels = { cidr: 'CIDR', range: 'Range', fqdn: 'FQDN', geo: 'Geo' };
+    let body = `<b>${escapeHtml(m.name)}</b>`;
+    if (m.type) body += ` <span class="badge bg-secondary-lt">${labels[m.type] || m.type}</span>`;
+    if (obj?.value) body += `<br><code>${escapeHtml(obj.value)}</code>`;
+    if (obj?.resolved_ips && obj.resolved_ips.length) {
+        const ips = obj.resolved_ips.slice(0, 4).map(ip => escapeHtml(ip)).join(', ');
+        const more = obj.resolved_ips.length > 4 ? ` <small>+${obj.resolved_ips.length - 4}</small>` : '';
+        body += `<br><small class="text-muted">→ ${ips}${more}</small>`;
+    }
+    return body;
+}
+
 function groupRow(g, canManage) {
     const members = (g.members || [])
-        .map(m => `<span class="badge bg-azure-lt me-1">${escapeHtml(m.name)}</span>`)
+        .map(m => `<span class="badge bg-azure-lt me-1 grp-member-chip" style="cursor:help"
+                        data-bs-toggle="popover" data-bs-html="true"
+                        data-bs-trigger="hover focus" data-bs-placement="top"
+                        data-bs-content="${escapeAttr(_memberChipPopover(m))}">
+                       ${escapeHtml(m.name)}
+                   </span>`)
         .join(' ') || '<span class="text-muted">—</span>';
-    const statusBadge = g.enabled
-        ? `<span class="badge bg-success-lt">${t('firewall.addr.statusActive')}</span>`
-        : `<span class="badge bg-secondary-lt">${t('firewall.addr.statusInactive')}</span>`;
     const actions = canManage ? `
         <div class="btn-group btn-group-sm">
             <button class="btn btn-ghost-primary ag-edit" data-id="${g.id}"
@@ -376,7 +385,6 @@ function groupRow(g, canManage) {
             <td><strong>${escapeHtml(g.name)}</strong></td>
             <td><span class="text-muted">${g.description ? escapeHtml(g.description) : '—'}</span></td>
             <td>${members}</td>
-            <td>${statusBadge}</td>
             <td class="text-end">${actions}</td>
         </tr>
     `;
@@ -392,7 +400,6 @@ async function openObjectModal(obj = null) {
         obj ? t('firewall.addr.editObject') : t('firewall.addr.newObject');
     document.getElementById('ao-name').value = obj?.name || '';
     document.getElementById('ao-description').value = obj?.description || '';
-    document.getElementById('ao-enabled').checked = obj ? obj.enabled : true;
 
     const type = obj?.type || 'cidr';
     document.getElementById('ao-type').value = type;
@@ -446,7 +453,6 @@ async function handleObjectSubmit(e) {
         type,
         value,
         description: document.getElementById('ao-description').value.trim() || null,
-        enabled:     document.getElementById('ao-enabled').checked,
     };
     try {
         if (editingObject) {
@@ -493,13 +499,15 @@ function openGroupModal(group = null) {
         group ? t('firewall.addr.editGroup') : t('firewall.addr.newGroup');
     document.getElementById('ag-name').value = group?.name || '';
     document.getElementById('ag-description').value = group?.description || '';
-    document.getElementById('ag-enabled').checked = group ? group.enabled : true;
 
     const items = addressObjects.map(o => ({
-        id:       o.id,
-        label:    o.name,
-        subtitle: typeLabel(o.type),
-        icon:     o.type,
+        id:          o.id,
+        label:       o.name,
+        subtitle:    typeLabel(o.type),
+        icon:        o.type,
+        kind:        'object',
+        value:       o.value,
+        resolved_ips: o.resolved_ips,
     }));
     const selected = new Set(
         (group?.members || []).filter(m => m.object_id).map(m => m.object_id)
@@ -518,7 +526,6 @@ async function handleGroupSubmit(e) {
     const payload = {
         name:        document.getElementById('ag-name').value.trim(),
         description: document.getElementById('ag-description').value.trim() || null,
-        enabled:     document.getElementById('ag-enabled').checked,
         members,
     };
     try {
@@ -557,97 +564,183 @@ async function deleteGroup(id) {
 
 // ---------------------------------------------------------------------------
 // Address picker component
+// Compact dropdown-style tags input.
 // Returns a getSelected() function → string[]
-// items: [{id, label, subtitle, icon}]
+// items: [{id, label, subtitle, icon, kind, value?, resolved_ips?, members?}]
+// onChange: optional callback fired on every selection change
 // ---------------------------------------------------------------------------
 
-export function buildAddressPicker(container, items, selectedIds = new Set()) {
+function _pickerItemIcon(item) {
+    if (item.kind === 'group')
+        return '<i class="ti ti-stack-2 text-azure me-1"></i>';
+    const map = { cidr: 'ti-network', range: 'ti-arrows-left-right', fqdn: 'ti-link', geo: 'ti-world' };
+    return `<i class="ti ${map[item.icon] || 'ti-box'} text-secondary me-1"></i>`;
+}
+
+function _pickerItemPopover(item) {
+    if (item.kind === 'group') {
+        const members = item.members || [];
+        if (!members.length)
+            return `<b>${escapeHtml(item.label)}</b> <span class="badge bg-azure-lt">gruppo</span><br><small class="text-muted">nessun membro</small>`;
+        const typeIcon = { cidr: '🌐', range: '↔', fqdn: '🔗', geo: '🌍' };
+        const lines = members.slice(0, 6).map(m => {
+            const ico = typeIcon[m.type] || '•';
+            let line = `${ico} <b>${escapeHtml(m.name)}</b>`;
+            if (m.value) line += ` — <code>${escapeHtml(m.value)}</code>`;
+            if (m.resolved_ips && m.resolved_ips.length) {
+                const ips = m.resolved_ips.slice(0, 3).map(ip => escapeHtml(ip)).join(', ');
+                const plus = m.resolved_ips.length > 3 ? ` +${m.resolved_ips.length - 3}` : '';
+                line += `<br><small class="text-muted ms-2">→ ${ips}${plus}</small>`;
+            }
+            return line;
+        }).join('<br>');
+        const more = members.length > 6 ? `<br><small class="text-muted">…e altri ${members.length - 6}</small>` : '';
+        return `<b>${escapeHtml(item.label)}</b> <span class="badge bg-azure-lt">gruppo</span><br>${lines}${more}`;
+    }
+    const labels = { cidr: 'CIDR', range: 'Range', fqdn: 'FQDN', geo: 'Geo' };
+    let body = `<b>${escapeHtml(item.label)}</b> <span class="badge bg-secondary-lt">${labels[item.icon] || ''}</span>`;
+    if (item.value) body += `<br><code>${escapeHtml(item.value)}</code>`;
+    if (item.resolved_ips && item.resolved_ips.length) {
+        const preview = item.resolved_ips.slice(0, 4).map(ip => escapeHtml(ip)).join(', ');
+        const more = item.resolved_ips.length > 4 ? ` <small>+${item.resolved_ips.length - 4}</small>` : '';
+        body += `<br><small class="text-muted">→ ${preview}${more}</small>`;
+    }
+    return body;
+}
+
+export function buildAddressPicker(container, items, selectedIds = new Set(), onChange = null) {
     let selected = new Set(selectedIds);
 
-    const TYPE_ICON = { cidr: '🌐', range: '↔', fqdn: '🔗', geo: '🌍' };
-
     container.innerHTML = `
-        <div class="address-picker">
-            <input class="form-control form-control-sm mb-2 picker-search"
-                   placeholder="${t('firewall.addr.pickerSearch')}"
-                   type="search" autocomplete="off">
-            <div class="picker-list border rounded bg-white"
-                 style="max-height:200px;overflow-y:auto;"></div>
-            <div class="picker-chips mt-2 d-flex flex-wrap gap-1 min-height-chips"></div>
+        <div class="addr-picker" style="position:relative;">
+            <div class="addr-picker-ctrl form-control d-flex flex-wrap gap-1 align-items-center"
+                 style="height:auto;min-height:38px;cursor:text;padding:3px 6px;">
+                <div class="addr-picker-chips d-flex flex-wrap gap-1 align-items-center"></div>
+                <input class="addr-picker-search"
+                       type="search" autocomplete="off"
+                       placeholder="${t('firewall.addr.pickerSearch')}"
+                       style="border:none;outline:none;background:transparent;min-width:90px;padding:2px 0;font-size:inherit;flex:1;">
+            </div>
+            <div class="addr-picker-drop border rounded shadow-sm bg-white"
+                 style="display:none;position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:500;max-height:220px;overflow-y:auto;"></div>
         </div>
     `;
 
-    const searchEl = container.querySelector('.picker-search');
-    const listEl   = container.querySelector('.picker-list');
-    const chipsEl  = container.querySelector('.picker-chips');
+    const pickerEl = container.querySelector('.addr-picker');
+    const ctrlEl   = container.querySelector('.addr-picker-ctrl');
+    const chipsEl  = container.querySelector('.addr-picker-chips');
+    const searchEl = container.querySelector('.addr-picker-search');
+    const dropEl   = container.querySelector('.addr-picker-drop');
 
-    function renderList(query = '') {
+    function openDrop() {
+        if (dropEl.style.display !== 'none') return;
+        dropEl.style.display = '';
+        renderDrop(searchEl.value);
+    }
+
+    function closeDrop() {
+        dropEl.querySelectorAll('[data-bs-toggle="popover"]').forEach(el =>
+            bootstrap.Popover.getInstance(el)?.dispose()
+        );
+        dropEl.style.display = 'none';
+        searchEl.value = '';
+    }
+
+    function itemHtml(item) {
+        const checked = selected.has(item.id);
+        const pop = escapeAttr(_pickerItemPopover(item));
+        return `
+            <label class="d-flex align-items-center gap-2 px-2 py-1 picker-item ${checked ? 'picker-item-selected' : ''}"
+                   style="cursor:pointer;margin:0;user-select:none;"
+                   data-bs-toggle="popover" data-bs-html="true"
+                   data-bs-trigger="hover" data-bs-placement="right"
+                   data-bs-content="${pop}">
+                <input type="checkbox" class="form-check-input m-0 flex-shrink-0"
+                       value="${item.id}" ${checked ? 'checked' : ''}>
+                <span class="flex-grow-1 text-truncate">${_pickerItemIcon(item)}${escapeHtml(item.label)}</span>
+                <small class="text-muted flex-shrink-0">${escapeHtml(item.subtitle || '')}</small>
+            </label>`;
+    }
+
+    function renderDrop(query = '') {
         const q = query.toLowerCase();
         const filtered = items.filter(item =>
             !q || item.label.toLowerCase().includes(q) ||
             (item.subtitle || '').toLowerCase().includes(q)
         );
-
         if (!filtered.length) {
-            listEl.innerHTML = `<div class="px-3 py-2 text-muted small">${t('common.noResults')}</div>`;
+            dropEl.innerHTML = `<div class="px-3 py-2 text-muted small">${t('common.noResults')}</div>`;
             return;
         }
+        const objects = filtered.filter(i => i.kind !== 'group');
+        const groups  = filtered.filter(i => i.kind === 'group');
+        let html = objects.map(itemHtml).join('');
+        if (objects.length && groups.length) {
+            html += `<div class="px-2 py-1 text-muted small border-top bg-light d-flex align-items-center gap-1">
+                         <i class="ti ti-stack-2"></i>${t('firewall.addr.tabGroups')}
+                     </div>`;
+        }
+        html += groups.map(itemHtml).join('');
+        dropEl.innerHTML = html;
 
-        listEl.innerHTML = filtered.map(item => {
-            const checked = selected.has(item.id);
-            const icon = TYPE_ICON[item.icon] || '';
-            return `
-                <label class="d-flex align-items-center gap-2 px-2 py-1 picker-item
-                              ${checked ? 'picker-item-selected' : ''}"
-                       style="cursor:pointer;" data-id="${item.id}">
-                    <input type="checkbox" class="form-check-input m-0 flex-shrink-0"
-                           value="${item.id}" ${checked ? 'checked' : ''}>
-                    <span class="flex-grow-1 text-truncate">
-                        ${icon} ${escapeHtml(item.label)}
-                    </span>
-                    <small class="text-muted flex-shrink-0">${escapeHtml(item.subtitle || '')}</small>
-                </label>
-            `;
-        }).join('');
-
-        listEl.querySelectorAll('input[type=checkbox]').forEach(chk => {
+        dropEl.querySelectorAll('input[type=checkbox]').forEach(chk => {
             chk.addEventListener('change', () => {
                 if (chk.checked) selected.add(chk.value);
                 else selected.delete(chk.value);
                 renderChips();
-                renderList(searchEl.value);
+                renderDrop(searchEl.value);
             });
         });
+        dropEl.querySelectorAll('label.picker-item').forEach(lbl =>
+            lbl.addEventListener('click', e => e.stopPropagation())
+        );
+        dropEl.querySelectorAll('[data-bs-toggle="popover"]').forEach(el =>
+            bootstrap.Popover.getOrCreateInstance(el, {
+                trigger: 'hover', html: true, placement: 'right', container: 'body',
+                delay: { show: 600, hide: 100 },
+            })
+        );
     }
 
     function renderChips() {
-        if (!selected.size) {
-            chipsEl.innerHTML = `<small class="text-muted">${t('firewall.addr.pickerEmpty')}</small>`;
-            return;
-        }
         chipsEl.innerHTML = [...selected].map(id => {
             const item = items.find(i => i.id === id);
             if (!item) return '';
-            return `
-                <span class="badge bg-azure-lt d-inline-flex align-items-center gap-1 picker-chip"
-                      data-id="${id}">
-                    ${escapeHtml(item.label)}
-                    <button type="button" class="btn-close" aria-label="${t('common.delete')}"
-                            style="font-size:0.45em;filter:none;opacity:0.7;"></button>
-                </span>
-            `;
+            return `<span class="badge bg-azure-lt d-inline-flex align-items-center gap-1 picker-chip" data-id="${id}">
+                        ${_pickerItemIcon(item)}${escapeHtml(item.label)}
+                        <button type="button" class="btn-close"
+                                style="font-size:0.65em;filter:none;opacity:0.8;width:1em;height:1em;"
+                                aria-label="${t('common.delete')}"></button>
+                    </span>`;
         }).join('');
+        searchEl.placeholder = selected.size ? '' : t('firewall.addr.pickerSearch');
         chipsEl.querySelectorAll('.picker-chip').forEach(chip => {
-            chip.querySelector('.btn-close').addEventListener('click', () => {
+            chip.querySelector('.btn-close').addEventListener('click', e => {
+                e.stopPropagation();
                 selected.delete(chip.dataset.id);
                 renderChips();
-                renderList(searchEl.value);
+                if (dropEl.style.display !== 'none') renderDrop(searchEl.value);
             });
         });
+        onChange?.();
     }
 
-    searchEl.addEventListener('input', () => renderList(searchEl.value));
-    renderList();
+    ctrlEl.addEventListener('click', e => {
+        if (e.target.classList.contains('btn-close')) return;
+        openDrop();
+        searchEl.focus();
+    });
+    searchEl.addEventListener('input', () => {
+        openDrop();
+        renderDrop(searchEl.value);
+    });
+    searchEl.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { closeDrop(); e.stopPropagation(); }
+    });
+    document.addEventListener('click', e => {
+        if (!pickerEl.contains(e.target)) closeDrop();
+    });
+
     renderChips();
 
     return () => [...selected];
