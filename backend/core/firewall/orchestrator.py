@@ -749,6 +749,12 @@ class FirewallOrchestrator:
                 f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
                 f" (gateway protect: {len(lan_interfaces)} LAN interfaces)"
             )
+            # Persist rules + ipsets so the fail-closed boot guard can restore a
+            # self-consistent last-good ruleset after a reboot. Best-effort, off
+            # the event loop. (Dynamic geo/fqdn sets may still be filling in via
+            # sync_referenced; that's fine — madmin always rebuilds from the DB on
+            # the next startup, this snapshot only covers the boot window.)
+            asyncio.create_task(asyncio.to_thread(iptables.save_rules))
 
         return success
 

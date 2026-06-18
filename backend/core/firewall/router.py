@@ -780,6 +780,57 @@ async def update_address_object(
     return _object_to_response(obj)
 
 
+@router.post("/addresses/{obj_id}/refresh", response_model=AddressObjectResponse)
+async def refresh_address_object(
+    obj_id: str,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Force an immediate re-resolution of a dynamic (fqdn/geo) address object,
+    rebuilding its ipset out-of-band of the daily task. fqdn A records and the
+    fresh timestamp are persisted; geo re-downloads the country list (force) and
+    only the timestamp is persisted (the CIDR list lives in the geoip disk cache,
+    not the DB). Fail-soft: a failed DNS lookup keeps the last-good set.
+    """
+    import asyncio
+    obj = await session.get(AddressObject, _uuid(obj_id))
+    if not obj:
+        raise HTTPException(status_code=404, detail="Oggetto non trovato")
+    if obj.type not in ("fqdn", "geo"):
+        raise HTTPException(
+            status_code=400,
+            detail="Solo gli oggetti fqdn o geo possono essere aggiornati."
+        )
+    if not obj.enabled:
+        raise HTTPException(status_code=400, detail="Oggetto disabilitato.")
+
+    obj_dict = {
+        "ref_key": obj.ref_key, "type": obj.type, "value": obj.value,
+        "enabled": obj.enabled,
+        "resolved_ips": json.loads(obj.resolved_ips) if obj.resolved_ips else None,
+    }
+    fresh = await asyncio.to_thread(addresses.refresh_dynamic, [obj_dict])
+
+    if obj.type == "fqdn":
+        if obj.ref_key in fresh:
+            obj.resolved_ips = json.dumps(fresh[obj.ref_key])
+            obj.resolved_at = datetime.utcnow()
+        elif not obj.resolved_ips:
+            # No fresh resolution and no last-good cache: surface the failure.
+            raise HTTPException(
+                status_code=502,
+                detail=f"Risoluzione DNS fallita per '{obj.value}' e nessuna cache disponibile."
+            )
+    else:  # geo: timestamp only (set rebuilt in-thread above via force_reload)
+        obj.resolved_at = datetime.utcnow()
+
+    session.add(obj)
+    await session.commit()
+    await session.refresh(obj)
+    return _object_to_response(obj)
+
+
 @router.delete("/addresses/{obj_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_address_object(
     obj_id: str,

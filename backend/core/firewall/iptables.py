@@ -7,6 +7,7 @@ Supports all standard iptables tables: filter, nat, mangle, raw.
 """
 import subprocess
 import logging
+import os
 import re
 from typing import List, Optional, Tuple, Dict
 from config import get_settings
@@ -856,41 +857,35 @@ def flush_conntrack_for_rule(
 
 def save_rules() -> bool:
     """
-    Save current iptables rules to persistent storage.
-    Uses iptables-save on Linux.
+    Persist the current firewall state (iptables rules + ipsets) to /etc/iptables
+    so it can be restored after a reboot. The iptables rules reference ipsets via
+    --match-set, so the sets MUST be saved alongside the rules — otherwise the
+    boot-time restore aborts on a missing set. The fail-closed boot guard
+    (scripts/madmin-firewall-boot.sh) restores ipsets.conf; netfilter-persistent
+    restores rules.v4.
     """
     if settings.mock_iptables:
-        logger.debug("[MOCK] Would save iptables rules")
+        logger.debug("[MOCK] Would save iptables rules + ipsets")
         return True
-    
+
     try:
-        # Try using iptables-save via script
-        result = subprocess.run(
-            ["/opt/madmin/scripts/save-iptables.sh"],
-            capture_output=True,
-            text=True
-        )
-        if result.returncode == 0:
-            logger.info("Iptables rules saved")
-            return True
-        logger.error(f"Failed to save rules: {result.stderr}")
-        return False
-    except FileNotFoundError:
-        logger.warning("save-iptables.sh not found, trying iptables-save directly")
+        os.makedirs("/etc/iptables", exist_ok=True)
+        rules = subprocess.run(["iptables-save"], capture_output=True, text=True)
+        with open("/etc/iptables/rules.v4", "w") as f:
+            f.write(rules.stdout)
+        # ipset save must accompany the rules (best-effort)
         try:
-            result = subprocess.run(
-                ["iptables-save"],
-                capture_output=True,
-                text=True
-            )
-            # Write to standard location
-            with open("/etc/iptables/rules.v4", "w") as f:
-                f.write(result.stdout)
-            logger.info("Iptables rules saved to /etc/iptables/rules.v4")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save rules: {e}")
-            return False
+            sets = subprocess.run(["ipset", "save"], capture_output=True, text=True)
+            if sets.returncode == 0:
+                with open("/etc/iptables/ipsets.conf", "w") as f:
+                    f.write(sets.stdout)
+        except FileNotFoundError:
+            logger.warning("ipset binary not found; ipsets not persisted")
+        logger.info("Iptables rules + ipsets saved to /etc/iptables/")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save rules: {e}")
+        return False
 
 
 # =============================================================================

@@ -1,0 +1,18 @@
+[Unit]
+Description=MADMIN fail-closed firewall boot guard (default-DROP until madmin loads)
+Documentation=https://github.com/ (MADMIN)
+# Run as early as possible, before the network is brought up and before any
+# persistence service, so the VM is blocked from the very first moment.
+DefaultDependencies=no
+After=systemd-modules-load.service
+Wants=network-pre.target
+Before=network-pre.target netfilter-persistent.service
+ConditionPathExists=/opt/madmin/scripts/madmin-firewall-boot.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/madmin/scripts/madmin-firewall-boot.sh
+
+[Install]
+WantedBy=multi-user.target

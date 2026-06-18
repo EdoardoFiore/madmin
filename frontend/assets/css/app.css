@@ -652,3 +652,11 @@ html {
 .transition-all {
     transition: all 0.2s ease;
 }
+
+/* Inline spinner for icon buttons (e.g. address-object refresh) */
+@keyframes madmin-spin {
+    to { transform: rotate(360deg); }
+}
+.spin {
+    animation: madmin-spin 0.8s linear infinite;
+}

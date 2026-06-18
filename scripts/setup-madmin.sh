@@ -204,6 +204,12 @@ mkdir -p $INSTALL_DIR/data
 # Copy backend files
 cp -r "$PROJECT_DIR/backend/"* $INSTALL_DIR/backend/
 
+# Deploy the fail-closed firewall boot guard script (run by its systemd unit).
+# Saving the ruleset (rules.v4 + ipsets.conf) is done in Python by madmin.
+mkdir -p $INSTALL_DIR/scripts
+cp "$SCRIPT_DIR/madmin-firewall-boot.sh" $INSTALL_DIR/scripts/
+chmod +x $INSTALL_DIR/scripts/*.sh
+
 # Create virtual environment (skip if already functional)
 if [ ! -x "$INSTALL_DIR/venv/bin/python3" ]; then
     log_info "Creating virtual environment..."
@@ -368,9 +374,16 @@ log_info "Enabling IP forwarding..."
 echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-madmin.conf
 sysctl -p /etc/sysctl.d/99-madmin.conf
 
+# Fail-closed firewall boot guard: drops all inbound/forward traffic at boot
+# (before the network is up) until madmin loads the real ruleset from the DB.
+# Runs before netfilter-persistent and restores ipsets so the persisted rules.v4
+# loads consistently. Recovery if madmin never starts is via hypervisor console.
+cp "$SCRIPT_DIR/madmin-firewall-boot.service" /etc/systemd/system/
+
 # Don't start yet — install module dependencies first
 systemctl daemon-reload
 systemctl enable madmin.service
+systemctl enable madmin-firewall-boot.service
 
 log_success "Systemd service configured."
 

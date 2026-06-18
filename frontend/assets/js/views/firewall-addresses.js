@@ -244,6 +244,9 @@ function renderObjects() {
             if (obj) openObjectModal(obj);
         })
     );
+    wrap.querySelectorAll('.ao-refresh').forEach(btn =>
+        btn.addEventListener('click', () => refreshObject(btn.dataset.id, btn))
+    );
     wrap.querySelectorAll('.ao-del').forEach(btn =>
         btn.addEventListener('click', () => deleteObject(btn.dataset.id))
     );
@@ -252,8 +255,9 @@ function renderObjects() {
 function objectRow(o, canManage) {
     const color = TYPE_COLOR[o.type] || 'bg-secondary-lt';
 
+    const isDynamic = o.type === 'fqdn' || o.type === 'geo';
     let resolvedCell = '<span class="text-muted small">—</span>';
-    if ((o.type === 'fqdn' || o.type === 'geo') && o.resolved_ips && o.resolved_ips.length) {
+    if (isDynamic && o.resolved_ips && o.resolved_ips.length) {
         const when = o.resolved_at
             ? `<small class="text-muted">${t('firewall.addr.resolvedAt')}: ${relativeTime(o.resolved_at)}</small>`
             : '';
@@ -269,12 +273,26 @@ function objectRow(o, canManage) {
                   data-bs-content="${escapeAttr(popContent)}">
                 ${o.resolved_ips.length} IP
             </span>`;
-    } else if (o.type === 'fqdn' || o.type === 'geo') {
-        resolvedCell = `<span class="badge bg-warning-lt">${t('firewall.addr.notResolved')}</span>`;
+    } else if (o.type === 'fqdn') {
+        // Real warning: an FQDN with no resolved A records (DNS failure).
+        resolvedCell = `<span class="badge bg-warning-lt">
+                <i class="ti ti-alert-triangle me-1"></i>${t('firewall.addr.notResolved')}
+            </span>`;
+    } else if (o.type === 'geo') {
+        // geo CIDR list lives in the geoip disk cache (not the DB), so an empty
+        // resolved_ips is NOT a failure — show a neutral "from cache" status.
+        resolvedCell = o.resolved_at
+            ? `<span class="badge bg-green-lt"><i class="ti ti-check me-1"></i>${relativeTime(o.resolved_at)}</span>`
+            : `<span class="badge bg-secondary-lt">${t('firewall.addr.geoCached')}</span>`;
     }
 
     const actions = canManage ? `
         <div class="btn-group btn-group-sm">
+            ${isDynamic ? `
+            <button class="btn btn-ghost-secondary ao-refresh" data-id="${o.id}"
+                    title="${t('firewall.addr.refresh')}">
+                <i class="ti ti-refresh"></i>
+            </button>` : ''}
             <button class="btn btn-ghost-primary ao-edit" data-id="${o.id}"
                     title="${t('common.edit')}">
                 <i class="ti ti-edit"></i>
@@ -468,6 +486,23 @@ async function handleObjectSubmit(e) {
         renderGroups();
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
+    }
+}
+
+async function refreshObject(id, btn = null) {
+    const icon = btn?.querySelector('i');
+    if (btn) btn.disabled = true;
+    if (icon) icon.classList.add('spin');
+    try {
+        await apiPost(`/firewall/addresses/${id}/refresh`, {});
+        showToast(t('firewall.addr.refreshDone'), 'success');
+        await loadAll();
+        renderObjects();   // re-render rebuilds the row; spinner cleared with it
+        renderGroups();
+    } catch (err) {
+        showToast(t('common.errorPrefix') + err.message, 'error');
+        if (btn) btn.disabled = false;
+        if (icon) icon.classList.remove('spin');
     }
 }
 
