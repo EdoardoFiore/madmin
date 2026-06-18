@@ -234,12 +234,16 @@ async def create_host(
     await db.flush()
     for d in domains_norm:
         db.add(RevproxyHostDomain(host_id=host.id, domain=d))
-    await db.commit()
+    await db.flush()
 
+    # Apply (renders + `nginx -t`) BEFORE committing so an invalid config never
+    # persists to the DB out of sync with the on-disk vhost.
     ok, msg = await svc.apply_host(db, host.id)
     if not ok:
+        await db.rollback()
         logger.error(f"apply_host failed for {host.id}: {msg}")
         raise HTTPException(status_code=500, detail=f"Configurazione nginx fallita: {msg}")
+    await db.commit()
 
     return _to_host_read(await _load_host(db, host.id))
 
@@ -307,11 +311,16 @@ async def update_host(
 
     from datetime import datetime
     host.updated_at = datetime.utcnow()
-    await db.commit()
+    await db.flush()
 
+    # Apply (renders + `nginx -t`) BEFORE committing: on failure roll the DB back
+    # so the bad config (e.g. custom_nginx_config) is not persisted, while
+    # apply_host has already reverted the on-disk vhost to its previous good state.
     ok, msg = await svc.apply_host(db, host.id)
     if not ok:
+        await db.rollback()
         raise HTTPException(status_code=500, detail=f"Configurazione nginx fallita: {msg}")
+    await db.commit()
 
     return _to_host_read(await _load_host(db, host.id))
 

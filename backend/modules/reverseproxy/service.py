@@ -363,6 +363,12 @@ async def apply_host(session: AsyncSession, host_id) -> Tuple[bool, str]:
 
     NGINX_SITES_AVAILABLE.mkdir(parents=True, exist_ok=True)
     NGINX_SITES_ENABLED.mkdir(parents=True, exist_ok=True)
+
+    # Snapshot the current on-disk vhost so a config that fails `nginx -t`
+    # (e.g. an invalid custom_nginx_config snippet) can be reverted without
+    # taking a previously-working host offline.
+    prev_config = avail.read_text() if avail.exists() else None
+
     avail.write_text(config)
 
     if not enabled.exists():
@@ -373,12 +379,18 @@ async def apply_host(session: AsyncSession, host_id) -> Tuple[bool, str]:
 
     ok, msg = nginx_reload()
     if not ok:
-        # Rollback: remove files
-        for p in (enabled, avail):
-            try:
-                p.unlink()
-            except FileNotFoundError:
-                pass
+        # `nginx -t` failed, so the broken config was never loaded (reload runs
+        # only after a passing test) — the live nginx is unchanged. Restore the
+        # on-disk file to its previous good content so it doesn't poison the next
+        # reload; if this host had no previous config, remove it entirely.
+        if prev_config is not None:
+            avail.write_text(prev_config)
+        else:
+            for p in (enabled, avail):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
         return False, f"nginx reload fallito: {msg}"
     return True, "applied"
 
