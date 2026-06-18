@@ -123,6 +123,23 @@ export async function render(container) {
                                     <small class="form-hint">${t('network.dnsHint')}</small>
                                 </div>
                             </div>
+
+                            <div class="mb-2">
+                                <a href="#" id="netplan-secondary-toggle"
+                                   class="text-decoration-none d-inline-flex align-items-center">
+                                    <i class="ti ti-chevron-right me-1" id="netplan-secondary-chevron"></i>
+                                    ${t('network.secondaryIpsSection')}
+                                    <span class="text-muted ms-1" id="netplan-secondary-count"></span>
+                                </a>
+                            </div>
+                            <div id="netplan-secondary-section" style="display: none;">
+                                <div id="netplan-secondary-list"></div>
+                                <button type="button" class="btn btn-sm btn-outline-primary"
+                                        id="netplan-add-secondary">
+                                    <i class="ti ti-plus me-1"></i>${t('network.addSecondaryIp')}
+                                </button>
+                                <small class="form-hint d-block mt-1">${t('network.secondaryIpHint')}</small>
+                            </div>
                         </div>
 
                         <div class="mb-3">
@@ -178,6 +195,14 @@ export async function render(container) {
             document.getElementById('static-config').style.display =
                 e.target.value === 'static' ? 'block' : 'none';
         });
+    });
+
+    document.getElementById('netplan-secondary-toggle')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        toggleSecondarySection();
+    });
+    document.getElementById('netplan-add-secondary')?.addEventListener('click', () => {
+        addSecondaryRow('');
     });
 
     await loadInterfaces();
@@ -460,6 +485,7 @@ async function openNetplanModal(interfaceName) {
     document.getElementById('netplan-gateway').value = '';
     document.getElementById('netplan-dns').value = '';
     document.getElementById('netplan-mtu').value = '';
+    resetSecondaryRows();
 
     try {
         const response = await apiGet(`/network/interfaces/${interfaceName}/config`);
@@ -469,6 +495,8 @@ async function openNetplanModal(interfaceName) {
             document.querySelector(`input[name="netplan-mode"][value="${isDhcp ? 'dhcp' : 'static'}"]`).checked = true;
             document.getElementById('static-config').style.display = isDhcp ? 'none' : 'block';
             if (config.addresses?.length > 0) document.getElementById('netplan-address').value = config.addresses[0];
+            // Addresses beyond the first are secondary IPs on the same interface.
+            (config.addresses || []).slice(1).forEach(addr => addSecondaryRow(addr));
             if (config.gateway4) document.getElementById('netplan-gateway').value = config.gateway4;
             if (config.dns_servers?.length > 0) document.getElementById('netplan-dns').value = config.dns_servers.join(', ');
             if (config.mtu) document.getElementById('netplan-mtu').value = config.mtu;
@@ -478,6 +506,58 @@ async function openNetplanModal(interfaceName) {
     }
 
     new bootstrap.Modal(document.getElementById('modal-netplan')).show();
+}
+
+// --- Secondary IP rows (static mode) ---
+
+function _updateSecondaryCount() {
+    const n = document.querySelectorAll('#netplan-secondary-list .netplan-secondary-ip').length;
+    const countEl = document.getElementById('netplan-secondary-count');
+    if (countEl) countEl.textContent = n ? `(${n})` : '';
+}
+
+function toggleSecondarySection(forceOpen = null) {
+    const sec = document.getElementById('netplan-secondary-section');
+    const chevron = document.getElementById('netplan-secondary-chevron');
+    if (!sec) return;
+    const open = forceOpen !== null ? forceOpen : sec.style.display === 'none';
+    sec.style.display = open ? 'block' : 'none';
+    chevron?.classList.toggle('ti-chevron-down', open);
+    chevron?.classList.toggle('ti-chevron-right', !open);
+}
+
+function resetSecondaryRows() {
+    const list = document.getElementById('netplan-secondary-list');
+    if (list) list.innerHTML = '';
+    toggleSecondarySection(false);
+    _updateSecondaryCount();
+}
+
+function addSecondaryRow(value = '') {
+    const list = document.getElementById('netplan-secondary-list');
+    if (!list) return;
+    const row = document.createElement('div');
+    row.className = 'input-group mb-2 netplan-secondary-row';
+    row.innerHTML = `
+        <input type="text" class="form-control netplan-secondary-ip"
+               placeholder="${t('network.secondaryIpPlaceholder')}" value="${escapeHtml(value)}">
+        <button type="button" class="btn btn-outline-danger" title="${t('network.removeSecondaryIp')}">
+            <i class="ti ti-trash"></i>
+        </button>
+    `;
+    row.querySelector('button').addEventListener('click', () => {
+        row.remove();
+        _updateSecondaryCount();
+    });
+    list.appendChild(row);
+    toggleSecondarySection(true);
+    _updateSecondaryCount();
+}
+
+function collectSecondaryIps() {
+    return [...document.querySelectorAll('#netplan-secondary-list .netplan-secondary-ip')]
+        .map(i => i.value.trim())
+        .filter(Boolean);
 }
 
 async function saveNetplanConfig() {
@@ -500,7 +580,15 @@ async function saveNetplanConfig() {
             if (!isValidIP(d)) { showToast(t('network.invalidDns', { dns: d }), 'error'); return; }
         }
 
-        data.addresses = [address];
+        // Secondary IPs: validate each (CIDR) and reject duplicates of the primary or each other.
+        const addresses = [address];
+        for (const sec of collectSecondaryIps()) {
+            if (!isValidCIDR(sec)) { showToast(t('network.invalidIp'), 'error'); return; }
+            if (addresses.includes(sec)) { showToast(t('network.duplicateIp', { ip: sec }), 'error'); return; }
+            addresses.push(sec);
+        }
+
+        data.addresses = addresses;
         if (gateway) data.gateway = gateway;
         if (dnsArr.length > 0) data.dns_servers = dnsArr;
     }
