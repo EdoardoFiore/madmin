@@ -324,6 +324,7 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
             addr_counts = await _import_address_catalog(session, addresses_file)
             result["address_objects_imported"] = addr_counts["objects"]
             result["address_groups_imported"] = addr_counts["groups"]
+            result["warnings"].extend(addr_counts.get("warnings", []))
             logger.info(
                 f"Imported {addr_counts['objects']} address objects, "
                 f"{addr_counts['groups']} groups"
@@ -332,8 +333,9 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
         # 2b. Firewall rules
         firewall_file = os.path.join(core_path, "firewall.json")
         if os.path.exists(firewall_file):
-            count = await _import_firewall_rules(session, firewall_file)
+            count, fw_warnings = await _import_firewall_rules(session, firewall_file)
             result["firewall_rules_imported"] = count
+            result["warnings"].extend(fw_warnings)
             logger.info(f"Imported {count} firewall rules")
         
         # 3. Settings
@@ -1034,17 +1036,6 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
     ]
 
 
-async def _unique_addr_key(session: AsyncSession, model) -> str:
-    """Generate a ref_key not already used by `model`."""
-    from core.firewall import addresses as addr_mod
-    for _ in range(12):
-        key = addr_mod.new_ref_key()
-        r = await session.execute(select(model).where(model.ref_key == key))
-        if r.scalar_one_or_none() is None:
-            return key
-    raise RuntimeError("Impossibile generare ref_key univoco")
-
-
 async def _export_address_catalog(session: AsyncSession) -> dict:
     """Export address objects and groups (with object members, by name)."""
     from core.firewall.models import AddressObject, AddressGroup, AddressGroupMember
@@ -1296,13 +1287,21 @@ async def _import_address_catalog(session: AsyncSession, addresses_file: str) ->
     """Import address objects and groups, replacing the existing catalog.
 
     Must run BEFORE _import_firewall_rules so rule references resolve by name.
+    Reuses the firewall core helpers (ref_key generation + value validation) so
+    the import path stays in sync with the live CRUD path and never duplicates
+    that logic. Objects whose value fails validation are skipped with a warning,
+    keeping the import resilient.
     """
+    from fastapi import HTTPException
     from core.firewall.models import (
         AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
     )
+    from core.firewall.router import _unique_ref_key, _validate_object_value
 
     with open(addresses_file) as f:
         data = json.load(f)
+
+    warnings: List[str] = []
 
     # Replace catalog (rule refs + members first due to FKs)
     await session.execute(delete(FirewallRuleAddress))
@@ -1313,9 +1312,14 @@ async def _import_address_catalog(session: AsyncSession, addresses_file: str) ->
 
     obj_by_name = {}
     for o in data.get("objects", []):
-        ref_key = await _unique_addr_key(session, AddressObject)
+        try:
+            value = _validate_object_value(o["type"], o["value"])
+        except HTTPException as e:
+            warnings.append(f"Address object '{o.get('name')}' saltato: {e.detail}")
+            continue
+        ref_key = await _unique_ref_key(session, AddressObject)
         obj = AddressObject(
-            ref_key=ref_key, name=o["name"], type=o["type"], value=o["value"],
+            ref_key=ref_key, name=o["name"], type=o["type"], value=value,
             description=o.get("description"), enabled=o.get("enabled", True),
         )
         session.add(obj)
@@ -1323,7 +1327,7 @@ async def _import_address_catalog(session: AsyncSession, addresses_file: str) ->
         obj_by_name[obj.name] = obj
 
     for g in data.get("groups", []):
-        ref_key = await _unique_addr_key(session, AddressGroup)
+        ref_key = await _unique_ref_key(session, AddressGroup)
         grp = AddressGroup(
             ref_key=ref_key, name=g["name"], description=g.get("description"),
             enabled=g.get("enabled", True),
@@ -1335,18 +1339,23 @@ async def _import_address_catalog(session: AsyncSession, addresses_file: str) ->
                 session.add(AddressGroupMember(
                     group_id=grp.id, member_object_id=obj_by_name[m["name"]].id))
     await session.flush()
-    return {"objects": len(data.get("objects", [])), "groups": len(data.get("groups", []))}
+    return {
+        "objects": len(obj_by_name),
+        "groups": len(data.get("groups", [])),
+        "warnings": warnings,
+    }
 
 
-async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> int:
+async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> tuple:
     """Import firewall rules. Replaces all existing rules and their address refs.
 
     Resolves source_refs/destination_refs (by name) against the already-imported
-    address catalog; missing names are skipped.
+    address catalog by reusing the firewall core helper _resolve_imported_refs,
+    so the by-name remapping (and its tolerant skip-when-missing behaviour) is
+    not duplicated here. Returns (count, warnings).
     """
-    from core.firewall.models import (
-        MachineFirewallRule, FirewallRuleAddress, AddressObject, AddressGroup,
-    )
+    from core.firewall.models import MachineFirewallRule, FirewallRuleAddress
+    from core.firewall.router import _resolve_imported_refs
 
     with open(firewall_file) as f:
         rules_data = json.load(f)
@@ -1356,31 +1365,32 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> i
     await session.execute(delete(MachineFirewallRule))
     await session.flush()
 
-    obj_by_name = {o.name: o.id for o in (await session.execute(select(AddressObject))).scalars().all()}
-    grp_by_name = {g.name: g.id for g in (await session.execute(select(AddressGroup))).scalars().all()}
-
+    warnings: List[str] = []
     count = 0
     exclude_fields = {"id", "created_at", "updated_at", "source_refs", "destination_refs"}
 
-    for rule_dict in rules_data:
+    for idx, rule_dict in enumerate(rules_data):
         clean_data = {k: v for k, v in rule_dict.items() if k not in exclude_fields}
         rule = MachineFirewallRule(**clean_data)
         session.add(rule)
         await session.flush()
         for direction in ("source", "destination"):
-            for i, ref in enumerate(rule_dict.get(f"{direction}_refs", []) or []):
-                kind, name = ref.get("kind"), ref.get("name")
-                if kind == "object" and name in obj_by_name:
+            resolved = await _resolve_imported_refs(
+                session, rule_dict.get(f"{direction}_refs"),
+                warnings, f"Regola #{idx + 1} ({direction})",
+            )
+            for i, ref in enumerate(resolved):
+                if ref.get("object_id"):
                     session.add(FirewallRuleAddress(
                         rule_id=rule.id, direction=direction,
-                        object_id=obj_by_name[name], order=i))
-                elif kind == "group" and name in grp_by_name:
+                        object_id=uuid.UUID(ref["object_id"]), order=i))
+                elif ref.get("group_id"):
                     session.add(FirewallRuleAddress(
                         rule_id=rule.id, direction=direction,
-                        group_id=grp_by_name[name], order=i))
+                        group_id=uuid.UUID(ref["group_id"]), order=i))
         count += 1
 
-    return count
+    return count, warnings
 
 
 async def _import_settings(session: AsyncSession, settings_file: str) -> Optional[str]:
