@@ -160,6 +160,11 @@ class UserPreferencesUpdate(SQLModel):
     preferences: str
 
 
+class UserProfileUpdate(SQLModel):
+    """Schema for the current user editing their own profile (self-service)."""
+    email: Optional[str] = Field(default=None, max_length=255)
+
+
 class UserResponse(SQLModel):
     """Schema for user API responses (excludes password)."""
     id: uuid.UUID

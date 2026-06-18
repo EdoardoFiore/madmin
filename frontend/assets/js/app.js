@@ -8,6 +8,7 @@
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
 import { showToast, loadingSpinner, copyToClipboard } from './utils.js';
 import { init as i18nInit, t, getLang, detectLang, translateDOM, loadModuleTranslations } from './i18n.js';
+import { openProfileModal } from './profile.js';
 
 // View registry - maps routes to view modules
 const views = {
@@ -82,6 +83,7 @@ async function init() {
     setupMobileMenu();
     setupThemeToggle();
     setupDropdowns();
+    setupProfileLink();
 
     // Load menu
     await loadMenu();
@@ -320,6 +322,20 @@ function updateUserDisplay() {
     const userNameEl = document.getElementById('user-name');
     if (userNameEl && currentUser) {
         userNameEl.textContent = currentUser.username;
+    }
+}
+
+/**
+ * Setup "Profile" dropdown item -> open self-service profile modal
+ */
+function setupProfileLink() {
+    const link = document.getElementById('profile-link');
+    if (link) {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeAllDropdowns();
+            openProfileModal();
+        });
     }
 }
 

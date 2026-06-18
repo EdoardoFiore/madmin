@@ -114,6 +114,12 @@
         "2faActivatedSuccess": "2FA attivata con successo!",
         "widgetManagement": "Gestione Widget"
     },
+    "profile": {
+        "contactInfo": "Informazioni di Contatto",
+        "emailPlaceholder": "tua@email.com",
+        "saveProfile": "Salva Modifiche",
+        "profileUpdated": "Profilo aggiornato con successo!"
+    },
     "dashboard": {
         "welcome": "Benvenuto",
         "welcomeTitle": "Benvenuto in MADMIN",

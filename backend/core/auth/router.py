@@ -19,6 +19,7 @@ from .models import (
     UserCreate,
     UserUpdate,
     UserPreferencesUpdate,
+    UserProfileUpdate,
     UserResponse,
     PermissionResponse,
     User
@@ -378,6 +379,23 @@ async def update_user_preferences(
     await session.commit()
     await session.refresh(current_user)
     return _user_response(current_user)
+
+
+@router.patch("/me/profile", response_model=UserResponse)
+async def update_own_profile(
+    profile_data: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Self-service update of the current user's own profile (e.g. contact email)."""
+    if profile_data.email is not None:
+        email = profile_data.email.strip()
+        current_user.email = email or None
+    session.add(current_user)
+    await session.commit()
+    # Re-fetch to get eagerly-loaded permissions (commit expires all relationships)
+    updated = await service.get_user_by_username(session, current_user.username)
+    return _user_response(updated)
 
 
 # --- User Management ---
