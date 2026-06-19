@@ -469,27 +469,26 @@ else
 fi
 rm -f /tmp/madmin_init.json
 
-# Import default firewall rules
-log_info "Importing default firewall rules..."
+# Apply default firewall rules (generated dynamically from live interfaces:
+# WAN = default route, LAN = other physical NICs). Names are NOT hardcoded.
+log_info "Applying default firewall rules (dynamic interface detection)..."
 LOGIN_BODY=$(python3 -c "import urllib.parse,sys; print(urllib.parse.urlencode({'username':sys.argv[1],'password':sys.argv[2],'grant_type':'password'}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
 TOKEN_RESPONSE=$(curl -s -X POST http://localhost:8000/api/auth/token \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -d "$LOGIN_BODY")
 JWT_TOKEN=$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('access_token',''))" "$TOKEN_RESPONSE")
 
-if [ -n "$JWT_TOKEN" ] && [ -f "$INSTALL_DIR/backend/default_rules.json" ]; then
-    IMPORT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-        "http://localhost:8000/api/firewall/import?mode=replace" \
-        -H "Authorization: Bearer $JWT_TOKEN" \
-        -F "file=@$INSTALL_DIR/backend/default_rules.json")
-    if [ "$IMPORT_HTTP" = "200" ]; then
-        log_success "Default firewall rules imported."
+if [ -n "$JWT_TOKEN" ]; then
+    DEF_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "http://localhost:8000/api/firewall/apply-defaults" \
+        -H "Authorization: Bearer $JWT_TOKEN")
+    if [ "$DEF_HTTP" = "200" ]; then
+        log_success "Default firewall rules applied."
     else
-        log_warning "Default firewall rules import failed (HTTP $IMPORT_HTTP). Apply them manually from the UI."
+        log_warning "Default firewall rules failed (HTTP $DEF_HTTP). Apply them manually from the UI."
     fi
-    rm -f "$INSTALL_DIR/backend/default_rules.json"
 else
-    log_warning "JWT unavailable or rules file missing. Firewall import skipped."
+    log_warning "JWT unavailable. Firewall defaults skipped."
 fi
 
 # Managed LAN auto-provisioning (opt-in, used by automations such as madmin-hub).

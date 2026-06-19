@@ -14,6 +14,28 @@
 
 ---
 
+## Table of Contents
+
+- [Key Features](#key-features)
+- [Technology Stack](#technology-stack)
+- [Project Structure](#project-structure)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Production Operations](#production-operations)
+- [Security Hardening (Post-Install Checklist)](#security-hardening-post-install-checklist)
+- [Authentication Flow](#authentication-flow)
+- [API Reference](#api-reference)
+- [Module System](#module-system)
+- [Firewall Architecture](#firewall-architecture)
+- [Core Permissions Reference](#core-permissions-reference)
+- [Internationalization](#internationalization)
+- [Development Setup](#development-setup)
+- [Background Tasks](#background-tasks)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
 ## Key Features
 
 ### Core System
@@ -38,7 +60,7 @@
 - **Gateway Protection** — Per-interface ipset-based DROP chains (`MADMIN_GW_PROTECT`) to protect gateway interfaces from unauthorized traffic
 - **Active Session Termination** — conntrack flush on new DROP rules: kills existing connections matching newly created rules immediately
 - **LAN Isolation** — Inter-LAN traffic blocked by default (`FORWARD` chain default policy)
-- **Dashboard Access Restriction** — Port 7443 accessible only from the primary management interface (`eth0`) by default
+- **Dashboard Access Restriction** — Port 7443 accessible only from the WAN (default-route) interface by default; the interface is detected dynamically at install, not hardcoded
 
 ### Frontend
 - **Internationalization (i18n)** — Multi-language UI with English (`en`) and Italian (`it`) locale files; auto-detect from user preferences or system default; dot-namespaced keys with `{placeholder}` interpolation
@@ -90,7 +112,6 @@ madmin/
 ├── backend/
 │   ├── main.py                 # FastAPI entry point, lifespan, router registration
 │   ├── config.py               # Settings from .env (Pydantic Settings), MADMIN_VERSION
-│   ├── default_rules.json      # Default firewall rules applied on init
 │   ├── requirements.txt
 │   ├── core/
 │   │   ├── auth/               # JWT, RBAC, 2FA/TOTP, backup codes, rate limiting, token blacklist
@@ -174,7 +195,7 @@ State set by these flags is persisted in the database and applied/reconciled on 
 5. Nginx reverse proxy on HTTPS port **7443** (self-signed certificate, 10 years)
 6. `madmin.service` systemd unit — enabled and started
 7. Module apt/pip dependencies from each `manifest.json`
-8. Default firewall ruleset applied (LAN isolation, eth0-only dashboard access)
+8. Default firewall ruleset applied (LAN isolation, WAN-only dashboard access) — interfaces detected dynamically (WAN = default route, LAN = other physical NICs)
 
 ### Post-Install Access
 - **URL**: `https://<your-server-ip>:7443`
@@ -236,7 +257,7 @@ journalctl -u madmin --since "1 hour ago"
 - [ ] Enable TOTP 2FA for all admin accounts
 - [ ] Review and rotate `SECRET_KEY` in `.env`
 - [ ] Confirm `DEBUG=false` in `.env` (disables Swagger UI in production)
-- [ ] Review default firewall rules (`default_rules.json`)
+- [ ] Review default firewall rules (auto-applied on install via `POST /api/firewall/apply-defaults`)
 - [ ] Restrict `ALLOWED_ORIGINS` if not using wildcard
 - [ ] Replace self-signed TLS certificate with a trusted CA cert in Nginx config
 - [ ] Ensure `/opt/madmin/backend/.env` is `chmod 600`
@@ -295,12 +316,12 @@ Swagger UI available at `/api/docs` when `DEBUG=true`.
 
 | ID | Name | Version | Description |
 |----|------|---------|-------------|
-| `dhcp` | DHCP Server | 1.1.0 | ISC DHCP — multi-interface subnets, static reservations, active leases view |
-| `dns` | DNS Server | 1.1.0 | BIND9 — zone management, record editing, conditional forwarding |
-| `openvpn` | OpenVPN Manager | 1.2.0 | Multi-instance OpenVPN with PKI (easy-rsa), client/group management, per-group firewall, split tunnel |
+| `dhcp` | DHCP Server | 1.2.0 | ISC DHCP — multi-interface subnets, static reservations, active leases view |
+| `dns` | DNS Server | 1.2.0 | BIND9 — zone management, record editing, conditional forwarding |
+| `openvpn` | OpenVPN Manager | 1.4.0 | Multi-instance OpenVPN with PKI (easy-rsa), client/group management, per-group firewall, split tunnel |
 | `reverseproxy` | Reverse Proxy | 1.0.0 | Nginx-based reverse proxy — multiple hosts, Let's Encrypt SSL/TLS, HTTP basic auth, IP access lists, exploit blocking |
-| `wireguard` | WireGuard VPN | 1.4.0 | Multi-instance WireGuard with QR code export, client/group management, per-group firewall, split tunnel |
-| `strongswan` | IPsec VPN Manager | 1.1.0 | strongSwan site-to-site IKEv2/IPsec with per-Child-SA firewall chains |
+| `wireguard` | WireGuard VPN | 1.6.0 | Multi-instance WireGuard with QR code export, client/group management, per-group firewall, split tunnel |
+| `strongswan` | IPsec VPN Manager | 1.2.0 | strongSwan site-to-site IKEv2/IPsec with per-Child-SA firewall chains |
 
 ### Module Permissions
 
@@ -325,7 +346,9 @@ Swagger UI available at `/api/docs` when `DEBUG=true`.
 │   └── 001_initial.py     # async def upgrade(session: AsyncSession)
 ├── hooks/
 │   ├── post_install.py    # async def run(session: AsyncSession)
-│   └── on_disable.py      # async def run(session: AsyncSession)
+│   ├── on_disable.py      # async def run(session: AsyncSession)
+│   ├── on_startup.py      # async def run(session: AsyncSession) — restore UP services at boot
+│   └── post_restore.py    # async def run(session: AsyncSession) — optional, after config restore
 └── static/views/
     ├── main.js            # export async function render(container, params)
     └── widgets.js         # Dashboard widgets (optional)
@@ -349,6 +372,10 @@ Swagger UI available at `/api/docs` when `DEBUG=true`.
    - Scans `backend/modules/` filesystem
    - Loads only modules with `enabled=True` in DB
    - Mounts FastAPI router + static files
+
+4. **Startup reconciliation** (after firewall `apply_rules`, non-blocking):
+   - Runs each loaded module's `on_startup` hook (if present)
+   - Restarts services/instances whose persisted desired state is UP and reapplies their firewall rules (idempotent, errors isolated per module)
 
 ---
 

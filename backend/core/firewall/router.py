@@ -1102,6 +1102,41 @@ async def import_rules(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/apply-defaults", status_code=status.HTTP_200_OK)
+async def apply_default_rules(
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Replace all rules with the default protective ruleset, generated dynamically
+    from the live interfaces (WAN = default route, LAN = other physical NICs).
+
+    Used by the installer so the rules never depend on hardcoded names like eth0.
+    """
+    from .defaults import generate_default_protection_rules
+
+    try:
+        wan, lan_ifaces, rules = await generate_default_protection_rules(firewall_orchestrator)
+
+        await firewall_orchestrator.delete_all_rules(session)
+        for rule in rules:
+            await firewall_orchestrator.create_rule(session, rule)
+        await session.commit()
+
+        logger.info(f"Applied default firewall rules (wan={wan}, lan={lan_ifaces})")
+        return {
+            "status": "ok",
+            "message": f"Applied {len(rules)} default rules",
+            "wan": wan,
+            "lan": lan_ifaces,
+            "count": len(rules),
+        }
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error applying default firewall rules: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- Module Chain Endpoints (for admin/debug) ---
 
 @router.get("/chains", response_model=List[ModuleChainResponse])
