@@ -780,7 +780,15 @@ async def update_address_object(
     return _object_to_response(obj)
 
 
-@router.post("/addresses/{obj_id}/refresh", response_model=AddressObjectResponse)
+@router.post(
+    "/addresses/{obj_id}/refresh",
+    response_model=AddressObjectResponse,
+    responses={
+        400: {"description": "Oggetto non dinamico o disabilitato"},
+        404: {"description": "Address object non trovato"},
+        502: {"description": "Risoluzione DNS fallita e nessuna cache disponibile"},
+    },
+)
 async def refresh_address_object(
     obj_id: str,
     current_user: User = Depends(require_permission("firewall.manage")),
