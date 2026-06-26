@@ -356,7 +356,12 @@ class ProvisioningService:
         await session.flush()
 
     async def _ensure_masquerade(self, session: AsyncSession, iface: str) -> None:
-        """Ensure a MASQUERADE rule iface->WAN exists and is enabled (sentinel-tagged)."""
+        """Ensure the managed navigation NAT exists (sentinel-tagged).
+
+        NAT is owned by the forward policy: a filter/FORWARD ACCEPT iface->WAN with
+        policy_nat=True. apply_rules emits the paired POSTROUTING MASQUERADE
+        companion.
+        """
         from core.firewall.models import MachineFirewallRule
         from core.network.utils import get_default_interface
 
@@ -373,24 +378,26 @@ class ProvisioningService:
         if rule is None:
             max_order = (await session.execute(
                 select(func.max(MachineFirewallRule.order)).where(
-                    MachineFirewallRule.table_name == "nat"
+                    MachineFirewallRule.chain == "FORWARD"
                 )
             )).scalar() or 0
             rule = MachineFirewallRule(
-                chain="POSTROUTING",
-                action="MASQUERADE",
+                chain="FORWARD",
+                action="ACCEPT",
                 in_interface=iface,
                 out_interface=wan,
-                table_name="nat",
+                table_name="filter",
+                policy_nat=True,
                 comment=MANAGED_NAT_SENTINEL,
                 order=max_order + 1,
                 enabled=True,
             )
             session.add(rule)
-            logger.info(f"Managed LAN: created MASQUERADE {iface}->{wan}")
+            logger.info(f"Managed LAN: created nav NAT policy {iface}->{wan} (policy_nat)")
         else:
             rule.in_interface = iface
             rule.out_interface = wan
+            rule.policy_nat = True
             rule.enabled = True
             session.add(rule)
         await session.flush()

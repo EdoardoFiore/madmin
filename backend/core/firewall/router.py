@@ -40,7 +40,7 @@ from .models import (
     AddressGroupMemberResponse,
     ADDRESS_OBJECT_TYPES,
 )
-from .orchestrator import firewall_orchestrator, dnat_forward_fields
+from .orchestrator import firewall_orchestrator, dnat_forward_fields, policy_nat_fields
 from .iptables import IptablesError, flush_conntrack_for_rule
 from .protected_ports import validate_protected_port_collision
 from . import addresses, geoip
@@ -189,8 +189,41 @@ def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
         table_name=rule.table_name,
         order=rule.order,
         enabled=rule.enabled,
+        policy_nat=rule.policy_nat,
         created_at=rule.created_at,
         updated_at=rule.updated_at
+    )
+
+
+def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a policy_nat companion."""
+    fields = policy_nat_fields(policy)
+    return MachineFirewallRuleResponse(
+        id=f"auto-nat-{policy.id}",
+        chain="POSTROUTING",
+        action="MASQUERADE",
+        protocol=None,
+        source=fields["source"],
+        destination=fields["destination"],
+        port=None,
+        in_interface=fields["in_interface"],
+        out_interface=fields["out_interface"],
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=f"→ policy NAT {policy.in_interface or 'any'}→{policy.out_interface or 'any'}",
+        table_name="nat",
+        order=-1,  # sorts above user POSTROUTING rules
+        enabled=True,
+        auto_generated=True,
+        created_at=policy.created_at,
+        updated_at=policy.updated_at,
     )
 
 
@@ -240,6 +273,10 @@ async def list_rules(
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
         responses.extend(_auto_forward_response(d) for d in dnat_rules)
+    # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
+    if chain in (None, "POSTROUTING"):
+        nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
+        responses.extend(_auto_nat_response(p) for p in nat_policies)
     return responses
 
 
@@ -306,6 +343,11 @@ async def create_rule(
         rule_data.chain, rule_data.action,
         rule_data.in_interface, rule_data.out_interface
     )
+    if rule_data.policy_nat and not (table == "filter" and rule_data.chain == "FORWARD"):
+        raise HTTPException(
+            status_code=400,
+            detail="policy_nat è disponibile solo su regole filter/FORWARD."
+        )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
     try:
@@ -373,6 +415,13 @@ async def update_rule(
         update_data.get("in_interface", existing.in_interface),
         update_data.get("out_interface", existing.out_interface),
     )
+    eff_table = update_data.get("table_name", existing.table_name)
+    eff_chain = update_data.get("chain", existing.chain)
+    if update_data.get("policy_nat", existing.policy_nat) and not (eff_table == "filter" and eff_chain == "FORWARD"):
+        raise HTTPException(
+            status_code=400,
+            detail="policy_nat è disponibile solo su regole filter/FORWARD."
+        )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
     try:

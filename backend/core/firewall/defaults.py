@@ -20,25 +20,26 @@ def build_default_protection_rules(wan: str, lan_ifaces: List[str]) -> List[Dict
     """
     Build the default protective ruleset.
 
-    - FORWARD: allow LAN -> WAN egress, drop everything else.
+    - FORWARD: allow LAN -> WAN egress (with policy_nat: the navigation masquerade
+      is owned by this policy — apply_rules emits the POSTROUTING MASQUERADE
+      companion), drop everything else.
     - INPUT: allow the UI port on the WAN and loopback, drop everything else.
-    - POSTROUTING: MASQUERADE each LAN interface out the WAN.
+
+    The navigation NAT is no longer standalone POSTROUTING rules: the single
+    LAN->WAN egress policy carries policy_nat=True, which masquerades all forwarded
+    traffic leaving the WAN. lan_ifaces is kept for signature compatibility.
 
     The list order is the rule order (create_rule assigns `order` by insertion).
     Dict keys match the fields accepted by orchestrator.create_rule.
     """
     rules: List[Dict] = [
-        {"chain": "FORWARD", "action": "ACCEPT", "out_interface": wan, "table_name": "filter"},
+        {"chain": "FORWARD", "action": "ACCEPT", "out_interface": wan,
+         "table_name": "filter", "policy_nat": True},
         {"chain": "FORWARD", "action": "DROP", "table_name": "filter"},
         {"chain": "INPUT", "action": "ACCEPT", "protocol": "tcp", "port": UI_PORT,
          "in_interface": wan, "table_name": "filter"},
         {"chain": "INPUT", "action": "ACCEPT", "in_interface": "lo", "table_name": "filter"},
         {"chain": "INPUT", "action": "DROP", "table_name": "filter"},
-    ]
-    rules += [
-        {"chain": "POSTROUTING", "action": "MASQUERADE", "in_interface": lan,
-         "out_interface": wan, "table_name": "nat"}
-        for lan in lan_ifaces
     ]
     return rules
 

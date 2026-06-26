@@ -59,6 +59,13 @@ class MachineFirewallRule(SQLModel, table=True):
     log_level: Optional[str] = Field(default=None, max_length=20)       # LOG
     reject_with: Optional[str] = Field(default=None, max_length=50)     # REJECT
     
+    # Outbound NAT intent (forward policies only). When True on a filter/FORWARD
+    # rule, apply_rules auto-generates a paired POSTROUTING MASQUERADE companion
+    # (comment MADMIN_AUTO_NAT_<id>), mirroring the DNAT->FORWARD companion. This
+    # is how navigation masquerade is owned by the policy instead of a separate
+    # standalone POSTROUTING rule.
+    policy_nat: bool = Field(default=False)
+
     # Metadata
     comment: Optional[str] = Field(default=None, max_length=255)
     table_name: str = Field(default="filter", max_length=20)  # filter, nat, mangle, raw
@@ -171,6 +178,7 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: str = "filter"
     enabled: bool = True
+    policy_nat: bool = False
     # Object/group references (multi-select, OR semantics). When non-empty for a
     # direction they take precedence over the literal source/destination field.
     source_refs: Optional[List[RuleAddressRef]] = None
@@ -199,6 +207,7 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: Optional[str] = None
     enabled: Optional[bool] = None
+    policy_nat: Optional[bool] = None
     source_refs: Optional[List[RuleAddressRef]] = None
     destination_refs: Optional[List[RuleAddressRef]] = None
 
@@ -240,7 +249,8 @@ class MachineFirewallRuleResponse(SQLModel):
     table_name: str
     order: int
     enabled: bool
-    auto_generated: bool = False  # synthetic read-only row (e.g. DNAT forward companion)
+    policy_nat: bool = False  # forward policy owns an outbound MASQUERADE companion
+    auto_generated: bool = False  # synthetic read-only row (e.g. DNAT/NAT companion)
     created_at: datetime
     updated_at: datetime
 

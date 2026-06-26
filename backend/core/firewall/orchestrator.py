@@ -44,6 +44,23 @@ def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
     }
 
 
+def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
+    """
+    Compute the POSTROUTING MASQUERADE match for a forward policy's NAT companion.
+
+    A filter/FORWARD policy with policy_nat=True owns its outbound masquerade. The
+    companion matches the same flow (source/destination/interfaces) so the policy
+    is the single source of truth. Shared by apply_rules (iptables generation) and
+    the API listing (read-only synthetic row) so they stay in sync.
+    """
+    return {
+        "source": rule.source,
+        "destination": rule.destination,
+        "in_interface": rule.in_interface,
+        "out_interface": rule.out_interface,
+    }
+
+
 class FirewallOrchestrator:
     """
     Orchestrates firewall chain management and rule application.
@@ -263,6 +280,21 @@ class FirewallOrchestrator:
         )
         return result.scalars().all()
 
+    async def get_enabled_policy_nat_rules(
+        self,
+        session: AsyncSession
+    ) -> List[MachineFirewallRule]:
+        """Get enabled forward policies with policy_nat — source of the POSTROUTING masquerade companions."""
+        result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "filter")
+            .where(MachineFirewallRule.chain == "FORWARD")
+            .where(MachineFirewallRule.policy_nat == True)
+            .where(MachineFirewallRule.enabled == True)
+            .order_by(MachineFirewallRule.order)
+        )
+        return result.scalars().all()
+
     async def get_rule_by_id(
         self,
         session: AsyncSession,
@@ -355,7 +387,8 @@ class FirewallOrchestrator:
             comment=rule_data.get("comment"),
             table_name=rule_data.get("table_name", "filter"),
             order=max_order + 1,
-            enabled=rule_data.get("enabled", True)
+            enabled=rule_data.get("enabled", True),
+            policy_nat=rule_data.get("policy_nat", False)
         )
         
         session.add(rule)
@@ -732,6 +765,33 @@ class FirewallOrchestrator:
             # Index 1 = after the built-in ESTABLISHED/RELATED line, before DB rules (incl. DROP)
             insert_at = 1 if fwd else 0
             fwd[insert_at:insert_at] = auto_forward_lines
+
+        # --- Auto-generate POSTROUTING MASQUERADE for policies with policy_nat ---
+        # A filter/FORWARD policy can own its outbound NAT (navigation masquerade).
+        # Emit a companion MASQUERADE in POSTROUTING matching the same flow, so the
+        # policy is the single source of truth (mirrors the DNAT->FORWARD companion).
+        auto_nat_lines: List[str] = []
+        for rule in rules:
+            if rule.table_name != "filter" or rule.chain != "FORWARD" or not rule.policy_nat:
+                continue
+            fields = policy_nat_fields(rule)
+            eff = eff_map.get(rule.id)
+            if eff:
+                if eff[0] is not None:
+                    fields["source"] = eff[0]        # honor object/group source refs
+                if eff[1] is not None:
+                    fields["destination"] = eff[1]   # honor object/group dest refs
+            auto_nat_lines.append(
+                " ".join(iptables.build_rule_args(
+                    chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,
+                    action="MASQUERADE",
+                    comment=f"MADMIN_AUTO_NAT_{rule.id}",
+                    operation="-A",
+                    **fields,
+                ))
+            )
+        if auto_nat_lines:
+            chain_rules["nat"][iptables.MADMIN_POSTROUTING_NAT_CHAIN].extend(auto_nat_lines)
 
         # --- Apply atomically per table ---
         for table, chains in chain_rules.items():
