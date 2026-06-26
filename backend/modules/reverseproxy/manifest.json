@@ -57,6 +57,10 @@
             "priority": 40
         }
     ],
+    "service_ports": [
+        {"proto": "tcp", "port": 80, "name": "Reverse Proxy (HTTP)"},
+        {"proto": "tcp", "port": 443, "name": "Reverse Proxy (HTTPS)"}
+    ],
     "config_export": {
         "tables": [
             "revproxy_host",

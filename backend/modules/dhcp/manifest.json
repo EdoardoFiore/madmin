@@ -46,6 +46,10 @@
         }
     ],
     "firewall_chains": [],
+    "service_ports": [
+        {"proto": "udp", "port": 67, "name": "DHCP server"},
+        {"proto": "udp", "port": 68, "name": "DHCP server"}
+    ],
     "config_export": {
         "tables": [
             "dhcp_settings",

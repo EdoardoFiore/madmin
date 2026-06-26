@@ -42,6 +42,7 @@ from .models import (
 )
 from .orchestrator import firewall_orchestrator, dnat_forward_fields
 from .iptables import IptablesError, flush_conntrack_for_rule
+from .protected_ports import validate_protected_port_collision
 from . import addresses, geoip
 
 logger = logging.getLogger(__name__)
@@ -308,6 +309,20 @@ async def create_rule(
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
     try:
+        await validate_protected_port_collision(
+            session,
+            table_name=table,
+            action=rule_data.action,
+            chain=rule_data.chain,
+            protocol=rule_data.protocol,
+            port=rule_data.port,
+            to_destination=rule_data.to_destination,
+            to_ports=rule_data.to_ports,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
         rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
         await session.commit()
         refs_map = await _rule_refs_map(session, [rule.id])
@@ -359,6 +374,20 @@ async def update_rule(
         update_data.get("out_interface", existing.out_interface),
     )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
+
+    try:
+        await validate_protected_port_collision(
+            session,
+            table_name=update_data.get("table_name", existing.table_name),
+            action=update_data.get("action", existing.action),
+            chain=update_data.get("chain", existing.chain),
+            protocol=update_data.get("protocol", existing.protocol),
+            port=update_data.get("port", existing.port),
+            to_destination=update_data.get("to_destination", existing.to_destination),
+            to_ports=update_data.get("to_ports", existing.to_ports),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)

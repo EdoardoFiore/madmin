@@ -407,6 +407,73 @@ class ModuleLoader:
             except Exception as e:
                 logger.error(f"on_startup hook for {module_id} failed: {e}", exc_info=True)
 
+    async def collect_service_ports(self, session: AsyncSession) -> List[tuple]:
+        """
+        Aggregate the live listening ports declared by loaded modules.
+
+        Two complementary sources, both gated on the module being active (only
+        active modules live in loaded_modules):
+
+        1. Manifest 'service_ports' — fixed, protocol-standard ports known at
+           design time (DNS 53, DHCP 67/68, IPsec 500/4500, proxy 80/443).
+        2. Manifest 'service_ports_hook' — path to a script exposing
+           'async def run(session) -> list[dict]' of {"proto","port","name"} —
+           for dynamic, per-instance ports read from the module's own tables
+           (e.g. user-chosen WireGuard/OpenVPN ports).
+
+        Consumed by the firewall protected-port guard so a port-forwarding rule
+        can never hijack an active module service. A new module only needs a
+        manifest entry (fixed port) or to declare 'service_ports_hook' (dynamic)
+        — no core change. Failures are isolated per module so one bad source
+        never suppresses the others.
+        """
+        collected: List[tuple] = []
+        for module_id, info in self.loaded_modules.items():
+            # 1. Static ports declared in the manifest
+            manifest: ModuleManifest = info["manifest"]
+            for sp in getattr(manifest, "service_ports", None) or []:
+                try:
+                    proto = (sp.proto or "tcp").lower()
+                    if proto not in ("tcp", "udp"):
+                        proto = "tcp"
+                    if 1 <= sp.port <= 65535:
+                        collected.append((proto, sp.port, sp.name or manifest.name))
+                except Exception as e:
+                    logger.error(f"service_ports manifest entry for {module_id} invalid: {e}")
+
+            # 2. Dynamic ports from the manifest-declared hook
+            hook_rel = getattr(manifest, "service_ports_hook", None)
+            if not hook_rel:
+                continue
+            hook_file = Path(info["path"]) / hook_rel
+            if not hook_file.exists():
+                logger.warning(f"service_ports_hook declared but missing for {module_id}: {hook_file}")
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    f"service_ports_{module_id}", hook_file
+                )
+                if spec is None or spec.loader is None:
+                    continue
+                hook_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(hook_module)
+                run_fn = getattr(hook_module, "run", None)
+                if run_fn is None:
+                    continue
+                result = run_fn(session)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                for entry in (result or []):
+                    proto = str(entry.get("proto", "tcp")).lower()
+                    if proto not in ("tcp", "udp"):
+                        proto = "tcp"
+                    port = int(entry["port"])
+                    if 1 <= port <= 65535:
+                        collected.append((proto, port, str(entry.get("name", module_id))))
+            except Exception as e:
+                logger.error(f"service_ports hook for {module_id} failed: {e}", exc_info=True)
+        return collected
+
     def get_menu_items(self) -> List[Dict]:
         """
         Get all menu items from loaded modules.

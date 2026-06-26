@@ -55,6 +55,22 @@ class ModuleFirewallChain(SQLModel):
     priority: int = 50
 
 
+class ModuleServicePort(SQLModel):
+    """
+    A fixed port a module listens on while active.
+
+    Declared here only for protocol-standard, design-time-known ports
+    (e.g. DNS 53, DHCP 67/68, IPsec 500/4500, reverse-proxy 80/443). The
+    firewall protected-port guard blocks DNAT/REDIRECT rules that would hijack
+    these ports whenever the module is active. Dynamic, per-instance ports
+    (e.g. user-chosen WireGuard/OpenVPN ports) are reported at runtime via the
+    optional 'hooks/service_ports.py' instead.
+    """
+    proto: str = "tcp"                # "tcp" or "udp"
+    port: int                         # 1..65535
+    name: Optional[str] = None        # human-readable label for the deny message
+
+
 class ModuleSystemDependencies(SQLModel):
     """System package dependencies for a module."""
     apt: List[str] = []  # e.g., ["wireguard", "wireguard-tools"]
@@ -102,6 +118,15 @@ class ModuleManifest(SQLModel):
     
     # Firewall chains to create
     firewall_chains: List[ModuleFirewallChain] = []
+
+    # Fixed listen ports to protect from port-forward hijack while module is active
+    service_ports: List[ModuleServicePort] = []
+
+    # Optional script reporting DYNAMIC listen ports (e.g. user-chosen per-instance
+    # ports). Path relative to module dir; exposes 'async def run(session) -> list[dict]'
+    # of {"proto","port","name"}. Use this instead of 'service_ports' when ports are
+    # only known at runtime (read from the module's own tables).
+    service_ports_hook: Optional[str] = None
     
     # Dependencies (other module IDs)
     dependencies: List[str] = []

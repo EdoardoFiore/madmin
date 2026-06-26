@@ -58,6 +58,10 @@
             "priority": 45
         }
     ],
+    "service_ports": [
+        {"proto": "udp", "port": 53, "name": "DNS (BIND9)"},
+        {"proto": "tcp", "port": 53, "name": "DNS (BIND9)"}
+    ],
     "config_export": {
         "tables": [
             "dns_settings",

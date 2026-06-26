@@ -64,6 +64,10 @@
             "priority": 40
         }
     ],
+    "service_ports": [
+        {"proto": "udp", "port": 500, "name": "IPsec IKE (strongSwan)"},
+        {"proto": "udp", "port": 4500, "name": "IPsec NAT-T (strongSwan)"}
+    ],
     "config_export": {
         "tables": [
             "ipsec_tunnel",
