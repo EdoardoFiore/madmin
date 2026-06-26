@@ -70,7 +70,22 @@ async def run(session: AsyncSession):
         # Write config file
         config_path = SWANCTL_CONF_DIR / f"madmin_{tunnel.name}.conf"
         config_path.write_text(config)
-        
+
         logger.info(f"Regenerated config for tunnel {tunnel.name}")
-    
+
+    # Regenerate the secrets file (PSK) — config files alone are not enough:
+    # without it charon has no key and IKE_SA initiation fails after restore.
+    secrets_entries = [
+        service.generate_secrets_entry(
+            name=tunnel.name,
+            local_id=tunnel.local_id,
+            remote_id=tunnel.remote_id,
+            psk=tunnel.psk,
+        )
+        for tunnel in tunnels
+        if tunnel.auth_method == "psk" and tunnel.psk
+    ]
+    service.update_secrets_file(secrets_entries)
+    logger.info(f"Regenerated secrets file: {len(secrets_entries)} PSK entries")
+
     logger.info(f"strongSwan post_restore complete: {len(tunnels)} tunnels regenerated")

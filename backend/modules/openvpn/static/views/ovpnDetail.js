@@ -761,6 +761,7 @@ function registerGlobalFunctions(container, canManage, canClients) {
             try {
                 await apiDelete(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`);
                 showToast(t('openvpn.clientRevoked'), 'success');
+                showToast(t('openvpn.clientRevokedRestartHint'), 'warning');
                 if (currentContainer) renderInstanceDetail(currentContainer, canManage, canClients);
             } catch (err) { showToast(err.message, 'error'); }
         }

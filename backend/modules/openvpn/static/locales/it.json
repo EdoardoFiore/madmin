@@ -103,6 +103,7 @@
   "confirmDeleteClient": "Elimina Client",
   "confirmDeleteClientMsg": "Eliminare definitivamente il client \"{name}\"? Questa azione è irreversibile.",
   "clientRevoked": "Client revocato",
+  "clientRevokedRestartHint": "Riavvia l'istanza per rendere effettiva la revoca: il certificato resta valido finché il servizio non viene riavviato.",
   "certRenewed": "Certificato rinnovato",
   "clientRestored": "Client ripristinato con nuovo certificato",
   "clientDeleted": "Client eliminato definitivamente",

@@ -236,32 +236,101 @@ class OpenVPNService:
             logger.error(f"Failed to revoke cert: {e}")
             return False
     
+    # CRL validity window. easy-rsa default is 180 days; the server config uses
+    # `crl-verify`, so an expired CRL makes OpenVPN reject every TLS handshake
+    # ("CRL has expired") — the daemon stays up but no client can connect. We
+    # mint long-lived CRLs and refresh them well before expiry (see
+    # renew_crl_if_needed + the background loop in the on_startup hook).
+    CRL_VALIDITY_DAYS = 3650
+    CRL_RENEW_THRESHOLD_DAYS = 30
+
     @staticmethod
     def regenerate_crl(instance_id: str) -> bool:
-        """Regenerate Certificate Revocation List."""
+        """Regenerate Certificate Revocation List with a long validity window."""
         easyrsa_dir = OpenVPNService.get_easyrsa_dir(instance_id)
         instance_dir = OpenVPNService.get_instance_dir(instance_id)
-        
+
         try:
+            env = {
+                **subprocess.os.environ,
+                "EASYRSA_CRL_DAYS": str(OpenVPNService.CRL_VALIDITY_DAYS),
+            }
             subprocess.run(
                 ["./easyrsa", "gen-crl"],
                 cwd=easyrsa_dir,
+                env=env,
                 check=True,
                 capture_output=True
             )
-            
+
             # Copy CRL to instance directory
             crl_src = easyrsa_dir / "pki" / "crl.pem"
             crl_dst = instance_dir / "crl.pem"
             shutil.copy(crl_src, crl_dst)
             crl_dst.chmod(0o644)
-            
+
             logger.info(f"CRL regenerated for {instance_id}")
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to regenerate CRL: {e}")
             return False
-    
+
+    @staticmethod
+    def get_crl_days_remaining(instance_id: str) -> Optional[int]:
+        """Days until the instance CRL nextUpdate. None if no CRL / parse error."""
+        crl_path = OpenVPNService.get_instance_dir(instance_id) / "crl.pem"
+        if not crl_path.exists():
+            return None
+        try:
+            result = subprocess.run(
+                ["openssl", "crl", "-nextupdate", "-noout", "-in", str(crl_path)],
+                capture_output=True,
+                text=True,
+            )
+            # Output: nextUpdate=Jan  7 12:00:00 2036 GMT
+            match = re.search(r'nextUpdate=(.+)', result.stdout)
+            if not match:
+                return None
+            next_update = datetime.strptime(match.group(1).strip(), "%b %d %H:%M:%S %Y %Z")
+            return (next_update - datetime.utcnow()).days
+        except Exception as e:
+            logger.error(f"Failed to parse CRL nextUpdate for {instance_id}: {e}")
+            return None
+
+    @staticmethod
+    def renew_crl_if_needed(instance_id: str, threshold_days: int = None) -> bool:
+        """Regenerate the CRL if missing or close to expiry, then reload it.
+
+        Returns True if the CRL was regenerated. OpenVPN reads `crl-verify <file>`
+        once at startup, so a running instance is restarted to pick up the new CRL
+        (renewal is proactive — long before expiry — so this is a rare event).
+        """
+        if threshold_days is None:
+            threshold_days = OpenVPNService.CRL_RENEW_THRESHOLD_DAYS
+
+        days = OpenVPNService.get_crl_days_remaining(instance_id)
+        if days is not None and days > threshold_days:
+            return False
+
+        logger.info(
+            f"CRL for {instance_id} needs renewal "
+            f"(days remaining: {days}, threshold: {threshold_days})"
+        )
+        if not OpenVPNService.regenerate_crl(instance_id):
+            return False
+
+        # Reload the daemon so the fresh CRL takes effect (file-mode crl-verify).
+        if OpenVPNService.get_instance_status(instance_id):
+            try:
+                subprocess.run(
+                    ["systemctl", "restart", f"openvpn-server@{instance_id}"],
+                    check=True, capture_output=True,
+                )
+                logger.info(f"Restarted openvpn-server@{instance_id} to load renewed CRL")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to restart instance {instance_id} after CRL renewal: {e}")
+        return True
+
     @staticmethod
     def renew_server_cert(instance_id: str, days: int = 3650) -> Dict:
         """Renew server certificate."""

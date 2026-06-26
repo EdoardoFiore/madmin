@@ -103,6 +103,7 @@
   "confirmDeleteClient": "Delete Client",
   "confirmDeleteClientMsg": "Permanently delete client \"{name}\"? This action is irreversible.",
   "clientRevoked": "Client revoked",
+  "clientRevokedRestartHint": "Restart the instance to make the revocation effective: the certificate stays valid until the service is restarted.",
   "certRenewed": "Certificate renewed",
   "clientRestored": "Client restored with new certificate",
   "clientDeleted": "Client permanently deleted",
