@@ -5,14 +5,12 @@
  * Displays rules with drag-and-drop ordering and iptables preview.
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete, apiPut, apiFetch } from '../api.js';
-import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../utils.js';
-import { setPageActions, checkPermission } from '../app.js';
-import { t } from '../i18n.js';
-import { buildAddressPicker } from './firewall-addresses.js';
-
-// Sentinel comment marking the protected managed-LAN MASQUERADE rule (mirrors backend)
-const MANAGED_NAT_SENTINEL = 'MADMIN_MANAGED_LAN_NAT';
+import { apiGet, apiPost, apiPatch, apiDelete, apiPut, apiFetch } from '../../api.js';
+import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../../utils.js';
+import { setPageActions, checkPermission } from '../../app.js';
+import { t } from '../../i18n.js';
+import { buildAddressPicker } from './addresses.js';
+import { MANAGED_NAT_SENTINEL } from './shared.js';
 
 let rules = [];
 let editingRule = null;

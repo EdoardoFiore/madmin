@@ -14,8 +14,7 @@ import { openProfileModal } from './profile.js';
 const views = {
     'dashboard': () => import('./views/dashboard.js'),
     'users': () => import('./views/users.js'),
-    'firewall': () => import('./views/firewall.js'),
-    'firewall-addresses': () => import('./views/firewall-addresses.js'),
+    'firewall': () => import('./views/firewall/index.js'),
     'network': () => import('./views/network.js'),
     'crontab': () => import('./views/crontab.js'),
     'settings': () => import('./views/settings.js'),
@@ -704,7 +703,6 @@ function getViewTitle(viewName) {
         'dashboard': t('menu.dashboard'),
         'users': t('menu.users'),
         'firewall': t('menu.firewall'),
-        'firewall-addresses': t('menu.firewallAddresses'),
         'network': t('menu.network'),
         'crontab': t('menu.crontab'),
         'settings': t('menu.settings'),

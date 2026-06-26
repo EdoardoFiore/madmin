@@ -5,10 +5,10 @@
  * Two tabs: Addresses (single objects) and Groups.
  */
 
-import { apiGet, apiPost, apiPatch, apiDelete } from '../api.js';
-import { showToast, confirmDialog, emptyState, escapeHtml } from '../utils.js';
-import { setPageActions, checkPermission } from '../app.js';
-import { t } from '../i18n.js';
+import { apiGet, apiPost, apiPatch, apiDelete } from '../../api.js';
+import { showToast, confirmDialog, emptyState, escapeHtml } from '../../utils.js';
+import { setPageActions, checkPermission } from '../../app.js';
+import { t } from '../../i18n.js';
 
 let addressObjects = [];
 let addressGroups = [];
