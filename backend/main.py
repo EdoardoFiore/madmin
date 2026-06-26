@@ -11,8 +11,9 @@ Handles:
 """
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from config import MADMIN_VERSION
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -396,6 +397,13 @@ async def lifespan(app: FastAPI):
         pass
 
 
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+
 def create_app() -> FastAPI:
     """
     Application factory.
@@ -420,14 +428,16 @@ def create_app() -> FastAPI:
     # Custom OpenAPI schema with JWT security
     setup_openapi(app)
     
-    # CORS middleware
+    # CORS middleware — no allow_credentials; auth uses Bearer token in localStorage
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_middleware(_SecurityHeadersMiddleware)
     
     # Audit log middleware (logs API calls with user identity)
     from core.audit.middleware import AuditLogMiddleware

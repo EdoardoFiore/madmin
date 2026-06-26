@@ -8,6 +8,7 @@ from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
 from sqlalchemy import Text
+from pydantic import field_validator
 import uuid
 
 
@@ -269,6 +270,14 @@ class OvpnClientRead(SQLModel):
 class SendConfigRequest(SQLModel):
     """Request schema for sending client config via email."""
     email: str
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, v: str) -> str:
+        import re
+        if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', v) or '\n' in v or '\r' in v:
+            raise ValueError("Invalid email address")
+        return v
 
 
 class OvpnGroupCreate(SQLModel):

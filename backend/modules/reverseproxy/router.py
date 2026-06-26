@@ -217,6 +217,11 @@ async def create_host(
         if not acl:
             raise HTTPException(status_code=404, detail="Access list non trovata")
 
+    try:
+        svc.validate_custom_nginx_config(data.custom_nginx_config or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     host = RevproxyHost(
         name=data.name,
         forward_scheme=data.forward_scheme,
@@ -266,6 +271,12 @@ async def update_host(
 ):
     _block_if_disabled()
     host = await _load_host(db, host_id)
+
+    if data.custom_nginx_config is not None:
+        try:
+            svc.validate_custom_nginx_config(data.custom_nginx_config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     if data.domains is not None:
         domains_norm = [svc.normalize_domain(d) for d in data.domains]

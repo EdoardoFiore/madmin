@@ -33,7 +33,7 @@ class FileDeleteResponse(BaseModel):
 
 # Upload directory configuration
 UPLOAD_DIR = os.environ.get("MADMIN_UPLOAD_DIR", "/opt/madmin/uploads")
-ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp"}
+ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp"}
 MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
 
 

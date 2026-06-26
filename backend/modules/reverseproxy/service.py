@@ -51,6 +51,43 @@ _jinja = Environment(
     keep_trailing_newline=True,
 )
 
+# Directives that must never appear in user-supplied nginx snippets because they
+# allow traffic hijacking, auth bypass, file-system access, or code execution.
+_BLOCKED_NGINX_DIRECTIVES = frozenset({
+    # Code execution (Lua / Perl)
+    "access_by_lua", "access_by_lua_block", "access_by_lua_file",
+    "content_by_lua", "content_by_lua_block", "content_by_lua_file",
+    "rewrite_by_lua", "rewrite_by_lua_block", "rewrite_by_lua_file",
+    "header_filter_by_lua", "header_filter_by_lua_block",
+    "body_filter_by_lua", "body_filter_by_lua_block",
+    "log_by_lua", "log_by_lua_block",
+    "balancer_by_lua", "ssl_certificate_by_lua",
+    "perl", "perl_set", "perl_require",
+    # File / module inclusion
+    "include", "load_module",
+    # Traffic hijacking (upstream redirection)
+    "proxy_pass", "fastcgi_pass", "uwsgi_pass", "scgi_pass", "grpc_pass",
+    # Auth bypass
+    "auth_request", "auth_request_set", "auth_basic_user_file",
+    # IP spoofing
+    "set_real_ip_from", "real_ip_header",
+    # Arbitrary redirect / access-control bypass
+    "return", "allow", "deny",
+    # File-system access change
+    "alias", "root",
+})
+
+
+def validate_custom_nginx_config(snippet: str) -> None:
+    """Raise ValueError if snippet contains a blocked nginx directive."""
+    if not snippet:
+        return
+    # Strip line comments before extracting directive names.
+    cleaned = re.sub(r'#[^\n]*', '', snippet)
+    for token in re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', cleaned):
+        if token.lower() in _BLOCKED_NGINX_DIRECTIVES:
+            raise ValueError(f"Directive '{token}' is not allowed in custom nginx config")
+
 
 # ============================================================================
 # Sentinel (conflict marker)
