@@ -45,10 +45,10 @@ const ALL_COLUMNS = {
 };
 
 const DEFAULT_COLUMNS = {
-    filter: ['protocol', 'source', 'destination', 'port', 'state', 'comment'],
-    nat: ['protocol', 'source', 'destination', 'port', 'to_destination', 'to_source', 'comment'],
-    mangle: ['protocol', 'source', 'destination', 'port', 'state', 'comment'],
-    raw: ['protocol', 'source', 'destination', 'port', 'state', 'comment']
+    filter: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment'],
+    nat: ['protocol', 'source', 'destination', 'port', 'in_interface', 'out_interface', 'to_destination', 'to_source', 'comment'],
+    mangle: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment'],
+    raw: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment']
 };
 
 // Table definitions with their chains
