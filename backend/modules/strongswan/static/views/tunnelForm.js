@@ -229,16 +229,21 @@ export function showTunnelForm(tunnel, onSave) {
                                 </div>
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
-                                        <label class="form-label">${t('strongswan.tunnelLocalIdLabel')}</label>
+                                        <label class="form-label">
+                                            ${t('strongswan.tunnelLocalIdLabel')}
+                                            <i class="ti ti-help-circle text-muted ms-1" style="cursor: help;"
+                                               title="${escapeHtml(t('strongswan.tunnelLocalIdHelp'))}"></i>
+                                        </label>
                                         <input type="text" class="form-control" id="tunnel-local-id"
-                                               value="${escapeHtml(tunnel?.local_id || '')}" 
-                                               placeholder="es. @vpn.example.com">
+                                               value="${escapeHtml(tunnel?.local_id || '')}"
+                                               placeholder="es. 203.0.113.10 o @madmin-sede">
                                     </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">${t('strongswan.tunnelRemoteIdLabel')}</label>
                                         <input type="text" class="form-control" id="tunnel-remote-id"
-                                               value="${escapeHtml(tunnel?.remote_id || '')}" 
+                                               value="${escapeHtml(tunnel?.remote_id || '')}"
                                                placeholder="es. @peer.example.com">
+                                        <small class="form-hint">${t('strongswan.tunnelRemoteIdHelp')}</small>
                                     </div>
                                 </div>
                             </div>

@@ -183,12 +183,16 @@ export function parseProposal(proposal) {
             }
         });
 
-        // Add pair if we found enc/integ
+        // Add pair if we found enc/integ. DH groups are tracked separately in
+        // dhSet (rendered as global checkboxes), so proposals that differ only
+        // by DH must NOT create duplicate enc/integ pairs — otherwise the first
+        // proposal appears multiplied by the number of selected DH groups.
         if (pairEnc || pairInteg) {
-            pairs.push({
-                enc: pairEnc || 'aes256',
-                integ: pairInteg || 'sha256'
-            });
+            const e = pairEnc || 'aes256';
+            const i = pairInteg || 'sha256';
+            if (!pairs.some(pr => pr.enc === e && pr.integ === i)) {
+                pairs.push({ enc: e, integ: i });
+            }
         }
     });
 

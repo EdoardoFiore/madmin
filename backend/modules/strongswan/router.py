@@ -92,7 +92,7 @@ async def create_tunnel(
     )
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Tunnel name already exists")
-    
+
     # Create tunnel
     tunnel = IpsecTunnel(**data.model_dump())
     db.add(tunnel)
@@ -201,7 +201,7 @@ async def update_tunnel(
         setattr(tunnel, key, value)
     
     tunnel.updated_at = datetime.utcnow()
-    
+
     # If name changed, delete old config file
     if data.name and data.name != old_name:
         await run_in_threadpool(strongswan_service.delete_tunnel_config, old_name)
@@ -343,7 +343,8 @@ async def start_tunnel(
         await db.commit()
         return {"status": status_response, "name": tunnel.name}
     else:
-        raise HTTPException(status_code=500, detail="Failed to initiate tunnel")
+        detail = strongswan_service.last_initiate_error or "Failed to initiate tunnel"
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.post("/tunnels/{tunnel_id}/stop")
@@ -1146,8 +1147,8 @@ async def _update_all_secrets(db: AsyncSession):
         if tunnel.psk:
             entry = strongswan_service.generate_secrets_entry(
                 name=tunnel.name,
-                local_id=tunnel.local_id,
                 remote_id=tunnel.remote_id,
+                remote_address=tunnel.remote_address,
                 psk=tunnel.psk
             )
             secrets_entries.append(entry)

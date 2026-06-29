@@ -32,6 +32,10 @@ class StrongSwanService:
     IPSEC_INPUT_CHAIN = "MOD_IPSEC_INPUT"
     IPSEC_FORWARD_CHAIN = "MOD_IPSEC_FORWARD"
     IPSEC_NAT_CHAIN = "MOD_IPSEC_NAT"
+
+    # Human-readable reason of the last failed initiate_tunnel(), surfaced to the
+    # API so the user sees the real cause instead of generic plugin noise.
+    last_initiate_error: str = ""
     
     def _get_vici_session(self):
         """
@@ -64,7 +68,61 @@ class StrongSwanService:
         except FileNotFoundError:
             logger.error("swanctl not found")
             raise
-    
+
+    @staticmethod
+    def _clean_swanctl_output(text: str) -> str:
+        """Strip the harmless 'plugin ...: failed to load' lines swanctl prints
+        on every invocation when optional plugins aren't installed. They bury
+        the real negotiation result in the logs."""
+        if not text:
+            return ""
+        kept = []
+        for ln in text.splitlines():
+            stripped = ln.strip()
+            if stripped.startswith("plugin '") and "failed to load" in stripped:
+                continue
+            if stripped:
+                kept.append(stripped)
+        return "\n".join(kept)
+
+    @staticmethod
+    def _extract_initiate_reason(output: str) -> str:
+        """Map swanctl/charon output to a concise, actionable failure cause.
+
+        swanctl --initiate streams charon's negotiation log to stdout, where the
+        real reason lives (the generic 'establishing IKE_SA failed' on stderr
+        does not say why)."""
+        markers = [
+            ("AUTHENTICATION_FAILED", "Authentication failed — check PSK and that Local/Remote ID match the peer (behind NAT a Local ID is required)"),
+            ("INVALID_ID_INFORMATION", "Peer rejected the ID — Local/Remote ID do not match the peer config"),
+            ("NO_PROPOSAL_CHOSEN", "No matching proposal — IKE/ESP algorithms differ from the peer"),
+            ("proposals inacceptable", "No matching proposal — IKE/ESP algorithms differ from the peer"),
+            ("TS_UNACCEPTABLE", "Traffic selectors rejected — local/remote subnets do not match the peer"),
+            ("retransmit", "No response from peer — unreachable / wrong remote address / UDP 500/4500 blocked"),
+        ]
+        low = output.lower()
+        for marker, msg in markers:
+            if marker.lower() in low:
+                return msg
+        for ln in reversed(output.splitlines()):
+            if ln.strip():
+                return ln.strip()
+        return "unknown error (see charon log: journalctl -u strongswan)"
+
+    @staticmethod
+    def _resolve_remote_id(remote_id: Optional[str], remote_address: str) -> str:
+        """Peer identity used for BOTH the connection's remote { id } and the PSK
+        secret's id.
+
+        Defaults to the tunnel's remote IP/host. An explicit Remote ID overrides
+        it — and since the same resolved value feeds both the conf and the secret,
+        the override is applied in both places at once. Keying every secret by the
+        (unique) remote identity prevents the empty-id wildcard collisions that
+        made charon pick the wrong PSK across tunnels.
+        """
+        rid = (remote_id or "").strip()
+        return rid if rid else (remote_address or "").strip()
+
     # --- Config File Generation ---
     
     def generate_tunnel_config(
@@ -122,12 +180,14 @@ class StrongSwanService:
         local_auth += """
         }"""
         
+        # Peer identity: explicit Remote ID, else the tunnel's remote address.
+        effective_remote_id = self._resolve_remote_id(remote_id, remote_address)
         remote_auth = f"""
         remote {{
             auth = {auth_method}"""
-        if remote_id:
+        if effective_remote_id:
             remote_auth += f"""
-            id = {remote_id}"""
+            id = {effective_remote_id}"""
         remote_auth += """
         }"""
         
@@ -159,30 +219,27 @@ connections {{
     def generate_secrets_entry(
         self,
         name: str,
-        local_id: Optional[str],
         remote_id: Optional[str],
+        remote_address: str,
         psk: str
     ) -> str:
         """
         Generate secrets entry for PSK authentication.
-        
+
+        The secret is keyed by the peer identity (explicit Remote ID, else the
+        tunnel's remote IP). This mirrors the conn's remote { id } and guarantees
+        each PSK is bound to a unique identity — no empty-id wildcard that would
+        collide across tunnels.
+
         Returns:
             Secret configuration snippet
         """
         secret_name = f"madmin-{name}"
-        
-        # Build ID list for the secret
-        ids = []
-        if local_id:
-            ids.append(local_id)
-        if remote_id:
-            ids.append(remote_id)
-        
-        id_list = " ".join(ids) if ids else ""
-        
+        secret_id = self._resolve_remote_id(remote_id, remote_address)
+
         return f"""
     ike-{secret_name} {{
-        id = {id_list}
+        id = {secret_id}
         secret = "{psk}"
     }}
 """
@@ -237,7 +294,17 @@ connections {{
     # --- Tunnel Control via VICI ---
     
     def load_all_connections(self) -> bool:
-        """Reload all swanctl connections."""
+        """Reload all swanctl connections and credentials.
+
+        swanctl --load-all does NOT flush already-loaded shared secrets: a
+        changed or removed PSK lingers in charon memory and causes
+        AUTHENTICATION_FAILED (or the wrong PSK being picked when several
+        tunnels exist with overlapping/empty IDs) until a full daemon restart.
+        '--load-creds --clear' first wipes all loaded credentials and reloads
+        them from disk, eliminating stale/duplicate PSKs. Then --load-all
+        re-syncs connections/pools.
+        """
+        self._run_swanctl(['--load-creds', '--clear'])
         result = self._run_swanctl(['--load-all'])
         return result.returncode == 0
 
@@ -284,8 +351,9 @@ connections {{
         if local_id:
             local["id"] = local_id
         remote = {"auth": auth_method}
-        if remote_id:
-            remote["id"] = remote_id
+        effective_remote_id = self._resolve_remote_id(remote_id, remote_address)
+        if effective_remote_id:
+            remote["id"] = effective_remote_id
 
         return {
             conn_name: {
@@ -341,14 +409,22 @@ connections {{
         # We don't check return code strictly because timeout (which is expected if peer is down) causes non-zero exit
         # Yet the initiation has started in background.
         result = self._run_swanctl(args)
+        # The real negotiation log (AUTHENTICATION_FAILED, NO_PROPOSAL_CHOSEN,
+        # TS_UNACCEPTABLE...) is on stdout; stderr only carries plugin noise plus
+        # a generic line. Combine + strip the noise before deciding/logging.
+        combined = self._clean_swanctl_output(f"{result.stdout}\n{result.stderr}")
+        self.last_initiate_error = ""
+
         if result.returncode == 0:
             logger.info(f"Initiated tunnel {name}")
             return True
-        elif any(x in (result.stderr + result.stdout).lower() for x in ["timeout", "not established after"]):
-            logger.warning(f"Initiate tunnel {name} timed out waiting for connection (background retry active)")
+        elif any(x in combined.lower() for x in ["timeout", "not established after"]):
+            logger.warning(f"Initiate tunnel {name} timed out waiting for peer (background retry active)")
             return True
         else:
-            logger.error(f"Failed to initiate tunnel {name}: {result.stderr}")
+            reason = self._extract_initiate_reason(combined)
+            self.last_initiate_error = reason
+            logger.error(f"Failed to initiate tunnel {name}: {reason}")
             return False
             
     def initiate_child_sa(self, tunnel_name: str, child_name: str) -> bool:
