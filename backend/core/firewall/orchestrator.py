@@ -24,6 +24,11 @@ from . import iptables, addresses
 
 logger = logging.getLogger(__name__)
 
+# Comment marking the always-last implicit deny appended to MADMIN_FORWARD by
+# apply_rules(). The FORWARD catch-all is no longer a DB rule: new policies are
+# always reachable by construction, FortiGate-style.
+IMPLICIT_DENY_COMMENT = "MADMIN_IMPLICIT_DENY"
+
 
 def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
     """
@@ -49,16 +54,68 @@ def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
     Compute the POSTROUTING MASQUERADE match for a forward policy's NAT companion.
 
     A filter/FORWARD policy with policy_nat=True owns its outbound masquerade. The
-    companion matches the same flow (source/destination/interfaces) so the policy
-    is the single source of truth. Shared by apply_rules (iptables generation) and
-    the API listing (read-only synthetic row) so they stay in sync.
+    companion is scoped to the policy's exact flow (source/destination/protocol/
+    port and out_interface) so it never masquerades traffic belonging to other
+    non-NAT policies. in_interface is deliberately excluded: -i does not exist in
+    POSTROUTING and would make iptables-restore reject the whole nat table.
+    Shared by apply_rules (iptables generation) and the API listing (read-only
+    synthetic row) so they stay in sync.
     """
     return {
+        "protocol": rule.protocol,
+        "port": rule.port,
         "source": rule.source,
         "destination": rule.destination,
-        "in_interface": rule.in_interface,
         "out_interface": rule.out_interface,
     }
+
+
+def _restore_line(madmin_chain: str, rule, eff_map: Dict) -> str:
+    """Restore-format line for a rule, honoring resolved address-set tokens."""
+    eff = eff_map.get(rule.id)
+    if eff:
+        eff_src, eff_dst = eff
+        return iptables.rule_to_restore_line(
+            madmin_chain, rule,
+            source=eff_src if eff_src is not None else rule.source,
+            destination=eff_dst if eff_dst is not None else rule.destination,
+        )
+    return iptables.rule_to_restore_line(madmin_chain, rule)
+
+
+def _build_forward_layout(
+    forward_rules: List,
+    eff_map: Dict,
+) -> Tuple[List[str], Dict[str, List[str]]]:
+    """
+    Build the MADMIN_FORWARD body with per-interface-pair subchains.
+
+    Rules with both interfaces set are grouped into a per-pair subchain,
+    dispatched by a single `-i X -o Y -j MFWD_*` jump emitted at the position
+    of the pair's first rule; partial/wildcard rules stay inline. Evaluation is
+    therefore grouped by pair at the group's first-occurrence position — the
+    same grouping the Standard UI displays. A packet matching no rule in its
+    pair subchain falls through (implicit RETURN) and continues in
+    MADMIN_FORWARD toward later wildcard rules, DNAT companions and the
+    implicit deny.
+
+    Returns (forward_lines, {subchain_name: [lines]}).
+    """
+    lines: List[str] = []
+    subchains: Dict[str, List[str]] = {}
+    for rule in forward_rules:
+        if rule.in_interface and rule.out_interface:
+            name = iptables.forward_subchain_name(rule.in_interface, rule.out_interface)
+            if name not in subchains:
+                subchains[name] = []
+                lines.append(
+                    f"-A {iptables.MADMIN_FORWARD_CHAIN}"
+                    f" -i {rule.in_interface} -o {rule.out_interface} -j {name}"
+                )
+            subchains[name].append(_restore_line(name, rule, eff_map))
+        else:
+            lines.append(_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map))
+    return lines, subchains
 
 
 class FirewallOrchestrator:
@@ -355,11 +412,14 @@ class FirewallOrchestrator:
         Automatically assigns order (appends to end of chain).
         """
         chain = rule_data.get("chain", "INPUT")
-        
-        # Get max order for this chain
+        table_name = rule_data.get("table_name", "filter")
+
+        # Get max order for this (table, chain) — chains like FORWARD exist in
+        # multiple tables and must not share numbering
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.chain == chain)
+            .where(MachineFirewallRule.table_name == table_name)
             .order_by(MachineFirewallRule.order.desc())
             .limit(1)
         )
@@ -385,7 +445,7 @@ class FirewallOrchestrator:
             log_level=rule_data.get("log_level"),
             reject_with=rule_data.get("reject_with"),
             comment=rule_data.get("comment"),
-            table_name=rule_data.get("table_name", "filter"),
+            table_name=table_name,
             order=max_order + 1,
             enabled=rule_data.get("enabled", True),
             policy_nat=rule_data.get("policy_nat", False)
@@ -459,6 +519,7 @@ class FirewallOrchestrator:
             return False
         
         chain = rule.chain
+        table_name = rule.table_name
         # Remove the rule's object/group references first (no DB-level cascade)
         await session.execute(
             delete(FirewallRuleAddress).where(FirewallRuleAddress.rule_id == rule_id)
@@ -466,10 +527,11 @@ class FirewallOrchestrator:
         await session.delete(rule)
         await session.flush()
 
-        # Reorder remaining rules in chain
+        # Reorder remaining rules in the same (table, chain)
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.chain == chain)
+            .where(MachineFirewallRule.table_name == table_name)
             .order_by(MachineFirewallRule.order)
         )
         rules = result.scalars().all()
@@ -665,15 +727,15 @@ class FirewallOrchestrator:
         """
         Apply all rules from database to iptables atomically.
 
-        Uses iptables-restore --noflush to flush and repopulate each MADMIN
-        core chain as a single kernel transaction — no window where chains are
-        empty and traffic is unprotected.
+        Uses a single iptables-restore --noflush invocation to flush and
+        repopulate every MADMIN core chain (plus the per-pair FORWARD
+        subchains) — no window where chains are empty and traffic is
+        unprotected. Raises IptablesError on failure; the previous ruleset
+        stays in place.
 
         Also rebuilds MADMIN_GW_PROTECT from current network topology (ipset-based
         cross-gateway isolation) and MADMIN_GW_EXCEPTS from DB rules.
         """
-        success = True
-
         # --- Gateway protection: resolve topology and rebuild ipsets ---
         lan_interfaces = await self._get_lan_interfaces()
         await self._rebuild_gateway_ipsets(lan_interfaces)
@@ -720,29 +782,30 @@ class FirewallOrchestrator:
         chain_rules["filter"][iptables.MADMIN_GW_EXCEPTS_CHAIN] = []
 
         # --- Assign DB rules to their respective MADMIN chains ---
+        # filter/FORWARD is handled by the pair-subchain layout builder below.
         for rule in rules:
+            if rule.table_name == "filter" and rule.chain == "FORWARD":
+                continue
             madmin_chain = iptables.get_madmin_chain(rule.table_name, rule.chain)
             if not madmin_chain:
-                logger.warning(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id}")
+                # The API rejects these since table/chain validation; legacy bad
+                # rows must not break the whole apply.
+                logger.error(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id} — skipped")
                 continue
-            eff = eff_map.get(rule.id)
-            if eff:
-                eff_src, eff_dst = eff
-                line = iptables.rule_to_restore_line(
-                    madmin_chain, rule,
-                    source=eff_src if eff_src is not None else rule.source,
-                    destination=eff_dst if eff_dst is not None else rule.destination,
-                )
-            else:
-                line = iptables.rule_to_restore_line(madmin_chain, rule)
-            chain_rules[rule.table_name][madmin_chain].append(line)
+            chain_rules[rule.table_name][madmin_chain].append(_restore_line(madmin_chain, rule, eff_map))
+
+        # --- FORWARD layout: per-interface-pair subchains + inline wildcard rules ---
+        forward_rules = [r for r in rules if r.table_name == "filter" and r.chain == "FORWARD"]
+        forward_lines, subchain_map = _build_forward_layout(forward_rules, eff_map)
+        chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(forward_lines)
+        chain_rules["filter"].update(subchain_map)
 
         # --- Auto-generate FORWARD ACCEPT for DNAT rules ---
         # A DNAT in PREROUTING/OUTPUT rewrites the destination to an internal host;
-        # the translated packet then traverses FORWARD and would hit the default DROP.
-        # Emit a companion ACCEPT toward the translated destination, refined by the
-        # DNAT's incoming interface and source when present, inserted right after the
-        # built-in ESTABLISHED line so it precedes the FORWARD DROP catch-all.
+        # the translated packet then traverses FORWARD and would hit the implicit
+        # deny. Emit a companion ACCEPT toward the translated destination, refined
+        # by the DNAT's incoming interface and source when present, appended AFTER
+        # the user policies so an explicit deny can block port-forwarded traffic.
         auto_forward_lines: List[str] = []
         for rule in rules:
             if rule.table_name != "nat" or rule.action != "DNAT" or not rule.to_destination:
@@ -761,10 +824,7 @@ class FirewallOrchestrator:
                 ))
             )
         if auto_forward_lines:
-            fwd = chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN]
-            # Index 1 = after the built-in ESTABLISHED/RELATED line, before DB rules (incl. DROP)
-            insert_at = 1 if fwd else 0
-            fwd[insert_at:insert_at] = auto_forward_lines
+            chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(auto_forward_lines)
 
         # --- Auto-generate POSTROUTING MASQUERADE for policies with policy_nat ---
         # A filter/FORWARD policy can own its outbound NAT (navigation masquerade).
@@ -793,30 +853,40 @@ class FirewallOrchestrator:
         if auto_nat_lines:
             chain_rules["nat"][iptables.MADMIN_POSTROUTING_NAT_CHAIN].extend(auto_nat_lines)
 
-        # --- Apply atomically per table ---
-        for table, chains in chain_rules.items():
-            if not iptables.restore_chains(table, chains):
-                logger.error(f"Failed to atomically restore table {table}")
-                success = False
+        # --- Implicit deny: always-last FORWARD drop (not a DB rule) ---
+        chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].append(
+            f"-A {iptables.MADMIN_FORWARD_CHAIN}"
+            f" -m comment --comment {IMPLICIT_DENY_COMMENT} -j DROP"
+        )
+
+        # --- Stale pair subchains (pairs no longer in use): flushed and deleted
+        #     in the same restore transaction ---
+        stale = sorted(set(iptables.list_forward_subchains()) - set(subchain_map))
+
+        # --- Apply atomically: single iptables-restore across all tables ---
+        try:
+            iptables.restore_all(chain_rules, delete_chains={"filter": stale})
+        except iptables.IptablesError:
+            logger.error("Atomic firewall restore failed; previous ruleset left in place")
+            raise
 
         # --- Rebuild parent-chain jump order for INPUT ---
         # Ensures MADMIN_GW_EXCEPTS → MADMIN_GW_PROTECT → MADMIN_INPUT are wired
         # in the correct order even when no module chain is registered for INPUT.
         await self.rebuild_chain_jumps(session, "INPUT", "filter")
 
-        if success:
-            logger.info(
-                f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
-                f" (gateway protect: {len(lan_interfaces)} LAN interfaces)"
-            )
-            # Persist rules + ipsets so the fail-closed boot guard can restore a
-            # self-consistent last-good ruleset after a reboot. Best-effort, off
-            # the event loop. (Dynamic geo/fqdn sets may still be filling in via
-            # sync_referenced; that's fine — madmin always rebuilds from the DB on
-            # the next startup, this snapshot only covers the boot window.)
-            asyncio.create_task(asyncio.to_thread(iptables.save_rules))
+        logger.info(
+            f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
+            f" ({len(subchain_map)} forward subchains, gateway protect: {len(lan_interfaces)} LAN interfaces)"
+        )
+        # Persist rules + ipsets so the fail-closed boot guard can restore a
+        # self-consistent last-good ruleset after a reboot. Best-effort, off
+        # the event loop. (Dynamic geo/fqdn sets may still be filling in via
+        # sync_referenced; that's fine — madmin always rebuilds from the DB on
+        # the next startup, this snapshot only covers the boot window.)
+        asyncio.create_task(asyncio.to_thread(iptables.save_rules))
 
-        return success
+        return True
 
     async def resync_addresses(self, session: AsyncSession) -> bool:
         """

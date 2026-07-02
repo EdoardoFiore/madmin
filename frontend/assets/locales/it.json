@@ -294,7 +294,14 @@
             "outNatHint": "Masquerade / SNAT sul traffico in uscita.",
             "newOutNat": "Nuovo SNAT",
             "noOutNat": "Nessuna regola di NAT in uscita",
-            "noOutNatHint": "Il NAT di navigazione è gestito dalle regole con NAT attivo."
+            "noOutNatHint": "Il NAT di navigazione è gestito dalle regole con NAT attivo.",
+            "colStatus": "Stato",
+            "implicitDeny": "Nega implicito",
+            "implicitDenyHint": "Tutto il traffico di forward non consentito da una regola precedente viene bloccato qui. Regola fissa di sistema, sempre ultima.",
+            "enableRule": "Abilita regola",
+            "disableRule": "Disabilita regola",
+            "ruleEnabled": "Regola abilitata",
+            "ruleDisabled": "Regola disabilitata"
         },
         "editor": {
             "anyInterface": "qualsiasi",
@@ -316,7 +323,10 @@
             "intPort": "Porta interna",
             "sourceRestrict": "Sorgente (opzionale)",
             "toSource": "To source",
-            "intIpRequired": "L'IP interno è obbligatorio"
+            "intIpRequired": "L'IP interno è obbligatorio",
+            "extIp": "IP esterno (opzionale)",
+            "extIpHint": "Vuoto = tutti gli IP dell'interfaccia. Specifica l'IP pubblico a cui legare il forward (utile con più IP sulla WAN).",
+            "unsavedBody": "Ci sono modifiche non salvate. Uscire senza salvare?"
         },
         "entries": {
             "title": "Seleziona voci",
@@ -330,7 +340,9 @@
         "validation": {
             "inIfaceHook": "Interfaccia di ingresso (-i) non valida nella catena {chain}: disponibile solo in PREROUTING, INPUT, FORWARD.",
             "outIfaceHook": "Interfaccia di uscita (-o) non valida nella catena {chain}: disponibile solo in POSTROUTING, OUTPUT, FORWARD.",
-            "natActionHook": "Azione {action} non valida nella catena {chain}."
+            "natActionHook": "Azione {action} non valida nella catena {chain}.",
+            "tableChain": "Catena {chain} non valida per la tabella {table}.",
+            "ipv4Only": "Indirizzo IPv4 non valido"
         },
         "autoRule": "Auto",
         "autoRuleHint": "Regola generata automaticamente per consentire il forward del DNAT. Si aggiorna ed elimina insieme alla regola DNAT corrispondente.",

@@ -5,6 +5,7 @@ Low-level wrapper for iptables commands.
 Handles chain creation, rule application, and command execution.
 Supports all standard iptables tables: filter, nat, mangle, raw.
 """
+import hashlib
 import subprocess
 import logging
 import os
@@ -43,6 +44,48 @@ MADMIN_POSTROUTING_MANGLE_CHAIN = "MADMIN_POSTROUTING_MANGLE"
 # Raw table chains
 MADMIN_PREROUTING_RAW_CHAIN = "MADMIN_PREROUTING_RAW"
 MADMIN_OUTPUT_RAW_CHAIN = "MADMIN_OUTPUT_RAW"
+
+# Per-interface-pair FORWARD subchains (filter table). One subchain per fully
+# specified (in_interface, out_interface) pair, dispatched from MADMIN_FORWARD.
+FORWARD_SUBCHAIN_PREFIX = "MFWD_"
+
+
+def forward_subchain_name(in_if: str, out_if: str) -> str:
+    """
+    Deterministic subchain name for a (in_interface, out_interface) pair.
+
+    iptables chain names are limited to 28 chars while interface names can be
+    up to 15, so the pair is truncated to 6 chars each and disambiguated with a
+    4-hex-char hash of the full pair (vlan100/vlan101 share the prefix but get
+    different hashes). Max length: 5 + 6 + 1 + 6 + 1 + 4 = 23.
+    """
+    pair_hash = hashlib.sha1(f"{in_if}|{out_if}".encode()).hexdigest()[:4]
+
+    def san(name: str) -> str:
+        return re.sub(r'[^A-Za-z0-9_.]', '_', name)[:6]
+
+    return f"{FORWARD_SUBCHAIN_PREFIX}{san(in_if)}_{san(out_if)}_{pair_hash}"
+
+
+def list_forward_subchains() -> List[str]:
+    """List the MFWD_* pair subchains currently present in the filter table."""
+    if settings.mock_iptables:
+        return []
+    try:
+        result = subprocess.run(
+            ["iptables-save", "-t", "filter"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning(f"Could not list forward subchains: {e}")
+        return []
+    chains = []
+    for line in result.stdout.splitlines():
+        if line.startswith(f":{FORWARD_SUBCHAIN_PREFIX}"):
+            chains.append(line[1:].split(" ")[0])
+    return chains
 
 
 # =============================================================================
@@ -224,7 +267,7 @@ def delete_chain(chain_name: str, table: str = "filter") -> bool:
     return success
 
 
-IPTABLES_MAX_CHAIN_LEN = 29
+IPTABLES_MAX_CHAIN_LEN = 28
 
 
 def create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:
@@ -326,6 +369,112 @@ def restore_chains(table: str, chain_rules: Dict[str, List[str]]) -> bool:
     except subprocess.CalledProcessError as e:
         logger.error(f"iptables-restore failed for table {table}: {e.stderr}")
         raise IptablesError(parse_iptables_error(e.stderr))
+    except FileNotFoundError:
+        logger.error("iptables-restore not found")
+        raise IptablesError("Comando iptables-restore non trovato sul sistema")
+
+
+# Kernel table application order: filter last so the packet-filtering table is
+# only touched if raw/mangle/nat succeeded (relevant with legacy iptables where
+# each COMMIT is a separate kernel transaction; iptables-nft applies the whole
+# file atomically).
+_RESTORE_TABLE_ORDER = ("raw", "mangle", "nat", "filter")
+
+
+def _validate_restore_payload(tables: Dict[str, Dict[str, List[str]]]) -> None:
+    """
+    Sanity-check a restore payload before touching the kernel.
+
+    Catches programming errors that iptables-restore would reject wholesale:
+    over-long chain names and interface flags invalid for the hook
+    (-i in POSTROUTING, -o in PREROUTING).
+    """
+    for table, chains in tables.items():
+        for chain, lines in chains.items():
+            if len(chain) > IPTABLES_MAX_CHAIN_LEN:
+                raise IptablesError(
+                    f"Nome chain troppo lungo: '{chain}' ({len(chain)} caratteri, max {IPTABLES_MAX_CHAIN_LEN})"
+                )
+            for line in lines:
+                if "POSTROUTING" in chain and re.search(r'(^|\s)-i\s', line):
+                    raise IptablesError(
+                        f"Flag -i non valido in POSTROUTING: {line}"
+                    )
+                if "PREROUTING" in chain and re.search(r'(^|\s)-o\s', line):
+                    raise IptablesError(
+                        f"Flag -o non valido in PREROUTING: {line}"
+                    )
+
+
+def restore_all(
+    tables: Dict[str, Dict[str, List[str]]],
+    delete_chains: Optional[Dict[str, List[str]]] = None
+) -> None:
+    """
+    Atomically flush and repopulate MADMIN chains across all tables with a
+    single iptables-restore --noflush invocation.
+
+    tables: {table: {chain_name: [restore-format rule lines ("-A chain ...")]}}
+    delete_chains: {table: [chain names]} — stale chains flushed and deleted in
+    the same transaction. Their -X lines are emitted after all -A lines: the
+    jumps referencing them disappear when their parent is flushed/rebuilt in
+    the same batch, so the delete succeeds at commit time.
+
+    With iptables-nft (deployment target) the whole file is one kernel
+    transaction — all-or-nothing across tables. With legacy iptables each
+    COMMIT is per-table; filter is ordered last so filtering is only touched
+    once raw/mangle/nat succeeded.
+
+    Raises IptablesError on failure, including the offending payload line when
+    iptables-restore reports one.
+    """
+    _validate_restore_payload(tables)
+    delete_chains = delete_chains or {}
+
+    if settings.mock_iptables:
+        total = sum(len(chains) for chains in tables.values())
+        logger.debug(f"[MOCK] Would restore {total} chains across {len(tables)} tables")
+        return
+
+    lines: List[str] = []
+    for table in _RESTORE_TABLE_ORDER:
+        if table not in tables and table not in delete_chains:
+            continue
+        chains = tables.get(table, {})
+        stale = delete_chains.get(table, [])
+        lines.append(f"*{table}")
+        for chain in chains:
+            lines.append(f":{chain} - [0:0]")
+        for chain in list(chains) + list(stale):
+            lines.append(f"-F {chain}")
+        for rules in chains.values():
+            lines.extend(rules)
+        for chain in stale:
+            lines.append(f"-X {chain}")
+        lines.append("COMMIT")
+    restore_input = "\n".join(lines) + "\n"
+
+    try:
+        subprocess.run(
+            ["iptables-restore", "--noflush"],
+            input=restore_input,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        logger.debug(f"Atomically restored {sum(len(c) for c in tables.values())} chains across tables")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"iptables-restore failed: {e.stderr}")
+        logger.debug(f"iptables-restore payload:\n{restore_input}")
+        detail = parse_iptables_error(e.stderr)
+        # iptables-restore reports "Error occurred at line: N" — surface the
+        # offending payload line to make failures diagnosable from the API.
+        m = re.search(r'line:?\s+(\d+)', e.stderr or "")
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= len(lines):
+                detail = f"{detail} (riga {n}: {lines[n - 1]})"
+        raise IptablesError(detail)
     except FileNotFoundError:
         logger.error("iptables-restore not found")
         raise IptablesError("Comando iptables-restore non trovato sul sistema")

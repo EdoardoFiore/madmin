@@ -40,7 +40,10 @@ from .models import (
     AddressGroupMemberResponse,
     ADDRESS_OBJECT_TYPES,
 )
-from .orchestrator import firewall_orchestrator, dnat_forward_fields, policy_nat_fields
+from .orchestrator import (
+    firewall_orchestrator, dnat_forward_fields, policy_nat_fields,
+    IMPLICIT_DENY_COMMENT,
+)
 from .iptables import IptablesError, flush_conntrack_for_rule
 from .protected_ports import validate_protected_port_collision
 from . import addresses, geoip
@@ -60,6 +63,20 @@ _NAT_TARGET_HOOK = {
     "REDIRECT": {"PREROUTING", "OUTPUT"},
     "SNAT": {"POSTROUTING"},
     "MASQUERADE": {"POSTROUTING"},
+}
+
+# Chain e azioni valide per tabella (GW_EXCEPTIONS è la chain virtuale filter).
+_TABLE_CHAINS = {
+    "filter": ("INPUT", "OUTPUT", "FORWARD", "GW_EXCEPTIONS"),
+    "nat": ("PREROUTING", "POSTROUTING", "OUTPUT"),
+    "mangle": ("PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"),
+    "raw": ("PREROUTING", "OUTPUT"),
+}
+_TABLE_ACTIONS = {
+    "filter": ("ACCEPT", "DROP", "REJECT", "LOG", "RETURN"),
+    "nat": ("SNAT", "DNAT", "MASQUERADE", "REDIRECT", "ACCEPT", "RETURN"),
+    "mangle": ("MARK", "TOS", "TTL", "ACCEPT", "RETURN"),
+    "raw": ("NOTRACK", "ACCEPT", "RETURN"),
 }
 
 
@@ -138,10 +155,27 @@ async def _rule_refs_map(session: AsyncSession, rule_ids) -> dict:
     return out
 
 
-def _validate_rule_constraints(chain: str, action: str,
+def _validate_rule_constraints(table: str, chain: str, action: str,
                                in_interface: Optional[str],
                                out_interface: Optional[str]) -> None:
-    """Reject rules whose fields are incompatible with the chain's netfilter hook."""
+    """Reject rules whose table/chain/action/interface combination is invalid for netfilter."""
+    if table not in _TABLE_CHAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tabella non valida: deve essere una tra {', '.join(_TABLE_CHAINS.keys())}."
+        )
+    if chain not in _TABLE_CHAINS[table]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Catena {chain} non valida per la tabella {table}: "
+                   f"disponibili {', '.join(_TABLE_CHAINS[table])}."
+        )
+    if action not in _TABLE_ACTIONS[table]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Azione {action} non valida per la tabella {table}: "
+                   f"disponibili {', '.join(_TABLE_ACTIONS[table])}."
+        )
     if in_interface and chain not in _IN_IFACE_VALID:
         raise HTTPException(
             status_code=400,
@@ -202,11 +236,11 @@ def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
         id=f"auto-nat-{policy.id}",
         chain="POSTROUTING",
         action="MASQUERADE",
-        protocol=None,
+        protocol=fields["protocol"],
         source=fields["source"],
         destination=fields["destination"],
-        port=None,
-        in_interface=fields["in_interface"],
+        port=fields["port"],
+        in_interface=None,  # -i does not exist in POSTROUTING
         out_interface=fields["out_interface"],
         state=None,
         limit_rate=None,
@@ -219,7 +253,7 @@ def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
         reject_with=None,
         comment=f"→ policy NAT {policy.in_interface or 'any'}→{policy.out_interface or 'any'}",
         table_name="nat",
-        order=-1,  # sorts above user POSTROUTING rules
+        order=999_998,  # companions sit after user POSTROUTING rules
         enabled=True,
         auto_generated=True,
         created_at=policy.created_at,
@@ -251,11 +285,47 @@ def _auto_forward_response(dnat) -> MachineFirewallRuleResponse:
         reject_with=None,
         comment=f"→ DNAT {dnat.to_destination}",
         table_name="filter",
-        order=-1,  # sorts above user FORWARD rules
+        order=999_998,  # companions sit after user policies, before the implicit deny
         enabled=True,
         auto_generated=True,
         created_at=dnat.created_at,
         updated_at=dnat.updated_at,
+    )
+
+
+def _implicit_deny_response() -> MachineFirewallRuleResponse:
+    """
+    Read-only synthetic row for the always-last FORWARD implicit deny appended
+    by apply_rules(). Informational only: not a DB rule, cannot be edited (the
+    'auto-' id prefix locks it in both views).
+    """
+    now = datetime.utcnow()
+    return MachineFirewallRuleResponse(
+        id="auto-implicit-deny",
+        chain="FORWARD",
+        action="DROP",
+        protocol=None,
+        source=None,
+        destination=None,
+        port=None,
+        in_interface=None,
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=IMPLICIT_DENY_COMMENT,
+        table_name="filter",
+        order=999_999,  # always last
+        enabled=True,
+        auto_generated=True,
+        created_at=now,
+        updated_at=now,
     )
 
 
@@ -273,6 +343,7 @@ async def list_rules(
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
         responses.extend(_auto_forward_response(d) for d in dnat_rules)
+        responses.append(_implicit_deny_response())
     # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
     if chain in (None, "POSTROUTING"):
         nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
@@ -307,40 +378,9 @@ async def create_rule(
     session: AsyncSession = Depends(get_session)
 ):
     """Create a new firewall rule."""
-    # Valid chains per table
-    table_chains = {
-        "filter": ("INPUT", "OUTPUT", "FORWARD", "GW_EXCEPTIONS"),
-        "nat": ("PREROUTING", "POSTROUTING", "OUTPUT"),
-        "mangle": ("PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"),
-        "raw": ("PREROUTING", "OUTPUT")
-    }
-    
     table = rule_data.table_name or "filter"
-    if table not in table_chains:
-        raise HTTPException(status_code=400, detail=f"Table must be one of: {', '.join(table_chains.keys())}")
-    
-    if rule_data.chain not in table_chains[table]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Chain for table {table} must be one of: {', '.join(table_chains[table])}"
-        )
-    
-    # Valid actions per table
-    table_actions = {
-        "filter": ("ACCEPT", "DROP", "REJECT", "LOG", "RETURN"),
-        "nat": ("SNAT", "DNAT", "MASQUERADE", "REDIRECT", "ACCEPT", "RETURN"),
-        "mangle": ("MARK", "TOS", "TTL", "ACCEPT", "RETURN"),
-        "raw": ("NOTRACK", "ACCEPT", "RETURN")
-    }
-    
-    if rule_data.action not in table_actions[table]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Action for table {table} must be one of: {', '.join(table_actions[table])}"
-        )
-
     _validate_rule_constraints(
-        rule_data.chain, rule_data.action,
+        table, rule_data.chain, rule_data.action,
         rule_data.in_interface, rule_data.out_interface
     )
     if rule_data.policy_nat and not (table == "filter" and rule_data.chain == "FORWARD"):
@@ -409,14 +449,15 @@ async def update_rule(
             detail="Regola NAT della LAN gestita: non modificabile (necessaria alla navigazione delle VM)."
         )
 
+    eff_table = update_data.get("table_name", existing.table_name)
+    eff_chain = update_data.get("chain", existing.chain)
     _validate_rule_constraints(
-        update_data.get("chain", existing.chain),
+        eff_table,
+        eff_chain,
         update_data.get("action", existing.action),
         update_data.get("in_interface", existing.in_interface),
         update_data.get("out_interface", existing.out_interface),
     )
-    eff_table = update_data.get("table_name", existing.table_name)
-    eff_chain = update_data.get("chain", existing.chain)
     if update_data.get("policy_nat", existing.policy_nat) and not (eff_table == "filter" and eff_chain == "FORWARD"):
         raise HTTPException(
             status_code=400,

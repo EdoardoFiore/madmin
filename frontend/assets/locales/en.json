@@ -294,7 +294,14 @@
             "outNatHint": "Masquerade / SNAT on outgoing traffic.",
             "newOutNat": "New SNAT",
             "noOutNat": "No outbound NAT rules",
-            "noOutNatHint": "Navigation NAT is owned by policies with NAT enabled."
+            "noOutNatHint": "Navigation NAT is owned by policies with NAT enabled.",
+            "colStatus": "Status",
+            "implicitDeny": "Implicit deny",
+            "implicitDenyHint": "Any forwarded traffic not allowed by a rule above is dropped here. Fixed system rule, always last.",
+            "enableRule": "Enable rule",
+            "disableRule": "Disable rule",
+            "ruleEnabled": "Rule enabled",
+            "ruleDisabled": "Rule disabled"
         },
         "editor": {
             "anyInterface": "any",
@@ -316,7 +323,10 @@
             "intPort": "Internal port",
             "sourceRestrict": "Source (optional)",
             "toSource": "To source",
-            "intIpRequired": "Internal IP is required"
+            "intIpRequired": "Internal IP is required",
+            "extIp": "External IP (optional)",
+            "extIpHint": "Empty = every IP on the interface. Set the public IP the forward binds to (useful with multiple WAN IPs).",
+            "unsavedBody": "You have unsaved changes. Leave without saving?"
         },
         "entries": {
             "title": "Select Entries",
@@ -330,7 +340,9 @@
         "validation": {
             "inIfaceHook": "Input interface (-i) is not valid in chain {chain}: only available in PREROUTING, INPUT, FORWARD.",
             "outIfaceHook": "Output interface (-o) is not valid in chain {chain}: only available in POSTROUTING, OUTPUT, FORWARD.",
-            "natActionHook": "Action {action} is not valid in chain {chain}."
+            "natActionHook": "Action {action} is not valid in chain {chain}.",
+            "tableChain": "Chain {chain} is not valid for table {table}.",
+            "ipv4Only": "Invalid IPv4 address"
         },
         "autoRule": "Auto",
         "autoRuleHint": "Auto-generated rule that allows the DNAT forward. It updates and is removed together with the matching DNAT rule.",

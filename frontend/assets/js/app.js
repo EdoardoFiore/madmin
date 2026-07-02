@@ -616,7 +616,32 @@ function hasPermission(permission) {
 /**
  * Handle route changes
  */
+// Navigation guard: a view with unsaved state (e.g. the firewall rule editor)
+// can veto hash navigation. The guard returns true to allow leaving.
+let navGuard = null;
+let lastRouteHash = window.location.hash;
+let restoringHash = false;
+
+export function setNavigationGuard(fn) { navGuard = fn; }
+export function clearNavigationGuard() { navGuard = null; }
+
 async function handleRoute() {
+    if (restoringHash) { restoringHash = false; return; }
+    if (navGuard && window.location.hash !== lastRouteHash) {
+        const target = window.location.hash;
+        // Put the old hash back while the guard decides (sync revert avoids a
+        // visible flash of the target route).
+        restoringHash = true;
+        window.location.hash = lastRouteHash;
+        if (!(await navGuard())) return;
+        navGuard = null;
+        restoringHash = true;
+        window.location.hash = target;
+        // fall through: render the target now (the hashchange we just queued
+        // is swallowed by the restoringHash flag)
+    }
+    lastRouteHash = window.location.hash;
+
     let hash = window.location.hash.slice(1);
 
     // Remove leading slash if present

@@ -23,6 +23,15 @@ export const NAT_ACTION_VALID_CHAINS = {
     MASQUERADE: ['POSTROUTING'],
 };
 
+// Valid chains per table, mirrors the backend _TABLE_CHAINS
+// (GW_EXCEPTIONS is the virtual filter chain).
+export const TABLE_CHAINS = {
+    filter: ['INPUT', 'OUTPUT', 'FORWARD', 'GW_EXCEPTIONS'],
+    nat: ['PREROUTING', 'POSTROUTING', 'OUTPUT'],
+    mangle: ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT', 'POSTROUTING'],
+    raw: ['PREROUTING', 'OUTPUT'],
+};
+
 // Common service presets for the editor's quick service picker.
 export const SERVICE_PRESETS = [
     { label: 'HTTP', protocol: 'tcp', port: '80' },
@@ -57,6 +66,11 @@ export function isManagedNat(rule) {
  */
 export function validateRuleConstraints(data) {
     const chain = data.chain;
+    const table = data.table_name || 'filter';
+    const chains = TABLE_CHAINS[table];
+    if (chains && !chains.includes(chain)) {
+        return t('firewall.validation.tableChain', { chain, table });
+    }
     if (data.in_interface && !IN_IFACE_VALID_CHAINS.includes(chain)) {
         return t('firewall.validation.inIfaceHook', { chain });
     }

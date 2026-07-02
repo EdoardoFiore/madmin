@@ -112,10 +112,21 @@ function renderPolicy() {
             <span class="text-muted ms-2 small">${t('firewall.std.policyHint')}</span>
         </div>`;
 
+    // Fixed informational row mirroring the engine's always-last implicit deny
+    // (MADMIN_IMPLICIT_DENY): any forwarded traffic not allowed above is dropped.
+    const implicitDeny = `
+        <div class="px-3 py-2 border-top d-flex align-items-center"
+             title="${escapeHtml(t('firewall.std.implicitDenyHint'))}">
+            <i class="ti ti-lock me-2 text-muted"></i>
+            <span class="text-muted me-2">${t('firewall.std.implicitDeny')}</span>
+            ${actionBadge('DROP')}
+            <i class="ti ti-info-circle ms-2 text-muted"></i>
+        </div>`;
+
     if (!policies.length) {
         wrap.innerHTML = `<div class="card">${header}<div class="card-body">${
             emptyState('ti-arrow-guide', t('firewall.std.noPolicies'), t('firewall.std.noPoliciesHint'))
-        }</div></div>`;
+        }</div>${implicitDeny}</div>`;
         return;
     }
 
@@ -143,6 +154,7 @@ function renderPolicy() {
                                 <th>${t('firewall.action')}</th>
                                 <th>${t('firewall.std.colNat')}</th>
                                 <th>${t('firewall.comment')}</th>
+                                <th>${t('firewall.std.colStatus')}</th>
                                 <th class="text-end"></th>
                             </tr>
                         </thead>
@@ -154,7 +166,7 @@ function renderPolicy() {
             </div>`;
     }
 
-    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}</div></div>`;
+    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${implicitDeny}</div></div>`;
 
     bindRowActions(wrap, 'policy');
     if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
@@ -173,6 +185,7 @@ function policyRow(r, canManage) {
                 <td>${natCell(r)}</td>
                 <td><span class="badge bg-azure-lt"><i class="ti ti-lock me-1"></i>${t('firewall.managedNat')}</span></td>
                 <td></td>
+                <td></td>
             </tr>`;
     }
     return `
@@ -184,6 +197,7 @@ function policyRow(r, canManage) {
             <td>${actionBadge(r.action)}</td>
             <td>${natCell(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
+            <td>${enableToggle(r, canManage)}</td>
             <td class="text-end">${canManage ? rowButtons() : ''}</td>
         </tr>`;
 }
@@ -195,6 +209,16 @@ function rowButtons() {
             <button class="btn btn-ghost-primary fw-edit" title="${t('common.edit')}"><i class="ti ti-edit"></i></button>
             <button class="btn btn-ghost-danger fw-del" title="${t('common.delete')}"><i class="ti ti-trash"></i></button>
         </div>`;
+}
+
+/** Inline enable/disable switch (hidden for locked/auto rows or without manage permission). */
+function enableToggle(r, canManage) {
+    if (!canManage || isAutoRow(r) || isManagedNat(r)) return '';
+    const title = r.enabled ? t('firewall.std.disableRule') : t('firewall.std.enableRule');
+    return `
+        <label class="form-check form-switch mb-0" title="${escapeHtml(title)}">
+            <input class="form-check-input fw-toggle" type="checkbox" ${r.enabled ? 'checked' : ''}>
+        </label>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,15 +254,17 @@ function renderPortForward() {
                         <th>${t('firewall.inInterface')}</th>
                         <th>${t('firewall.std.external')}</th>
                         <th>${t('firewall.std.internal')}</th>
+                        <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
                     <tbody>
                         ${list.map(r => `
-                            <tr data-id="${r.id}">
+                            <tr class="${r.enabled ? '' : 'opacity-50'}" data-id="${r.id}">
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
-                                <td><span class="badge bg-blue-lt">${serviceLabel(r)}</span></td>
+                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span></td>
                                 <td><code>${escapeHtml(r.to_destination || '')}</code></td>
+                                <td>${enableToggle(r, canManage)}</td>
                                 <td class="text-end">${canManage ? rowButtons() : ''}</td>
                             </tr>`).join('')}
                     </tbody>
@@ -284,17 +310,19 @@ function renderOutboundNat() {
                         <th>${t('firewall.std.colDest')}</th>
                         <th>${t('firewall.outInterface')}</th>
                         <th>${t('firewall.action')}</th>
+                        <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
                     <tbody>
                         ${list.map(r => {
                             const locked = isAutoRow(r) || isManagedNat(r);
                             return `
-                            <tr data-id="${r.id}">
+                            <tr class="${r.enabled ? '' : 'opacity-50'}" data-id="${r.id}">
                                 <td>${renderAddrCell(r.source, r.source_refs)}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
                                 <td>${r.out_interface ? `<code>${escapeHtml(r.out_interface)}</code>` : '<span class="text-muted">—</span>'}</td>
                                 <td>${actionBadge(r.action)} ${locked ? `<span class="badge bg-azure-lt ms-1"><i class="ti ti-lock me-1"></i>${t('firewall.autoRule')}</span>` : ''}</td>
+                                <td>${enableToggle(r, canManage)}</td>
                                 <td class="text-end">${(canManage && !locked) ? rowButtons() : ''}</td>
                             </tr>`;
                         }).join('')}
@@ -313,6 +341,18 @@ function renderOutboundNat() {
 // ---------------------------------------------------------------------------
 
 function bindRowActions(wrap, mode) {
+    wrap.querySelectorAll('.fw-toggle').forEach(input => input.addEventListener('change', async (e) => {
+        const r = ruleOf(e); if (!r) return;
+        const enabled = e.target.checked;
+        try {
+            await apiPatch(`/firewall/rules/${r.id}`, { enabled });
+            showToast(enabled ? t('firewall.std.ruleEnabled') : t('firewall.std.ruleDisabled'), 'success');
+            await reload();
+        } catch (err) {
+            e.target.checked = !enabled;
+            showToast(t('common.errorPrefix') + err.message, 'error');
+        }
+    }));
     wrap.querySelectorAll('.fw-edit').forEach(btn => btn.addEventListener('click', (e) => {
         const r = ruleOf(e); if (r) edit(mode, r);
     }));

@@ -14,13 +14,17 @@
  */
 import { apiGet, apiPost, apiPatch } from '../../api.js';
 import { showToast, escapeHtml } from '../../utils.js';
-import { setPageActions, checkPermission } from '../../app.js';
+import { setPageActions, checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces, interfaceSelect } from './interfaces.js';
 import { SERVICE_PRESETS, validateRuleConstraints } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
 let st = null;   // editor state
+
+// The whole address subsystem is IPv4-only (backend enforces it on address
+// objects and DNAT targets).
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
 export async function openEditor({ container, mode, rule = null, duplicate = false, onClose }) {
     const isEdit = !!rule && !duplicate;
@@ -31,11 +35,14 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
         objects: [], groups: [],
         activeField: null,
         panel: null,
+        dirty: false,
         fields: {
             source: { refs: new Set(), literals: [] },
             destination: { refs: new Set(), literals: [] },
         },
     };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    setNavigationGuard(() => !st?.dirty || window.confirm(t('firewall.editor.unsavedBody')));
 
     await loadInterfaces();
     try {
@@ -60,10 +67,24 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
 }
 
 function close() {
+    if (st?.dirty && !window.confirm(t('firewall.editor.unsavedBody'))) return;
     const cb = st?.onClose;
     st = null;
+    window.removeEventListener('beforeunload', onBeforeUnload);
+    clearNavigationGuard();
     setPageActions('');
     cb?.();
+}
+
+function onBeforeUnload(e) {
+    if (st?.dirty) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+}
+
+function markDirty() {
+    if (st) st.dirty = true;
 }
 
 function seedDirection(field, rule) {
@@ -114,7 +135,7 @@ function renderLayout(rule, duplicate) {
     renderChips('destination');
 }
 
-function addrFieldHtml(field, label) {
+function addrFieldHtml(field, label, hint = null) {
     return `
         <div class="col-12">
             <label class="form-label">${label}</label>
@@ -125,7 +146,7 @@ function addrFieldHtml(field, label) {
                        style="outline:none;min-width:120px;background:transparent"
                        placeholder="${t('firewall.editor.addrPlaceholder')}">
             </div>
-            <small class="form-hint">${t('firewall.editor.addrHint')}</small>
+            <small class="form-hint">${hint ?? t('firewall.editor.addrHint')}</small>
         </div>`;
 }
 
@@ -161,7 +182,7 @@ function nameHtml(rule) {
     return `
         <div class="col-12">
             <label class="form-label">${t('firewall.editor.name')}</label>
-            <input type="text" class="form-control" id="ed-name" value="${escapeHtml(rule?.comment || '')}"
+            <input type="text" class="form-control" id="ed-name" maxlength="255" value="${escapeHtml(rule?.comment || '')}"
                    placeholder="${t('firewall.editor.namePlaceholder')}">
         </div>`;
 }
@@ -230,6 +251,7 @@ function formFields(rule) {
                 <label class="form-label">${t('firewall.editor.extPort')}</label>
                 <input type="text" class="form-control" id="ed-port" value="${escapeHtml(rule?.port || '')}" placeholder="443">
             </div>
+            ${addrFieldHtml('destination', t('firewall.editor.extIp'), t('firewall.editor.extIpHint'))}
             <div class="col-md-6">
                 <label class="form-label">${t('firewall.editor.intIp')}</label>
                 <input type="text" class="form-control" id="ed-intip" value="${escapeHtml(ip)}" placeholder="10.0.0.5">
@@ -273,6 +295,12 @@ function bindForm() {
     container.querySelector('#ed-cancel')?.addEventListener('click', close);
     container.querySelector('#ed-save')?.addEventListener('click', save);
 
+    // Unsaved-changes tracking (chip add/remove and panel toggles mark dirty
+    // where they mutate state)
+    const form = container.querySelector('#ed-form');
+    form?.addEventListener('input', markDirty);
+    form?.addEventListener('change', markDirty);
+
     // Service preset -> protocol/port
     container.querySelector('#ed-preset')?.addEventListener('change', (e) => {
         if (!e.target.value) return;
@@ -299,7 +327,7 @@ function bindForm() {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 const v = input.value.trim();
-                if (v) { st.fields[field].literals.push(v); input.value = ''; renderChips(field); }
+                if (v) { st.fields[field].literals.push(v); input.value = ''; renderChips(field); markDirty(); }
             }
         });
     });
@@ -324,10 +352,11 @@ function mountEntriesPanel() {
             const set = st.fields[st.activeField].refs;
             set.has(c) ? set.delete(c) : set.add(c);
             renderChips(st.activeField);
+            markDirty();
         },
         onCreated: (obj) => {
             st.objects.push(obj);
-            if (st.activeField) { st.fields[st.activeField].refs.add(`obj:${obj.id}`); renderChips(st.activeField); }
+            if (st.activeField) { st.fields[st.activeField].refs.add(`obj:${obj.id}`); renderChips(st.activeField); markDirty(); }
         },
         activeLabel: () => {
             if (!st.activeField) return null;
@@ -358,6 +387,7 @@ function renderChips(field) {
         else stf.refs.delete(c);
         renderChips(field);
         st.panel?.render();
+        markDirty();
     }));
 }
 
@@ -419,9 +449,11 @@ async function save() {
             };
         } else if (mode === 'portforward') {
             const src = await resolveDirection('source');
+            const dst = await resolveDirection('destination');
             const ip = container.querySelector('#ed-intip').value.trim();
             const iport = container.querySelector('#ed-intport').value.trim();
             if (!ip) { showToast(t('firewall.editor.intIpRequired'), 'error'); return; }
+            if (!IPV4_RE.test(ip)) { showToast(t('firewall.validation.ipv4Only'), 'error'); return; }
             data = {
                 table_name: 'nat', chain: 'PREROUTING', action: 'DNAT',
                 comment: name,
@@ -430,6 +462,7 @@ async function save() {
                 port: container.querySelector('#ed-port').value || null,
                 to_destination: iport ? `${ip}:${iport}` : ip,
                 source: src.literal, source_refs: src.refs,
+                destination: dst.literal, destination_refs: dst.refs,
                 enabled,
             };
         } else { // outnat
@@ -460,6 +493,7 @@ async function save() {
             await apiPost('/firewall/rules', data);
             showToast(t('firewall.ruleCreated'), 'success');
         }
+        st.dirty = false;
         close();
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
@@ -468,6 +502,8 @@ async function save() {
 
 // ---------------------------------------------------------------------------
 
+// IPv4-only (like the rest of the address subsystem): splitting on the last
+// ':' would corrupt an IPv6 literal, which the backend rejects anyway.
 function splitIpPort(v) {
     if (!v) return ['', ''];
     const idx = v.lastIndexOf(':');
