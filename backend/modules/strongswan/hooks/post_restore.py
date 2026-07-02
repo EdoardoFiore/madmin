@@ -78,8 +78,8 @@ async def run(session: AsyncSession):
     secrets_entries = [
         service.generate_secrets_entry(
             name=tunnel.name,
-            local_id=tunnel.local_id,
             remote_id=tunnel.remote_id,
+            remote_address=tunnel.remote_address,
             psk=tunnel.psk,
         )
         for tunnel in tunnels
