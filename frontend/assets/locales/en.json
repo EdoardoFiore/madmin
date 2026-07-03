@@ -326,7 +326,9 @@
             "intIpRequired": "Internal IP is required",
             "extIp": "External IP (optional)",
             "extIpHint": "Empty = every IP on the interface. Set the public IP the forward binds to (useful with multiple WAN IPs).",
-            "unsavedBody": "You have unsaved changes. Leave without saving?"
+            "unsavedBody": "You have unsaved changes. Leave without saving?",
+            "unsavedTitle": "Unsaved changes",
+            "leaveAnyway": "Leave without saving"
         },
         "entries": {
             "title": "Select Entries",

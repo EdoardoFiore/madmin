@@ -13,7 +13,7 @@
  * literal is materialised as an address object and everything goes through refs.
  */
 import { apiGet, apiPost, apiPatch } from '../../api.js';
-import { showToast, escapeHtml } from '../../utils.js';
+import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { setPageActions, checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces, interfaceSelect } from './interfaces.js';
@@ -42,7 +42,7 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
         },
     };
     window.addEventListener('beforeunload', onBeforeUnload);
-    setNavigationGuard(() => !st?.dirty || window.confirm(t('firewall.editor.unsavedBody')));
+    setNavigationGuard(() => !st?.dirty || confirmUnsaved());
 
     await loadInterfaces();
     try {
@@ -66,8 +66,18 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
     renderLayout(rule, duplicate);
 }
 
-function close() {
-    if (st?.dirty && !window.confirm(t('firewall.editor.unsavedBody'))) return;
+/** Tabler modal confirm for discarding unsaved rule data (replaces window.confirm). */
+function confirmUnsaved() {
+    return confirmDialog(
+        t('firewall.editor.unsavedTitle'),
+        t('firewall.editor.unsavedBody'),
+        t('firewall.editor.leaveAnyway'),
+        'btn-danger',
+    );
+}
+
+async function close() {
+    if (st?.dirty && !(await confirmUnsaved())) return;
     const cb = st?.onClose;
     st = null;
     window.removeEventListener('beforeunload', onBeforeUnload);
@@ -110,29 +120,35 @@ function renderLayout(rule, duplicate) {
     const { container, mode, isEdit } = st;
     container.innerHTML = `
         <div class="card">
-            <div class="card-header">
+            <div class="card-header d-flex align-items-center">
                 <h3 class="card-title">${titleFor(mode, isEdit)}</h3>
+                <button class="btn btn-outline-primary btn-sm ms-auto" id="ed-open-entries" type="button">
+                    <i class="ti ti-box me-1"></i>${t('firewall.entries.title')}
+                </button>
             </div>
             <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-lg-8">
-                        <div id="ed-form" class="row g-3">${formFields(rule)}</div>
-                    </div>
-                    <div class="col-lg-4">
-                        <div id="ed-entries" style="position:sticky;top:1rem;"></div>
-                    </div>
-                </div>
+                <div id="ed-form" class="row g-3">${formFields(rule)}</div>
             </div>
             <div class="card-footer d-flex justify-content-end gap-2">
                 <button class="btn btn-link" id="ed-cancel">${t('common.cancel')}</button>
                 <button class="btn btn-primary" id="ed-save">${t('common.save')}</button>
             </div>
+        </div>
+        <div class="offcanvas offcanvas-end" tabindex="-1" id="ed-entries-oc"
+             data-bs-backdrop="false" data-bs-scroll="true" aria-labelledby="ed-entries-title" style="width:380px">
+            <div class="offcanvas-header">
+                <h5 class="offcanvas-title" id="ed-entries-title">${t('firewall.entries.title')}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+            </div>
+            <div class="offcanvas-body" id="ed-entries"></div>
         </div>`;
 
     bindForm();
     mountEntriesPanel();
     renderChips('source');
     renderChips('destination');
+    updateIfaceExclusion();
+    updatePortVisibility();
 }
 
 function addrFieldHtml(field, label, hint = null) {
@@ -165,7 +181,7 @@ function serviceHtml(rule) {
                 <option value="icmp" ${proto === 'icmp' ? 'selected' : ''}>ICMP</option>
             </select>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-4" id="ed-port-wrap">
             <label class="form-label">${t('firewall.port')}</label>
             <input type="text" class="form-control" id="ed-port" value="${escapeHtml(port)}" placeholder="80, 443, 8000:8080">
         </div>
@@ -301,13 +317,24 @@ function bindForm() {
     form?.addEventListener('input', markDirty);
     form?.addEventListener('change', markDirty);
 
+    // Open the entries panel (also opened when an address field is focused).
+    container.querySelector('#ed-open-entries')?.addEventListener('click', openEntries);
+
     // Service preset -> protocol/port
     container.querySelector('#ed-preset')?.addEventListener('change', (e) => {
         if (!e.target.value) return;
         const [proto, port] = e.target.value.split('|');
         container.querySelector('#ed-proto').value = proto;
         container.querySelector('#ed-port').value = port;
+        updatePortVisibility();
     });
+
+    // Protocol "all"/ICMP have no port -> hide the port field.
+    container.querySelector('#ed-proto')?.addEventListener('change', updatePortVisibility);
+
+    // In/Out interface are mutually exclusive: a picked iface can't be the other side.
+    container.querySelector('#ed-in')?.addEventListener('change', updateIfaceExclusion);
+    container.querySelector('#ed-out')?.addEventListener('change', updateIfaceExclusion);
 
     // Outbound NAT action -> show/hide to-source
     container.querySelector('#ed-nataction')?.addEventListener('change', (e) => {
@@ -338,6 +365,35 @@ function setActive(field) {
     st.container.querySelectorAll('.fw-addr-field').forEach(el =>
         el.classList.toggle('border-primary', el.dataset.field === field));
     st.panel?.render();
+    openEntries();
+}
+
+/** Show the right-side entries offcanvas (backdrop-less, form stays usable). */
+function openEntries() {
+    const el = st?.container.querySelector('#ed-entries-oc');
+    if (el) bootstrap.Offcanvas.getOrCreateInstance(el).show();
+}
+
+/** Hide the port field when the protocol carries no port (all / ICMP). */
+function updatePortVisibility() {
+    const wrap = st?.container.querySelector('#ed-port-wrap');
+    if (!wrap) return;
+    const proto = st.container.querySelector('#ed-proto')?.value || '';
+    wrap.classList.toggle('d-none', proto === '' || proto === 'icmp');
+}
+
+/** Grey out, in each interface select, the value already chosen in the other. */
+function updateIfaceExclusion() {
+    const inSel = st?.container.querySelector('#ed-in');
+    const outSel = st?.container.querySelector('#ed-out');
+    if (!inSel || !outSel) return;
+    const apply = (sel, taken) => {
+        sel.querySelectorAll('option').forEach(o => {
+            o.disabled = o.value !== '' && o.value === taken;
+        });
+    };
+    apply(inSel, outSel.value);
+    apply(outSel, inSel.value);
 }
 
 function mountEntriesPanel() {

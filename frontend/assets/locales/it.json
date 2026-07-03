@@ -326,7 +326,9 @@
             "intIpRequired": "L'IP interno è obbligatorio",
             "extIp": "IP esterno (opzionale)",
             "extIpHint": "Vuoto = tutti gli IP dell'interfaccia. Specifica l'IP pubblico a cui legare il forward (utile con più IP sulla WAN).",
-            "unsavedBody": "Ci sono modifiche non salvate. Uscire senza salvare?"
+            "unsavedBody": "Ci sono modifiche non salvate. Uscire senza salvare?",
+            "unsavedTitle": "Modifiche non salvate",
+            "leaveAnyway": "Esci senza salvare"
         },
         "entries": {
             "title": "Seleziona voci",
