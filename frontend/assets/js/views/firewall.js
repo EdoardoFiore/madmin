@@ -1388,7 +1388,7 @@ async function handleRuleSubmit(e) {
 }
 
 // Hook (chain) in cui ciascun match/azione è valido per netfilter.
-const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD'];
+const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD', 'POSTROUTING'];
 const OUT_IFACE_VALID_CHAINS = ['POSTROUTING', 'OUTPUT', 'FORWARD'];
 const NAT_ACTION_VALID_CHAINS = {
     DNAT: ['PREROUTING', 'OUTPUT'],

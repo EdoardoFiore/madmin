@@ -267,7 +267,7 @@
     },
     "firewall": {
         "validation": {
-            "inIfaceHook": "Interfaccia di ingresso (-i) non valida nella catena {chain}: disponibile solo in PREROUTING, INPUT, FORWARD.",
+            "inIfaceHook": "Interfaccia di ingresso (-i) non valida nella catena {chain}: disponibile solo in PREROUTING, INPUT, FORWARD, POSTROUTING.",
             "outIfaceHook": "Interfaccia di uscita (-o) non valida nella catena {chain}: disponibile solo in POSTROUTING, OUTPUT, FORWARD.",
             "natActionHook": "Azione {action} non valida nella catena {chain}."
         },
