@@ -1217,20 +1217,34 @@ connections {{
     def _setup_nat_exemption(self, comment: str, local_ts: str, remote_ts: str) -> bool:
         """
         Add NAT-exemption ACCEPT rules in MOD_IPSEC_NAT for every local/remote
-        subnet pair. ACCEPT is terminating in the nat table, so it short-circuits
-        the host SNAT/MASQUERADE in MADMIN_POSTROUTING and preserves the original
-        source — required for the packet to match the IPsec traffic selector.
+        subnet pair, in BOTH directions. ACCEPT is terminating in the nat table,
+        so it short-circuits the host SNAT/MASQUERADE in MADMIN_POSTROUTING and
+        preserves the original source IP.
+
+        Both directions are required because the host MASQUERADE catches
+        tunnel-selected traffic whichever way it is routed out:
+        - local -> remote: a LAN host reaching the peer must keep its real source
+          so the packet matches the IPsec traffic selector (else it isn't tunneled).
+        - remote -> local: a device on the peer side reaching a LAN service (e.g. a
+          branch printer hitting the HQ print/auth server) must not be collapsed
+          onto the gateway IP, or the service sees every branch as one source and
+          per-source auth/authorization breaks.
+        When no MASQUERADE would match, the ACCEPT is a harmless no-op.
         """
         success = True
-        for local in self._split_ts(local_ts):
-            for remote in self._split_ts(remote_ts):
-                args = [
-                    '-s', local, '-d', remote,
-                    '-m', 'comment', '--comment', comment,
-                    '-j', 'ACCEPT'
-                ]
-                if not core_iptables.run_safe('nat', ['-C', self.IPSEC_NAT_CHAIN] + args, suppress_errors=True):
-                    success &= core_iptables.run_safe('nat', ['-A', self.IPSEC_NAT_CHAIN] + args)
+        subnets_local = self._split_ts(local_ts)
+        subnets_remote = self._split_ts(remote_ts)
+        # (src, dst) pairs for both directions of every subnet combination
+        pairs = [(l, r) for l in subnets_local for r in subnets_remote]
+        pairs += [(r, l) for l in subnets_local for r in subnets_remote]
+        for src, dst in pairs:
+            args = [
+                '-s', src, '-d', dst,
+                '-m', 'comment', '--comment', comment,
+                '-j', 'ACCEPT'
+            ]
+            if not core_iptables.run_safe('nat', ['-C', self.IPSEC_NAT_CHAIN] + args, suppress_errors=True):
+                success &= core_iptables.run_safe('nat', ['-A', self.IPSEC_NAT_CHAIN] + args)
         return success
 
     def _remove_nat_exemption(self, comment: str) -> None:
@@ -1320,6 +1334,25 @@ connections {{
         core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
         core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
 
+    async def apply_tunnel_firewall(self, tunnel, db) -> bool:
+        """(Re)create a tunnel's firewall chains + NAT exemptions from its
+        persisted child SAs. Idempotent.
+
+        Used by the on_startup reconcile hook for tunnels that charon already
+        brought up (ESTABLISHED) before we run: their SAs are up but the iptables
+        rules — notably the bidirectional MOD_IPSEC_NAT exemptions — are not
+        persisted, so they must be rebuilt from code. bring_tunnel_up handles the
+        same for tunnels it initiates itself.
+        """
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecChildSa
+
+        result = await db.execute(
+            select(IpsecChildSa).where(IpsecChildSa.tunnel_id == tunnel.id)
+        )
+        children = result.scalars().all()
+        return await self.setup_tunnel_firewall_chains(tunnel, children, db)
+
     async def bring_tunnel_up(self, tunnel, db) -> bool:
         """
         Generate the tunnel config, load it and initiate the IPsec tunnel.
@@ -1370,6 +1403,15 @@ connections {{
 
         await asyncio.to_thread(self.save_tunnel_config, tunnel.name, config)
         await asyncio.to_thread(self.load_all_connections)
+
+        # Rebuild firewall chains + (bidirectional) NAT exemptions from code on
+        # every start/boot, so they never depend on iptables persistence.
+        # Idempotent; a firewall failure must not block tunnel initiation.
+        try:
+            await self.setup_tunnel_firewall_chains(tunnel, children, db)
+        except Exception as e:
+            logger.error(f"Firewall setup for tunnel {tunnel.name} failed: {e}")
+
         success = await asyncio.to_thread(self.initiate_tunnel, tunnel.name)
         if not success:
             return False

@@ -28,10 +28,17 @@ async def run(session: AsyncSession):
     restored = 0
     for tunnel in tunnels:
         try:
-            # Idempotent: skip if already established
+            # Idempotent: skip re-initiation if already established (charon
+            # auto-started the SA at boot). But its firewall chains / NAT
+            # exemptions are NOT persisted, so rebuild them from code here —
+            # otherwise an already-UP tunnel keeps stale/missing rules after boot.
             status = await asyncio.to_thread(strongswan_service.get_tunnel_status, tunnel.name)
             if status and status.get("ike_state") == "ESTABLISHED":
                 tunnel.status = "established"
+                try:
+                    await strongswan_service.apply_tunnel_firewall(tunnel, session)
+                except Exception as e:
+                    logger.error(f"Firewall setup for established tunnel {tunnel.name} failed: {e}")
                 continue
 
             if await strongswan_service.bring_tunnel_up(tunnel, session):
