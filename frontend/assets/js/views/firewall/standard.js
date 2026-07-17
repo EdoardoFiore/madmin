@@ -8,7 +8,7 @@
  *  3. Outbound NAT      — nat/POSTROUTING SNAT/MASQUERADE (incl. read-only
  *                          policy-NAT companions and the managed nav NAT).
  */
-import { apiGet, apiPatch, apiDelete } from '../../api.js';
+import { apiGet, apiPost, apiPatch, apiDelete } from '../../api.js';
 import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../../utils.js';
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
@@ -382,6 +382,31 @@ function bindRowActions(wrap, mode) {
             await apiPatch(`/firewall/rules/${r.id}`, { enabled });
             showToast(enabled ? t('firewall.std.ruleEnabled') : t('firewall.std.ruleDisabled'), 'success');
             await reload();
+            // Enabling a DROP/REJECT policy blocks new connections, but
+            // already-established ones keep flowing until conntrack is
+            // flushed — offer to do it now (only makes sense on enable).
+            if (mode === 'policy' && enabled && ['DROP', 'REJECT'].includes(r.action)) {
+                const confirmed = await confirmDialog(
+                    t('firewall.terminateSessionsTitle'),
+                    t('firewall.terminateSessionsDesc', { action: r.action }),
+                    t('firewall.terminateBtn'),
+                    'btn-warning'
+                );
+                if (confirmed) {
+                    try {
+                        const result = await apiPost(`/firewall/rules/${r.id}/flush-conntrack`, {});
+                        const count = result.flushed ?? 0;
+                        showToast(
+                            count > 0
+                                ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
+                                : t('firewall.noActiveSessions'),
+                            'success'
+                        );
+                    } catch (err) {
+                        showToast(t('common.errorPrefix') + err.message, 'error');
+                    }
+                }
+            }
         } catch (err) {
             e.target.checked = !enabled;
             showToast(t('common.errorPrefix') + err.message, 'error');

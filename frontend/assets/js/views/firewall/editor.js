@@ -591,18 +591,47 @@ async function save() {
     }
 
     // Phase 3: submit.
+    let saved;
     try {
         if (st.isEdit) {
-            await apiPatch(`/firewall/rules/${st.rule.id}`, data);
+            saved = await apiPatch(`/firewall/rules/${st.rule.id}`, data);
             showToast(t('firewall.ruleUpdated'), 'success');
         } else {
-            await apiPost('/firewall/rules', data);
+            saved = await apiPost('/firewall/rules', data);
             showToast(t('firewall.ruleCreated'), 'success');
         }
         st.dirty = false;
         close();
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
+        return;
+    }
+
+    // A newly-active DROP/REJECT policy blocks new connections, but
+    // already-established ones keep flowing until conntrack is flushed —
+    // offer to do it now (confirmDialog mounts on document.body, independent
+    // of the editor container close() just tore down).
+    if (mode === 'policy' && data.enabled && (data.action === 'DROP' || data.action === 'REJECT')) {
+        const confirmed = await confirmDialog(
+            t('firewall.terminateSessionsTitle'),
+            t('firewall.terminateSessionsDesc', { action: data.action }),
+            t('firewall.terminateBtn'),
+            'btn-warning'
+        );
+        if (confirmed) {
+            try {
+                const result = await apiPost(`/firewall/rules/${saved.id}/flush-conntrack`, {});
+                const count = result.flushed ?? 0;
+                showToast(
+                    count > 0
+                        ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
+                        : t('firewall.noActiveSessions'),
+                    'success'
+                );
+            } catch (err) {
+                showToast(t('common.errorPrefix') + err.message, 'error');
+            }
+        }
     }
 }
 
