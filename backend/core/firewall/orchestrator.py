@@ -12,7 +12,7 @@ import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, or_
 import uuid
 
 import json
@@ -31,7 +31,32 @@ logger = logging.getLogger(__name__)
 IMPLICIT_DENY_COMMENT = "MADMIN_IMPLICIT_DENY"
 
 
-def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
+def effective_to_destination(rule, obj_value: Optional[str] = None) -> Optional[str]:
+    """
+    The literal ip[:port] this DNAT rule actually rewrites to. When the rule
+    references an address object (to_destination_object_id), obj_value is
+    that object's resolved value — router.py only accepts /32 cidr objects
+    here (a single host), never a range or wider CIDR: --to-destination
+    rewrites to one address, and every companion below embeds the target as
+    a plain -d match, which a range or /24-style CIDR can't be (iptables
+    doesn't accept a range there, and a wider CIDR isn't a single rewrite
+    target to begin with). Otherwise the rule's own literal to_destination
+    column is used unchanged.
+
+    Every apply-time and display-time consumer of a DNAT target — the
+    restore line itself, the FORWARD/INPUT/hairpin companions, and the
+    protected-port guard — must resolve through this (or receive its result
+    via the `to_destination` kwarg the *_fields helpers below accept),
+    never read rule.to_destination directly, so switching a rule between a
+    literal and an object target can never leave one consumer stale.
+    """
+    if obj_value:
+        base = obj_value[:-3] if obj_value.endswith("/32") else obj_value
+        return f"{base}:{rule.to_destination_port}" if rule.to_destination_port else base
+    return rule.to_destination
+
+
+def dnat_forward_fields(rule, to_destination: Optional[str] = None) -> Dict[str, Optional[str]]:
     """
     Compute the FORWARD ACCEPT match for a DNAT rule's companion forward.
 
@@ -39,8 +64,12 @@ def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
     must be accepted toward that translated destination. Refined by the DNAT's
     incoming interface and source when present. Shared by apply_rules (iptables
     generation) and the API listing (read-only synthetic row) so they stay in sync.
+
+    to_destination: pre-resolved via effective_to_destination() by the caller
+    (falls back to the rule's literal column when the caller has nothing else
+    to resolve, e.g. a plain literal-target rule).
     """
-    dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+    dest_ip, dest_port = iptables.split_ip_port(to_destination if to_destination is not None else rule.to_destination)
     return {
         "protocol": rule.protocol,
         "source": rule.source,
@@ -71,15 +100,17 @@ def redirect_input_fields(rule) -> Dict[str, Optional[str]]:
     }
 
 
-def dnat_input_fields(rule) -> Dict[str, Optional[str]]:
+def dnat_input_fields(rule, to_destination: Optional[str] = None) -> Dict[str, Optional[str]]:
     """
     Compute the INPUT ACCEPT match for a DNAT whose target is a local address.
 
     DNAT rewrites the destination before the routing decision, so by the time
     the packet reaches INPUT it already carries the translated (local)
     destination — matching -d dest_ip here is correct post-NAT state.
+
+    to_destination: pre-resolved via effective_to_destination() by the caller.
     """
-    dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+    dest_ip, dest_port = iptables.split_ip_port(to_destination if to_destination is not None else rule.to_destination)
     return {
         "protocol": rule.protocol,
         "port": dest_port or rule.port,
@@ -112,7 +143,7 @@ def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
     }
 
 
-def hairpin_masq_fields(rule) -> Dict[str, Optional[str]]:
+def hairpin_masq_fields(rule, to_destination: Optional[str] = None) -> Dict[str, Optional[str]]:
     """
     Compute the POSTROUTING MASQUERADE match for a hairpin-NAT DNAT companion.
 
@@ -122,8 +153,10 @@ def hairpin_masq_fields(rule) -> Dict[str, Optional[str]]:
     -d/--dport) is topology-dependent and filled in by the caller — this only
     computes the destination-side match shared with apply_rules' hairpin DNAT
     line, so the two stay in sync the same way dnat_forward_fields/policy_nat_fields do.
+
+    to_destination: pre-resolved via effective_to_destination() by the caller.
     """
-    dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+    dest_ip, dest_port = iptables.split_ip_port(to_destination if to_destination is not None else rule.to_destination)
     return {
         "protocol": rule.protocol,
         "destination": dest_ip,
@@ -131,8 +164,13 @@ def hairpin_masq_fields(rule) -> Dict[str, Optional[str]]:
     }
 
 
-def _restore_line(madmin_chain: str, rule, eff_map: Dict) -> str:
-    """Restore-format line for a rule, honoring resolved address-set tokens."""
+def _restore_line(madmin_chain: str, rule, eff_map: Dict, to_destination: Optional[str] = None) -> str:
+    """Restore-format line for a rule, honoring resolved address-set tokens.
+
+    to_destination: resolved DNAT target (see effective_to_destination),
+    passed by apply_rules for DNAT rules with an object-based target; not
+    used for any other rule (build_rule_args ignores it unless action=DNAT).
+    """
     eff = eff_map.get(rule.id)
     if eff:
         eff_src, eff_dst = eff
@@ -140,8 +178,12 @@ def _restore_line(madmin_chain: str, rule, eff_map: Dict) -> str:
             madmin_chain, rule,
             source=eff_src if eff_src is not None else rule.source,
             destination=eff_dst if eff_dst is not None else rule.destination,
+            to_destination=to_destination if to_destination is not None else rule.to_destination,
         )
-    return iptables.rule_to_restore_line(madmin_chain, rule)
+    return iptables.rule_to_restore_line(
+        madmin_chain, rule,
+        to_destination=to_destination if to_destination is not None else rule.to_destination,
+    )
 
 
 def _connmark_restore_line(madmin_chain: str, rule, eff_map: Dict, mark: int) -> str:
@@ -422,6 +464,33 @@ class FirewallOrchestrator:
         result = await session.execute(query)
         return result.scalars().all()
 
+    async def resolve_dnat_targets(
+        self,
+        session: AsyncSession,
+        rules,
+    ) -> Dict[uuid.UUID, Optional[str]]:
+        """
+        Effective to_destination (see effective_to_destination) for every DNAT
+        rule in `rules`: literal-target rules resolve to their own column
+        unchanged, object-target rules resolve through the referenced
+        AddressObject's value — one batched query for every object referenced,
+        regardless of how many rules share it. Shared by apply_rules and the
+        API layer (router.py) so a DNAT's target is always computed the same
+        way no matter which one is asking.
+        """
+        dnat_rules = [r for r in rules if r.action == "DNAT"]
+        obj_ids = {r.to_destination_object_id for r in dnat_rules if r.to_destination_object_id}
+        obj_values: Dict[uuid.UUID, str] = {}
+        if obj_ids:
+            ores = await session.execute(select(AddressObject).where(AddressObject.id.in_(obj_ids)))
+            obj_values = {o.id: o.value for o in ores.scalars().all()}
+        return {
+            r.id: effective_to_destination(
+                r, obj_values.get(r.to_destination_object_id) if r.to_destination_object_id else None
+            )
+            for r in dnat_rules
+        }
+
     async def get_enabled_dnat_rules(
         self,
         session: AsyncSession
@@ -432,7 +501,10 @@ class FirewallOrchestrator:
             .where(MachineFirewallRule.table_name == "nat")
             .where(MachineFirewallRule.action == "DNAT")
             .where(MachineFirewallRule.enabled == True)
-            .where(MachineFirewallRule.to_destination.is_not(None))
+            .where(or_(
+                MachineFirewallRule.to_destination.is_not(None),
+                MachineFirewallRule.to_destination_object_id.is_not(None),
+            ))
             .order_by(MachineFirewallRule.order)
         )
         return result.scalars().all()
@@ -463,7 +535,10 @@ class FirewallOrchestrator:
             .where(MachineFirewallRule.action == "DNAT")
             .where(MachineFirewallRule.hairpin == True)
             .where(MachineFirewallRule.enabled == True)
-            .where(MachineFirewallRule.to_destination.is_not(None))
+            .where(or_(
+                MachineFirewallRule.to_destination.is_not(None),
+                MachineFirewallRule.to_destination_object_id.is_not(None),
+            ))
             .order_by(MachineFirewallRule.order)
         )
         return result.scalars().all()
@@ -492,13 +567,18 @@ class FirewallOrchestrator:
             .where(MachineFirewallRule.table_name == "nat")
             .where(MachineFirewallRule.action == "DNAT")
             .where(MachineFirewallRule.enabled == True)
-            .where(MachineFirewallRule.to_destination.is_not(None))
+            .where(or_(
+                MachineFirewallRule.to_destination.is_not(None),
+                MachineFirewallRule.to_destination_object_id.is_not(None),
+            ))
             .order_by(MachineFirewallRule.order)
         )
+        dnat_candidates = list(dnat_result.scalars().all())
+        dnat_targets = await self.resolve_dnat_targets(session, dnat_candidates)
         topo = await self._get_interface_topology()
         dnat_self_rules = []
-        for rule in dnat_result.scalars().all():
-            dest_ip, _ = iptables.split_ip_port(rule.to_destination)
+        for rule in dnat_candidates:
+            dest_ip, _ = iptables.split_ip_port(dnat_targets.get(rule.id))
             if dest_ip and dest_ip in topo["local_ips"]:
                 dnat_self_rules.append(rule)
 
@@ -591,6 +671,11 @@ class FirewallOrchestrator:
             limit_rate=rule_data.get("limit_rate"),
             limit_burst=rule_data.get("limit_burst"),
             to_destination=rule_data.get("to_destination"),
+            to_destination_object_id=(
+                uuid.UUID(rule_data["to_destination_object_id"])
+                if rule_data.get("to_destination_object_id") else None
+            ),
+            to_destination_port=rule_data.get("to_destination_port"),
             to_source=rule_data.get("to_source"),
             to_ports=rule_data.get("to_ports"),
             log_prefix=rule_data.get("log_prefix"),
@@ -600,7 +685,11 @@ class FirewallOrchestrator:
             table_name=table_name,
             order=max_order + 1,
             enabled=rule_data.get("enabled", True),
-            policy_nat=rule_data.get("policy_nat", False)
+            policy_nat=rule_data.get("policy_nat", False),
+            # NOTE: was missing entirely before this fix — every hairpin-enabled
+            # DNAT created via POST /firewall/rules silently persisted as
+            # hairpin=False regardless of what the client sent.
+            hairpin=rule_data.get("hairpin", False),
         )
         
         session.add(rule)
@@ -636,6 +725,10 @@ class FirewallOrchestrator:
         # Update fields (source_refs/destination_refs are not model columns and
         # are handled separately below)
         for key, value in rule_data.items():
+            # to_destination_object_id is a UUID column; the API layer only
+            # ever hands this loop a plain str (see MachineFirewallRuleUpdate).
+            if key == "to_destination_object_id" and isinstance(value, str):
+                value = uuid.UUID(value)
             if hasattr(rule, key):
                 setattr(rule, key, value)
 
@@ -954,6 +1047,12 @@ class FirewallOrchestrator:
         addresses.ensure_sets_exist(addr_plan)
         asyncio.create_task(asyncio.to_thread(addresses.sync_referenced, addr_plan))
 
+        # DNAT targets that reference an address object resolve to a literal
+        # ip[:port] here, once, for every consumer below (the DNAT restore
+        # line itself, its FORWARD/INPUT/hairpin companions) — see
+        # effective_to_destination / resolve_dnat_targets.
+        dnat_targets = await self.resolve_dnat_targets(session, rules)
+
         # Build per-table chain rules: {table: {madmin_chain: [restore-format lines]}}
         chain_rules: Dict[str, Dict[str, List[str]]] = {}
         for table, chains in iptables.CHAIN_MAP.items():
@@ -1027,7 +1126,9 @@ class FirewallOrchestrator:
                 # rows must not break the whole apply.
                 logger.error(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id} — skipped")
                 continue
-            chain_rules[rule.table_name][madmin_chain].append(_restore_line(madmin_chain, rule, eff_map))
+            chain_rules[rule.table_name][madmin_chain].append(
+                _restore_line(madmin_chain, rule, eff_map, dnat_targets.get(rule.id))
+            )
 
         # --- FORWARD layout: per-interface-pair subchains + inline wildcard rules ---
         forward_rules = [r for r in rules if r.table_name == "filter" and r.chain == "FORWARD"]
@@ -1058,9 +1159,12 @@ class FirewallOrchestrator:
         # the user policies so an explicit deny can block port-forwarded traffic.
         auto_forward_lines: List[str] = []
         for rule in rules:
-            if rule.table_name != "nat" or rule.action != "DNAT" or not rule.to_destination:
+            if rule.table_name != "nat" or rule.action != "DNAT":
                 continue
-            fields = dnat_forward_fields(rule)
+            target = dnat_targets.get(rule.id)
+            if not target:
+                continue
+            fields = dnat_forward_fields(rule, target)
             eff = eff_map.get(rule.id)
             if eff and eff[0] is not None:
                 fields["source"] = eff[0]   # honor object/group source refs
@@ -1123,14 +1227,16 @@ class FirewallOrchestrator:
         hairpin_postrouting_lines: List[str] = []
         hairpin_forward_lines: List[str] = []
         for rule in rules:
-            if (rule.table_name != "nat" or rule.action != "DNAT"
-                    or not rule.hairpin or not rule.to_destination):
+            if rule.table_name != "nat" or rule.action != "DNAT" or not rule.hairpin:
+                continue
+            target = dnat_targets.get(rule.id)
+            if not target:
                 continue
             if not topo["lan_networks"]:
                 logger.warning(f"Hairpin NAT skipped for rule {rule.id}: no LAN subnet resolved")
                 continue
 
-            dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+            dest_ip, dest_port = iptables.split_ip_port(target)
             int_port = dest_port or rule.port
 
             eff = eff_map.get(rule.id)
@@ -1159,7 +1265,7 @@ class FirewallOrchestrator:
                             source=str(subnet),
                             destination=dest,
                             port=rule.port,
-                            to_destination=rule.to_destination,
+                            to_destination=target,
                             comment=f"MADMIN_AUTO_HAIRPIN_{rule.id}",
                             operation="-A",
                         ))
@@ -1180,7 +1286,7 @@ class FirewallOrchestrator:
             # Scope the masquerade to the subnet actually containing the
             # target so unrelated intra-subnet flows aren't masqueraded;
             # fall back to every LAN subnet when the target isn't in any of them.
-            masq_fields = hairpin_masq_fields(rule)
+            masq_fields = hairpin_masq_fields(rule, target)
             try:
                 target_addr = ipaddress.IPv4Address(dest_ip) if dest_ip else None
             except ValueError:

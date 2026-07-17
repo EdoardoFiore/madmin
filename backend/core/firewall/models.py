@@ -53,6 +53,15 @@ class MachineFirewallRule(SQLModel, table=True):
 
     # Action specific fields
     to_destination: Optional[str] = Field(default=None, max_length=50)  # DNAT
+    # Alternative to the literal `to_destination` above: a DNAT can target an
+    # address object instead of a hand-typed IP (cidr /32 or range). Resolved
+    # to an effective "ip[:port]"/"a-b[:port]" string at apply time by
+    # orchestrator.effective_to_destination(); when set it takes precedence
+    # over the literal column (mirrors source/destination refs precedence).
+    to_destination_object_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_address_object.id"
+    )
+    to_destination_port: Optional[str] = Field(default=None, max_length=20)
     to_source: Optional[str] = Field(default=None, max_length=50)       # SNAT
     to_ports: Optional[str] = Field(default=None, max_length=50)        # REDIRECT/MASQUERADE
     log_prefix: Optional[str] = Field(default=None, max_length=50)      # LOG
@@ -155,6 +164,16 @@ class _FirewallRuleValidators(SQLModel):
                 raise ValueError(f"Porta non valida: {p} (range 1-65535)")
         return v
 
+    @field_validator('to_destination_port', mode='before', check_fields=False)
+    @classmethod
+    def validate_to_destination_port(cls, v):
+        if v is None or v == "":
+            return None
+        s = str(v)
+        if not s.isdigit() or not (1 <= int(s) <= 65535):
+            raise ValueError(f"Porta interna non valida: {v} (range 1-65535)")
+        return s
+
 
 class RuleAddressRef(SQLModel):
     """Object/group reference in a rule create/update payload (per direction).
@@ -179,6 +198,8 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     limit_rate: Optional[str] = None
     limit_burst: Optional[int] = None
     to_destination: Optional[str] = None
+    to_destination_object_id: Optional[str] = None
+    to_destination_port: Optional[str] = None
     to_source: Optional[str] = None
     to_ports: Optional[str] = None
     log_prefix: Optional[str] = None
@@ -209,6 +230,8 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     limit_rate: Optional[str] = None
     limit_burst: Optional[int] = None
     to_destination: Optional[str] = None
+    to_destination_object_id: Optional[str] = None
+    to_destination_port: Optional[str] = None
     to_source: Optional[str] = None
     to_ports: Optional[str] = None
     log_prefix: Optional[str] = None
@@ -251,6 +274,9 @@ class MachineFirewallRuleResponse(SQLModel):
     limit_rate: Optional[str]
     limit_burst: Optional[int]
     to_destination: Optional[str]
+    to_destination_object_id: Optional[str] = None
+    to_destination_object_name: Optional[str] = None
+    to_destination_port: Optional[str] = None
     to_source: Optional[str]
     to_ports: Optional[str]
     log_prefix: Optional[str]

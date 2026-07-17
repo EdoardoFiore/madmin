@@ -312,12 +312,18 @@ def split_ip_port(value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
 _UNSET = object()
 
 
-def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET) -> str:
+def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET,
+                          to_destination=_UNSET) -> str:
     """Convert a MachineFirewallRule to an iptables-restore format line (-A ...).
 
     `source`/`destination` may be overridden with an effective value (e.g. a
     'set:<ipset>' token resolved from the rule's address-object references)
-    without mutating the ORM object; if omitted, the rule's own columns are used.
+    without mutating the ORM object; if omitted, the rule's own columns are
+    used. `to_destination` may likewise be overridden with the DNAT target
+    resolved from an address-object reference (see orchestrator
+    effective_to_destination) — a DNAT with to_destination_object_id set
+    carries no literal to_destination column, so the caller must resolve and
+    pass one for the rule to rewrite to anything at all.
     """
     args = build_rule_args(
         chain=madmin_chain,
@@ -332,7 +338,7 @@ def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UN
         comment=f"ID_{rule.id}",
         limit_rate=rule.limit_rate,
         limit_burst=rule.limit_burst,
-        to_destination=rule.to_destination,
+        to_destination=rule.to_destination if to_destination is _UNSET else to_destination,
         to_source=rule.to_source,
         to_ports=rule.to_ports,
         log_prefix=rule.log_prefix,

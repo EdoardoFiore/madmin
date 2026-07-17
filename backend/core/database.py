@@ -78,6 +78,17 @@ async def init_db() -> None:
             "ALTER TABLE machine_firewall_rule "
             "ADD COLUMN IF NOT EXISTS hairpin BOOLEAN NOT NULL DEFAULT FALSE"
         ))
+        # DNAT target can reference an address object (cidr /32 or range)
+        # instead of a hand-typed IP — see MachineFirewallRule.to_destination_object_id.
+        await conn.execute(text(
+            "ALTER TABLE machine_firewall_rule "
+            "ADD COLUMN IF NOT EXISTS to_destination_object_id UUID "
+            "REFERENCES firewall_address_object(id)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE machine_firewall_rule "
+            "ADD COLUMN IF NOT EXISTS to_destination_port VARCHAR(20)"
+        ))
 
 
 async def check_db_connection() -> bool:
