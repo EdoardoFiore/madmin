@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 
 from .models import (
+    MachineFirewallRule,
     MachineFirewallRuleCreate,
     MachineFirewallRuleUpdate,
     MachineFirewallRuleResponse,
@@ -46,7 +47,7 @@ from .orchestrator import (
     IMPLICIT_DENY_COMMENT,
 )
 from .iptables import IptablesError, flush_conntrack_for_rule
-from .protected_ports import validate_protected_port_collision
+from .protected_ports import validate_protected_port_collision, port_specs_overlap
 from . import addresses, geoip
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,83 @@ def _validate_port_protocol(protocol: Optional[str], port: Optional[str]) -> Non
             status_code=400,
             detail="La porta è applicabile solo con protocollo TCP o UDP: "
                    "impostare il protocollo o rimuovere la porta."
+        )
+
+
+async def _validate_duplicate_port_forward(
+    session: AsyncSession,
+    *,
+    exclude_rule_id: Optional[uuid.UUID],
+    action: str,
+    protocol: Optional[str],
+    port: Optional[str],
+    in_interface: Optional[str],
+    source: Optional[str],
+    destination: Optional[str],
+    has_source_refs: bool,
+    has_destination_refs: bool,
+) -> None:
+    """
+    Reject a nat/PREROUTING DNAT|REDIRECT that would silently shadow (or be
+    shadowed by) another enabled port-forward rule: iptables evaluates in
+    order and only the first match wins, so an identical-enough duplicate
+    is dead code that never fires.
+
+    A rule using address-object/group refs for source or destination is
+    opaque here (its effective match depends on ipset contents resolved at
+    apply time) — such rules are skipped entirely rather than risk a false
+    positive/negative. Literal comparison is strict string equality, so
+    "1.2.3.4" and "1.2.3.4/32" are treated as different (a real, if unusual,
+    differentiator) — deliberately conservative: only flag true duplicates.
+    """
+    if has_source_refs or has_destination_refs:
+        return
+
+    query = (
+        select(MachineFirewallRule)
+        .where(MachineFirewallRule.table_name == "nat")
+        .where(MachineFirewallRule.chain == "PREROUTING")
+        .where(MachineFirewallRule.action.in_(("DNAT", "REDIRECT")))
+        .where(MachineFirewallRule.enabled == True)
+    )
+    if exclude_rule_id is not None:
+        query = query.where(MachineFirewallRule.id != exclude_rule_id)
+    candidates = (await session.execute(query)).scalars().all()
+    if not candidates:
+        return
+
+    other_ids = [c.id for c in candidates]
+    refs_res = await session.execute(
+        select(FirewallRuleAddress.rule_id).where(FirewallRuleAddress.rule_id.in_(other_ids))
+    )
+    ids_with_refs = {row[0] for row in refs_res.all()}
+
+    proto_l = (protocol or "").lower()
+    src_l = (source or "").strip()
+    dst_l = (destination or "").strip()
+
+    for other in candidates:
+        if other.id in ids_with_refs:
+            continue
+        other_proto = (other.protocol or "").lower()
+        if proto_l and other_proto and proto_l != other_proto:
+            continue
+        if not port_specs_overlap(port, other.port):
+            continue
+        if in_interface and other.in_interface and in_interface != other.in_interface:
+            continue
+        other_dst = (other.destination or "").strip()
+        if dst_l and other_dst and dst_l != other_dst:
+            continue
+        other_src = (other.source or "").strip()
+        if src_l and other_src and src_l != other_src:
+            continue
+        raise HTTPException(
+            status_code=409,
+            detail=f"Regola duplicata: confligge con il port forwarding "
+                   f"'{other.comment or str(other.id)[:8]}' "
+                   f"(porta {other.port or 'tutte'}, protocollo {other.protocol or 'tutti'}). "
+                   f"Cambiare porta, protocollo o interfaccia, oppure rimuovere la regola esistente."
         )
 
 
@@ -497,6 +575,19 @@ async def create_rule(
             status_code=400,
             detail="hairpin è disponibile solo su regole DNAT in nat/PREROUTING con destinazione interna."
         )
+    if table == "nat" and rule_data.chain == "PREROUTING" and rule_data.action in ("DNAT", "REDIRECT"):
+        await _validate_duplicate_port_forward(
+            session,
+            exclude_rule_id=None,
+            action=rule_data.action,
+            protocol=rule_data.protocol,
+            port=rule_data.port,
+            in_interface=rule_data.in_interface,
+            source=rule_data.source,
+            destination=rule_data.destination,
+            has_source_refs=bool(rule_data.source_refs),
+            has_destination_refs=bool(rule_data.destination_refs),
+        )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
     try:
@@ -589,6 +680,37 @@ async def update_rule(
         _validate_port_protocol(
             update_data.get("protocol", existing.protocol),
             update_data.get("port", existing.port),
+        )
+    # Re-check duplicate port-forwards whenever the write touches a field the
+    # conflict check depends on, INCLUDING `enabled`: re-enabling a rule that
+    # was disabled precisely because it duplicated another one must not
+    # silently resurrect the conflict.
+    _dup_check_fields = {
+        "table_name", "chain", "action", "protocol", "port", "in_interface",
+        "source", "destination", "source_refs", "destination_refs", "enabled",
+    }
+    if (eff_table == "nat" and eff_chain == "PREROUTING" and eff_action in ("DNAT", "REDIRECT")
+            and update_data.get("enabled", existing.enabled)
+            and (_dup_check_fields & update_data.keys())):
+        existing_dirs_res = await session.execute(
+            select(FirewallRuleAddress.direction).where(FirewallRuleAddress.rule_id == rule_uuid)
+        )
+        existing_dirs = {row[0] for row in existing_dirs_res.all()}
+        eff_has_source_refs = (bool(update_data["source_refs"]) if "source_refs" in update_data
+                                else "source" in existing_dirs)
+        eff_has_destination_refs = (bool(update_data["destination_refs"]) if "destination_refs" in update_data
+                                     else "destination" in existing_dirs)
+        await _validate_duplicate_port_forward(
+            session,
+            exclude_rule_id=rule_uuid,
+            action=eff_action,
+            protocol=update_data.get("protocol", existing.protocol),
+            port=update_data.get("port", existing.port),
+            in_interface=update_data.get("in_interface", existing.in_interface),
+            source=update_data.get("source", existing.source),
+            destination=update_data.get("destination", existing.destination),
+            has_source_refs=eff_has_source_refs,
+            has_destination_refs=eff_has_destination_refs,
         )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 

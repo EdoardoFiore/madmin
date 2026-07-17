@@ -75,6 +75,39 @@ def spec_contains_port(spec: Optional[str], port: int) -> bool:
     return False
 
 
+def _spec_intervals(spec: Optional[str]) -> Optional[List[Tuple[int, int]]]:
+    """Parse a port spec into a list of (lo, hi) intervals. None means 'matches
+    every port' (no --dport). Shares spec_contains_port's exact token grammar
+    (single / multiport ',' / range ':' or '-') so the two never disagree."""
+    if spec_is_any(spec):
+        return None
+    out: List[Tuple[int, int]] = []
+    for tok in str(spec).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        sep = ":" if ":" in tok else ("-" if "-" in tok else None)
+        try:
+            if sep:
+                a, _, b = tok.partition(sep)
+                lo, hi = int(a), int(b)
+            else:
+                lo = hi = int(tok)
+        except ValueError:
+            continue
+        out.append((lo, hi) if lo <= hi else (hi, lo))
+    return out
+
+
+def port_specs_overlap(a: Optional[str], b: Optional[str]) -> bool:
+    """True when two iptables port specs share at least one port. A missing/
+    empty spec matches every port and overlaps anything."""
+    ia, ib = _spec_intervals(a), _spec_intervals(b)
+    if ia is None or ib is None:
+        return True
+    return any(al <= bh and bl <= ah for al, ah in ia for bl, bh in ib)
+
+
 def is_loopback_host(value: Optional[str]) -> bool:
     """True if an address refers to the local host (loopback / self / any)."""
     if not value:
