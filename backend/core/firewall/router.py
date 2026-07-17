@@ -322,19 +322,25 @@ def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
     )
 
 
-def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
-    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a policy_nat companion."""
+def _auto_nat_response(policy, default_if: Optional[str] = None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a
+    policy_nat companion. The real companion matches by conntrack mark, not
+    by flow (see policy_nat_fields) — no single protocol/port/source/
+    destination value represents it, so those stay None; the comment
+    identifies the owning policy instead. default_if mirrors apply_rules'
+    fallback to the default-route interface when the policy sets none."""
     fields = policy_nat_fields(policy)
+    out_if = fields["out_interface"] or default_if
     return MachineFirewallRuleResponse(
         id=f"auto-nat-{policy.id}",
         chain="POSTROUTING",
         action="MASQUERADE",
-        protocol=fields["protocol"],
-        source=fields["source"],
-        destination=fields["destination"],
-        port=fields["port"],
+        protocol=None,
+        source=None,
+        destination=None,
+        port=None,
         in_interface=None,  # -i does not exist in POSTROUTING
-        out_interface=fields["out_interface"],
+        out_interface=out_if,
         state=None,
         limit_rate=None,
         limit_burst=None,
@@ -344,7 +350,7 @@ def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
         log_prefix=None,
         log_level=None,
         reject_with=None,
-        comment=f"→ policy NAT {policy.in_interface or 'any'}→{policy.out_interface or 'any'}",
+        comment=f"→ NAT (connmark) per policy: {policy.comment or str(policy.id)[:8]}",
         table_name="nat",
         order=999_998,  # companions sit after user POSTROUTING rules
         enabled=True,
@@ -512,8 +518,10 @@ async def list_rules(
         responses.append(_implicit_deny_response())
     # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
     if chain in (None, "POSTROUTING"):
+        from core.network.utils import get_default_interface
+        default_if = get_default_interface()
         nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
-        responses.extend(_auto_nat_response(p) for p in nat_policies)
+        responses.extend(_auto_nat_response(p, default_if) for p in nat_policies)
         hairpin_rules = await firewall_orchestrator.get_enabled_hairpin_rules(session)
         responses.extend(_auto_hairpin_nat_response(d) for d in hairpin_rules)
     # Surface auto-generated INPUT ACCEPT companions (REDIRECT / DNAT-to-self)

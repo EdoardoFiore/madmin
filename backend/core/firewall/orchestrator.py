@@ -91,21 +91,23 @@ def dnat_input_fields(rule) -> Dict[str, Optional[str]]:
 
 def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
     """
-    Compute the POSTROUTING MASQUERADE match for a forward policy's NAT companion.
+    Compute the effective fields for a forward policy's POSTROUTING NAT
+    companion.
 
-    A filter/FORWARD policy with policy_nat=True owns its outbound masquerade. The
-    companion is scoped to the policy's exact flow (source/destination/protocol/
-    port and out_interface) so it never masquerades traffic belonging to other
-    non-NAT policies. in_interface is deliberately excluded: -i does not exist in
-    POSTROUTING and would make iptables-restore reject the whole nat table.
+    A filter/FORWARD policy with policy_nat=True owns its outbound masquerade.
+    The companion no longer matches by flow (protocol/port/source/destination):
+    it matches by conntrack mark (see apply_rules' nat_marks and
+    _connmark_restore_line), which is set on the connection by a CONNMARK line
+    that shares the policy's exact match — so the masquerade can never fire for
+    traffic accepted by a *different*, non-NAT policy, even one with an
+    overlapping match (the old flow-based companion could leak this way).
+    out_interface may be topologically defaulted at apply time when the policy
+    doesn't set one (see apply_rules) — this function returns the rule's own
+    value only; the caller resolves the fallback.
     Shared by apply_rules (iptables generation) and the API listing (read-only
     synthetic row) so they stay in sync.
     """
     return {
-        "protocol": rule.protocol,
-        "port": rule.port,
-        "source": rule.source,
-        "destination": rule.destination,
         "out_interface": rule.out_interface,
     }
 
@@ -142,9 +144,35 @@ def _restore_line(madmin_chain: str, rule, eff_map: Dict) -> str:
     return iptables.rule_to_restore_line(madmin_chain, rule)
 
 
+def _connmark_restore_line(madmin_chain: str, rule, eff_map: Dict, mark: int) -> str:
+    """
+    Restore-format CONNMARK line for a policy-NAT rule's mark companion.
+
+    Reproduces the rule's exact match (protocol/source/destination — honoring
+    resolved set:<ipset> tokens the same way _restore_line does — plus
+    port/interfaces/state) so the mark is set on precisely the connections this
+    policy accepts. Deliberately excludes limit_rate/limit_burst: a rate-limited
+    CONNMARK line would own a separate `-m limit` token bucket from the ACCEPT
+    line right below it and could mark/skip out of sync with it. Also excludes
+    the LOG/REJECT-only extras (irrelevant to an ACCEPT-only policy_nat rule).
+    """
+    eff = eff_map.get(rule.id)
+    source = eff[0] if eff and eff[0] is not None else rule.source
+    destination = eff[1] if eff and eff[1] is not None else rule.destination
+    xmark = f"0x{mark:x}/0x{iptables.POLICY_NAT_MARK_MASK:x}"
+    return " ".join(iptables.build_rule_args(
+        chain=madmin_chain, action="CONNMARK",
+        protocol=rule.protocol, source=source, destination=destination,
+        port=rule.port, in_interface=rule.in_interface, out_interface=rule.out_interface,
+        state=rule.state, set_xmark=xmark,
+        comment=f"MADMIN_NATMARK_{rule.id}", operation="-A",
+    ))
+
+
 def _build_forward_layout(
     forward_rules: List,
     eff_map: Dict,
+    nat_marks: Optional[Dict] = None,
 ) -> Tuple[List[str], Dict[str, List[str]]]:
     """
     Build the MADMIN_FORWARD body with per-interface-pair subchains.
@@ -158,11 +186,20 @@ def _build_forward_layout(
     MADMIN_FORWARD toward later wildcard rules, DNAT companions and the
     implicit deny.
 
+    nat_marks: {rule_id: mark_value} for filter/FORWARD policies with
+    policy_nat=True (see apply_rules). Each gets a CONNMARK line emitted
+    immediately before its own ACCEPT line, in the same (sub)chain — the mark
+    lands on the connection's first packet before it's accepted, and the
+    POSTROUTING masquerade companion (policy_nat_fields) matches by that mark
+    instead of by flow, so it can never fire for a different policy's traffic.
+
     Returns (forward_lines, {subchain_name: [lines]}).
     """
+    nat_marks = nat_marks or {}
     lines: List[str] = []
     subchains: Dict[str, List[str]] = {}
     for rule in forward_rules:
+        mark = nat_marks.get(rule.id)
         if rule.in_interface and rule.out_interface:
             name = iptables.forward_subchain_name(rule.in_interface, rule.out_interface)
             if name not in subchains:
@@ -171,8 +208,12 @@ def _build_forward_layout(
                     f"-A {iptables.MADMIN_FORWARD_CHAIN}"
                     f" -i {rule.in_interface} -o {rule.out_interface} -j {name}"
                 )
+            if mark is not None:
+                subchains[name].append(_connmark_restore_line(name, rule, eff_map, mark))
             subchains[name].append(_restore_line(name, rule, eff_map))
         else:
+            if mark is not None:
+                lines.append(_connmark_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map, mark))
             lines.append(_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map))
     return lines, subchains
 
@@ -758,6 +799,7 @@ class FirewallOrchestrator:
             "lan_networks": lan_networks,
             "wan_ips": wan_ips,
             "local_ips": local_ips,
+            "wan_interface": wan_iface,
         }
 
     async def _rebuild_gateway_ipsets(
@@ -989,7 +1031,22 @@ class FirewallOrchestrator:
 
         # --- FORWARD layout: per-interface-pair subchains + inline wildcard rules ---
         forward_rules = [r for r in rules if r.table_name == "filter" and r.chain == "FORWARD"]
-        forward_lines, subchain_map = _build_forward_layout(forward_rules, eff_map)
+
+        # Conntrack marks for policy-NAT scoping: assigned by apply-order
+        # enumeration on every apply. Netfilter decides a connection's NAT on
+        # its FIRST packet only, so re-numbering marks across applies can
+        # never re-NAT or break an already-established connection; a stale
+        # ctmark left on an old connection is inert (the nat table is never
+        # re-consulted for it once a connection has a NAT decision).
+        nat_policies = [r for r in forward_rules if r.policy_nat]
+        if len(nat_policies) > 255:
+            logger.error(
+                f"{len(nat_policies)} policy-NAT rules exceed the 255-mark budget "
+                f"(POLICY_NAT_MARK_MASK); the extra {len(nat_policies) - 255} get no NAT companion."
+            )
+        nat_marks = {r.id: (i + 1) << 16 for i, r in enumerate(nat_policies[:255])}
+
+        forward_lines, subchain_map = _build_forward_layout(forward_rules, eff_map, nat_marks)
         chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(forward_lines)
         chain_rules["filter"].update(subchain_map)
 
@@ -1021,26 +1078,32 @@ class FirewallOrchestrator:
 
         # --- Auto-generate POSTROUTING MASQUERADE for policies with policy_nat ---
         # A filter/FORWARD policy can own its outbound NAT (navigation masquerade).
-        # Emit a companion MASQUERADE in POSTROUTING matching the same flow, so the
-        # policy is the single source of truth (mirrors the DNAT->FORWARD companion).
+        # Scoped by conntrack mark (set by the CONNMARK companion emitted in
+        # _build_forward_layout above), not by flow — this is what closes the
+        # cross-policy masquerade leak the old flow-based match had: a packet
+        # accepted by a *different*, non-NAT policy never carries this mark,
+        # no matter how much its match overlaps this policy's.
         auto_nat_lines: List[str] = []
-        for rule in rules:
-            if rule.table_name != "filter" or rule.chain != "FORWARD" or not rule.policy_nat:
-                continue
+        for rule in nat_policies:
+            mark = nat_marks.get(rule.id)
+            if mark is None:
+                continue  # 255-mark budget exhausted, already logged above
             fields = policy_nat_fields(rule)
-            eff = eff_map.get(rule.id)
-            if eff:
-                if eff[0] is not None:
-                    fields["source"] = eff[0]        # honor object/group source refs
-                if eff[1] is not None:
-                    fields["destination"] = eff[1]   # honor object/group dest refs
+            out_if = fields["out_interface"] or topo["wan_interface"]
+            if not out_if:
+                logger.warning(
+                    f"policy NAT {rule.id}: no out_interface and no default-route "
+                    "interface resolved — emitting MASQUERADE unscoped as a last resort."
+                )
+            xmark = f"0x{mark:x}/0x{iptables.POLICY_NAT_MARK_MASK:x}"
             auto_nat_lines.append(
                 " ".join(iptables.build_rule_args(
                     chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,
                     action="MASQUERADE",
+                    out_interface=out_if,
+                    connmark_match=xmark,
                     comment=f"MADMIN_AUTO_NAT_{rule.id}",
                     operation="-A",
-                    **fields,
                 ))
             )
         if auto_nat_lines:
