@@ -999,7 +999,108 @@ connections {{
             await db.rollback()
         
         return collected
-    
+
+    async def reconcile_tunnel_states(self, db) -> int:
+        """
+        Watchdog: force tunnels whose desired state is UP back to ESTABLISHED
+        when charon has silently dropped them (peer flap, DPD timeout without
+        auto-recovery, charon restart losing an in-memory SA, ...).
+
+        Runs alongside the traffic collector (COLLECTION_INTERVAL) so a tunnel
+        found down overnight is re-initiated within ~1 minute instead of
+        staying down until the next MADMIN/app restart (previously the only
+        reconciliation point — see hooks/on_startup.py). Idempotent and
+        errors are isolated per tunnel so one bad peer doesn't block the rest.
+
+        Returns:
+            Number of tunnels successfully forced back to ESTABLISHED/connecting.
+        """
+        import asyncio
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecTunnel
+
+        recovered = 0
+        try:
+            result = await db.execute(
+                select(IpsecTunnel).where(IpsecTunnel.enabled == True)  # noqa: E712
+            )
+            tunnels = result.scalars().all()
+
+            for tunnel in tunnels:
+                try:
+                    status = await asyncio.to_thread(self.get_tunnel_status, tunnel.name)
+                    ike_state = status.get("ike_state") if status else "DISCONNECTED"
+
+                    if ike_state == "ESTABLISHED":
+                        if tunnel.status != "established":
+                            tunnel.status = "established"
+                        await self._reconcile_child_sas(tunnel, status, db)
+                        continue
+                    if ike_state == "CONNECTING":
+                        # Negotiation already in flight — don't pile on another initiate.
+                        continue
+
+                    logger.warning(
+                        f"IPsec tunnel {tunnel.name} desired UP but found {ike_state}; "
+                        f"forcing reconnect"
+                    )
+                    if await self.bring_tunnel_up(tunnel, db):
+                        recovered += 1
+                        logger.info(f"Reconnected IPsec tunnel {tunnel.name} after state drift")
+                    else:
+                        logger.error(f"Failed to force-reconnect IPsec tunnel {tunnel.name}")
+                except Exception as e:
+                    logger.error(f"Reconciliation failed for tunnel {tunnel.name}: {e}")
+
+            await db.commit()
+        except Exception as e:
+            logger.error(f"Tunnel state reconciliation failed: {e}")
+            await db.rollback()
+
+        return recovered
+
+    async def _reconcile_child_sas(self, tunnel, status: Dict[str, Any], db) -> None:
+        """
+        For an ESTABLISHED tunnel, force-reinitiate any enabled Child SA that
+        isn't INSTALLED.
+
+        A parent IKE SA staying up does NOT guarantee its Child SAs are —
+        with start_action=start a child is expected to be up immediately and
+        does not wait for traffic (unlike trap), so a lost child after a link
+        flap can go unnoticed by an IKE-level-only check. dpd_action/close_action
+        normally get charon to redo this itself, but this is a defense-in-depth
+        watchdog for when that doesn't happen.
+        """
+        import asyncio
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecChildSa
+
+        result = await db.execute(
+            select(IpsecChildSa).where(
+                IpsecChildSa.tunnel_id == tunnel.id, IpsecChildSa.enabled == True  # noqa: E712
+            )
+        )
+        children = result.scalars().all()
+        if not children:
+            return
+
+        child_states = {c.get("name"): c.get("state") for c in status.get("child_sas", [])}
+        for child in children:
+            state = child_states.get(child.name)
+            if state == "INSTALLED":
+                continue
+            logger.warning(
+                f"Child SA {child.name} of tunnel {tunnel.name} is {state or 'MISSING'} "
+                f"while IKE SA is ESTABLISHED; forcing reinitiate"
+            )
+            try:
+                if await asyncio.to_thread(self.initiate_child_sa, tunnel.name, child.name):
+                    logger.info(f"Reinitiated Child SA {child.name}")
+                else:
+                    logger.error(f"Failed to reinitiate Child SA {child.name}")
+            except Exception as e:
+                logger.error(f"Error reinitiating Child SA {child.name}: {e}")
+
     async def get_traffic_history(
         self, 
         tunnel_id: uuid.UUID, 

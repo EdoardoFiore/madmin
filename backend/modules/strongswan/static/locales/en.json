@@ -169,5 +169,17 @@
   "loading": "Loading...",
   "loadError": "Unable to load data",
   "wActiveChildSas": "Active Child SAs",
-  "wNoTunnelsConfigured": "No tunnels configured"
+  "wNoTunnelsConfigured": "No tunnels configured",
+  "dpdActionRestart": "Restart",
+  "dpdActionClear": "Clear",
+  "dpdActionNone": "Disable",
+  "natTraversalEnable": "Enable",
+  "natTraversalDisable": "Disable",
+  "natTraversalForce": "Force",
+  "startActionStart": "Start (immediately)",
+  "startActionTrap": "On Demand (trap)",
+  "startActionNone": "Manual (none)",
+  "closeActionRestart": "Restart",
+  "closeActionTrap": "Hold (trap)",
+  "closeActionNone": "None"
 }
