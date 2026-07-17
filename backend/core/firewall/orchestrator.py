@@ -1093,11 +1093,14 @@ class FirewallOrchestrator:
                 continue
             if rule.chain == "PREROUTING" and rule.action == "REDIRECT":
                 fields = redirect_input_fields(rule)
-            elif rule.action == "DNAT" and rule.to_destination:
-                dest_ip, _ = iptables.split_ip_port(rule.to_destination)
+            elif rule.action == "DNAT":
+                target = dnat_targets.get(rule.id)
+                if not target:
+                    continue
+                dest_ip, _ = iptables.split_ip_port(target)
                 if not dest_ip or dest_ip not in topo["local_ips"]:
                     continue
-                fields = dnat_input_fields(rule)
+                fields = dnat_input_fields(rule, target)
             else:
                 continue
             eff = eff_map.get(rule.id)
