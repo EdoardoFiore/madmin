@@ -194,15 +194,24 @@ def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
     )
 
 
-def _auto_forward_response(dnat) -> MachineFirewallRuleResponse:
-    """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT companion."""
+def _auto_forward_response(dnat, refs_map=None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT companion.
+
+    Must mirror the DNAT's own source object/group refs (not just its literal
+    `source` column) — apply_rules() already honors them for the real iptables
+    rule via eff_map, but this display-only row previously showed the literal
+    column, which is None whenever the source is an address object/group.
+    """
+    refs_map = refs_map or {}
     fields = dnat_forward_fields(dnat)
+    source_refs = refs_map.get((dnat.id, "source"), [])
     return MachineFirewallRuleResponse(
         id=f"auto-dnat-{dnat.id}",
         chain="FORWARD",
         action="ACCEPT",
         protocol=fields["protocol"],
-        source=fields["source"],
+        source=None if source_refs else fields["source"],
+        source_refs=source_refs,
         destination=fields["destination"],
         port=fields["port"],
         in_interface=fields["in_interface"],
@@ -239,7 +248,8 @@ async def list_rules(
     # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
-        responses.extend(_auto_forward_response(d) for d in dnat_rules)
+        dnat_refs_map = await _rule_refs_map(session, [d.id for d in dnat_rules])
+        responses.extend(_auto_forward_response(d, dnat_refs_map) for d in dnat_rules)
     return responses
 
 
