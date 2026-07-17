@@ -34,6 +34,16 @@ MADMIN_PREROUTING_NAT_CHAIN = "MADMIN_PREROUTING"
 MADMIN_POSTROUTING_NAT_CHAIN = "MADMIN_POSTROUTING"
 MADMIN_OUTPUT_NAT_CHAIN = "MADMIN_OUTPUT_NAT"
 
+# Conntrack-mark region reserved for policy-NAT (bits 16-23, up to 255
+# concurrent NAT policies). This is a CONNTRACK mark (ctmark, set via
+# CONNMARK --set-xmark / matched via -m connmark), not a packet mark
+# (fwmark, set via MARK / matched via -m mark) — different netfilter
+# namespaces entirely. WireGuard's fwmark 51820 (0xCA6C, bits 2-15) can
+# never collide even numerically: 0xCA6C & 0x00FF0000 == 0. MADMIN never
+# emits `CONNMARK --restore-mark`, so this ctmark never leaks into a
+# packet mark or a routing decision.
+POLICY_NAT_MARK_MASK = 0x00FF0000
+
 # Mangle table chains
 MADMIN_PREROUTING_MANGLE_CHAIN = "MADMIN_PREROUTING_MANGLE"
 MADMIN_INPUT_MANGLE_CHAIN = "MADMIN_INPUT_MANGLE"
@@ -737,14 +747,16 @@ def build_rule_args(
     log_prefix: Optional[str] = None,
     log_level: Optional[str] = None,
     reject_with: Optional[str] = None,
+    connmark_match: Optional[str] = None,
+    set_xmark: Optional[str] = None,
     operation: str = "-A"
 ) -> List[str]:
     """
     Build iptables command arguments for a rule.
-    
+
     Args:
         chain: Target chain name
-        action: Rule action (ACCEPT, DROP, REJECT, MASQUERADE, etc.)
+        action: Rule action (ACCEPT, DROP, REJECT, MASQUERADE, CONNMARK, etc.)
         protocol: Protocol (tcp, udp, icmp, all)
         source: Source IP/CIDR
         destination: Destination IP/CIDR
@@ -760,6 +772,8 @@ def build_rule_args(
         log_prefix: Log prefix
         log_level: Log level
         reject_with: Reject type (e.g. icmp-port-unreachable)
+        connmark_match: "-m connmark --mark <value>[/<mask>]" match (policy-NAT scoping)
+        set_xmark: "--set-xmark <value>[/<mask>]" for action=CONNMARK
         operation: -A (append), -I (insert), -D (delete)
 
     Returns:
@@ -793,7 +807,10 @@ def build_rule_args(
     
     if state:
         args.extend(["-m", "state", "--state", state])
-    
+
+    if connmark_match:
+        args.extend(["-m", "connmark", "--mark", connmark_match])
+
     if port and protocol in ("tcp", "udp"):
         # Support both single port and range
         if "," in str(port):
@@ -812,6 +829,9 @@ def build_rule_args(
         args.extend(["-m", "comment", "--comment", safe_comment])
     
     args.extend(["-j", action])
+
+    if action == "CONNMARK" and set_xmark:
+        args.extend(["--set-xmark", set_xmark])
 
     if action == "DNAT" and to_destination:
         args.extend(["--to-destination", to_destination])
