@@ -13,7 +13,7 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
-import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode } from './shared.js';
+import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
@@ -82,6 +82,14 @@ function renderAddrCell(literal, refs) {
     }
     if (literal) return `<code>${escapeHtml(literal)}</code>`;
     return `<span class="text-muted">${t('firewall.std.anyAddr')}</span>`;
+}
+
+/** Badge for rules carrying a match/behavior Standard never shows (state,
+ * rate limit, logging — Advanced-only fields, preserved silently on save). */
+function advancedMatchBadge(r) {
+    if (!hasAdvancedMatch(r)) return '';
+    return `<span class="badge bg-yellow-lt ms-1" title="${escapeHtml(t('firewall.std.advancedMatchHint'))}">
+        <i class="ti ti-adjustments me-1"></i>${t('firewall.std.advancedMatchBadge')}</span>`;
 }
 
 function natCell(rule) {
@@ -195,7 +203,7 @@ function policyRow(r, canManage) {
             <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
             <td>${renderAddrCell(r.source, r.source_refs)}</td>
             <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
-            <td><span class="text-muted">${serviceLabel(r)}</span></td>
+            <td><span class="text-muted">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
             <td>${actionBadge(r.action)}</td>
             <td>${natCell(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
@@ -281,7 +289,7 @@ function renderPortForward() {
                                 <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
-                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span></td>
+                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
                                 <td><code>${escapeHtml(r.to_destination || '')}</code> ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
                                 <td>${enableToggle(r, canManage)}</td>
                                 <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>

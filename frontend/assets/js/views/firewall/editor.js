@@ -510,61 +510,79 @@ async function save() {
     const name = container.querySelector('#ed-name')?.value.trim() || null;
     const enabled = container.querySelector('#ed-enabled')?.checked !== false;
 
+    // Phase 1: read and validate every field that doesn't need a network call.
+    // Must run BEFORE resolveDirection (phase 2), which materialises literal
+    // address chips as address objects via POST — if validation ran after,
+    // a rejected save left those objects orphaned.
+    let plain;
+    if (mode === 'policy') {
+        // The Deny radio only ever represents DROP or REJECT (both render
+        // checked, see formFields policy branch); preserve REJECT when the
+        // rule already was REJECT and Deny stays selected, otherwise DROP.
+        const selected = container.querySelector('input[name="ed-action"]:checked')?.value || 'ACCEPT';
+        const action = selected === 'ACCEPT' ? 'ACCEPT'
+            : (st.origAction === 'REJECT' ? 'REJECT' : 'DROP');
+        const proto = container.querySelector('#ed-proto').value || null;
+        plain = {
+            table_name: 'filter', chain: 'FORWARD', action,
+            comment: name,
+            in_interface: container.querySelector('#ed-in').value || null,
+            out_interface: container.querySelector('#ed-out').value || null,
+            protocol: proto,
+            // The engine only matches --dport for tcp/udp; a port set under
+            // any other protocol is dead data (see backend port/protocol guard).
+            port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
+            policy_nat: container.querySelector('#ed-nat').checked,
+            enabled,
+        };
+    } else if (mode === 'portforward') {
+        const ip = container.querySelector('#ed-intip').value.trim();
+        const iport = container.querySelector('#ed-intport').value.trim();
+        if (!ip) { showToast(t('firewall.editor.intIpRequired'), 'error'); return; }
+        if (!IPV4_RE.test(ip)) { showToast(t('firewall.validation.ipv4Only'), 'error'); return; }
+        plain = {
+            table_name: 'nat', chain: 'PREROUTING', action: 'DNAT',
+            comment: name,
+            in_interface: container.querySelector('#ed-in').value || null,
+            protocol: container.querySelector('#ed-proto').value || 'tcp',
+            port: container.querySelector('#ed-port').value || null,
+            to_destination: iport ? `${ip}:${iport}` : ip,
+            hairpin: container.querySelector('#ed-hairpin')?.checked || false,
+            enabled,
+        };
+    } else { // outnat
+        const action = container.querySelector('#ed-nataction').value;
+        const toSource = container.querySelector('#ed-tosource')?.value.trim() || '';
+        if (action === 'SNAT' && !IPV4_RE.test(toSource)) {
+            showToast(t('firewall.validation.snatToSource'), 'error');
+            return;
+        }
+        plain = {
+            table_name: 'nat', chain: 'POSTROUTING', action,
+            comment: name,
+            out_interface: container.querySelector('#ed-out').value || null,
+            to_source: action === 'SNAT' ? toSource : null,
+            enabled,
+        };
+    }
+
+    const constraintError = validateRuleConstraints(plain);
+    if (constraintError) { showToast(constraintError, 'error'); return; }
+
+    // Phase 2: resolve address chips (may create address objects — only
+    // reached once every other field has already passed validation).
     let data;
     try {
-        if (mode === 'policy') {
+        if (mode === 'outnat') {
+            const src = await resolveDirection('source');
+            data = { ...plain, source: src.literal, source_refs: src.refs };
+        } else {
             const src = await resolveDirection('source');
             const dst = await resolveDirection('destination');
-            // The Deny radio only ever represents DROP or REJECT (both render
-            // checked, see formFields policy branch); preserve REJECT when the
-            // rule already was REJECT and Deny stays selected, otherwise DROP.
-            const selected = container.querySelector('input[name="ed-action"]:checked')?.value || 'ACCEPT';
-            const action = selected === 'ACCEPT' ? 'ACCEPT'
-                : (st.origAction === 'REJECT' ? 'REJECT' : 'DROP');
-            const proto = container.querySelector('#ed-proto').value || null;
             data = {
-                table_name: 'filter', chain: 'FORWARD', action,
-                comment: name,
-                in_interface: container.querySelector('#ed-in').value || null,
-                out_interface: container.querySelector('#ed-out').value || null,
-                protocol: proto,
-                // The engine only matches --dport for tcp/udp; a port set under
-                // any other protocol is dead data (see backend port/protocol guard).
-                port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
+                ...plain,
                 source: src.literal, source_refs: src.refs,
                 destination: dst.literal, destination_refs: dst.refs,
-                policy_nat: container.querySelector('#ed-nat').checked,
-                enabled,
-            };
-        } else if (mode === 'portforward') {
-            const src = await resolveDirection('source');
-            const dst = await resolveDirection('destination');
-            const ip = container.querySelector('#ed-intip').value.trim();
-            const iport = container.querySelector('#ed-intport').value.trim();
-            if (!ip) { showToast(t('firewall.editor.intIpRequired'), 'error'); return; }
-            if (!IPV4_RE.test(ip)) { showToast(t('firewall.validation.ipv4Only'), 'error'); return; }
-            data = {
-                table_name: 'nat', chain: 'PREROUTING', action: 'DNAT',
-                comment: name,
-                in_interface: container.querySelector('#ed-in').value || null,
-                protocol: container.querySelector('#ed-proto').value || 'tcp',
-                port: container.querySelector('#ed-port').value || null,
-                to_destination: iport ? `${ip}:${iport}` : ip,
-                source: src.literal, source_refs: src.refs,
-                destination: dst.literal, destination_refs: dst.refs,
-                hairpin: container.querySelector('#ed-hairpin')?.checked || false,
-                enabled,
-            };
-        } else { // outnat
-            const src = await resolveDirection('source');
-            const action = container.querySelector('#ed-nataction').value;
-            data = {
-                table_name: 'nat', chain: 'POSTROUTING', action,
-                comment: name,
-                out_interface: container.querySelector('#ed-out').value || null,
-                to_source: action === 'SNAT' ? (container.querySelector('#ed-tosource').value || null) : null,
-                source: src.literal, source_refs: src.refs,
-                enabled,
             };
         }
     } catch (err) {
@@ -572,9 +590,7 @@ async function save() {
         return;
     }
 
-    const constraintError = validateRuleConstraints(data);
-    if (constraintError) { showToast(constraintError, 'error'); return; }
-
+    // Phase 3: submit.
     try {
         if (st.isEdit) {
             await apiPatch(`/firewall/rules/${st.rule.id}`, data);

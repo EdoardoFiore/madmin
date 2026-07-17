@@ -298,6 +298,8 @@
             "noOutNat": "No outbound NAT rules",
             "noOutNatHint": "Navigation NAT is owned by policies with NAT enabled.",
             "manageFromAdvanced": "Advanced action: manage from the Advanced view",
+            "advancedMatchBadge": "Advanced",
+            "advancedMatchHint": "This rule carries extra conditions (state, rate limit or logging) only visible in the Advanced view.",
             "colStatus": "Status",
             "implicitDeny": "Implicit deny",
             "implicitDenyHint": "Any forwarded traffic not allowed by a rule above is dropped here. Fixed system rule, always last.",
@@ -349,7 +351,8 @@
             "outIfaceHook": "Output interface (-o) is not valid in chain {chain}: only available in POSTROUTING, OUTPUT, FORWARD.",
             "natActionHook": "Action {action} is not valid in chain {chain}.",
             "tableChain": "Chain {chain} is not valid for table {table}.",
-            "ipv4Only": "Invalid IPv4 address"
+            "ipv4Only": "Invalid IPv4 address",
+            "snatToSource": "SNAT requires a valid IPv4 address in \"Source address (SNAT)\"."
         },
         "autoRule": "Auto",
         "autoRuleHint": "Auto-generated companion rule. It updates and is removed together with its owning rule.",

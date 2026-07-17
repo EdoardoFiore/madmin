@@ -774,11 +774,15 @@ async def reorder_single_rule(
                     r.order -= 1
         
         rule.order = new_order
-        await session.commit()
-        
-        # Re-apply rules
+        await session.flush()
+
+        # Re-apply rules BEFORE committing: if the kernel rejects the new
+        # ruleset, the except IptablesError below must roll back the order
+        # mutations too, or DB and kernel state permanently diverge.
         await firewall_orchestrator.apply_rules(session)
-        
+
+        await session.commit()
+
         return {"status": "ok", "message": f"Rule moved to position {new_order}"}
     except IptablesError as e:
         await session.rollback()

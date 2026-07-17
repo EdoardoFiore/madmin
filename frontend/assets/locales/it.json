@@ -298,6 +298,8 @@
             "noOutNat": "Nessuna regola di NAT in uscita",
             "noOutNatHint": "Il NAT di navigazione è gestito dalle regole con NAT attivo.",
             "manageFromAdvanced": "Azione avanzata: gestibile solo dalla vista Avanzata",
+            "advancedMatchBadge": "Avanzata",
+            "advancedMatchHint": "Questa regola ha condizioni aggiuntive (stato, rate limit o log) visibili solo nella vista Avanzata.",
             "colStatus": "Stato",
             "implicitDeny": "Nega implicito",
             "implicitDenyHint": "Tutto il traffico di forward non consentito da una regola precedente viene bloccato qui. Regola fissa di sistema, sempre ultima.",
@@ -349,7 +351,8 @@
             "outIfaceHook": "Interfaccia di uscita (-o) non valida nella catena {chain}: disponibile solo in POSTROUTING, OUTPUT, FORWARD.",
             "natActionHook": "Azione {action} non valida nella catena {chain}.",
             "tableChain": "Catena {chain} non valida per la tabella {table}.",
-            "ipv4Only": "Indirizzo IPv4 non valido"
+            "ipv4Only": "Indirizzo IPv4 non valido",
+            "snatToSource": "SNAT richiede un indirizzo IPv4 valido in \"Indirizzo sorgente (SNAT)\"."
         },
         "autoRule": "Auto",
         "autoRuleHint": "Regola companion generata automaticamente. Si aggiorna ed elimina insieme alla regola che la possiede.",

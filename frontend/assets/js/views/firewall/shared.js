@@ -80,6 +80,15 @@ export function isLockedForMode(rule, mode) {
     return !!set && !set.includes(rule.action);
 }
 
+/** True when a rule carries a match/behavior the Standard editor never shows
+ * or edits (connection state, rate limiting, logging) — set only from
+ * Advanced, but silently preserved (not stripped) when the rule is saved
+ * again from Standard. Used to flag such rows so they don't look narrower
+ * than they really are. */
+export function hasAdvancedMatch(rule) {
+    return !!(rule.state || rule.limit_rate || rule.log_prefix);
+}
+
 /**
  * Validate a rule's field/chain (hook) compatibility client-side, mirroring the
  * backend. Returns a translated error string, or null if valid.
