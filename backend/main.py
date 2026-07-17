@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from sqlalchemy import select
 from config import MADMIN_VERSION
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -204,7 +205,6 @@ async def lifespan(app: FastAPI):
     # Start scheduled backup task
     from core.settings.models import BackupSettings
     from core.backup.service import run_backup
-    from sqlalchemy import select
     from datetime import datetime
     
     backup_task_running = True

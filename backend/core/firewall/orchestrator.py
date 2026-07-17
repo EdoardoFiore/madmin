@@ -1167,7 +1167,7 @@ class FirewallOrchestrator:
 
         logger.info(
             f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
-            f" ({len(subchain_map)} forward subchains, gateway protect: {len(lan_interfaces)} LAN interfaces)"
+            f" ({len(subchain_map)} forward subchains, gateway protect: {len(topo['lan_interfaces'])} LAN interfaces)"
         )
         # Persist rules + ipsets so the fail-closed boot guard can restore a
         # self-consistent last-good ruleset after a reboot. Best-effort, off
