@@ -326,6 +326,8 @@
             "extPort": "External port",
             "intIp": "Internal IP",
             "intPort": "Internal port",
+            "intObj": "Internal object",
+            "intObjHint": "Instead of a literal IP: a host address object (CIDR /32).",
             "sourceRestrict": "Source (optional)",
             "hairpin": "Hairpin NAT",
             "hairpinHint": "Lets LAN clients reach this port forward via the public IP (NAT reflection).",

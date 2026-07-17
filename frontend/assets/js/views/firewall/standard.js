@@ -84,6 +84,16 @@ function renderAddrCell(literal, refs) {
     return `<span class="text-muted">${t('firewall.std.anyAddr')}</span>`;
 }
 
+/** DNAT internal target: an address-object reference (badge + optional
+ * :port) or the literal ip[:port] column — see to_destination_object_id. */
+function internalTargetCell(r) {
+    if (r.to_destination_object_id) {
+        const port = r.to_destination_port ? `:${escapeHtml(r.to_destination_port)}` : '';
+        return `<span class="badge bg-azure-lt"><i class="ti ti-box me-1"></i>${escapeHtml(r.to_destination_object_name || r.to_destination_object_id)}</span><code class="ms-1">${port}</code>`;
+    }
+    return `<code>${escapeHtml(r.to_destination || '')}</code>`;
+}
+
 /** Badge for rules carrying a match/behavior Standard never shows (state,
  * rate limit, logging — Advanced-only fields, preserved silently on save). */
 function advancedMatchBadge(r) {
@@ -290,7 +300,7 @@ function renderPortForward() {
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
-                                <td><code>${escapeHtml(r.to_destination || '')}</code> ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
+                                <td>${internalTargetCell(r)} ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
                                 <td>${enableToggle(r, canManage)}</td>
                                 <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>
                             </tr>`;

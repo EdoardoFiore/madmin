@@ -1069,7 +1069,12 @@ function renderCell(rule, column) {
         case 'comment': return `<span class="text-muted">${rule.comment ? esc(rule.comment) : '-'}</span>`;
         case 'in_interface': return rule.in_interface ? `<code>${esc(rule.in_interface)}</code>` : '-';
         case 'out_interface': return rule.out_interface ? `<code>${esc(rule.out_interface)}</code>` : '-';
-        case 'to_destination': return rule.to_destination ? `<code>${esc(rule.to_destination)}</code>` : '-';
+        case 'to_destination':
+            if (rule.to_destination_object_id) {
+                const port = rule.to_destination_port ? `:${esc(rule.to_destination_port)}` : '';
+                return `<span class="badge bg-azure-lt"><i class="ti ti-box me-1"></i>${esc(rule.to_destination_object_name || rule.to_destination_object_id)}</span><code class="ms-1">${port}</code>`;
+            }
+            return rule.to_destination ? `<code>${esc(rule.to_destination)}</code>` : '-';
         case 'to_source': return rule.to_source ? `<code>${esc(rule.to_source)}</code>` : '-';
         case 'to_ports': return rule.to_ports ? `<code>${esc(rule.to_ports)}</code>` : '-';
         case 'log_prefix': return rule.log_prefix ? `<code>${esc(rule.log_prefix)}</code>` : '-';

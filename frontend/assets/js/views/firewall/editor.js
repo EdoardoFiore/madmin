@@ -260,7 +260,14 @@ function formFields(rule) {
             ${enabledHtml(rule)}`;
     }
     if (mode === 'portforward') {
-        const [ip, iport] = splitIpPort(rule?.to_destination);
+        const hasIntObj = !!rule?.to_destination_object_id;
+        const [ip, literalPort] = splitIpPort(rule?.to_destination);
+        const iport = hasIntObj ? (rule?.to_destination_port || '') : literalPort;
+        // Object targets are restricted to /32 cidr (a single host — see
+        // backend effective_to_destination): a range or wider CIDR can't be
+        // a DNAT rewrite target or a plain -d match on the companions.
+        const intObjOptions = (st.objects || [])
+            .filter(o => o.enabled && o.type === 'cidr' && o.value.endsWith('/32'));
         return `
             ${nameHtml(rule)}
             <div class="col-md-6">
@@ -281,11 +288,20 @@ function formFields(rule) {
             ${addrFieldHtml('destination', t('firewall.editor.extIp'), t('firewall.editor.extIpHint'))}
             <div class="col-md-6">
                 <label class="form-label">${t('firewall.editor.intIp')}</label>
-                <input type="text" class="form-control" id="ed-intip" value="${escapeHtml(ip)}" placeholder="10.0.0.5">
+                <input type="text" class="form-control" id="ed-intip" value="${escapeHtml(ip)}"
+                       placeholder="10.0.0.5" ${hasIntObj ? 'disabled' : ''}>
             </div>
             <div class="col-md-6">
                 <label class="form-label">${t('firewall.editor.intPort')}</label>
                 <input type="text" class="form-control" id="ed-intport" value="${escapeHtml(iport)}" placeholder="443">
+            </div>
+            <div class="col-12">
+                <label class="form-label">${t('firewall.editor.intObj')}</label>
+                <select class="form-select" id="ed-intobj">
+                    <option value="">—</option>
+                    ${intObjOptions.map(o => `<option value="${o.id}" ${hasIntObj && rule.to_destination_object_id === o.id ? 'selected' : ''}>${escapeHtml(o.name)} (${escapeHtml(o.value)})</option>`).join('')}
+                </select>
+                <small class="form-hint">${t('firewall.editor.intObjHint')}</small>
             </div>
             ${addrFieldHtml('source', t('firewall.editor.sourceRestrict'))}
             <div class="col-12">
@@ -357,6 +373,19 @@ function bindForm() {
     // Outbound NAT action -> show/hide to-source
     container.querySelector('#ed-nataction')?.addEventListener('change', (e) => {
         container.querySelector('#ed-tosource-wrap')?.classList.toggle('d-none', e.target.value !== 'SNAT');
+    });
+
+    // Internal target: literal IP and address object are mutually exclusive.
+    container.querySelector('#ed-intobj')?.addEventListener('change', (e) => {
+        const intIp = container.querySelector('#ed-intip');
+        if (!intIp) return;
+        if (e.target.value) { intIp.value = ''; intIp.disabled = true; }
+        else { intIp.disabled = false; }
+    });
+    container.querySelector('#ed-intip')?.addEventListener('input', (e) => {
+        if (!e.target.value) return;
+        const intObj = container.querySelector('#ed-intobj');
+        if (intObj) intObj.value = '';
     });
 
     // Combined address fields
@@ -536,17 +565,30 @@ async function save() {
             enabled,
         };
     } else if (mode === 'portforward') {
-        const ip = container.querySelector('#ed-intip').value.trim();
+        const intObjId = container.querySelector('#ed-intobj')?.value || '';
         const iport = container.querySelector('#ed-intport').value.trim();
-        if (!ip) { showToast(t('firewall.editor.intIpRequired'), 'error'); return; }
-        if (!IPV4_RE.test(ip)) { showToast(t('firewall.validation.ipv4Only'), 'error'); return; }
+        // Literal IP and address object are mutually exclusive internal
+        // targets (see #ed-intobj change handler); explicit nulls on both
+        // branches below so switching between them clears the other on PATCH.
+        let toDestination = null, toDestinationObjectId = null, toDestinationPort = null;
+        if (intObjId) {
+            toDestinationObjectId = intObjId;
+            toDestinationPort = iport || null;
+        } else {
+            const ip = container.querySelector('#ed-intip').value.trim();
+            if (!ip) { showToast(t('firewall.editor.intIpRequired'), 'error'); return; }
+            if (!IPV4_RE.test(ip)) { showToast(t('firewall.validation.ipv4Only'), 'error'); return; }
+            toDestination = iport ? `${ip}:${iport}` : ip;
+        }
         plain = {
             table_name: 'nat', chain: 'PREROUTING', action: 'DNAT',
             comment: name,
             in_interface: container.querySelector('#ed-in').value || null,
             protocol: container.querySelector('#ed-proto').value || 'tcp',
             port: container.querySelector('#ed-port').value || null,
-            to_destination: iport ? `${ip}:${iport}` : ip,
+            to_destination: toDestination,
+            to_destination_object_id: toDestinationObjectId,
+            to_destination_port: toDestinationPort,
             hairpin: container.querySelector('#ed-hairpin')?.checked || false,
             enabled,
         };
