@@ -890,6 +890,84 @@ function renderRules() {
 
         const orderedColumns = getOrderedVisibleColumns();
 
+        // filter/FORWARD: the engine dispatches rules with both interfaces set
+        // into per-pair subchains, evaluated at the pair's first-rule position
+        // (see orchestrator._build_forward_layout) — a flat order-sorted table
+        // misrepresents that. Group the same way standard.js's Policy section
+        // does, so the two views agree on what actually happens.
+        if (currentTable === 'filter' && chain === 'FORWARD') {
+            const userRules = chainRules.filter(r => !r.auto_generated);
+            const autoRules = chainRules.filter(r => r.auto_generated);
+
+            const groups = new Map();
+            for (const r of userRules) {
+                const key = `${r.in_interface || '*'}|${r.out_interface || '*'}`;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(r);
+            }
+
+            const theadHtml = `
+                <thead>
+                    <tr>
+                        <th class="rule-order" style="width: 60px;">#</th>
+                        <th>${t('firewall.action')}</th>
+                        ${orderedColumns.map(col => `<th>${ALL_COLUMNS[col].label}</th>`).join('')}
+                        <th class="rule-actions"></th>
+                    </tr>
+                </thead>`;
+
+            let groupsHtml = '';
+            for (const [key, list] of groups) {
+                const [inIf, outIf] = key.split('|');
+                const pairLabel = `${inIf === '*' ? t('firewall.editor.anyInterface') : escapeHtml(inIf)}
+                    <i class="ti ti-arrow-right mx-1 text-muted"></i>
+                    ${outIf === '*' ? t('firewall.editor.anyInterface') : escapeHtml(outIf)}`;
+                groupsHtml += `
+                    <div class="mb-3">
+                        <div class="px-2 py-1 bg-light border-bottom d-flex align-items-center">
+                            <i class="ti ti-arrows-right-left me-2 text-muted"></i>
+                            <strong>${pairLabel}</strong>
+                            <span class="badge bg-secondary-lt ms-2">${list.length}</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-vcenter firewall-table mb-0">
+                                ${theadHtml}
+                                <tbody class="sortable-container" data-chain="${chain}" data-pair="${escapeHtml(key)}">
+                                    ${list.map(rule => renderRuleRow(rule, orderedColumns)).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>`;
+            }
+
+            const autoHtml = autoRules.length ? `
+                <div class="table-responsive">
+                    <table class="table table-vcenter firewall-table mb-0">
+                        ${theadHtml}
+                        <tbody>
+                            ${autoRules.map(rule => renderRuleRow(rule, orderedColumns)).join('')}
+                        </tbody>
+                    </table>
+                </div>` : '';
+
+            container.innerHTML = `
+                <div class="text-muted small mb-2"><i class="ti ti-info-circle me-1"></i>${t('firewall.forwardGroupHint')}</div>
+                ${groupsHtml}
+                ${autoHtml}
+            `;
+
+            setupRowEvents(container);
+            container.querySelectorAll('.sortable-container').forEach(tbody => setupDragDrop(tbody));
+
+            container.querySelectorAll('.addr-ref-chip[data-bs-toggle="popover"]').forEach(el => {
+                bootstrap.Popover.getOrCreateInstance(el, {
+                    html: true, trigger: 'hover focus', placement: 'top', container: 'body',
+                    delay: { show: 500, hide: 100 },
+                });
+            });
+            continue;
+        }
+
         container.innerHTML = `
             <div class="table-responsive">
                 <table class="table table-vcenter firewall-table" id="table-${chain.toLowerCase()}">

@@ -436,6 +436,7 @@
         "noRules": "No rules in this chain",
         "noRulesInChain": "No rules for chain {chain}",
         "noRulesHint": "Click 'New Rule' to create one",
+        "forwardGroupHint": "Rules are grouped by interface pair the way the engine evaluates them (per-pair subchains, at the first rule's position).",
         "lessThan2Lans": "Less than 2 LAN networks configured",
         "add2LansHint": "Add at least two LAN interfaces to manage gateway exceptions.",
         "sourceNetwork": "Source network",
