@@ -17,7 +17,7 @@ import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { setPageActions, checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces, interfaceSelect } from './interfaces.js';
-import { SERVICE_PRESETS, validateRuleConstraints } from './shared.js';
+import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
 let st = null;   // editor state
@@ -27,11 +27,22 @@ let st = null;   // editor state
 const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
 export async function openEditor({ container, mode, rule = null, duplicate = false, onClose }) {
+    // A rule whose action falls outside this mode's fixed action set (e.g. a
+    // LOG policy, a REDIRECT port forward) can't be represented by this form:
+    // opening it would silently coerce the action into something else on
+    // save. The Standard view already disables edit/duplicate for these rows
+    // (see rowButtons in standard.js); this is defense in depth.
+    if (rule && isLockedForMode(rule, mode)) {
+        showToast(t('firewall.std.manageFromAdvanced'), 'error');
+        onClose?.();
+        return;
+    }
     const isEdit = !!rule && !duplicate;
     st = {
         container, mode, onClose,
         isEdit,
         rule: isEdit ? rule : null,
+        origAction: rule?.action || null,
         objects: [], groups: [],
         activeField: null,
         panel: null,
@@ -277,6 +288,13 @@ function formFields(rule) {
                 <input type="text" class="form-control" id="ed-intport" value="${escapeHtml(iport)}" placeholder="443">
             </div>
             ${addrFieldHtml('source', t('firewall.editor.sourceRestrict'))}
+            <div class="col-12">
+                <label class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="ed-hairpin" ${rule?.hairpin ? 'checked' : ''}>
+                    <span class="form-check-label">${t('firewall.editor.hairpin')}</span>
+                </label>
+                <small class="form-hint">${t('firewall.editor.hairpinHint')}</small>
+            </div>
             ${enabledHtml(rule)}`;
     }
     // outnat
@@ -374,12 +392,19 @@ function openEntries() {
     if (el) bootstrap.Offcanvas.getOrCreateInstance(el).show();
 }
 
-/** Hide the port field when the protocol carries no port (all / ICMP). */
+/** Hide the port field when the protocol carries no port (all / ICMP). Also
+ * clears its value: the engine only emits --dport for tcp/udp, so a port left
+ * behind in the hidden field would be saved and silently ignored. */
 function updatePortVisibility() {
     const wrap = st?.container.querySelector('#ed-port-wrap');
     if (!wrap) return;
     const proto = st.container.querySelector('#ed-proto')?.value || '';
-    wrap.classList.toggle('d-none', proto === '' || proto === 'icmp');
+    const hidden = proto === '' || proto === 'icmp';
+    wrap.classList.toggle('d-none', hidden);
+    if (hidden) {
+        const portInput = st.container.querySelector('#ed-port');
+        if (portInput) portInput.value = '';
+    }
 }
 
 /** Grey out, in each interface select, the value already chosen in the other. */
@@ -490,14 +515,22 @@ async function save() {
         if (mode === 'policy') {
             const src = await resolveDirection('source');
             const dst = await resolveDirection('destination');
-            const action = container.querySelector('input[name="ed-action"]:checked')?.value || 'ACCEPT';
+            // The Deny radio only ever represents DROP or REJECT (both render
+            // checked, see formFields policy branch); preserve REJECT when the
+            // rule already was REJECT and Deny stays selected, otherwise DROP.
+            const selected = container.querySelector('input[name="ed-action"]:checked')?.value || 'ACCEPT';
+            const action = selected === 'ACCEPT' ? 'ACCEPT'
+                : (st.origAction === 'REJECT' ? 'REJECT' : 'DROP');
+            const proto = container.querySelector('#ed-proto').value || null;
             data = {
                 table_name: 'filter', chain: 'FORWARD', action,
                 comment: name,
                 in_interface: container.querySelector('#ed-in').value || null,
                 out_interface: container.querySelector('#ed-out').value || null,
-                protocol: container.querySelector('#ed-proto').value || null,
-                port: container.querySelector('#ed-port').value || null,
+                protocol: proto,
+                // The engine only matches --dport for tcp/udp; a port set under
+                // any other protocol is dead data (see backend port/protocol guard).
+                port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
                 source: src.literal, source_refs: src.refs,
                 destination: dst.literal, destination_refs: dst.refs,
                 policy_nat: container.querySelector('#ed-nat').checked,
@@ -519,6 +552,7 @@ async function save() {
                 to_destination: iport ? `${ip}:${iport}` : ip,
                 source: src.literal, source_refs: src.refs,
                 destination: dst.literal, destination_refs: dst.refs,
+                hairpin: container.querySelector('#ed-hairpin')?.checked || false,
                 enabled,
             };
         } else { // outnat

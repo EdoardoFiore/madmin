@@ -66,6 +66,15 @@ class MachineFirewallRule(SQLModel, table=True):
     # standalone POSTROUTING rule.
     policy_nat: bool = Field(default=False)
 
+    # Hairpin NAT (nat/PREROUTING DNAT rules only). When True, apply_rules
+    # auto-generates the companion lines (comment MADMIN_AUTO_HAIRPIN_<id>) that
+    # let LAN clients reach this port forward via the WAN IP: a PREROUTING DNAT
+    # scoped to each LAN subnet (no -i), a POSTROUTING MASQUERADE so the internal
+    # server's reply routes back through the gateway, and a FORWARD ACCEPT for
+    # the LAN-sourced flow (the original DNAT's FORWARD companion carries the
+    # WAN in_interface and won't match hairpin traffic).
+    hairpin: bool = Field(default=False)
+
     # Metadata
     comment: Optional[str] = Field(default=None, max_length=255)
     table_name: str = Field(default="filter", max_length=20)  # filter, nat, mangle, raw
@@ -179,6 +188,7 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     table_name: str = "filter"
     enabled: bool = True
     policy_nat: bool = False
+    hairpin: bool = False
     # Object/group references (multi-select, OR semantics). When non-empty for a
     # direction they take precedence over the literal source/destination field.
     source_refs: Optional[List[RuleAddressRef]] = None
@@ -208,6 +218,7 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     table_name: Optional[str] = None
     enabled: Optional[bool] = None
     policy_nat: Optional[bool] = None
+    hairpin: Optional[bool] = None
     source_refs: Optional[List[RuleAddressRef]] = None
     destination_refs: Optional[List[RuleAddressRef]] = None
 
@@ -250,6 +261,7 @@ class MachineFirewallRuleResponse(SQLModel):
     order: int
     enabled: bool
     policy_nat: bool = False  # forward policy owns an outbound MASQUERADE companion
+    hairpin: bool = False  # DNAT is reachable from the LAN via the WAN IP (NAT reflection)
     auto_generated: bool = False  # synthetic read-only row (e.g. DNAT/NAT companion)
     created_at: datetime
     updated_at: datetime

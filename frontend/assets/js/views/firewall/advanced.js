@@ -39,11 +39,12 @@ const ALL_COLUMNS = {
     to_ports: { get label() { return t('firewall.columnLabels.to_ports'); }, tables: ['nat'] },
     log_prefix: { get label() { return t('firewall.columnLabels.log_prefix'); } },
     limit_rate: { get label() { return t('firewall.columnLabels.limit_rate'); } },
+    policy_nat: { get label() { return t('firewall.columnLabels.policy_nat'); }, tables: ['filter'] },
     comment: { get label() { return t('firewall.columnLabels.comment'); } }
 };
 
 const DEFAULT_COLUMNS = {
-    filter: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment'],
+    filter: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'policy_nat', 'comment'],
     nat: ['protocol', 'source', 'destination', 'port', 'in_interface', 'out_interface', 'to_destination', 'to_source', 'comment'],
     mangle: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment'],
     raw: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment']
@@ -296,6 +297,14 @@ export async function render(container) {
                                         <input class="form-check-input" type="checkbox" id="rule-enabled" checked>
                                         <span class="form-check-label">${t('firewall.ruleActive')}</span>
                                     </label>
+                                </div>
+                                <div class="col-md-6 field-policy-nat" style="display:none">
+                                    <label class="form-label">${t('firewall.columnLabels.policy_nat')}</label>
+                                    <label class="form-check form-switch mt-2">
+                                        <input class="form-check-input" type="checkbox" id="rule-policy-nat">
+                                        <span class="form-check-label">${t('firewall.policyNatLabel')}</span>
+                                    </label>
+                                    <small class="form-hint">${t('firewall.policyNatHint')}</small>
                                 </div>
                                 <div class="col-12">
                                     <label class="form-label">${t('firewall.comment')}</label>
@@ -647,7 +656,13 @@ function setupEventListeners() {
         updateModalChains(e.target.value);
         updateModalActions(e.target.value);
         toggleActionFields();
+        togglePolicyNatField();
         updateIptablesPreview();
+    });
+
+    // Modal chain change - policy_nat is only meaningful on filter/FORWARD
+    document.getElementById('rule-chain')?.addEventListener('change', () => {
+        togglePolicyNatField();
     });
 
     // Action change - show/hide specific fields
@@ -730,6 +745,25 @@ function updateModalActions(table) {
     const actionSelect = document.getElementById('rule-action');
     const actions = TABLE_ACTIONS[table];
     actionSelect.innerHTML = actions.map(a => `<option value="${a}">${a}</option>`).join('');
+}
+
+/**
+ * Show the outbound-NAT switch only for filter/FORWARD rules (the only chain
+ * apply_rules will honor policy_nat on, see backend policy_nat_fields).
+ * Uncheck when hidden so a stale checked value never rides along after a
+ * table/chain switch.
+ */
+function togglePolicyNatField() {
+    const wrap = document.querySelector('.field-policy-nat');
+    if (!wrap) return;
+    const table = document.getElementById('rule-table')?.value;
+    const chain = document.getElementById('rule-chain')?.value;
+    const show = table === 'filter' && chain === 'FORWARD';
+    wrap.style.display = show ? 'block' : 'none';
+    if (!show) {
+        const cb = document.getElementById('rule-policy-nat');
+        if (cb) cb.checked = false;
+    }
 }
 
 /**
@@ -1040,6 +1074,9 @@ function renderCell(rule, column) {
         case 'to_ports': return rule.to_ports ? `<code>${esc(rule.to_ports)}</code>` : '-';
         case 'log_prefix': return rule.log_prefix ? `<code>${esc(rule.log_prefix)}</code>` : '-';
         case 'limit_rate': return rule.limit_rate ? `${esc(rule.limit_rate)}${rule.limit_burst ? ` (burst: ${rule.limit_burst})` : ''}` : '-';
+        case 'policy_nat': return rule.policy_nat
+            ? `<span class="badge bg-green-lt"><i class="ti ti-arrows-exchange me-1"></i>${t('firewall.std.masquerade')}</span>`
+            : '<span class="text-muted">-</span>';
         default: return '-';
     }
 }
@@ -1304,6 +1341,8 @@ function openRuleModal(rule = null, isDuplicate = false) {
     document.getElementById('rule-limit-rate').value = rule?.limit_rate || '';
     document.getElementById('rule-limit-burst').value = rule?.limit_burst || '';
     document.getElementById('rule-enabled').checked = rule?.enabled !== false;
+    document.getElementById('rule-policy-nat').checked = rule?.policy_nat || false;
+    togglePolicyNatField();
     document.getElementById('rule-comment').value = rule?.comment || '';
 
     // New fields
@@ -1335,12 +1374,18 @@ async function handleRuleSubmit(e) {
 
     const srcDir = getDirectionPayload('source');
     const dstDir = getDirectionPayload('destination');
+    const table_name = document.getElementById('rule-table').value;
+    const chain = document.getElementById('rule-chain').value;
+    const protocol = document.getElementById('rule-protocol').value || null;
     const data = {
-        table_name: document.getElementById('rule-table').value,
-        chain: document.getElementById('rule-chain').value,
+        table_name,
+        chain,
         action: document.getElementById('rule-action').value,
-        protocol: document.getElementById('rule-protocol').value || null,
-        port: document.getElementById('rule-port').value || null,
+        protocol,
+        // The engine only matches --dport for tcp/udp (build_rule_args); a port
+        // left in the (possibly hidden, e.g. after loading a legacy rule) field
+        // under any other protocol is dead data — never send it.
+        port: (protocol === 'tcp' || protocol === 'udp') ? (document.getElementById('rule-port').value || null) : null,
         source: srcDir.literal,
         destination: dstDir.literal,
         source_refs: srcDir.refs,
@@ -1352,6 +1397,11 @@ async function handleRuleSubmit(e) {
         limit_burst: parseInt(document.getElementById('rule-limit-burst').value) || null,
         enabled: document.getElementById('rule-enabled').checked,
         comment: document.getElementById('rule-comment').value || null,
+        // Only meaningful on filter/FORWARD (backend router rejects it elsewhere);
+        // gating here mirrors togglePolicyNatField and keeps duplicate-from-Advanced
+        // from silently dropping the flag (previously omitted entirely).
+        policy_nat: (table_name === 'filter' && chain === 'FORWARD')
+            ? (document.getElementById('rule-policy-nat')?.checked || false) : false,
 
         // New fields
         to_destination: document.getElementById('rule-to-destination').value || null,

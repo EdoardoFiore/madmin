@@ -13,7 +13,7 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
-import { serviceLabel, isAutoRow, isManagedNat } from './shared.js';
+import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
@@ -188,9 +188,11 @@ function policyRow(r, canManage) {
                 <td></td>
             </tr>`;
     }
+    const locked = isLockedForMode(r, 'policy');
+    const draggable = canManage && !locked;
     return `
-        <tr class="${disabled} fw-drag" data-id="${r.id}" draggable="${canManage}">
-            <td>${canManage ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
+        <tr class="${disabled} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+            <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
             <td>${renderAddrCell(r.source, r.source_refs)}</td>
             <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
             <td><span class="text-muted">${serviceLabel(r)}</span></td>
@@ -198,11 +200,23 @@ function policyRow(r, canManage) {
             <td>${natCell(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
             <td>${enableToggle(r, canManage)}</td>
-            <td class="text-end">${canManage ? rowButtons() : ''}</td>
+            <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>
         </tr>`;
 }
 
-function rowButtons() {
+/** Edit/duplicate/delete button group. When locked (rule's action isn't one
+ * the current Standard editor mode can represent, e.g. a LOG policy or a
+ * REDIRECT port forward) edit/duplicate are disabled to avoid the editor
+ * silently coercing the action into something else on save; delete stays
+ * available since removing the rule can't misrepresent it. */
+function rowButtons(locked = false) {
+    if (locked) {
+        return `
+            <div class="btn-group btn-group-sm">
+                <button class="btn btn-ghost-secondary" disabled title="${escapeHtml(t('firewall.std.manageFromAdvanced'))}"><i class="ti ti-lock"></i></button>
+                <button class="btn btn-ghost-danger fw-del" title="${t('common.delete')}"><i class="ti ti-trash"></i></button>
+            </div>`;
+    }
     return `
         <div class="btn-group btn-group-sm">
             <button class="btn btn-ghost-secondary fw-dup" title="${t('common.copy')}"><i class="ti ti-copy"></i></button>
@@ -250,6 +264,7 @@ function renderPortForward() {
             <div class="table-responsive">
                 <table class="table table-vcenter card-table mb-0">
                     <thead><tr>
+                        <th style="width:42px"></th>
                         <th>${t('firewall.comment')}</th>
                         <th>${t('firewall.inInterface')}</th>
                         <th>${t('firewall.std.external')}</th>
@@ -257,16 +272,21 @@ function renderPortForward() {
                         <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
-                    <tbody>
-                        ${list.map(r => `
-                            <tr class="${r.enabled ? '' : 'opacity-50'}" data-id="${r.id}">
+                    <tbody class="fw-sortable">
+                        ${list.map(r => {
+                            const locked = isLockedForMode(r, 'portforward');
+                            const draggable = canManage && !locked;
+                            return `
+                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+                                <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span></td>
-                                <td><code>${escapeHtml(r.to_destination || '')}</code></td>
+                                <td><code>${escapeHtml(r.to_destination || '')}</code> ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
                                 <td>${enableToggle(r, canManage)}</td>
-                                <td class="text-end">${canManage ? rowButtons() : ''}</td>
-                            </tr>`).join('')}
+                                <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>
+                            </tr>`;
+                        }).join('')}
                     </tbody>
                 </table>
             </div>`;
@@ -275,6 +295,7 @@ function renderPortForward() {
     wrap.innerHTML = `<div class="card">${header}${inner}</div>`;
     document.getElementById('btn-new-portfwd')?.addEventListener('click', () => edit('portforward', null));
     bindRowActions(wrap, 'portforward');
+    if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +327,7 @@ function renderOutboundNat() {
             <div class="table-responsive">
                 <table class="table table-vcenter card-table mb-0">
                     <thead><tr>
+                        <th style="width:42px"></th>
                         <th>${t('firewall.std.colSource')}</th>
                         <th>${t('firewall.std.colDest')}</th>
                         <th>${t('firewall.outInterface')}</th>
@@ -313,17 +335,20 @@ function renderOutboundNat() {
                         <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
-                    <tbody>
+                    <tbody class="fw-sortable">
                         ${list.map(r => {
                             const locked = isAutoRow(r) || isManagedNat(r);
+                            const actionLocked = isLockedForMode(r, 'outnat');
+                            const draggable = canManage && !locked;
                             return `
-                            <tr class="${r.enabled ? '' : 'opacity-50'}" data-id="${r.id}">
+                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+                                <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${renderAddrCell(r.source, r.source_refs)}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
                                 <td>${r.out_interface ? `<code>${escapeHtml(r.out_interface)}</code>` : '<span class="text-muted">—</span>'}</td>
                                 <td>${actionBadge(r.action)} ${locked ? `<span class="badge bg-azure-lt ms-1"><i class="ti ti-lock me-1"></i>${t('firewall.autoRule')}</span>` : ''}</td>
                                 <td>${enableToggle(r, canManage)}</td>
-                                <td class="text-end">${(canManage && !locked) ? rowButtons() : ''}</td>
+                                <td class="text-end">${(canManage && !locked) ? rowButtons(actionLocked) : ''}</td>
                             </tr>`;
                         }).join('')}
                     </tbody>
@@ -334,6 +359,7 @@ function renderOutboundNat() {
     wrap.innerHTML = `<div class="card">${header}${inner}</div>`;
     document.getElementById('btn-new-outnat')?.addEventListener('click', () => edit('outnat', null));
     bindRowActions(wrap, 'outnat');
+    if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
 }
 
 // ---------------------------------------------------------------------------

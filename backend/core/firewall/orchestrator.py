@@ -7,6 +7,7 @@ High-level firewall management that coordinates:
 - Rule application from database
 """
 import asyncio
+import ipaddress
 import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
@@ -49,6 +50,45 @@ def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
     }
 
 
+def redirect_input_fields(rule) -> Dict[str, Optional[str]]:
+    """
+    Compute the INPUT ACCEPT match for a nat/PREROUTING REDIRECT companion.
+
+    REDIRECT always delivers to the host itself, so the packet traverses INPUT
+    (not FORWARD) after the rewrite — without a companion it dies on the
+    default INPUT catch-all. Shared by apply_rules and the API listing so they
+    stay in sync (dnat_forward_fields/policy_nat_fields pattern).
+    """
+    dport = rule.to_ports or rule.port
+    # to_ports is validated as \d+(-\d+)? (a range) but --dport wants ':'.
+    if dport and "-" in dport:
+        dport = dport.replace("-", ":")
+    return {
+        "protocol": rule.protocol,
+        "port": dport,
+        "source": rule.source,
+        "in_interface": rule.in_interface,
+    }
+
+
+def dnat_input_fields(rule) -> Dict[str, Optional[str]]:
+    """
+    Compute the INPUT ACCEPT match for a DNAT whose target is a local address.
+
+    DNAT rewrites the destination before the routing decision, so by the time
+    the packet reaches INPUT it already carries the translated (local)
+    destination — matching -d dest_ip here is correct post-NAT state.
+    """
+    dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+    return {
+        "protocol": rule.protocol,
+        "port": dest_port or rule.port,
+        "source": rule.source,
+        "destination": dest_ip,
+        "in_interface": rule.in_interface,
+    }
+
+
 def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
     """
     Compute the POSTROUTING MASQUERADE match for a forward policy's NAT companion.
@@ -67,6 +107,25 @@ def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
         "source": rule.source,
         "destination": rule.destination,
         "out_interface": rule.out_interface,
+    }
+
+
+def hairpin_masq_fields(rule) -> Dict[str, Optional[str]]:
+    """
+    Compute the POSTROUTING MASQUERADE match for a hairpin-NAT DNAT companion.
+
+    Lets a LAN client reach a port forward via the WAN IP: without this, the
+    internal server would reply to the LAN client directly (with its own IP),
+    which the client's connection doesn't expect. Scoping (source subnet,
+    -d/--dport) is topology-dependent and filled in by the caller — this only
+    computes the destination-side match shared with apply_rules' hairpin DNAT
+    line, so the two stay in sync the same way dnat_forward_fields/policy_nat_fields do.
+    """
+    dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+    return {
+        "protocol": rule.protocol,
+        "destination": dest_ip,
+        "port": dest_port or rule.port,
     }
 
 
@@ -352,6 +411,58 @@ class FirewallOrchestrator:
         )
         return result.scalars().all()
 
+    async def get_enabled_hairpin_rules(
+        self,
+        session: AsyncSession
+    ) -> List[MachineFirewallRule]:
+        """Get enabled DNAT rules with hairpin=True — source of the hairpin-NAT companions."""
+        result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "nat")
+            .where(MachineFirewallRule.action == "DNAT")
+            .where(MachineFirewallRule.hairpin == True)
+            .where(MachineFirewallRule.enabled == True)
+            .where(MachineFirewallRule.to_destination.is_not(None))
+            .order_by(MachineFirewallRule.order)
+        )
+        return result.scalars().all()
+
+    async def get_enabled_input_companion_rules(
+        self,
+        session: AsyncSession
+    ) -> Dict[str, List[MachineFirewallRule]]:
+        """
+        Enabled nat/PREROUTING REDIRECT rules and DNAT rules whose target is a
+        local address — source of the INPUT ACCEPT companions (both deliver to
+        the gateway itself, so they traverse INPUT rather than FORWARD).
+        """
+        redirect_result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "nat")
+            .where(MachineFirewallRule.chain == "PREROUTING")
+            .where(MachineFirewallRule.action == "REDIRECT")
+            .where(MachineFirewallRule.enabled == True)
+            .order_by(MachineFirewallRule.order)
+        )
+        redirect_rules = list(redirect_result.scalars().all())
+
+        dnat_result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "nat")
+            .where(MachineFirewallRule.action == "DNAT")
+            .where(MachineFirewallRule.enabled == True)
+            .where(MachineFirewallRule.to_destination.is_not(None))
+            .order_by(MachineFirewallRule.order)
+        )
+        topo = await self._get_interface_topology()
+        dnat_self_rules = []
+        for rule in dnat_result.scalars().all():
+            dest_ip, _ = iptables.split_ip_port(rule.to_destination)
+            if dest_ip and dest_ip in topo["local_ips"]:
+                dnat_self_rules.append(rule)
+
+        return {"redirect": redirect_rules, "dnat_self": dnat_self_rules}
+
     async def get_rule_by_id(
         self,
         session: AsyncSession,
@@ -589,6 +700,18 @@ class FirewallOrchestrator:
         """
         Return list of (iface_name, [ip, ...]) for all physical LAN interfaces.
         Excludes WAN (default route interface) and loopback.
+        """
+        return (await self._get_interface_topology())["lan_interfaces"]
+
+    async def _get_interface_topology(self) -> Dict:
+        """
+        Resolve live network topology once per apply: LAN interfaces/subnets, WAN
+        IPs, and every IPv4 address owned by a physical interface. Backs the
+        hairpin-NAT companions (need each LAN subnet + which one contains a given
+        target) and the DNAT/REDIRECT-to-self INPUT companions (need "is this
+        address one of ours"). NetworkService already excludes loopback/virtual
+        interfaces, so local_ips never includes 127.0.0.1 — that's fine, a DNAT
+        to loopback is rejected outright by protected_ports.py Guard B.
         NetworkService.get_interfaces() is synchronous — runs in executor.
         """
         from core.network.service import NetworkService
@@ -598,15 +721,44 @@ class FirewallOrchestrator:
         loop = asyncio.get_event_loop()
         all_ifaces = await loop.run_in_executor(None, NetworkService().get_interfaces)
 
-        result = []
+        lan_interfaces: List[Tuple[str, List[str]]] = []
+        lan_networks: List[ipaddress.IPv4Network] = []
+        wan_ips: List[str] = []
+        local_ips: set = set()
+
         for iface in all_ifaces:
             name = iface.get("name", "")
-            if not name or name == wan_iface or name == "lo":
+            if not name:
                 continue
             ips = iface.get("addresses", [])
-            if ips:
-                result.append((name, ips))
-        return result
+            local_ips.update(ips)
+
+            is_wan = name == wan_iface
+            if is_wan:
+                wan_ips.extend(ips)
+            elif ips:
+                lan_interfaces.append((name, ips))
+
+            # Subnets are only meaningful for the LAN side (hairpin scoping).
+            if is_wan:
+                continue
+            for entry in iface.get("addr_info", []):
+                ip, netmask = entry.get("address"), entry.get("netmask")
+                if not ip or not netmask:
+                    continue  # e.g. point-to-point links report no netmask
+                try:
+                    net = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                except ValueError:
+                    continue
+                if net not in lan_networks:
+                    lan_networks.append(net)
+
+        return {
+            "lan_interfaces": lan_interfaces,
+            "lan_networks": lan_networks,
+            "wan_ips": wan_ips,
+            "local_ips": local_ips,
+        }
 
     async def _rebuild_gateway_ipsets(
         self,
@@ -737,8 +889,8 @@ class FirewallOrchestrator:
         cross-gateway isolation) and MADMIN_GW_EXCEPTS from DB rules.
         """
         # --- Gateway protection: resolve topology and rebuild ipsets ---
-        lan_interfaces = await self._get_lan_interfaces()
-        await self._rebuild_gateway_ipsets(lan_interfaces)
+        topo = await self._get_interface_topology()
+        await self._rebuild_gateway_ipsets(topo["lan_interfaces"])
 
         # --- Get all enabled DB rules ordered by chain and order ---
         result = await session.execute(
@@ -775,11 +927,52 @@ class FirewallOrchestrator:
                 chain_rules[table][madmin_chain] = lines
 
         # --- Inject auto-generated MADMIN_GW_PROTECT content ---
-        protect_lines = iptables.build_gateway_protect_lines(lan_interfaces)
+        protect_lines = iptables.build_gateway_protect_lines(topo["lan_interfaces"])
         chain_rules["filter"][iptables.MADMIN_GW_PROTECT_CHAIN] = protect_lines
 
         # MADMIN_GW_EXCEPTS starts empty (populated below by DB rules with chain=GW_EXCEPTIONS)
         chain_rules["filter"][iptables.MADMIN_GW_EXCEPTS_CHAIN] = []
+
+        # --- Auto-generate INPUT ACCEPT for REDIRECT / DNAT-to-self rules ---
+        # A REDIRECT always delivers to the host itself; a DNAT whose target is
+        # one of the host's own addresses does too — both traverse INPUT (not
+        # FORWARD) after the rewrite and would hit the INPUT catch-all. Unlike
+        # the FORWARD implicit deny (engine-owned, always last), that catch-all
+        # is an ordinary DB rule (see defaults.py) — appending companions after
+        # DB rules would make them dead on every default install. Prepended
+        # here, right after the built-in ESTABLISHED line and before any DB
+        # INPUT rule, so they encode the same "the admin explicitly published
+        # this service" intent the DNAT/FORWARD companion already carries.
+        # Consequence (deliberate, FortiGate-VIP-like): an explicit user INPUT
+        # DROP cannot override one of these — disable the PREROUTING rule (or
+        # scope its `source`, which the companion inherits) to block it instead.
+        auto_input_lines: List[str] = []
+        for rule in rules:
+            if rule.table_name != "nat":
+                continue
+            if rule.chain == "PREROUTING" and rule.action == "REDIRECT":
+                fields = redirect_input_fields(rule)
+            elif rule.action == "DNAT" and rule.to_destination:
+                dest_ip, _ = iptables.split_ip_port(rule.to_destination)
+                if not dest_ip or dest_ip not in topo["local_ips"]:
+                    continue
+                fields = dnat_input_fields(rule)
+            else:
+                continue
+            eff = eff_map.get(rule.id)
+            if eff and eff[0] is not None:
+                fields["source"] = eff[0]   # honor object/group source refs
+            auto_input_lines.append(
+                " ".join(iptables.build_rule_args(
+                    chain=iptables.MADMIN_INPUT_CHAIN,
+                    action="ACCEPT",
+                    comment=f"MADMIN_AUTO_RDR_{rule.id}",
+                    operation="-A",
+                    **fields,
+                ))
+            )
+        if auto_input_lines:
+            chain_rules["filter"][iptables.MADMIN_INPUT_CHAIN].extend(auto_input_lines)
 
         # --- Assign DB rules to their respective MADMIN chains ---
         # filter/FORWARD is handled by the pair-subchain layout builder below.
@@ -852,6 +1045,103 @@ class FirewallOrchestrator:
             )
         if auto_nat_lines:
             chain_rules["nat"][iptables.MADMIN_POSTROUTING_NAT_CHAIN].extend(auto_nat_lines)
+
+        # --- Auto-generate hairpin-NAT companions for DNAT rules with hairpin=True ---
+        # Lets a LAN client reach a port forward via the WAN IP (NAT reflection).
+        # The original DNAT carries -i <wan> and never matches LAN-sourced
+        # traffic, so without this a LAN client hitting the WAN IP would route
+        # to the host itself or die in FORWARD. Per LAN subnet: a PREROUTING
+        # DNAT without -i (appended after user PREROUTING rules — matches are
+        # disjoint from the original rule anyway), a POSTROUTING MASQUERADE so
+        # the internal server's reply routes back through the gateway, and a
+        # FORWARD ACCEPT for the LAN-sourced flow (the DNAT's own FORWARD
+        # companion above carries -i <wan> and won't match it).
+        hairpin_prerouting_lines: List[str] = []
+        hairpin_postrouting_lines: List[str] = []
+        hairpin_forward_lines: List[str] = []
+        for rule in rules:
+            if (rule.table_name != "nat" or rule.action != "DNAT"
+                    or not rule.hairpin or not rule.to_destination):
+                continue
+            if not topo["lan_networks"]:
+                logger.warning(f"Hairpin NAT skipped for rule {rule.id}: no LAN subnet resolved")
+                continue
+
+            dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+            int_port = dest_port or rule.port
+
+            eff = eff_map.get(rule.id)
+            eff_dest = eff[1] if (eff and eff[1] is not None) else rule.destination
+
+            # Never leave the hairpin DNAT's destination unscoped: an unscoped
+            # -d would hijack ALL LAN traffic on this dport, not just traffic
+            # aimed at this forward's public IP(s). Fall back to the host's own
+            # WAN addresses (what the forward actually binds to); if neither is
+            # available, skip rather than guess.
+            if eff_dest:
+                dest_targets = [eff_dest]
+            elif topo["wan_ips"]:
+                dest_targets = topo["wan_ips"]
+            else:
+                logger.warning(f"Hairpin NAT skipped for rule {rule.id}: no destination and no WAN IP to scope to")
+                dest_targets = []
+
+            for subnet in topo["lan_networks"]:
+                for dest in dest_targets:
+                    hairpin_prerouting_lines.append(
+                        " ".join(iptables.build_rule_args(
+                            chain=iptables.MADMIN_PREROUTING_NAT_CHAIN,
+                            action="DNAT",
+                            protocol=rule.protocol,
+                            source=str(subnet),
+                            destination=dest,
+                            port=rule.port,
+                            to_destination=rule.to_destination,
+                            comment=f"MADMIN_AUTO_HAIRPIN_{rule.id}",
+                            operation="-A",
+                        ))
+                    )
+                hairpin_forward_lines.append(
+                    " ".join(iptables.build_rule_args(
+                        chain=iptables.MADMIN_FORWARD_CHAIN,
+                        action="ACCEPT",
+                        protocol=rule.protocol,
+                        source=str(subnet),
+                        destination=dest_ip,
+                        port=int_port,
+                        comment=f"MADMIN_AUTO_HAIRPIN_{rule.id}",
+                        operation="-A",
+                    ))
+                )
+
+            # Scope the masquerade to the subnet actually containing the
+            # target so unrelated intra-subnet flows aren't masqueraded;
+            # fall back to every LAN subnet when the target isn't in any of them.
+            masq_fields = hairpin_masq_fields(rule)
+            try:
+                target_addr = ipaddress.IPv4Address(dest_ip) if dest_ip else None
+            except ValueError:
+                target_addr = None
+            matching_subnets = [n for n in topo["lan_networks"] if target_addr and target_addr in n] \
+                or topo["lan_networks"]
+            for subnet in matching_subnets:
+                hairpin_postrouting_lines.append(
+                    " ".join(iptables.build_rule_args(
+                        chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,
+                        action="MASQUERADE",
+                        source=str(subnet),
+                        comment=f"MADMIN_AUTO_HAIRPIN_{rule.id}",
+                        operation="-A",
+                        **masq_fields,
+                    ))
+                )
+
+        if hairpin_prerouting_lines:
+            chain_rules["nat"][iptables.MADMIN_PREROUTING_NAT_CHAIN].extend(hairpin_prerouting_lines)
+        if hairpin_postrouting_lines:
+            chain_rules["nat"][iptables.MADMIN_POSTROUTING_NAT_CHAIN].extend(hairpin_postrouting_lines)
+        if hairpin_forward_lines:
+            chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(hairpin_forward_lines)
 
         # --- Implicit deny: always-last FORWARD drop (not a DB rule) ---
         chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].append(

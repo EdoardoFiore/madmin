@@ -41,7 +41,8 @@ from .models import (
     ADDRESS_OBJECT_TYPES,
 )
 from .orchestrator import (
-    firewall_orchestrator, dnat_forward_fields, policy_nat_fields,
+    firewall_orchestrator, dnat_forward_fields, policy_nat_fields, hairpin_masq_fields,
+    redirect_input_fields, dnat_input_fields,
     IMPLICIT_DENY_COMMENT,
 )
 from .iptables import IptablesError, flush_conntrack_for_rule
@@ -195,6 +196,19 @@ def _validate_rule_constraints(table: str, chain: str, action: str,
         )
 
 
+def _validate_port_protocol(protocol: Optional[str], port: Optional[str]) -> None:
+    """Reject a port match without a tcp/udp protocol: build_rule_args only
+    emits --dport for protocol in (tcp, udp) (iptables.py), so a port stored
+    against any other protocol (or none) is silently ignored by the engine —
+    the rule ends up matching far more traffic than its port suggests."""
+    if port and protocol not in ("tcp", "udp"):
+        raise HTTPException(
+            status_code=400,
+            detail="La porta è applicabile solo con protocollo TCP o UDP: "
+                   "impostare il protocollo o rimuovere la porta."
+        )
+
+
 def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
     """Convert database model to API response, including resolved address refs."""
     refs_map = refs_map or {}
@@ -224,6 +238,7 @@ def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
         order=rule.order,
         enabled=rule.enabled,
         policy_nat=rule.policy_nat,
+        hairpin=rule.hairpin,
         created_at=rule.created_at,
         updated_at=rule.updated_at
     )
@@ -261,6 +276,41 @@ def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
     )
 
 
+def _auto_hairpin_nat_response(dnat) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a
+    DNAT's hairpin-NAT companion. The real companion is emitted once per LAN
+    subnet (topology-resolved at apply time) so no single `source` value can
+    represent it here — the comment carries the context instead."""
+    fields = hairpin_masq_fields(dnat)
+    return MachineFirewallRuleResponse(
+        id=f"auto-hairpin-{dnat.id}",
+        chain="POSTROUTING",
+        action="MASQUERADE",
+        protocol=fields["protocol"],
+        source=None,
+        destination=fields["destination"],
+        port=fields["port"],
+        in_interface=None,  # -i does not exist in POSTROUTING
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=f"→ hairpin {dnat.to_destination}",
+        table_name="nat",
+        order=999_998,  # companions sit after user POSTROUTING rules
+        enabled=True,
+        auto_generated=True,
+        created_at=dnat.created_at,
+        updated_at=dnat.updated_at,
+    )
+
+
 def _auto_forward_response(dnat) -> MachineFirewallRuleResponse:
     """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT companion."""
     fields = dnat_forward_fields(dnat)
@@ -290,6 +340,44 @@ def _auto_forward_response(dnat) -> MachineFirewallRuleResponse:
         auto_generated=True,
         created_at=dnat.created_at,
         updated_at=dnat.updated_at,
+    )
+
+
+def _auto_input_response(rule, fields: dict, label: str) -> MachineFirewallRuleResponse:
+    """
+    Build the read-only synthetic INPUT ACCEPT row mirroring a REDIRECT or
+    DNAT-to-self companion (both deliver to the gateway itself). order=-1 sorts
+    it before user INPUT rules, matching real evaluation order (see apply_rules
+    — the companion is prepended, not appended, unlike the FORWARD companions).
+    Advanced renders auto_generated rows with a lock icon instead of the order
+    number, so -1 never surfaces to the user.
+    """
+    return MachineFirewallRuleResponse(
+        id=f"auto-rdr-{rule.id}",
+        chain="INPUT",
+        action="ACCEPT",
+        protocol=fields["protocol"],
+        source=fields["source"],
+        destination=fields.get("destination"),
+        port=fields["port"],
+        in_interface=fields["in_interface"],
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=label,
+        table_name="filter",
+        order=-1,
+        enabled=True,
+        auto_generated=True,
+        created_at=rule.created_at,
+        updated_at=rule.updated_at,
     )
 
 
@@ -348,6 +436,18 @@ async def list_rules(
     if chain in (None, "POSTROUTING"):
         nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
         responses.extend(_auto_nat_response(p) for p in nat_policies)
+        hairpin_rules = await firewall_orchestrator.get_enabled_hairpin_rules(session)
+        responses.extend(_auto_hairpin_nat_response(d) for d in hairpin_rules)
+    # Surface auto-generated INPUT ACCEPT companions (REDIRECT / DNAT-to-self)
+    if chain in (None, "INPUT"):
+        input_companions = await firewall_orchestrator.get_enabled_input_companion_rules(session)
+        for r in input_companions["redirect"]:
+            fields = redirect_input_fields(r)
+            label = f"→ REDIRECT :{fields['port']}" if fields["port"] else "→ REDIRECT"
+            responses.append(_auto_input_response(r, fields, label))
+        for r in input_companions["dnat_self"]:
+            fields = dnat_input_fields(r)
+            responses.append(_auto_input_response(r, fields, f"→ DNAT self {r.to_destination}"))
     return responses
 
 
@@ -383,10 +483,19 @@ async def create_rule(
         table, rule_data.chain, rule_data.action,
         rule_data.in_interface, rule_data.out_interface
     )
+    _validate_port_protocol(rule_data.protocol, rule_data.port)
     if rule_data.policy_nat and not (table == "filter" and rule_data.chain == "FORWARD"):
         raise HTTPException(
             status_code=400,
             detail="policy_nat è disponibile solo su regole filter/FORWARD."
+        )
+    if rule_data.hairpin and not (
+        table == "nat" and rule_data.chain == "PREROUTING"
+        and rule_data.action == "DNAT" and rule_data.to_destination
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="hairpin è disponibile solo su regole DNAT in nat/PREROUTING con destinazione interna."
         )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
@@ -462,6 +571,24 @@ async def update_rule(
         raise HTTPException(
             status_code=400,
             detail="policy_nat è disponibile solo su regole filter/FORWARD."
+        )
+    eff_action = update_data.get("action", existing.action)
+    eff_to_destination = update_data.get("to_destination", existing.to_destination)
+    if update_data.get("hairpin", existing.hairpin) and not (
+        eff_table == "nat" and eff_chain == "PREROUTING"
+        and eff_action == "DNAT" and eff_to_destination
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="hairpin è disponibile solo su regole DNAT in nat/PREROUTING con destinazione interna."
+        )
+    # Only re-check the port/protocol trap when this write actually touches the
+    # service definition: an update that just toggles `enabled` or reorders a
+    # legacy port-without-proto row must keep working untouched.
+    if "port" in update_data or "protocol" in update_data:
+        _validate_port_protocol(
+            update_data.get("protocol", existing.protocol),
+            update_data.get("port", existing.port),
         )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 

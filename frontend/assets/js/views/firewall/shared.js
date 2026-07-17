@@ -42,11 +42,14 @@ export const SERVICE_PRESETS = [
     { label: 'SMTP', protocol: 'tcp', port: '25' },
 ];
 
-/** Human label for a rule's service (protocol + port). */
+/** Human label for a rule's service (protocol + port). The engine only emits
+ * --dport for tcp/udp (iptables.py build_rule_args), so a port set on any
+ * other protocol is dead data and must not be shown as if it mattered. */
 export function serviceLabel(rule) {
-    if (!rule.protocol && !rule.port) return 'ALL';
-    const proto = rule.protocol ? rule.protocol.toUpperCase() : 'ALL';
-    return rule.port ? `${proto}/${rule.port}` : proto;
+    if (!rule.protocol) return 'ALL';
+    const proto = rule.protocol.toUpperCase();
+    const portActive = rule.port && (rule.protocol === 'tcp' || rule.protocol === 'udp');
+    return portActive ? `${proto}/${rule.port}` : proto;
 }
 
 /** True for synthetic, read-only companion rows produced by the backend. */
@@ -58,6 +61,23 @@ export function isAutoRow(rule) {
 /** True for the protected managed navigation-NAT policy. */
 export function isManagedNat(rule) {
     return rule.comment === MANAGED_NAT_SENTINEL;
+}
+
+// Actions each Standard editor mode knows how to render/save. A rule whose
+// action falls outside its mode's set (e.g. a LOG policy, a REDIRECT port
+// forward, an ACCEPT/RETURN outbound-NAT exemption created from Advanced)
+// must never be opened for edit there: the mode's fixed action set would
+// silently coerce it into something else on save.
+export const STD_EDITABLE_ACTIONS = {
+    policy: ['ACCEPT', 'DROP', 'REJECT'],
+    portforward: ['DNAT'],
+    outnat: ['MASQUERADE', 'SNAT'],
+};
+
+/** True when a rule's action isn't one the given Standard editor mode can represent. */
+export function isLockedForMode(rule, mode) {
+    const set = STD_EDITABLE_ACTIONS[mode];
+    return !!set && !set.includes(rule.action);
 }
 
 /**
