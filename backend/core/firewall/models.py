@@ -37,8 +37,10 @@ class MachineFirewallRule(SQLModel, table=True):
     source: Optional[str] = Field(default=None, max_length=50)  # IP or CIDR
     destination: Optional[str] = Field(default=None, max_length=50)  # IP or CIDR
     
-    # Port (single or range like "80" or "80:443")
-    port: Optional[str] = Field(default=None, max_length=20)
+    # Port: single ("80"), range ("80:443"), or multiport/mixed list combining
+    # both ("20:22,49152:50152") — iptables -m multiport allows up to 15 entries,
+    # so 20 chars was too tight for anything beyond one short range.
+    port: Optional[str] = Field(default=None, max_length=255)
     
     # Interfaces
     in_interface: Optional[str] = Field(default=None, max_length=20)

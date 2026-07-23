@@ -6,6 +6,7 @@
 
 import { apiGet, apiPost, apiDelete, apiPatch, apiPut } from '/static/js/api.js';
 import { showToast, confirmDialog, escapeHtml, isValidCIDR, isValidIP } from '/static/js/utils.js';
+import { t } from '/static/js/i18n.js';
 
 // Re-export for convenience
 export { apiGet, apiPost, apiDelete, apiPatch, apiPut, showToast, confirmDialog, escapeHtml, isValidCIDR, isValidIP };
@@ -74,24 +75,24 @@ export const CRYPTO_OPTIONS = {
         ]
     },
     dpdAction: [
-        { value: 'restart', label: 'Restart' },
-        { value: 'clear', label: 'Clear' },
-        { value: 'none', label: 'Disabilita' }
+        { value: 'restart', label: t('strongswan.dpdActionRestart') },
+        { value: 'clear', label: t('strongswan.dpdActionClear') },
+        { value: 'none', label: t('strongswan.dpdActionNone') }
     ],
     natTraversal: [
-        { value: 'yes', label: 'Enable' },
-        { value: 'no', label: 'Disable' },
-        { value: 'force', label: 'Force' }
+        { value: 'yes', label: t('strongswan.natTraversalEnable') },
+        { value: 'no', label: t('strongswan.natTraversalDisable') },
+        { value: 'force', label: t('strongswan.natTraversalForce') }
     ],
     startAction: [
-        { value: 'start', label: 'Start (inizia subito)' },
-        { value: 'trap', label: 'On Demand (trap)' },
-        { value: 'none', label: 'Manual (none)' }
+        { value: 'start', label: t('strongswan.startActionStart') },
+        { value: 'trap', label: t('strongswan.startActionTrap') },
+        { value: 'none', label: t('strongswan.startActionNone') }
     ],
     closeAction: [
-        { value: 'restart', label: 'Restart' },
-        { value: 'trap', label: 'Hold (trap)' },
-        { value: 'none', label: 'None' }
+        { value: 'restart', label: t('strongswan.closeActionRestart') },
+        { value: 'trap', label: t('strongswan.closeActionTrap') },
+        { value: 'none', label: t('strongswan.closeActionNone') }
     ],
     // DH groups for PFS (Phase 2) - more standard/common groups
     pfsGroups: [
@@ -199,7 +200,12 @@ export function parseProposal(proposal) {
     // Convert sets to arrays
     result.enc = encSet.size > 0 ? Array.from(encSet) : ['aes256'];
     result.integ = integSet.size > 0 ? Array.from(integSet) : ['sha256'];
-    result.dh = dhSet.size > 0 ? Array.from(dhSet) : ['modp2048'];
+    // DH/PFS is legitimately optional (Phase 2 "No PFS"), unlike enc/integ.
+    // Only fall back to modp2048 when the whole proposal was unparseable
+    // (nothing matched at all) — otherwise an intentional empty dhSet (no PFS)
+    // must stay empty, or "No PFS" silently reverts to "Group 14" on every reopen.
+    result.dh = dhSet.size > 0 ? Array.from(dhSet)
+        : (encSet.size === 0 && integSet.size === 0 ? ['modp2048'] : []);
     result.pairs = pairs.length > 0 ? pairs : [{ enc: 'aes256', integ: 'sha256' }];
 
     return result;

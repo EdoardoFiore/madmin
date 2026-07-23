@@ -23,6 +23,14 @@ export async function renderTunnelDetail(container, tunnelId, permissions) {
     // Clear previous interval if any
     if (statusInterval) clearInterval(statusInterval);
 
+    // Traffic chart is a module-level singleton; destroy the previous instance so
+    // a new detail view doesn't keep updating a chart bound to a removed DOM node
+    // (leaves the new tunnel's chart empty until a full page reload).
+    if (trafficChart) {
+        try { trafficChart.destroy(); } catch (_) {}
+        trafficChart = null;
+    }
+
     canManage = permissions.manage;
 
     container.innerHTML = loadingSpinner();

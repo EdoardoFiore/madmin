@@ -349,7 +349,7 @@
             "nameValueRequired": "Name and value are required"
         },
         "validation": {
-            "inIfaceHook": "Input interface (-i) is not valid in chain {chain}: only available in PREROUTING, INPUT, FORWARD.",
+            "inIfaceHook": "Input interface (-i) is not valid in chain {chain}: only available in PREROUTING, INPUT, FORWARD, POSTROUTING.",
             "outIfaceHook": "Output interface (-o) is not valid in chain {chain}: only available in POSTROUTING, OUTPUT, FORWARD.",
             "natActionHook": "Action {action} is not valid in chain {chain}.",
             "tableChain": "Chain {chain} is not valid for table {table}.",

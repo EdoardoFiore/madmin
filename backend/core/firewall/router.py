@@ -58,7 +58,7 @@ router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
 # Hook (chain) in cui ciascun match/azione è valido per netfilter.
 # Denylist applicata DOPO la validazione table/chain/action: blocca solo le
 # combinazioni note-incompatibili, lasciando passare quelle non elencate.
-_IN_IFACE_VALID = {"PREROUTING", "INPUT", "FORWARD"}
+_IN_IFACE_VALID = {"PREROUTING", "INPUT", "FORWARD", "POSTROUTING"}
 _OUT_IFACE_VALID = {"POSTROUTING", "OUTPUT", "FORWARD"}
 _NAT_TARGET_HOOK = {
     "DNAT": {"PREROUTING", "OUTPUT"},
@@ -182,7 +182,7 @@ def _validate_rule_constraints(table: str, chain: str, action: str,
         raise HTTPException(
             status_code=400,
             detail=f"Interfaccia di ingresso (-i) non valida nella catena {chain}: "
-                   f"disponibile solo in PREROUTING, INPUT, FORWARD."
+                   f"disponibile solo in PREROUTING, INPUT, FORWARD, POSTROUTING."
         )
     if out_interface and chain not in _OUT_IFACE_VALID:
         raise HTTPException(
@@ -440,18 +440,27 @@ def _auto_hairpin_nat_response(dnat, to_destination: Optional[str] = None) -> Ma
     )
 
 
-def _auto_forward_response(dnat, to_destination: Optional[str] = None) -> MachineFirewallRuleResponse:
+def _auto_forward_response(dnat, to_destination: Optional[str] = None, refs_map=None) -> MachineFirewallRuleResponse:
     """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT
     companion. to_destination: resolved via resolve_dnat_targets() by the
-    caller (falls back to dnat.to_destination when not given)."""
+    caller (falls back to dnat.to_destination when not given).
+
+    Must mirror the DNAT's own source object/group refs (not just its literal
+    `source` column) — apply_rules() already honors them for the real iptables
+    rule via eff_map, but this display-only row previously showed the literal
+    column, which is None whenever the source is an address object/group.
+    """
+    refs_map = refs_map or {}
     fields = dnat_forward_fields(dnat, to_destination)
     label = to_destination if to_destination is not None else dnat.to_destination
+    source_refs = refs_map.get((dnat.id, "source"), [])
     return MachineFirewallRuleResponse(
         id=f"auto-dnat-{dnat.id}",
         chain="FORWARD",
         action="ACCEPT",
         protocol=fields["protocol"],
-        source=fields["source"],
+        source=None if source_refs else fields["source"],
+        source_refs=source_refs,
         destination=fields["destination"],
         port=fields["port"],
         in_interface=fields["in_interface"],
@@ -564,7 +573,10 @@ async def list_rules(
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
         dnat_targets = await firewall_orchestrator.resolve_dnat_targets(session, dnat_rules)
-        responses.extend(_auto_forward_response(d, dnat_targets.get(d.id)) for d in dnat_rules)
+        dnat_refs_map = await _rule_refs_map(session, [d.id for d in dnat_rules])
+        responses.extend(
+            _auto_forward_response(d, dnat_targets.get(d.id), dnat_refs_map) for d in dnat_rules
+        )
         responses.append(_implicit_deny_response())
     # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
     if chain in (None, "POSTROUTING"):
