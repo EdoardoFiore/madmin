@@ -68,6 +68,22 @@ export function isManagedNat(rule) {
     return rule.comment === MANAGED_NAT_SENTINEL;
 }
 
+// A plain uuid for a real DB rule, or the uuid embedded at the end of a
+// synthetic companion id (e.g. "auto-nat-<uuid>", "auto-hairpin-fwd-<uuid>"
+// — see router.py _auto_*_response). GET /firewall/counters keys its rows by
+// the owning DB rule's uuid (every kernel line a rule expands to — the rule
+// itself plus any auto-generated companion — shares one comment-tag uuid and
+// is summed together, see iptables.read_rule_counters), so resolving a
+// companion row back to that same uuid lets its counter icon show the
+// policy's combined total instead of nothing. Returns null for the one
+// synthetic row with no uuid at all (auto-implicit-deny).
+const UUID_RE = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
+export function counterRuleId(rule) {
+    if (!isAutoRow(rule)) return rule.id;
+    const m = UUID_RE.exec(rule.id);
+    return m ? m[0] : null;
+}
+
 // Actions each Standard editor mode knows how to render/save. A rule whose
 // action falls outside its mode's set (e.g. a LOG policy, a REDIRECT port
 // forward, an ACCEPT/RETURN outbound-NAT exemption created from Advanced)

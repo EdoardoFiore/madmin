@@ -20,6 +20,7 @@ import json
 from .models import (
     MachineFirewallRule, ModuleChain,
     AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
+    RuleCounter,
 )
 from . import iptables, addresses
 
@@ -765,9 +766,13 @@ class FirewallOrchestrator:
         
         chain = rule.chain
         table_name = rule.table_name
-        # Remove the rule's object/group references first (no DB-level cascade)
+        # Remove the rule's object/group references and counter row first
+        # (no DB-level cascade)
         await session.execute(
             delete(FirewallRuleAddress).where(FirewallRuleAddress.rule_id == rule_id)
+        )
+        await session.execute(
+            delete(RuleCounter).where(RuleCounter.rule_id == rule_id)
         )
         await session.delete(rule)
         await session.flush()
@@ -794,9 +799,10 @@ class FirewallOrchestrator:
         Used for full config restore/replace.
         """
         await session.execute(delete(FirewallRuleAddress))
+        await session.execute(delete(RuleCounter))
         await session.execute(delete(MachineFirewallRule))
         await session.flush()
-        
+
         # Apply (clear) rules
         await self.apply_rules(session)
         
@@ -1325,6 +1331,17 @@ class FirewallOrchestrator:
         #     in the same restore transaction ---
         stale = sorted(set(iptables.list_forward_subchains()) - set(subchain_map))
 
+        # --- Capture durable counters before the flush zeroes them ---
+        # restore_all() below is `-F` + `:chain - [0:0]` on every MADMIN chain,
+        # which resets kernel packet/byte counters. Snapshot first so the
+        # counts accumulated since the last apply aren't lost, and rebaseline
+        # so the next read's delta is computed from a freshly-flushed kernel.
+        # Best-effort: counter bookkeeping must never break a firewall apply.
+        try:
+            await self.snapshot_counters(session, zero_baseline=True)
+        except Exception as e:
+            logger.warning(f"snapshot_counters failed before apply (non-fatal): {e}")
+
         # --- Apply atomically: single iptables-restore across all tables ---
         try:
             iptables.restore_all(chain_rules, delete_chains={"filter": stale})
@@ -1349,6 +1366,84 @@ class FirewallOrchestrator:
         asyncio.create_task(asyncio.to_thread(iptables.save_rules))
 
         return True
+
+    async def snapshot_counters(self, session: AsyncSession, zero_baseline: bool = False) -> None:
+        """
+        Accumulate live kernel packet/byte counters into the durable
+        RuleCounter table (see models.RuleCounter for why this exists —
+        kernel counters are zeroed on every apply_rules() flush).
+
+        Called from two places:
+        - apply_rules(), just before restore_all() flushes the chains
+          (zero_baseline=True): captures the counts the flush is about to
+          discard, then rebaselines last_packets/last_bytes to 0 so the next
+          snapshot's delta is computed against a freshly-flushed kernel.
+        - GET /firewall/counters (zero_baseline=False): a plain delta-accumulate
+          against current kernel state, so the UI sees fresh totals on page
+          load without waiting for the next apply.
+
+        No-ops (does not touch window_start/updated_at) when
+        iptables.read_rule_counters() returns nothing — mock mode, or a
+        transient iptables-save failure — never misreadable as "traffic
+        stopped", just "nothing new to accumulate this round".
+        """
+        live = iptables.read_rule_counters()
+        if not live:
+            return
+
+        result = await session.execute(select(RuleCounter))
+        existing = {c.rule_id: c for c in result.scalars().all()}
+
+        # A rule_id read from the (pre-flush) kernel may no longer have a
+        # MachineFirewallRule: this runs from apply_rules() *after* delete_rule()
+        # already removed both the DB row and its RuleCounter, but *before* the
+        # flush that would drop the tag from the kernel too — the deleted
+        # rule's old comment tag is still live in this read. Only rules that
+        # still exist may get a fresh counter row (the FK would reject one
+        # for a vanished rule_id); a delta for a since-deleted rule is simply
+        # dropped, which is correct — nothing left in the UI to show it on.
+        valid_ids = set((await session.execute(select(MachineFirewallRule.id))).scalars().all())
+
+        now = datetime.utcnow()
+        for rule_id_str, (pkts, byte_count) in live.items():
+            try:
+                rule_id = uuid.UUID(rule_id_str)
+            except ValueError:
+                continue
+            counter = existing.get(rule_id)
+            if counter is None:
+                if rule_id not in valid_ids:
+                    continue
+                counter = RuleCounter(rule_id=rule_id, window_start=now)
+                session.add(counter)
+                existing[rule_id] = counter
+
+            if pkts < counter.last_packets or byte_count < counter.last_bytes:
+                # Kernel counters were reset by something other than our own
+                # flush (manual `iptables -Z`, reboot before this ran, ...) —
+                # the live values themselves are the delta.
+                delta_p, delta_b = pkts, byte_count
+            else:
+                delta_p = pkts - counter.last_packets
+                delta_b = byte_count - counter.last_bytes
+
+            counter.packets += delta_p
+            counter.bytes += delta_b
+            counter.last_packets = pkts
+            counter.last_bytes = byte_count
+            counter.updated_at = now
+
+        if zero_baseline:
+            # The imminent restore_all() flush is about to zero every kernel
+            # counter; rebaseline last_* to 0 now so it stays truthful (the
+            # reset-detection branch above would also handle a stale nonzero
+            # baseline correctly, but this keeps the row consistent with what
+            # the kernel will actually read as immediately after the flush).
+            for counter in existing.values():
+                counter.last_packets = 0
+                counter.last_bytes = 0
+
+        await session.flush()
 
     async def resync_addresses(self, session: AsyncSession) -> bool:
         """

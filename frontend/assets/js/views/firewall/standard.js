@@ -9,14 +9,15 @@
  *                          policy-NAT companions and the managed nav NAT).
  */
 import { apiGet, apiPost, apiPatch, apiDelete } from '../../api.js';
-import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../../utils.js';
+import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml, formatBytes, formatDate, formatRelativeTime } from '../../utils.js';
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
-import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch } from './shared.js';
+import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
+let counters = new Map(); // rule uuid -> {rule_id, packets, bytes, window_start, updated_at}
 let containerEl = null;
 
 export async function render(container, _params = []) {
@@ -56,6 +57,62 @@ async function reload() {
     renderPolicy();
     renderPortForward();
     renderOutboundNat();
+    // Fire-and-forget: rows render immediately with inert counter icons: the
+    // hover popover attaches once this resolves (see populateCounterPopovers).
+    // No polling/refresh button — this is the "on page load" auto-refresh.
+    loadCounters();
+}
+
+/** GET /firewall/counters — durable per-rule hit/traffic totals (see backend
+ * models.RuleCounter). Never blocks the row render above: kernel counters are
+ * ephemeral, iptables-save is a real subprocess call, and rules must appear
+ * instantly regardless of how long that takes. */
+async function loadCounters() {
+    try {
+        const list = await apiGet('/firewall/counters');
+        counters = new Map(list.map(c => [c.rule_id, c]));
+    } catch (e) {
+        counters = new Map();
+    }
+    populateCounterPopovers();
+}
+
+/** Attach the hover popover to every counter icon currently in the DOM.
+ * Content/title are baked onto the element (mirrors the addr-ref-chip pattern
+ * in advanced.js) right before instantiating the Popover, so Bootstrap always
+ * reads fresh data — icons rendered before loadCounters() resolves simply
+ * stay inert until this runs. */
+function populateCounterPopovers() {
+    containerEl?.querySelectorAll('.fw-counter[data-counter-id]').forEach(el => {
+        el.setAttribute('title', t('firewall.std.counterTitle'));
+        el.setAttribute('data-bs-content', counterPopoverHtml(counters.get(el.dataset.counterId)));
+        bootstrap.Popover.getOrCreateInstance(el, {
+            html: true, trigger: 'hover focus', placement: 'top', container: 'body',
+            delay: { show: 1000, hide: 100 },
+        });
+    });
+}
+
+function counterPopoverHtml(c) {
+    if (!c) {
+        return `<span class="text-muted small">${escapeHtml(t('firewall.std.counterNone'))}</span>`;
+    }
+    return `
+        <div class="small">
+            <div>${escapeHtml(t('firewall.std.counterHits'))}: <strong>${c.packets.toLocaleString()}</strong></div>
+            <div>${escapeHtml(t('firewall.std.counterTraffic'))}: <strong>${formatBytes(c.bytes)}</strong></div>
+            <div class="text-muted mt-1">${escapeHtml(t('firewall.std.counterSince'))} ${formatDate(c.window_start)}</div>
+            <div class="text-muted">${escapeHtml(t('firewall.std.counterRange'))} ${formatRelativeTime(c.window_start)}</div>
+        </div>`;
+}
+
+/** Inline hover-details icon for a rule's counters, keyed by counterRuleId
+ * (resolves auto/companion rows back to the owning policy's uuid). Empty
+ * string for rows with no countable id (auto-implicit-deny). */
+function counterIcon(r) {
+    const cid = counterRuleId(r);
+    if (!cid) return '';
+    return `<i class="ti ti-chart-histogram fw-counter text-muted" data-counter-id="${cid}" style="cursor:help"></i>`;
 }
 
 /** Open the editor in-place, returning to this view on close. */
@@ -172,6 +229,7 @@ function renderPolicy() {
                                 <th>${t('firewall.action')}</th>
                                 <th>${t('firewall.std.colNat')}</th>
                                 <th>${t('firewall.comment')}</th>
+                                <th style="width:34px"></th>
                                 <th>${t('firewall.std.colStatus')}</th>
                                 <th class="text-end"></th>
                             </tr>
@@ -202,6 +260,7 @@ function policyRow(r, canManage) {
                 <td>${actionBadge(r.action)}</td>
                 <td>${natCell(r)}</td>
                 <td><span class="badge bg-azure-lt"><i class="ti ti-lock me-1"></i>${t('firewall.managedNat')}</span></td>
+                <td>${counterIcon(r)}</td>
                 <td></td>
                 <td></td>
             </tr>`;
@@ -217,6 +276,7 @@ function policyRow(r, canManage) {
             <td>${actionBadge(r.action)}</td>
             <td>${natCell(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
+            <td>${counterIcon(r)}</td>
             <td>${enableToggle(r, canManage)}</td>
             <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>
         </tr>`;
@@ -287,6 +347,7 @@ function renderPortForward() {
                         <th>${t('firewall.inInterface')}</th>
                         <th>${t('firewall.std.external')}</th>
                         <th>${t('firewall.std.internal')}</th>
+                        <th style="width:34px"></th>
                         <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
@@ -301,6 +362,7 @@ function renderPortForward() {
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
                                 <td>${internalTargetCell(r)} ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
+                                <td>${counterIcon(r)}</td>
                                 <td>${enableToggle(r, canManage)}</td>
                                 <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>
                             </tr>`;
@@ -350,6 +412,7 @@ function renderOutboundNat() {
                         <th>${t('firewall.std.colDest')}</th>
                         <th>${t('firewall.outInterface')}</th>
                         <th>${t('firewall.action')}</th>
+                        <th style="width:34px"></th>
                         <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
@@ -365,6 +428,7 @@ function renderOutboundNat() {
                                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
                                 <td>${r.out_interface ? `<code>${escapeHtml(r.out_interface)}</code>` : '<span class="text-muted">—</span>'}</td>
                                 <td>${actionBadge(r.action)} ${locked ? `<span class="badge bg-azure-lt ms-1"><i class="ti ti-lock me-1"></i>${t('firewall.autoRule')}</span>` : ''}</td>
+                                <td>${counterIcon(r)}</td>
                                 <td>${enableToggle(r, canManage)}</td>
                                 <td class="text-end">${(canManage && !locked) ? rowButtons(actionLocked) : ''}</td>
                             </tr>`;

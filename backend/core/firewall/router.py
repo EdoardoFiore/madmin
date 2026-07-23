@@ -26,6 +26,8 @@ from .models import (
     MachineFirewallRuleUpdate,
     MachineFirewallRuleResponse,
     RuleOrderUpdate,
+    RuleCounter,
+    RuleCounterResponse,
     ModuleChainResponse,
     RuleAddressRefResponse,
     AddressObject,
@@ -651,6 +653,32 @@ async def list_rules(
             fields = dnat_input_fields(r, target)
             responses.append(_auto_input_response(r, fields, f"→ DNAT self {target}"))
     return responses
+
+
+@router.get("/counters", response_model=List[RuleCounterResponse])
+async def get_rule_counters(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Durable per-rule hit-count/traffic totals (see models.RuleCounter — kernel
+    iptables counters are zeroed on every apply, so these accumulate deltas
+    across applies/reboots). Snapshots the live kernel state on every call so
+    totals are fresh; the Standard view fetches this once on page load
+    (fire-and-forget, no polling) and renders it as a per-rule hover popover.
+    """
+    await firewall_orchestrator.snapshot_counters(session)
+    result = await session.execute(select(RuleCounter))
+    return [
+        RuleCounterResponse(
+            rule_id=str(c.rule_id),
+            packets=c.packets,
+            bytes=c.bytes,
+            window_start=c.window_start,
+            updated_at=c.updated_at,
+        )
+        for c in result.scalars().all()
+    ]
 
 
 @router.get("/rules/{rule_id}", response_model=MachineFirewallRuleResponse)

@@ -306,7 +306,13 @@
             "enableRule": "Enable rule",
             "disableRule": "Disable rule",
             "ruleEnabled": "Rule enabled",
-            "ruleDisabled": "Rule disabled"
+            "ruleDisabled": "Rule disabled",
+            "counterTitle": "Policy traffic",
+            "counterHits": "Hits",
+            "counterTraffic": "Traffic",
+            "counterSince": "Counting since",
+            "counterRange": "Range",
+            "counterNone": "No traffic recorded yet"
         },
         "editor": {
             "anyInterface": "any",

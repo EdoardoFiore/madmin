@@ -99,6 +99,64 @@ def list_forward_subchains() -> List[str]:
 
 
 # =============================================================================
+# COUNTERS
+# =============================================================================
+
+# A saved rule line looks like: [123:45678] -A MADMIN_FORWARD -s 10.0.0.0/24
+# -j ACCEPT -m comment --comment "ID_a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# (iptables-save quotes the comment match value regardless of content).
+_COUNTER_LINE_RE = re.compile(r'^\[(\d+):(\d+)\]\s+-A\s+\S+\s+(.*)$')
+_COUNTER_COMMENT_RE = re.compile(
+    r'--comment\s+"?(?:ID_|MADMIN_AUTO_[A-Z]+_|MADMIN_NATMARK_)'
+    r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"?'
+)
+
+
+def read_rule_counters() -> Dict[str, Tuple[int, int]]:
+    """
+    Read current kernel packet/byte counters for every MADMIN-managed rule,
+    summed per rule UUID.
+
+    Every user rule carries a comment tag with its DB id — `ID_<uuid>`
+    (rule_to_restore_line) — and auto-generated companions carry
+    `MADMIN_AUTO_<TYPE>_<uuid>` / `MADMIN_NATMARK_<uuid>` (orchestrator.py). A
+    single DB rule can expand into several kernel lines (e.g. a policy_nat
+    FORWARD rule -> ACCEPT + MASQUERADE + CONNMARK companions); their counters
+    are summed here so callers see one total per rule id.
+
+    Returns {} in mock mode or if iptables-save fails — the caller
+    (orchestrator.snapshot_counters) treats that as "nothing to accumulate
+    this round", never as a reset to zero.
+    """
+    if settings.mock_iptables:
+        return {}
+    try:
+        result = subprocess.run(
+            ["iptables-save", "-c"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning(f"Could not read rule counters: {e}")
+        return {}
+
+    totals: Dict[str, Tuple[int, int]] = {}
+    for line in result.stdout.splitlines():
+        m = _COUNTER_LINE_RE.match(line)
+        if not m:
+            continue
+        cm = _COUNTER_COMMENT_RE.search(m.group(3))
+        if not cm:
+            continue
+        packets, byte_count = int(m.group(1)), int(m.group(2))
+        rule_id = cm.group(1)
+        prev_p, prev_b = totals.get(rule_id, (0, 0))
+        totals[rule_id] = (prev_p + packets, prev_b + byte_count)
+    return totals
+
+
+# =============================================================================
 # CHAIN MAPPING
 # =============================================================================
 

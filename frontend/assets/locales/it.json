@@ -306,7 +306,13 @@
             "enableRule": "Abilita regola",
             "disableRule": "Disabilita regola",
             "ruleEnabled": "Regola abilitata",
-            "ruleDisabled": "Regola disabilitata"
+            "ruleDisabled": "Regola disabilitata",
+            "counterTitle": "Traffico policy",
+            "counterHits": "Hit",
+            "counterTraffic": "Traffico",
+            "counterSince": "Conteggio dal",
+            "counterRange": "Intervallo",
+            "counterNone": "Nessun traffico registrato"
         },
         "editor": {
             "anyInterface": "qualsiasi",

@@ -4,6 +4,7 @@ MADMIN Firewall Models
 Database models for machine firewall rules and module chain registration.
 """
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, BigInteger
 from pydantic import field_validator
 from typing import Optional, List
 from datetime import datetime
@@ -115,6 +116,41 @@ class ModuleChain(SQLModel, table=True):
     table_name: str = Field(default="filter", max_length=20)
     
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RuleCounter(SQLModel, table=True):
+    """
+    Durable hit/traffic accumulator for a firewall rule.
+
+    Kernel iptables counters are ephemeral: apply_rules() flushes and rebuilds
+    every MADMIN chain on any rule create/edit/delete/reorder (iptables-restore
+    `:chain - [0:0]` + `-F`), zeroing per-rule packet/byte counters. This table
+    accumulates deltas across those resets so totals — and window_start, the
+    "counting since" timestamp — survive rule edits and reboots.
+
+    One row per rule_id (comment `ID_<uuid>` / `MADMIN_AUTO_*_<uuid>` on the
+    kernel side, summed across every kernel line a single rule expands to —
+    see orchestrator.snapshot_counters). last_packets/last_bytes hold the most
+    recent raw kernel snapshot, used only to compute the next delta and detect
+    a counter reset (kernel value dropping below the last snapshot).
+    """
+    __tablename__ = "firewall_rule_counter"
+
+    # No DB-level cascade (matches FirewallRuleAddress convention elsewhere in
+    # this module) — delete_rule()/delete_all_rules() remove the row explicitly.
+    rule_id: uuid.UUID = Field(foreign_key="machine_firewall_rule.id", primary_key=True)
+
+    # Accumulated totals since window_start. BIGINT: cumulative byte counts on
+    # a busy policy overflow a 32-bit INTEGER.
+    packets: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+    bytes: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+
+    # Last raw kernel snapshot (not accumulated) — delta/reset baseline.
+    last_packets: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+    last_bytes: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+
+    window_start: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # --- Pydantic Schemas ---
@@ -299,6 +335,15 @@ class RuleOrderUpdate(SQLModel):
     """Schema for updating rule order."""
     id: str
     order: int
+
+
+class RuleCounterResponse(SQLModel):
+    """Schema for GET /firewall/counters — durable hit/traffic totals per rule."""
+    rule_id: str
+    packets: int
+    bytes: int
+    window_start: datetime  # "counting since" — see RuleCounter
+    updated_at: datetime    # time range covered = [window_start, updated_at]
 
 
 class ModuleChainResponse(SQLModel):
