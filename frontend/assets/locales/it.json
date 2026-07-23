@@ -308,10 +308,8 @@
             "ruleEnabled": "Regola abilitata",
             "ruleDisabled": "Regola disabilitata",
             "counterTitle": "Traffico policy",
-            "counterHits": "Hit",
-            "counterTraffic": "Traffico",
-            "counterSince": "Conteggio dal",
-            "counterRange": "Intervallo",
+            "counterFirstUsed": "Primo utilizzo",
+            "counterLastUsed": "Ultimo utilizzo",
             "counterNone": "Nessun traffico registrato"
         },
         "editor": {

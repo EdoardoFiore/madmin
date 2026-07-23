@@ -308,10 +308,8 @@
             "ruleEnabled": "Rule enabled",
             "ruleDisabled": "Rule disabled",
             "counterTitle": "Policy traffic",
-            "counterHits": "Hits",
-            "counterTraffic": "Traffic",
-            "counterSince": "Counting since",
-            "counterRange": "Range",
+            "counterFirstUsed": "First used",
+            "counterLastUsed": "Last used",
             "counterNone": "No traffic recorded yet"
         },
         "editor": {

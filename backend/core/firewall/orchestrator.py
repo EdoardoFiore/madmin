@@ -1431,7 +1431,11 @@ class FirewallOrchestrator:
             counter.bytes += delta_b
             counter.last_packets = pkts
             counter.last_bytes = byte_count
-            counter.updated_at = now
+            # updated_at is "last used", not "last polled" — only advance it
+            # when this round actually saw new traffic, so a rule with zero
+            # hits since the previous snapshot doesn't look freshly active.
+            if delta_p or delta_b:
+                counter.updated_at = now
 
         if zero_baseline:
             # The imminent restore_all() flush is about to zero every kernel

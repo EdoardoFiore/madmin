@@ -9,7 +9,7 @@
  *                          policy-NAT companions and the managed nav NAT).
  */
 import { apiGet, apiPost, apiPatch, apiDelete } from '../../api.js';
-import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml, formatBytes, formatDate, formatRelativeTime } from '../../utils.js';
+import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml, formatBytes, formatDate } from '../../utils.js';
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
@@ -97,12 +97,20 @@ function counterPopoverHtml(c) {
     if (!c) {
         return `<span class="text-muted small">${escapeHtml(t('firewall.std.counterNone'))}</span>`;
     }
+    const row = (label, value) => `
+        <div class="d-flex justify-content-between align-items-center">
+            <span class="text-muted me-3">${escapeHtml(label)}</span>
+            <span>${value}</span>
+        </div>`;
     return `
-        <div class="small">
-            <div>${escapeHtml(t('firewall.std.counterHits'))}: <strong>${c.packets.toLocaleString()}</strong></div>
-            <div>${escapeHtml(t('firewall.std.counterTraffic'))}: <strong>${formatBytes(c.bytes)}</strong></div>
-            <div class="text-muted mt-1">${escapeHtml(t('firewall.std.counterSince'))} ${formatDate(c.window_start)}</div>
-            <div class="text-muted">${escapeHtml(t('firewall.std.counterRange'))} ${formatRelativeTime(c.window_start)}</div>
+        <div class="small" style="min-width:190px">
+            <div class="d-flex justify-content-between align-items-baseline">
+                <strong>${formatBytes(c.bytes)}</strong>
+                <span class="text-muted ms-3">${c.packets.toLocaleString()} pkt</span>
+            </div>
+            <hr class="my-1">
+            ${row(t('firewall.std.counterFirstUsed'), formatDate(c.window_start))}
+            ${row(t('firewall.std.counterLastUsed'), formatDate(c.updated_at))}
         </div>`;
 }
 
