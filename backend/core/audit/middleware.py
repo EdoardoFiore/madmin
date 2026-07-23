@@ -329,6 +329,23 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     session.add(audit_entry)
                     await session.commit()
 
+                # Forward to external syslog (non-blocking enqueue; filter +
+                # network I/O happen in the background forwarder task).
+                try:
+                    from .syslog import syslog_forwarder
+                    syslog_forwarder.submit(
+                        timestamp=audit_entry.timestamp,
+                        username=username,
+                        method=method,
+                        path=clean_path,
+                        status_code=status_code,
+                        duration_ms=duration_ms,
+                        client_ip=client_ip,
+                        category=category,
+                    )
+                except Exception:
+                    pass  # syslog must never impact the request
+
             except Exception as e:
                 # Never let audit logging break the actual request
                 logger.error(f"Failed to persist audit log: {e}")

@@ -18,6 +18,7 @@ from .models import (
     SystemSettings, SystemSettingsUpdate, SystemSettingsResponse,
     SMTPSettings, SMTPSettingsUpdate, SMTPSettingsResponse,
     BackupSettings, BackupSettingsUpdate, BackupSettingsResponse,
+    SyslogSettings, SyslogSettingsUpdate, SyslogSettingsResponse,
     NetworkSettingsResponse, PortChangeRequest, CertificateInfo
 )
 from .service import network_service
@@ -334,6 +335,99 @@ async def update_backup_settings(
         last_run_time=settings.last_run_time,
         updated_at=settings.updated_at
     )
+
+
+# --- Syslog Settings ---
+
+def _syslog_response(settings: SyslogSettings) -> SyslogSettingsResponse:
+    """Build the response schema, replacing the CA cert PEM with a bool flag."""
+    return SyslogSettingsResponse(
+        enabled=settings.enabled,
+        host=settings.host,
+        port=settings.port,
+        protocol=settings.protocol,
+        facility=settings.facility,
+        app_name=settings.app_name,
+        forward_reads=settings.forward_reads,
+        min_status=settings.min_status,
+        tls_ca_cert_configured=bool(settings.tls_ca_cert),
+        tls_verify=settings.tls_verify,
+        last_error=settings.last_error,
+        last_sent_at=settings.last_sent_at,
+        updated_at=settings.updated_at,
+    )
+
+
+@router.get("/syslog", response_model=SyslogSettingsResponse)
+async def get_syslog_settings(
+    current_user: User = Depends(require_permission("settings.view")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Get external syslog forwarding settings."""
+    result = await session.execute(select(SyslogSettings).where(SyslogSettings.id == 1))
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        settings = SyslogSettings(id=1)
+        session.add(settings)
+        await session.commit()
+        await session.refresh(settings)
+
+    return _syslog_response(settings)
+
+
+@router.patch("/syslog", response_model=SyslogSettingsResponse)
+async def update_syslog_settings(
+    data: SyslogSettingsUpdate,
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Update syslog forwarding settings and reload the forwarder."""
+    result = await session.execute(select(SyslogSettings).where(SyslogSettings.id == 1))
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        settings = SyslogSettings(id=1)
+        session.add(settings)
+
+    for key, value in data.model_dump(exclude_unset=True).items():
+        if value is not None:
+            setattr(settings, key, value)
+
+    settings.updated_at = datetime.utcnow()
+    session.add(settings)
+    await session.commit()
+    await session.refresh(settings)
+
+    # Reload the in-memory config and force reconnection with the new target.
+    try:
+        from core.audit.syslog import syslog_forwarder
+        await syslog_forwarder.reload()
+    except Exception as e:
+        logger.error(f"Syslog forwarder reload failed: {e}")
+
+    return _syslog_response(settings)
+
+
+@router.post("/syslog/test")
+async def test_syslog_settings(
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session)
+):
+    """Send a one-off test message to the configured syslog collector."""
+    result = await session.execute(select(SyslogSettings).where(SyslogSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    if not settings or not settings.host:
+        raise HTTPException(status_code=400, detail="Syslog non configurato")
+
+    from core.audit.syslog import syslog_forwarder
+    outcome = await syslog_forwarder.test_send()
+    if not outcome.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Invio syslog fallito: {outcome.get('error')}"
+        )
+    return {"success": True}
 
 
 # --- Network Settings ---

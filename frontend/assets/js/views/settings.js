@@ -265,6 +265,98 @@ export async function render(container) {
                 </div>
             </div>
             
+            <!-- External Syslog -->
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="ti ti-file-report me-2"></i>${t('settings.syslogConfig')}</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-12">
+                                <label class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="syslog-enabled" ${canManage ? '' : 'disabled'}>
+                                    <span class="form-check-label">${t('settings.syslogEnabled')}</span>
+                                </label>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.syslogHost')}</label>
+                                <input type="text" class="form-control" id="syslog-host" placeholder="10.0.0.10 / siem.example.com" ${canManage ? '' : 'disabled'}>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">${t('settings.syslogPort')}</label>
+                                <input type="number" class="form-control" id="syslog-port" value="514" min="1" max="65535" ${canManage ? '' : 'disabled'}>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">${t('settings.syslogProtocol')}</label>
+                                <select class="form-select" id="syslog-protocol" ${canManage ? '' : 'disabled'}>
+                                    <option value="udp" selected>UDP</option>
+                                    <option value="tcp">TCP</option>
+                                    <option value="tls">TCP + TLS</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">${t('settings.syslogFacility')}</label>
+                                <select class="form-select" id="syslog-facility" ${canManage ? '' : 'disabled'}>
+                                    <option value="16" selected>local0</option>
+                                    <option value="17">local1</option>
+                                    <option value="18">local2</option>
+                                    <option value="19">local3</option>
+                                    <option value="20">local4</option>
+                                    <option value="21">local5</option>
+                                    <option value="22">local6</option>
+                                    <option value="23">local7</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.syslogAppName')}</label>
+                                <input type="text" class="form-control" id="syslog-app-name" placeholder="madmin" maxlength="48" ${canManage ? '' : 'disabled'}>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">${t('settings.syslogMinStatus')}</label>
+                                <select class="form-select" id="syslog-min-status" ${canManage ? '' : 'disabled'}>
+                                    <option value="0" selected>${t('settings.syslogAllEvents')}</option>
+                                    <option value="400">${t('settings.syslogErrorsOnly')}</option>
+                                    <option value="500">${t('settings.syslogServerErrorsOnly')}</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <label class="form-check form-switch mb-2">
+                                    <input class="form-check-input" type="checkbox" id="syslog-forward-reads" ${canManage ? '' : 'disabled'}>
+                                    <span class="form-check-label">${t('settings.syslogForwardReads')}</span>
+                                </label>
+                            </div>
+                            <div class="col-12" id="syslog-tls-section" style="display:none">
+                                <div class="hr-text">${t('settings.syslogTlsSection')}</div>
+                                <div class="row g-3">
+                                    <div class="col-12">
+                                        <label class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="syslog-tls-verify" checked ${canManage ? '' : 'disabled'}>
+                                            <span class="form-check-label">${t('settings.syslogTlsVerify')}</span>
+                                        </label>
+                                    </div>
+                                    <div class="col-12">
+                                        <label class="form-label">${t('settings.syslogTlsCa')}</label>
+                                        <textarea class="form-control font-monospace" id="syslog-tls-ca" rows="4" placeholder="-----BEGIN CERTIFICATE-----" ${canManage ? '' : 'disabled'}></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-12" id="syslog-error-row" style="display:none">
+                                <div class="alert alert-warning mb-0 py-2"><i class="ti ti-alert-triangle me-1"></i><span id="syslog-last-error"></span></div>
+                            </div>
+                            <div class="col-12">
+                                ${canManage ? `
+                                <button class="btn btn-primary" id="save-syslog">${t('common.save')}</button>
+                                <button class="btn btn-outline-secondary ms-2" id="test-syslog">
+                                    <i class="ti ti-send me-1"></i>${t('settings.syslogTest')}
+                                </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Backup & Migrazione -->
             <div class="col-12">
                 <div class="card">
@@ -513,11 +605,12 @@ export async function render(container) {
 
 async function loadSettings() {
     try {
-        const [system, smtp, backup, network] = await Promise.all([
+        const [system, smtp, backup, network, syslog] = await Promise.all([
             apiGet('/settings/system'),
             apiGet('/settings/smtp'),
             apiGet('/settings/backup'),
-            apiGet('/settings/network')
+            apiGet('/settings/network'),
+            apiGet('/settings/syslog')
         ]);
 
         // Network
@@ -595,6 +688,33 @@ async function loadSettings() {
         document.getElementById('smtp-username').value = smtp.smtp_username || '';
         document.getElementById('sender-email').value = smtp.sender_email || '';
         document.getElementById('sender-name').value = smtp.sender_name || '';
+
+        // Syslog
+        document.getElementById('syslog-enabled').checked = !!syslog.enabled;
+        document.getElementById('syslog-host').value = syslog.host || '';
+        document.getElementById('syslog-port').value = syslog.port || 514;
+        document.getElementById('syslog-protocol').value = syslog.protocol || 'udp';
+        document.getElementById('syslog-facility').value = syslog.facility ?? 16;
+        document.getElementById('syslog-app-name').value = syslog.app_name || 'madmin';
+        document.getElementById('syslog-forward-reads').checked = !!syslog.forward_reads;
+        document.getElementById('syslog-min-status').value = syslog.min_status ?? 0;
+        document.getElementById('syslog-tls-verify').checked = syslog.tls_verify !== false;
+        // CA PEM is never returned; show a placeholder if one is configured.
+        const syslogCaEl = document.getElementById('syslog-tls-ca');
+        syslogCaEl.value = '';
+        syslogCaEl.placeholder = syslog.tls_ca_cert_configured
+            ? t('settings.syslogTlsCaConfigured')
+            : '-----BEGIN CERTIFICATE-----';
+        // Toggle TLS section + last-error banner based on current state.
+        document.getElementById('syslog-tls-section').style.display =
+            (syslog.protocol === 'tls') ? '' : 'none';
+        const syslogErrRow = document.getElementById('syslog-error-row');
+        if (syslog.last_error) {
+            document.getElementById('syslog-last-error').textContent = syslog.last_error;
+            syslogErrRow.style.display = '';
+        } else {
+            syslogErrRow.style.display = 'none';
+        }
 
         // Backup
         document.getElementById('backup-enabled').checked = backup.enabled;
@@ -909,6 +1029,53 @@ function setupEventListeners() {
             showToast(t('settings.smtpTestSent', { recipient }), 'success');
         } catch (e) {
             showToast(t('settings.smtpSendError', { error: e.message }), 'error');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    });
+
+    // Toggle TLS section when protocol changes
+    document.getElementById('syslog-protocol')?.addEventListener('change', (e) => {
+        document.getElementById('syslog-tls-section').style.display =
+            (e.target.value === 'tls') ? '' : 'none';
+    });
+
+    // Save syslog settings
+    document.getElementById('save-syslog')?.addEventListener('click', async () => {
+        try {
+            const data = {
+                enabled: document.getElementById('syslog-enabled').checked,
+                host: document.getElementById('syslog-host').value.trim(),
+                port: parseInt(document.getElementById('syslog-port').value) || 514,
+                protocol: document.getElementById('syslog-protocol').value,
+                facility: parseInt(document.getElementById('syslog-facility').value),
+                app_name: document.getElementById('syslog-app-name').value.trim() || 'madmin',
+                forward_reads: document.getElementById('syslog-forward-reads').checked,
+                min_status: parseInt(document.getElementById('syslog-min-status').value) || 0,
+                tls_verify: document.getElementById('syslog-tls-verify').checked
+            };
+            // Only send the CA cert if the textarea was actually filled in.
+            const ca = document.getElementById('syslog-tls-ca').value.trim();
+            if (ca) data.tls_ca_cert = ca;
+
+            await apiPatch('/settings/syslog', data);
+            showToast(t('settings.syslogSaved'), 'success');
+            await loadSettings();
+        } catch (e) { showToast(e.message, 'error'); }
+    });
+
+    // Test syslog - send a one-off message to the collector
+    document.getElementById('test-syslog')?.addEventListener('click', async () => {
+        const btn = document.getElementById('test-syslog');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.smtpTestSending')}`;
+        btn.disabled = true;
+        try {
+            await apiPost('/settings/syslog/test', {});
+            showToast(t('settings.syslogTestSent'), 'success');
+        } catch (e) {
+            showToast(t('settings.syslogTestError', { error: e.message }), 'error');
         } finally {
             btn.innerHTML = originalText;
             btn.disabled = false;
