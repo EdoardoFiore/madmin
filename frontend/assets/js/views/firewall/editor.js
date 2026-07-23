@@ -253,7 +253,7 @@ function formFields(rule) {
             <div class="col-md-6">
                 <label class="form-label d-block">${t('firewall.std.colNat')}</label>
                 <label class="form-check form-switch">
-                    <input class="form-check-input" type="checkbox" id="ed-nat" ${rule?.policy_nat ? 'checked' : ''}>
+                    <input class="form-check-input" type="checkbox" id="ed-nat" ${(rule ? rule.policy_nat : true) ? 'checked' : ''}>
                     <span class="form-check-label">${t('firewall.editor.natHint')}</span>
                 </label>
             </div>

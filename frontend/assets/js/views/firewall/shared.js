@@ -12,9 +12,14 @@ import { t } from '../../i18n.js';
 // POSTROUTING MASQUERADE).
 export const MANAGED_NAT_SENTINEL = 'MADMIN_MANAGED_LAN_NAT';
 
-// Netfilter hook (chain) validity, mirrors the backend denylist. Used to
-// validate the editor before submit.
-export const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD'];
+// Netfilter hook (chain) validity, mirrors the backend denylist
+// (router.py _IN_IFACE_VALID / _OUT_IFACE_VALID). Used to validate the editor
+// before submit. The denylist is permissive by design: it blocks only
+// known-incompatible combos and lets everything else through to iptables,
+// which rejects any truly-invalid combination at apply time. Keep in exact
+// sync with the backend — a mismatch either blocks a rule the engine accepts
+// or lets through one it will reject on apply.
+export const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD', 'POSTROUTING'];
 export const OUT_IFACE_VALID_CHAINS = ['POSTROUTING', 'OUTPUT', 'FORWARD'];
 export const NAT_ACTION_VALID_CHAINS = {
     DNAT: ['PREROUTING', 'OUTPUT'],

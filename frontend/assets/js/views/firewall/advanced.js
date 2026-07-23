@@ -10,7 +10,7 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL } from './shared.js';
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints } from './shared.js';
 
 let rules = [];
 let editingRule = null;
@@ -1516,35 +1516,6 @@ async function handleRuleSubmit(e) {
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');
     }
-}
-
-// Hook (chain) in cui ciascun match/azione è valido per netfilter.
-const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD', 'POSTROUTING'];
-const OUT_IFACE_VALID_CHAINS = ['POSTROUTING', 'OUTPUT', 'FORWARD'];
-const NAT_ACTION_VALID_CHAINS = {
-    DNAT: ['PREROUTING', 'OUTPUT'],
-    REDIRECT: ['PREROUTING', 'OUTPUT'],
-    SNAT: ['POSTROUTING'],
-    MASQUERADE: ['POSTROUTING'],
-};
-
-/**
- * Validate rule field/chain (hook) compatibility client-side, mirroring the
- * backend denylist. Returns a translated error string, or null if valid.
- */
-function validateRuleConstraints(data) {
-    const chain = data.chain;
-    if (data.in_interface && !IN_IFACE_VALID_CHAINS.includes(chain)) {
-        return t('firewall.validation.inIfaceHook', { chain });
-    }
-    if (data.out_interface && !OUT_IFACE_VALID_CHAINS.includes(chain)) {
-        return t('firewall.validation.outIfaceHook', { chain });
-    }
-    const validChains = NAT_ACTION_VALID_CHAINS[data.action];
-    if (validChains && !validChains.includes(chain)) {
-        return t('firewall.validation.natActionHook', { action: data.action, chain });
-    }
-    return null;
 }
 
 /**

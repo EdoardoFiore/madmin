@@ -440,6 +440,45 @@ def _auto_hairpin_nat_response(dnat, to_destination: Optional[str] = None) -> Ma
     )
 
 
+def _auto_hairpin_forward_response(dnat, to_destination: Optional[str] = None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic FORWARD ACCEPT row mirroring a hairpin
+    DNAT's LAN-side forward companion. apply_rules emits one such ACCEPT per
+    LAN subnet (source=<subnet>) for LAN-originated reflected traffic — the
+    DNAT's own FORWARD companion (_auto_forward_response) carries -i <wan> and
+    never matches it. Like the hairpin MASQUERADE row, source collapses to None
+    (no single subnet represents it); the comment carries the context. Shares
+    hairpin_masq_fields with apply_rules so destination/port stay in sync."""
+    fields = hairpin_masq_fields(dnat, to_destination)
+    label = to_destination if to_destination is not None else dnat.to_destination
+    return MachineFirewallRuleResponse(
+        id=f"auto-hairpin-fwd-{dnat.id}",
+        chain="FORWARD",
+        action="ACCEPT",
+        protocol=fields["protocol"],
+        source=None,
+        destination=fields["destination"],
+        port=fields["port"],
+        in_interface=None,
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=f"→ hairpin {label}",
+        table_name="filter",
+        order=999_998,  # companions sit after user policies, before the implicit deny
+        enabled=True,
+        auto_generated=True,
+        created_at=dnat.created_at,
+        updated_at=dnat.updated_at,
+    )
+
+
 def _auto_forward_response(dnat, to_destination: Optional[str] = None, refs_map=None) -> MachineFirewallRuleResponse:
     """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT
     companion. to_destination: resolved via resolve_dnat_targets() by the
@@ -576,6 +615,16 @@ async def list_rules(
         dnat_refs_map = await _rule_refs_map(session, [d.id for d in dnat_rules])
         responses.extend(
             _auto_forward_response(d, dnat_targets.get(d.id), dnat_refs_map) for d in dnat_rules
+        )
+        # Hairpin DNATs also emit a LAN-side FORWARD ACCEPT (apply_rules
+        # hairpin_forward_lines) that the DNAT's own -i <wan> companion above
+        # never covers. Surface it here so the FORWARD listing mirrors the
+        # engine — ordered after the DNAT companions, before the implicit deny,
+        # exactly as apply_rules appends them.
+        hairpin_fwd_rules = await firewall_orchestrator.get_enabled_hairpin_rules(session)
+        hairpin_fwd_targets = await firewall_orchestrator.resolve_dnat_targets(session, hairpin_fwd_rules)
+        responses.extend(
+            _auto_hairpin_forward_response(d, hairpin_fwd_targets.get(d.id)) for d in hairpin_fwd_rules
         )
         responses.append(_implicit_deny_response())
     # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
