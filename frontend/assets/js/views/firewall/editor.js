@@ -315,9 +315,17 @@ function formFields(rule) {
     }
     // outnat
     const action = rule?.action || 'MASQUERADE';
+    // Destination and service are valid matches in nat/POSTROUTING (-d/-p/--dport)
+    // and were previously Advanced-only: the Standard list rendered a
+    // Destination column the editor could not show, so a destination-scoped
+    // SNAT looked unscoped here while silently staying scoped on save
+    // (PATCH exclude_unset). Editing them where they are displayed removes
+    // that blind spot.
     return `
         ${nameHtml(rule)}
         ${addrFieldHtml('source', t('firewall.std.colSource'))}
+        ${addrFieldHtml('destination', t('firewall.std.colDest'), t('firewall.editor.outNatDestHint'))}
+        ${serviceHtml(rule)}
         <div class="col-md-6">
             <label class="form-label">${t('firewall.outInterface')}</label>
             ${interfaceSelect('ed-out', rule?.out_interface || '')}
@@ -599,10 +607,15 @@ async function save() {
             showToast(t('firewall.validation.snatToSource'), 'error');
             return;
         }
+        const proto = container.querySelector('#ed-proto').value || null;
         plain = {
             table_name: 'nat', chain: 'POSTROUTING', action,
             comment: name,
             out_interface: container.querySelector('#ed-out').value || null,
+            protocol: proto,
+            // Same tcp/udp-only guard as the policy branch: the engine emits
+            // --dport for those protocols only (backend _validate_port_protocol).
+            port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
             to_source: action === 'SNAT' ? toSource : null,
             enabled,
         };
@@ -612,21 +625,17 @@ async function save() {
     if (constraintError) { showToast(constraintError, 'error'); return; }
 
     // Phase 2: resolve address chips (may create address objects — only
-    // reached once every other field has already passed validation).
+    // reached once every other field has already passed validation). Every
+    // mode now carries both directions (outnat included, see formFields).
     let data;
     try {
-        if (mode === 'outnat') {
-            const src = await resolveDirection('source');
-            data = { ...plain, source: src.literal, source_refs: src.refs };
-        } else {
-            const src = await resolveDirection('source');
-            const dst = await resolveDirection('destination');
-            data = {
-                ...plain,
-                source: src.literal, source_refs: src.refs,
-                destination: dst.literal, destination_refs: dst.refs,
-            };
-        }
+        const src = await resolveDirection('source');
+        const dst = await resolveDirection('destination');
+        data = {
+            ...plain,
+            source: src.literal, source_refs: src.refs,
+            destination: dst.literal, destination_refs: dst.refs,
+        };
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
         return;

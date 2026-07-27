@@ -173,6 +173,63 @@ function natCell(rule) {
         : `<span class="text-muted">—</span>`;
 }
 
+/** Read-only block for the engine-generated FORWARD companions (a port
+ * forward's ACCEPT toward the translated destination, plus the LAN-side
+ * hairpin ACCEPT). apply_rules appends these AFTER every user policy and
+ * before the implicit deny (orchestrator.apply_rules), which is why a user
+ * DROP placed above can silently kill a port forward. Rendering them in that
+ * exact position is what makes the ordering visible instead of surprising —
+ * without it the Standard view reads as "policies, then deny" and the cause
+ * of a dead forward is only findable in the Advanced view. */
+function renderAutoForward() {
+    const list = rules.filter(r => r.table_name === 'filter' && r.chain === 'FORWARD'
+        && isAutoRow(r) && r.id !== 'auto-implicit-deny');
+    if (!list.length) return '';
+    const hint = escapeHtml(t('firewall.std.autoFwdHint'));
+    return `
+        <div class="fw-pair-group">
+            <div class="px-3 py-2 bg-light border-top fw-pair-header d-flex align-items-center" title="${hint}">
+                <i class="ti ti-lock me-2 text-muted"></i>
+                <strong>${t('firewall.std.autoFwdTitle')}</strong>
+                <span class="badge bg-secondary-lt ms-2">${list.length}</span>
+                <i class="ti ti-info-circle ms-2 text-muted"></i>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-vcenter card-table mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width:42px"></th>
+                            <th>${t('firewall.inInterface')}</th>
+                            <th>${t('firewall.std.colSource')}</th>
+                            <th>${t('firewall.std.colDest')}</th>
+                            <th>${t('firewall.std.colService')}</th>
+                            <th>${t('firewall.action')}</th>
+                            <th>${t('firewall.std.colOrigin')}</th>
+                            <th style="width:34px"></th>
+                        </tr>
+                    </thead>
+                    <tbody>${list.map(r => autoForwardRow(r, hint)).join('')}</tbody>
+                </table>
+            </div>
+        </div>`;
+}
+
+function autoForwardRow(r, hint) {
+    return `
+        <tr data-id="${r.id}">
+            <td class="text-muted"><i class="ti ti-lock" title="${hint}"></i></td>
+            <td>${r.in_interface
+                ? `<code>${escapeHtml(r.in_interface)}</code>`
+                : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
+            <td>${renderAddrCell(r.source, r.source_refs)}</td>
+            <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
+            <td><span class="text-muted">${serviceLabel(r)}</span></td>
+            <td>${actionBadge(r.action)}</td>
+            <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
+            <td>${counterIcon(r)}</td>
+        </tr>`;
+}
+
 function renderPolicy() {
     const wrap = document.getElementById('std-policy');
     const canManage = checkPermission('firewall.manage');
@@ -206,10 +263,15 @@ function renderPolicy() {
             <i class="ti ti-info-circle ms-2 text-muted"></i>
         </div>`;
 
+    // Companions are appended by the engine after every user policy — rendered
+    // in that same position here, in both the populated and the empty case (a
+    // port forward can exist with no forward policy at all).
+    const autoBlock = renderAutoForward();
+
     if (!policies.length) {
         wrap.innerHTML = `<div class="card">${header}<div class="card-body">${
             emptyState('ti-arrow-guide', t('firewall.std.noPolicies'), t('firewall.std.noPoliciesHint'))
-        }</div>${implicitDeny}</div>`;
+        }</div>${autoBlock}${implicitDeny}</div>`;
         return;
     }
 
@@ -250,7 +312,7 @@ function renderPolicy() {
             </div>`;
     }
 
-    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${implicitDeny}</div></div>`;
+    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${autoBlock}${implicitDeny}</div></div>`;
 
     bindRowActions(wrap, 'policy');
     if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
@@ -418,6 +480,7 @@ function renderOutboundNat() {
                         <th style="width:42px"></th>
                         <th>${t('firewall.std.colSource')}</th>
                         <th>${t('firewall.std.colDest')}</th>
+                        <th>${t('firewall.std.colService')}</th>
                         <th>${t('firewall.outInterface')}</th>
                         <th>${t('firewall.action')}</th>
                         <th style="width:34px"></th>
@@ -434,6 +497,7 @@ function renderOutboundNat() {
                                 <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${renderAddrCell(r.source, r.source_refs)}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
+                                <td><span class="text-muted">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
                                 <td>${r.out_interface ? `<code>${escapeHtml(r.out_interface)}</code>` : '<span class="text-muted">—</span>'}</td>
                                 <td>${actionBadge(r.action)} ${locked ? `<span class="badge bg-azure-lt ms-1"><i class="ti ti-lock me-1"></i>${t('firewall.autoRule')}</span>` : ''}</td>
                                 <td>${counterIcon(r)}</td>
