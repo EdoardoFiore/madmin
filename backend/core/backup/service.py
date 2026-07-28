@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text, delete
+from sqlalchemy import select, text, delete, update
 
 from config import get_settings, MADMIN_VERSION
 
@@ -973,15 +973,33 @@ async def _export_users(session: AsyncSession) -> List[dict]:
 
 async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
     """Export machine firewall rules, including address-object/group references
-    (serialized by name so they survive id changes on restore)."""
+    (serialized by name so they survive id changes on restore).
+
+    Every column the engine reads at apply time must appear here: a field missing
+    from this dict is silently lost on restore (_import_firewall_rules builds the
+    model straight from these keys, so an absent key falls back to the column
+    default). That is why policy_nat/hairpin and the DNAT object target are
+    listed explicitly — without them a restored install loses its outbound NAT
+    and its object-targeted port forwards without a single error.
+
+    The DNAT object target is exported by NAME, not by id: address objects are
+    recreated on import and get fresh uuids (see _import_address_catalog), so a
+    raw to_destination_object_id would restore as a dangling reference. Same
+    reasoning as source_refs/destination_refs below.
+    """
     from core.firewall.models import (
         MachineFirewallRule, FirewallRuleAddress, AddressObject, AddressGroup,
     )
+    from core.firewall.router import _dnat_obj_names_map
 
     result = await session.execute(
         select(MachineFirewallRule).order_by(MachineFirewallRule.order)
     )
     rules = result.scalars().all()
+
+    # {rule_id: object_name} — same helper the API listing uses to label a
+    # rule's object-based DNAT target, so export and UI never disagree.
+    dnat_obj_names = await _dnat_obj_names_map(session, rules)
 
     ra_res = await session.execute(
         select(FirewallRuleAddress).order_by(FirewallRuleAddress.order)
@@ -1020,6 +1038,9 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
             "limit_rate": r.limit_rate,
             "limit_burst": r.limit_burst,
             "to_destination": r.to_destination,
+            "to_destination_port": r.to_destination_port,
+            # By name (see docstring) — resolved back to an id on import.
+            "to_destination_object": dnat_obj_names.get(r.id),
             "to_source": r.to_source,
             "to_ports": r.to_ports,
             "log_prefix": r.log_prefix,
@@ -1029,6 +1050,8 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
             "table_name": r.table_name,
             "order": r.order,
             "enabled": r.enabled,
+            "policy_nat": r.policy_nat,
+            "hairpin": r.hairpin,
             "source_refs": refs_by.get((r.id, "source"), []),
             "destination_refs": refs_by.get((r.id, "destination"), []),
         }
@@ -1295,6 +1318,7 @@ async def _import_address_catalog(session: AsyncSession, addresses_file: str) ->
     from fastapi import HTTPException
     from core.firewall.models import (
         AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
+        MachineFirewallRule,
     )
     from core.firewall.router import _unique_ref_key, _validate_object_value
 
@@ -1303,8 +1327,15 @@ async def _import_address_catalog(session: AsyncSession, addresses_file: str) ->
 
     warnings: List[str] = []
 
-    # Replace catalog (rule refs + members first due to FKs)
+    # Replace catalog (rule refs + members first due to FKs).
+    # machine_firewall_rule.to_destination_object_id is a second FK into this
+    # catalog, and the rules themselves are only wiped later, in phase 2b — so
+    # clear it here or delete(AddressObject) raises ForeignKeyViolationError for
+    # any DNAT with an object target. Nulling it loses nothing: either 2b
+    # replaces those rules outright, or firewall.json is absent from the archive
+    # and the target would point at a just-deleted object anyway.
     await session.execute(delete(FirewallRuleAddress))
+    await session.execute(update(MachineFirewallRule).values(to_destination_object_id=None))
     await session.execute(delete(AddressGroupMember))
     await session.execute(delete(AddressGroup))
     await session.execute(delete(AddressObject))
@@ -1354,24 +1385,55 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
     so the by-name remapping (and its tolerant skip-when-missing behaviour) is
     not duplicated here. Returns (count, warnings).
     """
-    from core.firewall.models import MachineFirewallRule, FirewallRuleAddress
+    from core.firewall.models import (
+        MachineFirewallRule, FirewallRuleAddress, RuleCounter, AddressObject,
+    )
     from core.firewall.router import _resolve_imported_refs
 
     with open(firewall_file) as f:
         rules_data = json.load(f)
 
-    # Delete existing rules + their refs
+    # Delete existing rules + their refs. RuleCounter holds a plain FK to
+    # machine_firewall_rule with no DB-level cascade (models.RuleCounter), so it
+    # must go first or the delete below raises ForeignKeyViolationError — the
+    # counters exist on any real install as soon as traffic hits a rule. Same
+    # FK-safe order orchestrator.delete_all_rules() uses.
     await session.execute(delete(FirewallRuleAddress))
+    await session.execute(delete(RuleCounter))
     await session.execute(delete(MachineFirewallRule))
     await session.flush()
 
     warnings: List[str] = []
     count = 0
-    exclude_fields = {"id", "created_at", "updated_at", "source_refs", "destination_refs"}
+    # to_destination_object is exported by name and is not a model column — it is
+    # resolved to to_destination_object_id below, after the address catalog import.
+    exclude_fields = {
+        "id", "created_at", "updated_at",
+        "source_refs", "destination_refs", "to_destination_object",
+    }
 
     for idx, rule_dict in enumerate(rules_data):
         clean_data = {k: v for k, v in rule_dict.items() if k not in exclude_fields}
         rule = MachineFirewallRule(**clean_data)
+
+        # Re-point an object-based DNAT target at the freshly imported object of
+        # the same name (_import_address_catalog ran first, in phase 2a). An
+        # unresolvable name leaves the target null, which makes apply_rules skip
+        # the rule entirely while it still shows in the UI — warn, or the dead
+        # port forward is invisible.
+        obj_name = rule_dict.get("to_destination_object")
+        if obj_name:
+            obj = (await session.execute(
+                select(AddressObject).where(AddressObject.name == obj_name)
+            )).scalar_one_or_none()
+            if obj:
+                rule.to_destination_object_id = obj.id
+            else:
+                warnings.append(
+                    f"Regola #{idx + 1}: oggetto di destinazione DNAT '{obj_name}' non trovato — "
+                    f"il port forward resta senza destinazione interna."
+                )
+
         session.add(rule)
         await session.flush()
         for direction in ("source", "destination"):
