@@ -528,7 +528,11 @@ class OpenVPNService:
             "persist-key",
             "persist-tun",
             "",
-            f"status /var/log/openvpn/status_{instance.id}.log",
+            # Explicit interval + version: the defaults (60s, version 1) meant a
+            # disconnected client lingered in the file for up to a minute, and
+            # version 1 carries no machine-readable connect timestamp.
+            f"status /var/log/openvpn/status_{instance.id}.log 10",
+            "status-version 2",
             f"log-append /var/log/openvpn/{instance.id}.log",
             "verb 3",
             "",
@@ -1077,6 +1081,27 @@ class OpenVPNService:
             return False
     
     @staticmethod
+    def parse_connected_since(conn_info: Dict) -> Optional[datetime]:
+        """Connect time of a status-file entry, or None if unparseable.
+
+        Prefers the epoch field, which only status-version 2+ provides. The
+        human-readable fallback differs across versions — v1 emits ctime
+        ("Thu Aug  3 09:00:00 2026"), v2 an ISO-like form — and assuming a
+        single format silently blanked the column for every v1 status file.
+        """
+        epoch = conn_info.get('connected_since_epoch')
+        if epoch:
+            return datetime.fromtimestamp(epoch)
+
+        raw = (conn_info.get('connected_since') or "").strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%a %b %d %H:%M:%S %Y"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
     def get_connected_clients(instance_id: str) -> List[Dict]:
         """Get list of connected clients via status file."""
         # Check standard systemd path first, then config path
@@ -1109,7 +1134,7 @@ class OpenVPNService:
                 if is_v2:
                     if line.startswith('CLIENT_LIST'):
                         # TIME,HEADER fields show:
-                        # CLIENT_LIST,CommonName,RealAddress,VirtualAddress,VirtualIPv6,BytesReceived,BytesSent,ConnectedSince,...
+                        # CLIENT_LIST,CommonName,RealAddress,VirtualAddress,VirtualIPv6,BytesReceived,BytesSent,ConnectedSince,ConnectedSince(time_t),...
                         parts = line.split(',')
                         if len(parts) >= 8:
                             connected.append({
@@ -1119,6 +1144,11 @@ class OpenVPNService:
                                 'bytes_received': int(parts[5]) if parts[5].isdigit() else 0,
                                 'bytes_sent': int(parts[6]) if parts[6].isdigit() else 0,
                                 'connected_since': parts[7],
+                                # Unambiguous epoch, unlike the human-readable
+                                # field whose format varies across versions.
+                                'connected_since_epoch': (
+                                    int(parts[8]) if len(parts) > 8 and parts[8].isdigit() else None
+                                ),
                             })
                 else:
                     # Version 1 parsing

@@ -13,10 +13,23 @@ const MODULE_API = '/modules/openvpn';
 let currentInstanceId = null;
 let currentContainer = null;
 let networkInterfaces = [];
+let clientsInterval = null;
+let currentCanClients = false;
+
+// openvpn rewrites its status file every 10s (see the generated server config),
+// so polling faster would just re-read the same snapshot.
+const CLIENTS_POLL_MS = 15000;
 
 export async function renderOvpnDetail(container, instanceId, canManage, canClients) {
+    // The previous detail view may still be polling; its interval outlives the
+    // DOM it was updating.
+    if (clientsInterval) {
+        clearInterval(clientsInterval);
+        clientsInterval = null;
+    }
     currentInstanceId = instanceId;
     currentContainer = container;
+    currentCanClients = canClients;
     await renderInstanceDetail(container, canManage, canClients);
 }
 
@@ -66,6 +79,94 @@ function renderCertStatus(daysRemaining, revoked) {
     if (daysRemaining < 30) return `<span class="badge bg-warning-lt">${daysRemaining} ${t('openvpn.days')}</span>`;
     if (daysRemaining < 90) return `<span class="badge bg-info-lt">${daysRemaining} ${t('openvpn.days')}</span>`;
     return `<span class="badge bg-success-lt">${daysRemaining} ${t('openvpn.days')}</span>`;
+}
+
+function renderClientRows(clients, canClients) {
+    return clients.map(c => `
+        <tr class="${c.revoked ? 'text-muted' : ''}">
+            <td>
+                ${c.is_connected === true
+                    ? `<span class="status-dot status-dot-animated bg-success" title="${t('openvpn.connected')}"></span>`
+                    : `<span class="status-dot bg-secondary" title="${t('openvpn.offline')}"></span>`}
+            </td>
+            <td>
+                <strong>${escapeHtml(c.name)}</strong>
+                ${c.revoked ? `<span class="badge bg-danger-lt ms-1">${t('openvpn.revoked')}</span>` : ''}
+            </td>
+            <td><code>${c.allocated_ip}</code></td>
+            <td>${renderCertStatus(c.cert_days_remaining, c.revoked)}</td>
+            <td>
+                ${c.is_connected === true ? `
+                <small class="text-muted">
+                    <i class="ti ti-arrow-down text-success"></i> ${formatBytes(c.bytes_received || 0)}
+                    <i class="ti ti-arrow-up text-primary ms-2"></i> ${formatBytes(c.bytes_sent || 0)}
+                </small>
+                ` : '<small class="text-muted">-</small>'}
+            </td>
+            <td>
+                ${c.last_connection
+                    ? `<small class="text-muted">${formatTimeAgo(c.last_connection)}</small>`
+                    : '<small class="text-muted">-</small>'}
+            </td>
+            <td>
+                <div class="btn-group">
+                    ${!c.revoked && canClients ? `
+                    <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="${t('openvpn.downloadConfig')}">
+                        <i class="ti ti-download"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="${t('openvpn.sendEmail')}">
+                        <i class="ti ti-mail"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-warning" onclick="renewClientCert('${escapeHtml(c.name)}')" title="${t('openvpn.renewCert')}">
+                        <i class="ti ti-refresh"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="${t('openvpn.revoke')}">
+                        <i class="ti ti-ban"></i>
+                    </button>` : ''}
+                    ${c.revoked && canClients ? `
+                    <button class="btn btn-sm btn-outline-success" onclick="restoreClient('${escapeHtml(c.name)}')" title="${t('openvpn.restore')}">
+                        <i class="ti ti-restore"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteClientPermanent('${escapeHtml(c.name)}')" title="${t('openvpn.deletePermanent')}">
+                        <i class="ti ti-trash"></i>
+                    </button>` : ''}
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+/**
+ * Repaint just the client rows with live status. Deliberately not a full
+ * re-render: that would drop scroll position and close any open modal.
+ */
+async function refreshClients() {
+    const tbody = document.getElementById('ovpn-clients-tbody');
+    if (!tbody) return;
+
+    const clients = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/clients`);
+    tbody.innerHTML = renderClientRows(clients, currentCanClients);
+}
+
+function startClientsPolling() {
+    if (clientsInterval) clearInterval(clientsInterval);
+
+    clientsInterval = setInterval(async () => {
+        // The router swaps container.innerHTML without telling us, so the
+        // disappearance of our tbody is what signals the view is gone.
+        if (!document.getElementById('ovpn-clients-tbody')) {
+            clearInterval(clientsInterval);
+            clientsInterval = null;
+            return;
+        }
+        if (document.hidden) return;
+
+        try {
+            await refreshClients();
+        } catch (err) {
+            console.warn('Client status refresh failed:', err);
+        }
+    }, CLIENTS_POLL_MS);
 }
 
 async function renderInstanceDetail(container, canManage, canClients) {
@@ -192,10 +293,15 @@ async function renderInstanceDetail(container, canManage, canClients) {
                     <div class="card card-body border-top-0 rounded-top-0">
                         <div class="d-flex justify-content-between align-items-center mb-3">
                             <h4 class="mb-0">${t('openvpn.vpnClients')}</h4>
-                            ${canClients ? `
-                            <button class="btn btn-primary" id="btn-new-client">
-                                <i class="ti ti-user-plus me-1"></i>${t('openvpn.newClient')}
-                            </button>` : ''}
+                            <div class="btn-list">
+                                <button class="btn btn-outline-secondary" id="btn-refresh-clients" title="${t('openvpn.refreshClients')}">
+                                    <i class="ti ti-refresh"></i>
+                                </button>
+                                ${canClients ? `
+                                <button class="btn btn-primary" id="btn-new-client">
+                                    <i class="ti ti-user-plus me-1"></i>${t('openvpn.newClient')}
+                                </button>` : ''}
+                            </div>
                         </div>
                         ${clients.length === 0 ? `
                             <div class="text-center py-4 text-muted">
@@ -217,59 +323,8 @@ async function renderInstanceDetail(container, canManage, canClients) {
                                             <th class="w-1">${t('openvpn.actions')}</th>
                                         </tr>
                                     </thead>
-                                    <tbody>
-                                        ${clients.map(c => `
-                                            <tr class="${c.revoked ? 'text-muted' : ''}">
-                                                <td>
-                                                    ${c.is_connected === true
-                                                        ? `<span class="status-dot status-dot-animated bg-success" title="${t('openvpn.connected')}"></span>`
-                                                        : `<span class="status-dot bg-secondary" title="${t('openvpn.offline')}"></span>`}
-                                                </td>
-                                                <td>
-                                                    <strong>${escapeHtml(c.name)}</strong>
-                                                    ${c.revoked ? `<span class="badge bg-danger-lt ms-1">${t('openvpn.revoked')}</span>` : ''}
-                                                </td>
-                                                <td><code>${c.allocated_ip}</code></td>
-                                                <td>${renderCertStatus(c.cert_days_remaining, c.revoked)}</td>
-                                                <td>
-                                                    ${c.is_connected === true ? `
-                                                    <small class="text-muted">
-                                                        <i class="ti ti-arrow-down text-success"></i> ${formatBytes(c.bytes_received || 0)}
-                                                        <i class="ti ti-arrow-up text-primary ms-2"></i> ${formatBytes(c.bytes_sent || 0)}
-                                                    </small>
-                                                    ` : '<small class="text-muted">-</small>'}
-                                                </td>
-                                                <td>
-                                                    ${c.last_connection
-                                                        ? `<small class="text-muted">${formatTimeAgo(c.last_connection)}</small>`
-                                                        : '<small class="text-muted">-</small>'}
-                                                </td>
-                                                <td>
-                                                    <div class="btn-group">
-                                                        ${!c.revoked && canClients ? `
-                                                        <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="${t('openvpn.downloadConfig')}">
-                                                            <i class="ti ti-download"></i>
-                                                        </button>
-                                                        <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="${t('openvpn.sendEmail')}">
-                                                            <i class="ti ti-mail"></i>
-                                                        </button>
-                                                        <button class="btn btn-sm btn-outline-warning" onclick="renewClientCert('${escapeHtml(c.name)}')" title="${t('openvpn.renewCert')}">
-                                                            <i class="ti ti-refresh"></i>
-                                                        </button>
-                                                        <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="${t('openvpn.revoke')}">
-                                                            <i class="ti ti-ban"></i>
-                                                        </button>` : ''}
-                                                        ${c.revoked && canClients ? `
-                                                        <button class="btn btn-sm btn-outline-success" onclick="restoreClient('${escapeHtml(c.name)}')" title="${t('openvpn.restore')}">
-                                                            <i class="ti ti-restore"></i>
-                                                        </button>
-                                                        <button class="btn btn-sm btn-outline-danger" onclick="deleteClientPermanent('${escapeHtml(c.name)}')" title="${t('openvpn.deletePermanent')}">
-                                                            <i class="ti ti-trash"></i>
-                                                        </button>` : ''}
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        `).join('')}
+                                    <tbody id="ovpn-clients-tbody">
+                                        ${renderClientRows(clients, canClients)}
                                     </tbody>
                                 </table>
                             </div>
@@ -453,6 +508,20 @@ async function renderInstanceDetail(container, canManage, canClients) {
             tabsEl.parentNode.insertBefore(s2sPanel, tabsEl);
             setupS2SHandlers(instance, canManage, canClients);
         }
+
+        document.getElementById('btn-refresh-clients')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            try {
+                await refreshClients();
+            } catch (err) {
+                showToast(err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        startClientsPolling();
 
         // New client - open modal and load groups
         document.getElementById('btn-new-client')?.addEventListener('click', async () => {

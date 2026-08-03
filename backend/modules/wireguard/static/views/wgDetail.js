@@ -13,10 +13,23 @@ const MODULE_API = '/modules/wireguard';
 let currentInstanceId = null;
 let currentContainer = null;
 let networkInterfaces = [];
+let clientsInterval = null;
+let currentCanClients = false;
+
+// A peer's handshake only ages out after 180s (see get_peer_status), so there is
+// nothing to gain from polling faster than this.
+const CLIENTS_POLL_MS = 15000;
 
 export async function renderWgDetail(container, instanceId, canManage, canClients) {
+    // The previous detail view may still be polling; its interval outlives the
+    // DOM it was updating.
+    if (clientsInterval) {
+        clearInterval(clientsInterval);
+        clientsInterval = null;
+    }
     currentInstanceId = instanceId;
     currentContainer = container;
+    currentCanClients = canClients;
     await renderInstanceDetail(container, canManage, canClients);
 }
 
@@ -48,6 +61,104 @@ function formatTimeAgo(isoString) {
     if (diffSec < 3600) return t('wireguard.minutesAgo').replace('{n}', Math.floor(diffSec / 60));
     if (diffSec < 86400) return t('wireguard.hoursAgo').replace('{n}', Math.floor(diffSec / 3600));
     return t('wireguard.daysAgo').replace('{n}', Math.floor(diffSec / 86400));
+}
+
+function renderClientRows(clients, canClients) {
+    return clients.map(c => `
+        <tr>
+            <td>
+                ${c.is_connected === true
+                    ? `<span class="status-dot status-dot-animated bg-success" title="${t('wireguard.connected')}"></span>`
+                    : `<span class="status-dot bg-secondary" title="${t('wireguard.disconnected')}"></span>`}
+            </td>
+            <td>
+                <strong>${escapeHtml(c.name)}</strong>
+                ${(c.allowed_ips || c.dns) ? `
+                    <span class="ms-2" data-bs-toggle="tooltip" data-bs-html="true"
+                          title="<strong>${t('wireguard.customConfigTooltipTitle')}</strong><br>
+                                 ${c.allowed_ips ? t('wireguard.routesOverride') + ': ' + escapeHtml(c.allowed_ips) + '<br>' : ''}
+                                 ${c.dns ? t('wireguard.dnsOverride') + ': ' + escapeHtml(c.dns) : ''}">
+                        <i class="ti ti-adjustments text-blue"></i>
+                    </span>
+                ` : ''}
+            </td>
+            <td><code>${c.allocated_ip}</code></td>
+            <td>
+                ${c.is_connected === true ? `
+                <small class="text-muted">
+                    <i class="ti ti-arrow-down text-success"></i> ${formatBytes(c.rx_bytes || 0)}
+                    <i class="ti ti-arrow-up text-primary ms-2"></i> ${formatBytes(c.tx_bytes || 0)}
+                </small>
+                ` : '<small class="text-muted">-</small>'}
+            </td>
+            <td>
+                ${c.last_seen
+                    ? `<small class="text-muted">${formatTimeAgo(c.last_seen)}</small>`
+                    : `<small class="text-muted">${t('wireguard.neverConnected')}</small>`}
+            </td>
+            <td>
+                <div class="btn-group">
+                    ${canClients ? `
+                    <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="${t('wireguard.downloadConfig')}">
+                        <i class="ti ti-download"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="showQR('${escapeHtml(c.name)}')" title="${t('wireguard.qrCode')}">
+                        <i class="ti ti-qrcode"></i>
+                    </button>
+                    ${(c.allowed_ips || c.dns) ? `
+                        <button class="btn btn-sm btn-outline-warning" onclick="resetClientDefaults('${escapeHtml(c.name)}')" title="${t('wireguard.resetDefaults')}" data-bs-toggle="tooltip">
+                            <i class="ti ti-restore"></i>
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="${t('wireguard.sendEmail')}">
+                        <i class="ti ti-mail"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="${t('wireguard.revoke')}">
+                        <i class="ti ti-trash"></i>
+                    </button>` : ''}
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+/**
+ * Repaint just the client rows with live status. Deliberately not a full
+ * re-render: that would drop scroll position and close any open modal.
+ */
+async function refreshClients() {
+    const tbody = document.getElementById('wg-clients-tbody');
+    if (!tbody) return;
+
+    const clients = await apiGet(`${MODULE_API}/instances/${currentInstanceId}/clients`);
+
+    // Tooltips hold references into the nodes we are about to discard.
+    tbody.querySelectorAll('[data-bs-toggle="tooltip"]')
+        .forEach(el => bootstrap.Tooltip.getInstance(el)?.dispose());
+    tbody.innerHTML = renderClientRows(clients, currentCanClients);
+    tbody.querySelectorAll('[data-bs-toggle="tooltip"]')
+        .forEach(el => new bootstrap.Tooltip(el));
+}
+
+function startClientsPolling() {
+    if (clientsInterval) clearInterval(clientsInterval);
+
+    clientsInterval = setInterval(async () => {
+        // The router swaps container.innerHTML without telling us, so the
+        // disappearance of our tbody is what signals the view is gone.
+        if (!document.getElementById('wg-clients-tbody')) {
+            clearInterval(clientsInterval);
+            clientsInterval = null;
+            return;
+        }
+        if (document.hidden) return;
+
+        try {
+            await refreshClients();
+        } catch (err) {
+            console.warn('Client status refresh failed:', err);
+        }
+    }, CLIENTS_POLL_MS);
 }
 
 async function renderInstanceDetail(container, canManage, canClients) {
@@ -169,10 +280,15 @@ async function renderInstanceDetail(container, canManage, canClients) {
                     <div class="card card-body border-top-0 rounded-top-0">
                         <div class="d-flex justify-content-between align-items-center mb-3">
                             <h4 class="mb-0">${t('wireguard.vpnClients')}</h4>
-                            ${canClients ? `
-                            <button class="btn btn-primary" id="btn-new-client">
-                                <i class="ti ti-user-plus me-1"></i>${t('wireguard.newClient')}
-                            </button>` : ''}
+                            <div class="btn-list">
+                                <button class="btn btn-outline-secondary" id="btn-refresh-clients" title="${t('wireguard.refreshClients')}">
+                                    <i class="ti ti-refresh"></i>
+                                </button>
+                                ${canClients ? `
+                                <button class="btn btn-primary" id="btn-new-client">
+                                    <i class="ti ti-user-plus me-1"></i>${t('wireguard.newClient')}
+                                </button>` : ''}
+                            </div>
                         </div>
                         ${clients.length === 0 ? `
                             <div class="text-center py-4 text-muted">
@@ -193,63 +309,8 @@ async function renderInstanceDetail(container, canManage, canClients) {
                                             <th class="w-1">${t('wireguard.actions')}</th>
                                         </tr>
                                     </thead>
-                                    <tbody>
-                                        ${clients.map(c => `
-                                            <tr>
-                                                <td>
-                                                    ${c.is_connected === true
-                                                        ? `<span class="status-dot status-dot-animated bg-success" title="${t('wireguard.connected')}"></span>`
-                                                        : `<span class="status-dot bg-secondary" title="${t('wireguard.disconnected')}"></span>`}
-                                                </td>
-                                                <td>
-                                                    <strong>${escapeHtml(c.name)}</strong>
-                                                    ${(c.allowed_ips || c.dns) ? `
-                                                        <span class="ms-2" data-bs-toggle="tooltip" data-bs-html="true"
-                                                              title="<strong>${t('wireguard.customConfigTooltipTitle')}</strong><br>
-                                                                     ${c.allowed_ips ? t('wireguard.routesOverride') + ': ' + escapeHtml(c.allowed_ips) + '<br>' : ''}
-                                                                     ${c.dns ? t('wireguard.dnsOverride') + ': ' + escapeHtml(c.dns) : ''}">
-                                                            <i class="ti ti-adjustments text-blue"></i>
-                                                        </span>
-                                                    ` : ''}
-                                                </td>
-                                                <td><code>${c.allocated_ip}</code></td>
-                                                <td>
-                                                    ${c.is_connected === true ? `
-                                                    <small class="text-muted">
-                                                        <i class="ti ti-arrow-down text-success"></i> ${formatBytes(c.rx_bytes || 0)}
-                                                        <i class="ti ti-arrow-up text-primary ms-2"></i> ${formatBytes(c.tx_bytes || 0)}
-                                                    </small>
-                                                    ` : '<small class="text-muted">-</small>'}
-                                                </td>
-                                                <td>
-                                                    ${c.last_seen
-                                                        ? `<small class="text-muted">${formatTimeAgo(c.last_seen)}</small>`
-                                                        : `<small class="text-muted">${t('wireguard.neverConnected')}</small>`}
-                                                </td>
-                                                <td>
-                                                    <div class="btn-group">
-                                                        ${canClients ? `
-                                                        <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="${t('wireguard.downloadConfig')}">
-                                                            <i class="ti ti-download"></i>
-                                                        </button>
-                                                        <button class="btn btn-sm btn-outline-secondary" onclick="showQR('${escapeHtml(c.name)}')" title="${t('wireguard.qrCode')}">
-                                                            <i class="ti ti-qrcode"></i>
-                                                        </button>
-                                                        ${(c.allowed_ips || c.dns) ? `
-                                                            <button class="btn btn-sm btn-outline-warning" onclick="resetClientDefaults('${escapeHtml(c.name)}')" title="${t('wireguard.resetDefaults')}" data-bs-toggle="tooltip">
-                                                                <i class="ti ti-restore"></i>
-                                                            </button>
-                                                        ` : ''}
-                                                        <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="${t('wireguard.sendEmail')}">
-                                                            <i class="ti ti-mail"></i>
-                                                        </button>
-                                                        <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="${t('wireguard.revoke')}">
-                                                            <i class="ti ti-trash"></i>
-                                                        </button>` : ''}
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        `).join('')}
+                                    <tbody id="wg-clients-tbody">
+                                        ${renderClientRows(clients, canClients)}
                                     </tbody>
                                 </table>
                             </div>
@@ -462,6 +523,20 @@ async function renderInstanceDetail(container, canManage, canClients) {
 
         // Initialize Bootstrap tooltips
         document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => new bootstrap.Tooltip(el));
+
+        document.getElementById('btn-refresh-clients')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            try {
+                await refreshClients();
+            } catch (err) {
+                showToast(err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        startClientsPolling();
 
         // Add route button in new client modal
         document.getElementById('new-client-routes-list')?.addEventListener('click', (e) => {

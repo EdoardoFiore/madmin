@@ -63,6 +63,7 @@
   "pkiTab": "PKI",
   "firewallTab": "Firewall",
   "vpnClients": "VPN Clients",
+  "refreshClients": "Refresh client status",
   "newClient": "New Client",
   "noClients": "No clients configured",
   "noClientsHint": "Click \"New Client\" to add one",

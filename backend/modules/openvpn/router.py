@@ -726,15 +726,10 @@ async def list_clients(
     for client in clients:
         conn_info = connected_map.get(client.name, {})
         
-        live_connected_since = None
-        if conn_info and conn_info.get('connected_since'):
-            try:
-                # Parse date: 2026-01-10 17:29:06
-                live_connected_since = datetime.strptime(conn_info['connected_since'], "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                # Fallback or ignore parse error
-                pass
-        
+        live_connected_since = (
+            openvpn_service.parse_connected_since(conn_info) if conn_info else None
+        )
+
         # Use live connection time if available, otherwise None (as requested by user to avoid stale data)
         display_last_connection = live_connected_since
 

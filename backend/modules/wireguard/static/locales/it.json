@@ -54,6 +54,7 @@
   "clientsTab": "Client ({n})",
   "firewallTab": "Firewall",
   "vpnClients": "Client VPN",
+  "refreshClients": "Aggiorna stato client",
   "newClient": "Nuovo Client",
   "noClients": "Nessun client configurato",
   "noClientsHint": "Clicca \"Nuovo Client\" per aggiungerne uno",
