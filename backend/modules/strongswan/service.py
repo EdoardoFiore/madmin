@@ -171,7 +171,12 @@ class StrongSwanService:
         # Connection name (filesystem safe)
         conn_name = f"madmin_{name}"
         
-        # Build children section
+        # Build children section.
+        # esp_lifetime maps to rekey_time, not life_time: life_time is the hard
+        # expiry cap, while rekey_time (default 1h) is what actually drives
+        # renegotiation. Setting only life_time left every Child SA rekeying
+        # hourly regardless of the configured lifetime. swanctl derives
+        # life_time as rekey_time + 10% on its own.
         children_conf = ""
         for child in child_sas:
             child_name = child.get("name", "child1")
@@ -180,7 +185,7 @@ class StrongSwanService:
                 local_ts = {child.get("local_ts", "0.0.0.0/0")}
                 remote_ts = {child.get("remote_ts", "0.0.0.0/0")}
                 esp_proposals = {child.get("esp_proposal", "aes256-sha256-modp2048")}
-                life_time = {child.get("esp_lifetime", 3600)}s
+                rekey_time = {child.get("esp_lifetime", 3600)}s
                 start_action = {child.get("start_action", "trap")}
                 close_action = {child.get("close_action", "restart")}
                 dpd_action = {dpd_action}
@@ -362,7 +367,7 @@ connections {{
                 "local_ts": self._split_ts(child.get("local_ts", "0.0.0.0/0")),
                 "remote_ts": self._split_ts(child.get("remote_ts", "0.0.0.0/0")),
                 "esp_proposals": [p.strip() for p in child.get("esp_proposal", "aes256-sha256-modp2048").split(",") if p.strip()],
-                "life_time": f"{child.get('esp_lifetime', 3600)}s",
+                "rekey_time": f"{child.get('esp_lifetime', 3600)}s",
                 "start_action": child.get("start_action", "trap"),
                 "close_action": child.get("close_action", "restart"),
                 "dpd_action": dpd_action,
