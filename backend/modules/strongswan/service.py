@@ -98,6 +98,10 @@ class StrongSwanService:
             ("NO_PROPOSAL_CHOSEN", "No matching proposal — IKE/ESP algorithms differ from the peer"),
             ("proposals inacceptable", "No matching proposal — IKE/ESP algorithms differ from the peer"),
             ("TS_UNACCEPTABLE", "Traffic selectors rejected — local/remote subnets do not match the peer"),
+            # Before "retransmit": a peer that answers INVALID_SYNTAX to a valid
+            # IKE_SA_INIT is almost always an IKEv1-only gateway saying it does
+            # not speak IKEv2 (RFC would ask for INVALID_MAJOR_VERSION instead).
+            ("invalid_syntax", "Peer rejected IKE_SA_INIT as malformed (INVALID_SYNTAX) — the peer most likely does not support IKEv2 at all; try setting IKE version to 1"),
             ("retransmit", "No response from peer — unreachable / wrong remote address / UDP 500/4500 blocked"),
         ]
         low = output.lower()
@@ -108,6 +112,17 @@ class StrongSwanService:
             if ln.strip():
                 return ln.strip()
         return "unknown error (see charon log: journalctl -u strongswan)"
+
+    @staticmethod
+    def _is_aggressive(ike_version: str, mode: Optional[str]) -> bool:
+        """Whether the connection must negotiate in Aggressive Mode.
+
+        Aggressive Mode only exists in IKEv1: IKEv2 replaced the Main/Aggressive
+        distinction with a single fixed exchange and charon ignores the key
+        there. Shared by the swanctl.conf and VICI generators so the two can
+        never disagree on it.
+        """
+        return str(ike_version) == "1" and (mode or "").lower() == "aggressive"
 
     @staticmethod
     def _resolve_remote_id(remote_id: Optional[str], remote_address: str) -> str:
@@ -130,6 +145,7 @@ class StrongSwanService:
         tunnel_id: uuid.UUID,
         name: str,
         ike_version: str,
+        mode: str,
         local_address: str,
         remote_address: str,
         local_id: Optional[str],
@@ -190,7 +206,11 @@ class StrongSwanService:
             id = {effective_remote_id}"""
         remote_auth += """
         }"""
-        
+
+        # Emitted only when active: Main-mode files keep the exact same keys as
+        # before (the one blank line below simply lost its trailing spaces).
+        aggressive_conf = "\n        aggressive = yes" if self._is_aggressive(ike_version, mode) else ""
+
         # Build main connection config
         config = f"""# MADMIN IPsec VPN - {name}
 # Tunnel ID: {tunnel_id}
@@ -204,8 +224,8 @@ connections {{
         proposals = {ike_proposal}
         rekey_time = {ike_lifetime}s
         dpd_delay = {dpd_delay}s
-        encap = {"yes" if nat_traversal else "no"}
-        
+        encap = {"yes" if nat_traversal else "no"}{aggressive_conf}
+
 {local_auth}
 {remote_auth}
         
@@ -312,6 +332,7 @@ connections {{
         self,
         name: str,
         ike_version: str,
+        mode: str,
         local_address: str,
         remote_address: str,
         local_id: Optional[str],
@@ -355,20 +376,23 @@ connections {{
         if effective_remote_id:
             remote["id"] = effective_remote_id
 
-        return {
-            conn_name: {
-                "version": str(ike_version),
-                "local_addrs": [local_address if local_address else "%any"],
-                "remote_addrs": [remote_address],
-                "proposals": [p.strip() for p in ike_proposal.split(",") if p.strip()],
-                "rekey_time": f"{ike_lifetime}s",
-                "dpd_delay": f"{dpd_delay}s",
-                "encap": "yes" if nat_traversal else "no",
-                "local": local,
-                "remote": remote,
-                "children": children,
-            }
+        conn: Dict[str, Any] = {
+            "version": str(ike_version),
+            "local_addrs": [local_address if local_address else "%any"],
+            "remote_addrs": [remote_address],
+            "proposals": [p.strip() for p in ike_proposal.split(",") if p.strip()],
+            "rekey_time": f"{ike_lifetime}s",
+            "dpd_delay": f"{dpd_delay}s",
+            "encap": "yes" if nat_traversal else "no",
+            "local": local,
+            "remote": remote,
+            "children": children,
         }
+        # Set only when active, mirroring generate_tunnel_config().
+        if self._is_aggressive(ike_version, mode):
+            conn["aggressive"] = "yes"
+
+        return {conn_name: conn}
 
     def load_single_connection(self, name: str, **conn_kwargs) -> bool:
         """
@@ -1489,6 +1513,7 @@ connections {{
             tunnel_id=tunnel.id,
             name=tunnel.name,
             ike_version=tunnel.ike_version,
+            mode=tunnel.mode,
             local_address=tunnel.local_address,
             remote_address=tunnel.remote_address,
             local_id=tunnel.local_id,

@@ -54,6 +54,7 @@ async def run(session: AsyncSession):
             tunnel_id=tunnel.id,
             name=tunnel.name,
             ike_version=tunnel.ike_version,
+            mode=tunnel.mode,
             local_address=tunnel.local_address,
             remote_address=tunnel.remote_address,
             local_id=tunnel.local_id,
