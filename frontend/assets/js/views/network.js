@@ -30,7 +30,7 @@ let lockedIfaces = new Set();
 let wanProtectionEnabled = false;
 
 export async function render(container) {
-    const canManage = checkPermission('settings.manage');
+    const canManage = checkPermission('network.manage');
 
     container.innerHTML = `
         <div class="row row-deck row-cards">
@@ -283,7 +283,7 @@ async function loadInterfaces() {
 
 function renderInterfaceRow(iface) {
     const isUp = iface.is_up;
-    const canManage = checkPermission('settings.manage');
+    const canManage = checkPermission('network.manage');
     const isWAN = iface.name === 'eth0';
     // WAN is read-only only when edit-protection is enabled (installer flag --protect-wan)
     const isProtected = isWAN && wanProtectionEnabled;

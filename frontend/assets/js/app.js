@@ -538,6 +538,7 @@ async function loadMenu() {
         if (!response.ok) throw new Error('Failed to load menu');
 
         const menuData = await response.json();
+        buildRoutePermissions(menuData);
 
         // Build menu HTML
         let menuHtml = '';
@@ -604,13 +605,29 @@ function createMenuItem(item) {
 }
 
 /**
- * Check if current user has a permission
+ * Check if current user has a permission.
+ * Accepts a slug, or an array of slugs meaning "any of these".
  */
 function hasPermission(permission) {
     if (!currentUser) return false;
     if (currentUser.is_superuser) return true;
     if (currentUser.permissions.includes('*')) return true;
+    if (Array.isArray(permission)) {
+        return permission.some(p => currentUser.permissions.includes(p));
+    }
     return currentUser.permissions.includes(permission);
+}
+
+// route name -> permission, built from the menu the server sends. Lets handleRoute
+// refuse a hash typed by hand instead of loading a view whose every API call 403s.
+let routePermissions = {};
+
+function buildRoutePermissions(menuData) {
+    routePermissions = {};
+    for (const item of [...(menuData.core || []), ...(menuData.modules || [])]) {
+        if (!item.permission || !item.route) continue;
+        routePermissions[item.route.replace(/^#\/?/, '')] = item.permission;
+    }
 }
 
 /**
@@ -647,6 +664,23 @@ async function handleRoute() {
     // Load view
     const contentEl = document.getElementById('app-content');
     if (!contentEl) return;
+
+    // A hash typed by hand must not load a view the user cannot use. The backend
+    // still enforces every call; this only avoids a page of cascading 403 toasts.
+    const required = routePermissions[viewName];
+    if (required && !hasPermission(required)) {
+        contentEl.innerHTML = `
+            <div class="card">
+                <div class="card-body text-center py-5">
+                    <i class="ti ti-lock text-muted" style="font-size: 4rem;"></i>
+                    <h3 class="mt-3">${t('app.accessDenied')}</h3>
+                    <p class="text-muted">${t('app.accessDeniedDesc')}</p>
+                    <a href="#dashboard" class="btn btn-primary">${t('app.backToDashboard')}</a>
+                </div>
+            </div>
+        `;
+        return;
+    }
 
     contentEl.innerHTML = loadingSpinner();
 

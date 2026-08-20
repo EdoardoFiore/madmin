@@ -11,12 +11,22 @@ import { t, init as i18nInit, getLang } from '../i18n.js';
  * Render the settings view
  */
 export async function render(container) {
-    const canManage = checkPermission('settings.manage');
+    // Each card on this page is governed by its own subsystem permission: a user
+    // granted only SMTP must not see backup controls, and vice versa.
+    const canViewSettings = checkPermission('settings.view');
+    const canManageSettings = checkPermission('settings.manage');
+    const canViewSmtp = checkPermission('smtp.view');
+    const canManageSmtp = checkPermission('smtp.manage');
+    const canViewBackup = checkPermission('backup.view');
+    const canManageBackup = checkPermission('backup.manage');
+    const canRestoreBackup = checkPermission('backup.restore');
+    const canManageServices = checkPermission('services.manage');
 
     container.innerHTML = `
         <div class="row row-deck row-cards">
 
             <!-- Appearance -->
+            ${canViewSettings ? `
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
@@ -27,30 +37,30 @@ export async function render(container) {
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.companyName')}</label>
                                 <div class="input-group">
-                                    <input type="text" class="form-control" id="company-name" placeholder="MADMIN" ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? `<button type="button" class="btn btn-outline-secondary" id="reset-company" title="${t('settings.resetDefault')}"><i class="ti ti-refresh"></i></button>` : ''}
+                                    <input type="text" class="form-control" id="company-name" placeholder="MADMIN" ${canManageSettings ? '' : 'disabled'}>
+                                    ${canManageSettings ? `<button type="button" class="btn btn-outline-secondary" id="reset-company" title="${t('settings.resetDefault')}"><i class="ti ti-refresh"></i></button>` : ''}
                                 </div>
                                 <small class="form-hint">${t('settings.companyNameDefault')}</small>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.primaryColor')}</label>
                                 <div class="input-group">
-                                    <input type="color" class="form-control form-control-color" id="primary-color" ${canManage ? '' : 'disabled'}>
-                                    <input type="text" class="form-control" id="primary-color-hex" placeholder="#206bc4" ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? `<button type="button" class="btn btn-outline-secondary" id="reset-color" title="${t('settings.resetDefault')}"><i class="ti ti-refresh"></i></button>` : ''}
+                                    <input type="color" class="form-control form-control-color" id="primary-color" ${canManageSettings ? '' : 'disabled'}>
+                                    <input type="text" class="form-control" id="primary-color-hex" placeholder="#206bc4" ${canManageSettings ? '' : 'disabled'}>
+                                    ${canManageSettings ? `<button type="button" class="btn btn-outline-secondary" id="reset-color" title="${t('settings.resetDefault')}"><i class="ti ti-refresh"></i></button>` : ''}
                                 </div>
                                 <small class="form-hint">${t('settings.primaryColorDefault')}</small>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.supportUrl')}</label>
                                 <div class="input-group">
-                                    <input type="url" class="form-control" id="support-url" placeholder="https://..." ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? `<button type="button" class="btn btn-outline-secondary" id="reset-support" title="${t('settings.remove')}"><i class="ti ti-x"></i></button>` : ''}
+                                    <input type="url" class="form-control" id="support-url" placeholder="https://..." ${canManageSettings ? '' : 'disabled'}>
+                                    ${canManageSettings ? `<button type="button" class="btn btn-outline-secondary" id="reset-support" title="${t('settings.remove')}"><i class="ti ti-x"></i></button>` : ''}
                                 </div>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.language')}</label>
-                                <select class="form-select" id="system-language" ${canManage ? '' : 'disabled'}>
+                                <select class="form-select" id="system-language" ${canManageSettings ? '' : 'disabled'}>
                                     <option value="en">English</option>
                                     <option value="it">Italiano</option>
                                 </select>
@@ -63,7 +73,7 @@ export async function render(container) {
                                          style="min-height: 50px; min-width: 120px;">
                                         <img id="logo-preview-img" src="/static/img/logo.png" style="max-height: 50px; max-width: 100%; object-fit: contain;">
                                     </div>
-                                    ${canManage ? `
+                                    ${canManageSettings ? `
                                     <div class="btn-group">
                                         <label class="btn btn-outline-primary btn-sm">
                                             <i class="ti ti-upload me-1"></i>${t('common.upload')}
@@ -84,7 +94,7 @@ export async function render(container) {
                                          style="width: 40px; height: 40px;">
                                         <img id="favicon-preview-img" src="/static/img/favicon.ico" style="height: 32px; width: 32px; object-fit: contain;">
                                     </div>
-                                    ${canManage ? `
+                                    ${canManageSettings ? `
                                     <div class="btn-group">
                                         <label class="btn btn-outline-primary btn-sm">
                                             <i class="ti ti-upload me-1"></i>${t('common.upload')}
@@ -99,12 +109,13 @@ export async function render(container) {
                                 <small class="form-hint">ICO o PNG 32x32px</small>
                             </div>
                             <div class="col-12">
-                                ${canManage ? `<button class="btn btn-primary" id="save-system">${t('settings.saveSettings')}</button>` : ''}
+                                ${canManageSettings ? `<button class="btn btn-primary" id="save-system">${t('settings.saveSettings')}</button>` : ''}
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
+            ` : ''}
 
             <!-- Personal Preferences -->
             <div class="col-12">
@@ -140,6 +151,7 @@ export async function render(container) {
             </div>
 
             <!-- Security Settings -->
+            ${canViewSettings ? `
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
@@ -151,8 +163,8 @@ export async function render(container) {
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.managementPort')}</label>
                                 <div class="input-group">
-                                    <input type="number" class="form-control" id="network-port" placeholder="7443" ${canManage ? '' : 'disabled'}>
-                                    ${canManage ? `<button class="btn btn-warning" id="save-port">${t('settings.changePort')}</button>` : ''}
+                                    <input type="number" class="form-control" id="network-port" placeholder="7443" ${canManageSettings ? '' : 'disabled'}>
+                                    ${canManageSettings ? `<button class="btn btn-warning" id="save-port">${t('settings.changePort')}</button>` : ''}
                                 </div>
                                 <small class="form-hint text-warning">
                                     <i class="ti ti-alert-triangle me-1"></i>
@@ -163,11 +175,11 @@ export async function render(container) {
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.passwordMaxAge')}</label>
                                 <div class="input-group">
-                                    <input type="number" min="0" class="form-control" id="password-max-age" placeholder="0" ${canManage ? '' : 'disabled'}>
+                                    <input type="number" min="0" class="form-control" id="password-max-age" placeholder="0" ${canManageSettings ? '' : 'disabled'}>
                                     <span class="input-group-text text-muted">${t('settings.days')}</span>
                                 </div>
                                 <small class="form-hint">${t('settings.passwordMaxAgeHint')}</small>
-                                ${canManage ? `<button class="btn btn-primary btn-sm mt-2" id="save-password-policy">${t('common.save')}</button>` : ''}
+                                ${canManageSettings ? `<button class="btn btn-primary btn-sm mt-2" id="save-password-policy">${t('common.save')}</button>` : ''}
                             </div>
                             <!-- SSL Certificate -->
                             <div class="col-md-4">
@@ -179,7 +191,7 @@ export async function render(container) {
                                             <div class="text-muted small" id="ssl-issuer">Issuer: -</div>
                                         </div>
                                         <div class="text-muted small mb-2" id="ssl-validity">Scadenza: -</div>
-                                        ${canManage ? `
+                                        ${canManageSettings ? `
                                         <div class="btn-group w-100">
                                             <button class="btn btn-outline-primary btn-sm" id="renew-ssl">
                                                 <i class="ti ti-refresh me-1"></i>${t('settings.renewSelfSigned')}
@@ -196,8 +208,10 @@ export async function render(container) {
                     </div>
                 </div>
             </div>
+            ` : ''}
 
             <!-- SMTP Settings -->
+            ${canViewSmtp ? `
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
@@ -207,15 +221,15 @@ export async function render(container) {
                         <div class="row g-3">
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.smtpServer')}</label>
-                                <input type="text" class="form-control" id="smtp-host" placeholder="smtp.gmail.com" ${canManage ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="smtp-host" placeholder="smtp.gmail.com" ${canManageSmtp ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.smtpPort')}</label>
-                                <input type="number" class="form-control" id="smtp-port" value="587" ${canManage ? '' : 'disabled'}>
+                                <input type="number" class="form-control" id="smtp-port" value="587" ${canManageSmtp ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label">${t('settings.smtpEncryption')}</label>
-                                <select class="form-select" id="smtp-encryption" ${canManage ? '' : 'disabled'}>
+                                <select class="form-select" id="smtp-encryption" ${canManageSmtp ? '' : 'disabled'}>
                                     <option value="none">${t('settings.encryptionNone')}</option>
                                     <option value="tls" selected>TLS (STARTTLS)</option>
                                     <option value="ssl">SSL/TLS</option>
@@ -225,9 +239,9 @@ export async function render(container) {
                                 <label class="form-label">${t('settings.publicDownloadUrl')}</label>
                                 <div class="input-group">
                                     <span class="input-group-text text-muted">https://</span>
-                                    <input type="text" class="form-control" id="public-download-host" placeholder="192.168.1.1 o dominio.it" ${canManage ? '' : 'disabled'}>
+                                    <input type="text" class="form-control" id="public-download-host" placeholder="192.168.1.1 o dominio.it" ${canManageSmtp ? '' : 'disabled'}>
                                     <span class="input-group-text text-muted">:</span>
-                                    <input type="number" class="form-control" id="public-download-port" placeholder="6443" min="1" max="65535" style="max-width:90px" ${canManage ? '' : 'disabled'}>
+                                    <input type="number" class="form-control" id="public-download-port" placeholder="6443" min="1" max="65535" style="max-width:90px" ${canManageSmtp ? '' : 'disabled'}>
                                 </div>
                                 <small class="form-hint">
                                     Lasciare vuoto per disabilitare. Porta vuota = 443 (HTTPS standard).
@@ -238,22 +252,22 @@ export async function render(container) {
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label">${t('settings.smtpUsername')}</label>
-                                <input type="text" class="form-control" id="smtp-username" ${canManage ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="smtp-username" ${canManageSmtp ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label">${t('settings.smtpPassword')}</label>
-                                <input type="password" class="form-control" id="smtp-password" placeholder="••••••••" ${canManage ? '' : 'disabled'}>
+                                <input type="password" class="form-control" id="smtp-password" placeholder="••••••••" ${canManageSmtp ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label">${t('settings.senderEmail')}</label>
-                                <input type="email" class="form-control" id="sender-email" placeholder="noreply@example.com" ${canManage ? '' : 'disabled'}>
+                                <input type="email" class="form-control" id="sender-email" placeholder="noreply@example.com" ${canManageSmtp ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-3">
                                 <label class="form-label">${t('settings.senderName')}</label>
-                                <input type="text" class="form-control" id="sender-name" placeholder="MADMIN" ${canManage ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="sender-name" placeholder="MADMIN" ${canManageSmtp ? '' : 'disabled'}>
                             </div>
                             <div class="col-12">
-                                ${canManage ? `
+                                ${canManageSmtp ? `
                                 <button class="btn btn-primary" id="save-smtp">${t('common.save')}</button>
                                 <button class="btn btn-outline-secondary ms-2" id="test-smtp">
                                     <i class="ti ti-send me-1"></i>${t('settings.sendTestEmail')}
@@ -264,14 +278,16 @@ export async function render(container) {
                     </div>
                 </div>
             </div>
+            ` : ''}
             
             <!-- Backup & Migrazione -->
+            ${canViewBackup ? `
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title"><i class="ti ti-database-export me-2"></i>Backup & ${t('settings.restore')}</h3>
                         <div class="card-actions">
-                            ${canManage ? `
+                            ${canManageBackup ? `
                             <div class="btn-group">
                                 <button class="btn btn-primary btn-sm" id="backup-local-btn">
                                     <i class="ti ti-device-floppy me-1"></i>${t('settings.localBackup')}
@@ -280,6 +296,8 @@ export async function render(container) {
                                     <i class="ti ti-cloud-upload me-1"></i>${t('settings.remoteBackup')}
                                 </button>
                             </div>
+                            ` : ''}
+                            ${canRestoreBackup ? `
                             <button class="btn btn-warning btn-sm ms-2" id="open-import-modal-btn">
                                 <i class="ti ti-file-import me-1"></i>${t('settings.restore')}...
                             </button>
@@ -300,55 +318,55 @@ export async function render(container) {
                         <div class="row g-3">
                             <div class="col-md-2">
                                 <label class="form-check form-switch">
-                                    <input class="form-check-input" type="checkbox" id="backup-enabled" ${canManage ? '' : 'disabled'}>
+                                    <input class="form-check-input" type="checkbox" id="backup-enabled" ${canManageBackup ? '' : 'disabled'}>
                                     <span class="form-check-label">${t('settings.automatic')}</span>
                                 </label>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.backupFrequency')}</label>
-                                <select class="form-select" id="backup-frequency" ${canManage ? '' : 'disabled'}>
+                                <select class="form-select" id="backup-frequency" ${canManageBackup ? '' : 'disabled'}>
                                     <option value="daily">${t('settings.daily')}</option>
                                     <option value="weekly">${t('settings.weekly')}</option>
                                 </select>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.backupTime')}</label>
-                                <input type="time" class="form-control" id="backup-time" ${canManage ? '' : 'disabled'}>
+                                <input type="time" class="form-control" id="backup-time" ${canManageBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.retention')}</label>
-                                <input type="number" class="form-control" id="backup-retention" min="0" placeholder="30" ${canManage ? '' : 'disabled'}>
+                                <input type="number" class="form-control" id="backup-retention" min="0" placeholder="30" ${canManageBackup ? '' : 'disabled'}>
                                 <small class="form-hint">${t('settings.retentionUnlimited')}</small>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remoteProtocol')}</label>
-                                <select class="form-select" id="backup-protocol" ${canManage ? '' : 'disabled'}>
+                                <select class="form-select" id="backup-protocol" ${canManageBackup ? '' : 'disabled'}>
                                     <option value="sftp">SFTP</option>
                                     <option value="ftp">FTP</option>
                                 </select>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remotePort')}</label>
-                                <input type="number" class="form-control" id="backup-port" ${canManage ? '' : 'disabled'}>
+                                <input type="number" class="form-control" id="backup-port" ${canManageBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.remoteHost')}</label>
-                                <input type="text" class="form-control" id="backup-host" ${canManage ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="backup-host" ${canManageBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.remotePath')}</label>
-                                <input type="text" class="form-control" id="backup-path" ${canManage ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="backup-path" ${canManageBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remoteUser')}</label>
-                                <input type="text" class="form-control" id="backup-user" ${canManage ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="backup-user" ${canManageBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remotePassword')}</label>
-                                <input type="password" class="form-control" id="backup-password" placeholder="••••••••" ${canManage ? '' : 'disabled'}>
+                                <input type="password" class="form-control" id="backup-password" placeholder="••••••••" ${canManageBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-12">
-                                ${canManage ? `<button class="btn btn-primary" id="save-backup">${t('settings.saveConfig')}</button>` : ''}
+                                ${canManageBackup ? `<button class="btn btn-primary" id="save-backup">${t('settings.saveConfig')}</button>` : ''}
                             </div>
                         </div>
                         
@@ -375,7 +393,7 @@ export async function render(container) {
                     <!-- Remote Backup History -->
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h4 class="card-title m-0"><i class="ti ti-cloud me-2"></i>${t('settings.remoteBackups')}</h4>
-                        ${canManage ? `
+                        ${canManageBackup ? `
                         <button class="btn btn-sm btn-outline-warning" onclick="cleanupRemoteBackups()" title="${t('settings.cleanupBtn')}">
                             <i class="ti ti-trash me-1"></i>${t('settings.cleanupBtn')}
                         </button>` : ''}
@@ -440,8 +458,10 @@ export async function render(container) {
                     </div>
                 </div>
             </div>
+            ` : ''}
 
             <!-- System Management -->
+            ${canManageServices ? `
             <div class="col-12">
                 <div class="card">
                     <div class="card-header">
@@ -454,7 +474,7 @@ export async function render(container) {
                                 <p class="text-muted mb-0">${t('settings.restartService')}</p>
                             </div>
                             <div class="col-md-4 text-end">
-                                ${canManage ? `
+                                ${canManageServices ? `
                                 <button class="btn btn-warning" id="btn-restart-madmin">
                                     <i class="ti ti-refresh me-1"></i>${t('settings.restartMadmin')}
                                 </button>
@@ -466,6 +486,7 @@ export async function render(container) {
             </div>
             </div>
         </div>
+            ` : ''}
         
         <!-- Upload SSL Modal -->
         <div class="modal modal-blur fade" id="modal-upload-ssl" tabindex="-1" role="dialog" aria-hidden="true">
@@ -511,19 +532,64 @@ export async function render(container) {
     setupEventListeners();
 }
 
+/**
+ * Populate the page.
+ *
+ * One loader per card, each independent: the cards are governed by different
+ * permissions, so a 403 on one subsystem must not leave the others unpopulated.
+ * A card the user cannot see is not in the DOM at all, so its loader is skipped.
+ */
 async function loadSettings() {
-    try {
-        const [system, smtp, backup, network] = await Promise.all([
-            apiGet('/settings/system'),
-            apiGet('/settings/smtp'),
-            apiGet('/settings/backup'),
-            apiGet('/settings/network')
-        ]);
+    await Promise.all([
+        loadBrandingSection(),
+        loadNetworkSection(),
+        loadSmtpSection(),
+        loadBackupSection(),
+    ]);
 
-        // Network
+    // Per-user preferences need no API call
+    const darkToggle = document.getElementById('dark-mode-toggle');
+    if (darkToggle) darkToggle.checked = getCurrentTheme() === 'dark';
+    const myLangEl = document.getElementById('my-language');
+    if (myLangEl) myLangEl.value = getLang();
+}
+
+async function loadBrandingSection() {
+    if (!document.getElementById('company-name')) return;
+
+    try {
+        const system = await apiGet('/settings/system');
+
+        document.getElementById('company-name').value = system.company_name || '';
+        document.getElementById('primary-color').value = system.primary_color || '#206bc4';
+        document.getElementById('primary-color-hex').value = system.primary_color || '#206bc4';
+        document.getElementById('support-url').value = system.support_url || '';
+
+        const systemLangEl = document.getElementById('system-language');
+        if (systemLangEl) systemLangEl.value = system.default_language || 'en';
+
+        // Previews fall back to the bundled defaults when no custom asset is set
+        const logoPreviewImg = document.getElementById('logo-preview-img');
+        if (logoPreviewImg) logoPreviewImg.src = system.logo_url || '/static/img/logo.png';
+
+        const faviconPreviewImg = document.getElementById('favicon-preview-img');
+        if (faviconPreviewImg) faviconPreviewImg.src = system.favicon_url || '/static/img/favicon.ico';
+
+        const pwdMaxAgeEl = document.getElementById('password-max-age');
+        if (pwdMaxAgeEl) pwdMaxAgeEl.value = system.password_max_age_days ?? 0;
+    } catch (error) {
+        showToast(t('settings.settingsLoadError'), 'error');
+    }
+}
+
+async function loadNetworkSection() {
+    if (!document.getElementById('network-port')) return;
+
+    try {
+        const network = await apiGet('/settings/network');
+
         document.getElementById('network-port').value = network.management_port;
 
-        // SSL Info
         if (network.certificate) {
             document.getElementById('ssl-issuer').textContent = `Issuer: ${network.certificate.issuer}`;
             const validTo = new Date(network.certificate.valid_to).toLocaleDateString(undefined);
@@ -541,43 +607,21 @@ async function loadSettings() {
             document.getElementById('ssl-status-badge').className = 'badge bg-secondary-lt me-2';
             document.getElementById('ssl-status-badge').textContent = t('common.none');
         }
+    } catch (error) {
+        showToast(t('settings.settingsLoadError'), 'error');
+    }
+}
 
-        // System
-        document.getElementById('company-name').value = system.company_name || '';
-        document.getElementById('primary-color').value = system.primary_color || '#206bc4';
-        document.getElementById('primary-color-hex').value = system.primary_color || '#206bc4';
-        document.getElementById('support-url').value = system.support_url || '';
-        const pwdMaxAgeEl = document.getElementById('password-max-age');
-        if (pwdMaxAgeEl) pwdMaxAgeEl.value = system.password_max_age_days ?? 0;
+async function loadSmtpSection() {
+    if (!document.getElementById('smtp-host')) return;
 
-        // Dark mode toggle (per-user preference)
-        const darkToggle = document.getElementById('dark-mode-toggle');
-        if (darkToggle) {
-            darkToggle.checked = getCurrentTheme() === 'dark';
-        }
+    try {
+        const smtp = await apiGet('/settings/smtp');
 
-        // Language dropdowns
-        const systemLangEl = document.getElementById('system-language');
-        if (systemLangEl) systemLangEl.value = system.default_language || 'en';
-        const myLangEl = document.getElementById('my-language');
-        if (myLangEl) myLangEl.value = getLang();
-
-        // Logo preview - use custom URL if set, otherwise default
-        const logoPreviewImg = document.getElementById('logo-preview-img');
-        if (logoPreviewImg) {
-            logoPreviewImg.src = system.logo_url || '/static/img/logo.png';
-        }
-
-        // Favicon preview - use custom URL if set, otherwise default
-        const faviconPreviewImg = document.getElementById('favicon-preview-img');
-        if (faviconPreviewImg) {
-            faviconPreviewImg.src = system.favicon_url || '/static/img/favicon.ico';
-        }
-
-        // SMTP
         document.getElementById('smtp-host').value = smtp.smtp_host || '';
         document.getElementById('smtp-port').value = smtp.smtp_port || 587;
         document.getElementById('smtp-encryption').value = smtp.smtp_encryption || 'tls';
+
         const existingDownloadUrl = smtp.public_download_url || '';
         if (existingDownloadUrl) {
             try {
@@ -592,11 +636,21 @@ async function loadSettings() {
             document.getElementById('public-download-host').value = '';
             document.getElementById('public-download-port').value = '';
         }
+
         document.getElementById('smtp-username').value = smtp.smtp_username || '';
         document.getElementById('sender-email').value = smtp.sender_email || '';
         document.getElementById('sender-name').value = smtp.sender_name || '';
+    } catch (error) {
+        showToast(t('settings.settingsLoadError'), 'error');
+    }
+}
 
-        // Backup
+async function loadBackupSection() {
+    if (!document.getElementById('backup-enabled')) return;
+
+    try {
+        const backup = await apiGet('/settings/backup');
+
         document.getElementById('backup-enabled').checked = backup.enabled;
         document.getElementById('backup-frequency').value = backup.frequency || 'daily';
         document.getElementById('backup-time').value = backup.time || '03:00';
@@ -607,7 +661,6 @@ async function loadSettings() {
         document.getElementById('backup-path').value = backup.remote_path || '/';
         document.getElementById('backup-user').value = backup.remote_user || '';
 
-        // Last backup status
         const statusEl = document.getElementById('backup-last-status');
         const alertEl = document.getElementById('backup-status-alert');
         if (backup.last_run_time) {
@@ -625,17 +678,14 @@ async function loadSettings() {
             remoteBtn.style.display = (backup.remote_host && backup.remote_user) ? '' : 'none';
         }
 
-        // Load backup history
         await loadBackupHistory();
         await loadRemoteBackupHistory();
-
-        // Setup export/import listeners
         setupExportImportListeners();
-
     } catch (error) {
         showToast(t('settings.settingsLoadError'), 'error');
     }
 }
+
 
 function setupEventListeners() {
     // Color picker sync

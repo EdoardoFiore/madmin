@@ -108,6 +108,8 @@
     "app": {
         "pageNotFound": "Page not found",
         "pageNotFoundDesc": "The requested page does not exist.",
+        "accessDenied": "Access denied",
+        "accessDeniedDesc": "You do not have permission to view this page.",
         "backToDashboard": "Back to Dashboard",
         "loadingError": "Loading error",
         "reload": "Reload",

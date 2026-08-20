@@ -31,7 +31,7 @@ def _delayed_restart(service_name: str, delay: float = 0.5):
 @router.get("/{service_name}/status")
 async def get_service_status(
     service_name: str,
-    _user: User = Depends(require_permission("settings.view"))
+    _user: User = Depends(require_permission("services.view"))
 ):
     """
     Get the status of a systemd service.
@@ -50,7 +50,7 @@ async def get_service_status(
 @router.post("/{service_name}/restart", response_model=ServiceActionResponse)
 async def restart_service(
     service_name: str,
-    _user: User = Depends(require_permission("settings.manage"))
+    _user: User = Depends(require_permission("services.manage"))
 ):
     """
     Restart a systemd service.
@@ -89,7 +89,7 @@ async def restart_service(
 @router.post("/{service_name}/start", response_model=ServiceActionResponse)
 async def start_service(
     service_name: str,
-    _user: User = Depends(require_permission("settings.manage"))
+    _user: User = Depends(require_permission("services.manage"))
 ):
     """
     Start a systemd service.
@@ -113,7 +113,7 @@ async def start_service(
 @router.post("/{service_name}/stop", response_model=ServiceActionResponse)
 async def stop_service(
     service_name: str,
-    _user: User = Depends(require_permission("settings.manage"))
+    _user: User = Depends(require_permission("services.manage"))
 ):
     """
     Stop a systemd service.

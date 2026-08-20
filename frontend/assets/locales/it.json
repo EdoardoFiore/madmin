@@ -108,6 +108,8 @@
     "app": {
         "pageNotFound": "Pagina non trovata",
         "pageNotFoundDesc": "La pagina richiesta non esiste.",
+        "accessDenied": "Accesso negato",
+        "accessDeniedDesc": "Non hai i permessi per visualizzare questa pagina.",
         "backToDashboard": "Torna alla Dashboard",
         "loadingError": "Errore di caricamento",
         "reload": "Ricarica",

@@ -137,7 +137,7 @@ async def update_system_settings(
 
 @router.get("/smtp", response_model=SMTPSettingsResponse)
 async def get_smtp_settings(
-    current_user: User = Depends(require_permission("settings.view")),
+    current_user: User = Depends(require_permission("smtp.view")),
     session: AsyncSession = Depends(get_session)
 ):
     """Get SMTP settings."""
@@ -165,7 +165,7 @@ async def get_smtp_settings(
 @router.patch("/smtp", response_model=SMTPSettingsResponse)
 async def update_smtp_settings(
     data: SMTPSettingsUpdate,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("smtp.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """Update SMTP settings."""
@@ -227,7 +227,7 @@ class SMTPTestRequest(BaseModel):
 @router.post("/smtp/test")
 async def test_smtp_settings(
     data: SMTPTestRequest,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("smtp.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """
@@ -268,7 +268,7 @@ async def test_smtp_settings(
 
 @router.get("/backup", response_model=BackupSettingsResponse)
 async def get_backup_settings(
-    current_user: User = Depends(require_permission("settings.view")),
+    current_user: User = Depends(require_permission("backup.view")),
     session: AsyncSession = Depends(get_session)
 ):
     """Get backup settings."""
@@ -300,7 +300,7 @@ async def get_backup_settings(
 @router.patch("/backup", response_model=BackupSettingsResponse)
 async def update_backup_settings(
     data: BackupSettingsUpdate,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """Update backup settings."""

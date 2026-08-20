@@ -479,16 +479,20 @@ def create_app() -> FastAPI:
         """Get complete menu structure for frontend sidebar."""
         from core.modules.loader import module_loader
         
-        # Core menu items (labels are i18n keys, resolved by the frontend)
+        # Core menu items (labels are i18n keys, resolved by the frontend).
+        # "permission" is either a slug, null (always visible), or a list meaning
+        # "any of these" — the Settings page hosts several independently-gated
+        # sections, so holding any one of them is enough to reach it.
         core_menu = [
             {"label": "menu.dashboard", "icon": "home", "route": "#dashboard", "permission": None},
             {"label": "menu.users", "icon": "users", "route": "#users", "permission": "users.view"},
             {"label": "menu.firewall", "icon": "shield", "route": "#firewall", "permission": "firewall.view"},
             {"label": "menu.firewallAddresses", "icon": "address-book", "route": "#firewall-addresses", "permission": "firewall.view"},
             {"label": "menu.network", "icon": "network", "route": "#network", "permission": "network.view"},
-            {"label": "menu.crontab", "icon": "clock", "route": "#crontab", "permission": "settings.view"},
+            {"label": "menu.crontab", "icon": "clock", "route": "#crontab", "permission": "cron.view"},
             {"label": "menu.logs", "icon": "file-text", "route": "#logs", "permission": "logs.view"},
-            {"label": "menu.settings", "icon": "settings", "route": "#settings", "permission": "settings.view"},
+            {"label": "menu.settings", "icon": "settings", "route": "#settings",
+             "permission": ["settings.view", "smtp.view", "backup.view", "services.view"]},
             {"label": "menu.modules", "icon": "puzzle", "route": "#modules", "permission": "modules.view"},
         ]
         

@@ -214,20 +214,31 @@ class TokenData(SQLModel):
     user_id: Optional[uuid.UUID] = None
 
 
-# Core permission definitions
+# Core permission definitions.
+#
+# One slug per subsystem, so an operator can be given exactly one area without
+# handing over the machine. Deliberately absent: a "cron.manage" slug — writing
+# the root crontab schedules arbitrary commands as root, so it is superuser-only
+# and cannot be delegated (see core/cron/router.py).
 CORE_PERMISSIONS = [
     {"slug": "users.view", "description": "View user list"},
     {"slug": "users.manage", "description": "Create, edit, delete users"},
-    {"slug": "permissions.manage", "description": "Assign permissions to users"},
+    {"slug": "permissions.manage", "description": "Assign permissions to users (requires users.manage)"},
     {"slug": "firewall.view", "description": "View firewall rules"},
     {"slug": "firewall.manage", "description": "Create, edit, delete firewall rules"},
     {"slug": "network.view", "description": "View network interfaces"},
     {"slug": "network.manage", "description": "Configure network interfaces"},
-    {"slug": "settings.view", "description": "View system settings"},
-    {"slug": "settings.manage", "description": "Modify system settings"},
+    {"slug": "settings.view", "description": "View branding, management port and SSL settings"},
+    {"slug": "settings.manage", "description": "Modify branding, management port and SSL settings"},
+    {"slug": "smtp.view", "description": "View SMTP configuration"},
+    {"slug": "smtp.manage", "description": "Modify SMTP configuration and send test emails"},
+    {"slug": "backup.view", "description": "View backup settings, history and archives"},
+    {"slug": "backup.manage", "description": "Configure backups, export, download and delete archives"},
+    {"slug": "backup.restore", "description": "Import and restore a configuration archive (destructive)"},
+    {"slug": "cron.view", "description": "View scheduled jobs and available scripts"},
+    {"slug": "services.view", "description": "View system service status"},
+    {"slug": "services.manage", "description": "Start, stop and restart system services"},
     {"slug": "modules.view", "description": "View installed modules"},
     {"slug": "modules.manage", "description": "Install, remove, configure modules"},
-    {"slug": "backup.create", "description": "Create system backups"},
-    {"slug": "backup.restore", "description": "Restore system from backup"},
     {"slug": "logs.view", "description": "View audit logs and system logs"},
 ]

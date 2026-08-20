@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/backup", tags=["Backup"])
 @router.post("/export")
 async def export_configuration(
     download: bool = False,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """Export full configuration as tar.gz archive.
@@ -70,7 +70,7 @@ async def export_configuration(
 @router.post("/import/preview")
 async def preview_import(
     file: UploadFile = File(...),
-    current_user: User = Depends(require_permission("settings.manage"))
+    current_user: User = Depends(require_permission("backup.restore"))
 ):
     """Preview contents of a config archive without applying."""
     if not file.filename.endswith(".tar.gz"):
@@ -100,7 +100,7 @@ async def preview_import(
 @router.post("/import")
 async def import_configuration(
     file: UploadFile = File(...),
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.restore")),
     session: AsyncSession = Depends(get_session)
 ):
     """Import configuration from uploaded tar.gz archive."""
@@ -139,7 +139,7 @@ async def import_configuration(
 @router.post("/import/from-file")
 async def import_from_scp_file(
     filename: str,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.restore")),
     session: AsyncSession = Depends(get_session)
 ):
     """Import configuration from file uploaded via SCP to imports directory."""
@@ -157,7 +157,7 @@ async def import_from_scp_file(
 
 @router.get("/import/files")
 async def list_scp_import_files(
-    current_user: User = Depends(require_permission("settings.view"))
+    current_user: User = Depends(require_permission("backup.view"))
 ):
     """List config archives available in the imports directory (uploaded via SCP)."""
     return list_import_files()
@@ -166,7 +166,7 @@ async def list_scp_import_files(
 @router.post("/import/preview/from-file")
 async def preview_scp_file(
     filename: str,
-    current_user: User = Depends(require_permission("settings.view"))
+    current_user: User = Depends(require_permission("backup.view"))
 ):
     """Preview a config archive from the imports directory."""
     safe_name = Path(filename).name
@@ -190,7 +190,7 @@ async def preview_scp_file(
 @router.post("/restore/preview/{filename}")
 async def preview_local_backup(
     filename: str,
-    current_user: User = Depends(require_permission("settings.view"))
+    current_user: User = Depends(require_permission("backup.view"))
 ):
     """Preview a local backup file for restore."""
     safe_name = Path(filename).name
@@ -211,7 +211,7 @@ async def preview_local_backup(
 @router.post("/restore/{filename}")
 async def restore_local_backup(
     filename: str,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.restore")),
     session: AsyncSession = Depends(get_session)
 ):
     """Restore configuration from a local backup file."""
@@ -252,7 +252,7 @@ async def update_backup_status(session: AsyncSession, success: bool, errors: Lis
 
 @router.post("/run", response_model=BackupResult)
 async def trigger_backup(
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """Trigger a manual backup (export + remote upload)."""
@@ -286,7 +286,7 @@ async def trigger_backup(
 
 @router.get("/history")
 async def get_backup_history(
-    current_user: User = Depends(require_permission("settings.view")),
+    current_user: User = Depends(require_permission("backup.view")),
 ):
     """Get list of local config export archives."""
     return list_local_backups()
@@ -295,7 +295,7 @@ async def get_backup_history(
 @router.get("/download/{filename}")
 async def download_backup(
     filename: str,
-    current_user: User = Depends(require_permission("settings.manage"))
+    current_user: User = Depends(require_permission("backup.manage"))
 ):
     """Download a config export archive."""
     safe_name = Path(filename).name
@@ -316,7 +316,7 @@ async def download_backup(
 @router.delete("/delete/{filename}")
 async def delete_backup(
     filename: str,
-    current_user: User = Depends(require_permission("settings.manage"))
+    current_user: User = Depends(require_permission("backup.manage"))
 ):
     """Delete a config export archive."""
     safe_name = Path(filename).name
@@ -342,7 +342,7 @@ class RemoteBackupItem(BaseModel):
 
 @router.get("/remote/list", response_model=List[RemoteBackupItem])
 async def list_remote_backup_files(
-    current_user: User = Depends(require_permission("settings.view")),
+    current_user: User = Depends(require_permission("backup.view")),
     session: AsyncSession = Depends(get_session)
 ):
     """List backup files on remote storage."""
@@ -374,7 +374,7 @@ async def list_remote_backup_files(
 @router.post("/remote/download/{filename}")
 async def download_remote_backup_file(
     filename: str,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """Download a backup from remote storage to local."""
@@ -407,7 +407,7 @@ async def download_remote_backup_file(
 @router.delete("/remote/delete/{filename}")
 async def delete_remote_backup_file(
     filename: str,
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """Delete a backup from remote storage."""
@@ -439,7 +439,7 @@ async def delete_remote_backup_file(
 
 @router.post("/remote/cleanup")
 async def cleanup_remote_storage(
-    current_user: User = Depends(require_permission("settings.manage")),
+    current_user: User = Depends(require_permission("backup.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """Apply retention policy to remote storage."""

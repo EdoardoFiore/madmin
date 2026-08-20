@@ -17,7 +17,7 @@ from passlib.context import CryptContext
 from cryptography.fernet import Fernet
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 import uuid
 import logging
@@ -388,23 +388,51 @@ async def apply_password_expiry_policy(session: AsyncSession, max_age_days: int)
 
 async def init_core_permissions(session: AsyncSession) -> None:
     """
-    Initialize core permissions in database.
+    Reconcile core permissions with CORE_PERMISSIONS.
+
+    Authoritative, not merely additive: slugs that were removed or renamed in
+    code are dropped from the database too. Without this, a retired slug would
+    linger forever in the permission picker while governing nothing — grantable
+    but dead. Module permissions (module_id NOT NULL) are untouched; they are
+    owned by the module lifecycle.
+
     Called during application startup.
     """
+    known_slugs = {p["slug"] for p in CORE_PERMISSIONS}
+
+    result = await session.execute(
+        select(Permission).where(Permission.module_id.is_(None))
+    )
+    existing_by_slug = {p.slug: p for p in result.scalars().all()}
+
     for perm_data in CORE_PERMISSIONS:
-        result = await session.execute(
-            select(Permission).where(Permission.slug == perm_data["slug"])
-        )
-        existing = result.scalar_one_or_none()
+        existing = existing_by_slug.get(perm_data["slug"])
 
         if not existing:
-            permission = Permission(
+            session.add(Permission(
                 slug=perm_data["slug"],
                 description=perm_data["description"],
                 module_id=None  # Core permissions have no module
-            )
-            session.add(permission)
+            ))
             logger.info(f"Created core permission: {perm_data['slug']}")
+        elif existing.description != perm_data["description"]:
+            existing.description = perm_data["description"]
+            session.add(existing)
+
+    stale_slugs = sorted(set(existing_by_slug) - known_slugs)
+    if stale_slugs:
+        # user_permission has no ON DELETE CASCADE: clear the link rows first,
+        # or the delete below fails on the foreign key.
+        await session.execute(
+            delete(UserPermission).where(UserPermission.permission_slug.in_(stale_slugs))
+        )
+        await session.execute(
+            delete(Permission).where(Permission.slug.in_(stale_slugs))
+        )
+        logger.warning(
+            f"Removed {len(stale_slugs)} stale core permissions (grants revoked): "
+            f"{', '.join(stale_slugs)}"
+        )
 
     await session.commit()
 

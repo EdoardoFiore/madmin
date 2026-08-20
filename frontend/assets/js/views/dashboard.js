@@ -40,7 +40,7 @@ const CORE_WIDGETS = [
     { id: 'resource_graphs', get title() { return t('dashboard.resourceTrend'); }, col: 12, fixed: false, render: renderResourceGraphs, load: loadResourceGraphs },
     { id: 'net_traffic', get title() { return t('dashboard.networkTraffic'); }, col: 6, fixed: false, render: renderNetTraffic, load: loadNetTraffic },
     { id: 'alerts', get title() { return t('dashboard.systemAlerts'); }, col: 6, fixed: false, render: renderAlerts, load: loadAlerts },
-    { id: 'backup_status', get title() { return t('dashboard.backupStatus'); }, col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus, visible: () => checkPermission('settings.view') },
+    { id: 'backup_status', get title() { return t('dashboard.backupStatus'); }, col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus, visible: () => checkPermission('backup.view') },
     { id: 'quick_actions', get title() { return t('dashboard.quickActions'); }, col: 6, fixed: false, render: renderQuickActions, load: null, visible: () => visibleQuickActions().length > 0 },
     { id: 'stat_cards', get title() { return t('dashboard.counters'); }, col: 12, fixed: false, render: renderStatCards, load: loadStatCards },
 ];
@@ -647,7 +647,7 @@ function renderStatCards() {
 const QUICK_ACTIONS = [
     { href: '#users', icon: 'ti-user-plus', labelKey: 'dashboard.newUser', permission: 'users.view' },
     { href: '#firewall', icon: 'ti-shield-plus', labelKey: 'dashboard.newRule', permission: 'firewall.view' },
-    { href: '#settings', icon: 'ti-settings', labelKey: 'dashboard.settings', permission: 'settings.view' },
+    { href: '#settings', icon: 'ti-settings', labelKey: 'dashboard.settings', permission: ['settings.view', 'smtp.view', 'backup.view', 'services.view'] },
     { href: '#modules', icon: 'ti-puzzle', labelKey: 'dashboard.modules', permission: 'modules.view' },
 ];
 

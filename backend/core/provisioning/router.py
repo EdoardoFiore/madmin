@@ -51,7 +51,7 @@ def _build_response(settings: ManagedLanSettings, detected: str | None) -> Manag
 
 @router.get("/managed-lan", response_model=ManagedLanResponse)
 async def get_managed_lan(
-    _user: User = Depends(require_permission("settings.view")),
+    _user: User = Depends(require_permission("network.view")),
     session: AsyncSession = Depends(get_session),
 ):
     """Current managed-LAN provisioning state."""
