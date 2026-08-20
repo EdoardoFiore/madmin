@@ -6,16 +6,19 @@
 
 import { apiGet, apiPost, apiDelete, apiPatch } from '../api.js';
 import { showToast, escapeHtml, confirmDialog } from '../utils.js';
-import { checkPermission } from '../app.js';
+import { getUser } from '../app.js';
 import { t } from '../i18n.js';
 
 let presets = {};
+let scripts = [];
 
 /**
  * Render the crontab view
  */
 export async function render(container) {
-    const canManage = checkPermission('settings.manage');
+    // Scheduling a job runs a command as root: superuser only, not a delegable
+    // permission. cron.view governs the read-only side of this page.
+    const canManage = getUser()?.is_superuser || false;
 
     container.innerHTML = `
         <div class="row row-deck row-cards">
@@ -94,8 +97,16 @@ export async function render(container) {
                                 </div>
                             </div>
                             <div class="col-12">
-                                <label class="form-label">${t('common.command')}</label>
-                                <input type="text" class="form-control" id="cron-command" placeholder="/usr/bin/script.sh">
+                                <label class="form-label">${t('crontab.script')}</label>
+                                <select class="form-select" id="cron-script">
+                                    <option value="">${t('crontab.selectScript')}</option>
+                                </select>
+                                <small class="form-hint">${t('crontab.scriptHint')}</small>
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label">${t('crontab.arguments')}</label>
+                                <input type="text" class="form-control" id="cron-args" placeholder="--verbose /tmp/out">
+                                <small class="form-hint">${t('crontab.argumentsHint')}</small>
                             </div>
                         </div>
                     </div>
@@ -178,6 +189,8 @@ async function loadCrontab() {
         const entries = data.entries || [];
         presets = data.presets || {};
 
+        await loadScripts();
+
         // Populate preset dropdown
         const presetSelect = document.getElementById('cron-preset');
         if (presetSelect) {
@@ -198,7 +211,7 @@ async function loadCrontab() {
             return;
         }
 
-        const canManage = checkPermission('settings.manage');
+        const canManage = getUser()?.is_superuser || false;
 
         container.innerHTML = `
             <div class="table-responsive">
@@ -292,6 +305,35 @@ function renderCronRow(entry, index, canManage) {
 }
 
 /**
+ * Load the scripts a job may run.
+ *
+ * The list comes from a directory MADMIN only reads: an operator with shell
+ * access puts scripts there, which is what keeps the scheduler from running
+ * arbitrary commands.
+ */
+async function loadScripts() {
+    const select = document.getElementById('cron-script');
+    if (!select) return;
+
+    try {
+        scripts = await apiGet('/cron/scripts');
+    } catch (error) {
+        scripts = [];
+    }
+
+    if (scripts.length === 0) {
+        select.innerHTML = `<option value="">${t('crontab.noScripts')}</option>`;
+        return;
+    }
+
+    select.innerHTML = `<option value="">${t('crontab.selectScript')}</option>` +
+        scripts.map(sc => {
+            const label = sc.description ? `${sc.name} — ${sc.description}` : sc.name;
+            return `<option value="${escapeHtml(sc.name)}">${escapeHtml(label)}</option>`;
+        }).join('');
+}
+
+/**
  * Save a new cron job
  */
 async function saveCronJob() {
@@ -303,15 +345,19 @@ async function saveCronJob() {
         document.getElementById('cron-weekday')?.value || '*'
     ].join(' ');
 
-    const command = document.getElementById('cron-command')?.value.trim();
+    const script = document.getElementById('cron-script')?.value;
 
-    if (!command) {
-        showToast(t('crontab.enterCommand'), 'error');
+    if (!script) {
+        showToast(t('crontab.selectScript'), 'error');
         return;
     }
 
+    // Split on whitespace; the backend quotes each argument for /bin/sh
+    const rawArgs = document.getElementById('cron-args')?.value.trim() || '';
+    const args = rawArgs ? rawArgs.split(/\s+/) : [];
+
     try {
-        await apiPost('/cron/entries', { schedule, command });
+        await apiPost('/cron/entries', { schedule, script, args });
         showToast(t('crontab.cronJobAdded'), 'success');
         bootstrap.Modal.getInstance(document.getElementById('modal-add-cron'))?.hide();
         await loadCrontab();

@@ -328,7 +328,7 @@
         "deleteRule": "Delete Rule",
         "deleteRuleConfirm": "Are you sure you want to delete this rule?",
         "isolationInfo": "<strong>Network isolation</strong> — By default each network can only reach its own gateway. Enable access to other gateways' services (DNS, VPN, etc.) where needed.",
-        "isolationNote": "This does not affect VM\u2194VM traffic between networks, which is managed separately by FORWARD rules.",
+        "isolationNote": "This does not affect VM↔VM traffic between networks, which is managed separately by FORWARD rules.",
         "columnLabels": {
             "protocol": "Protocol",
             "source": "Source",
@@ -489,7 +489,6 @@
         "state": "State",
         "enable": "Enable",
         "disable": "Disable",
-        "enterCommand": "Enter a command",
         "cronJobAdded": "Cron job added",
         "statusUpdated": "Status updated",
         "deleteCronJob": "Delete Cron Job",
@@ -508,7 +507,13 @@
             "weekly_monday": "Every Monday",
             "monthly": "Monthly",
             "yearly": "Yearly"
-        }
+        },
+        "script": "Script",
+        "selectScript": "Select a script",
+        "scriptHint": "Scripts live in the server's cron-scripts directory and are added over SSH, not from this page.",
+        "arguments": "Arguments (optional)",
+        "argumentsHint": "Space-separated. Each one is quoted before being written to the crontab.",
+        "noScripts": "No script available"
     },
     "modules": {
         "title": "Module Management",

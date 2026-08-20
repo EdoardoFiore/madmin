@@ -210,6 +210,21 @@ mkdir -p $INSTALL_DIR/scripts
 cp "$SCRIPT_DIR/madmin-firewall-boot.sh" $INSTALL_DIR/scripts/
 chmod +x $INSTALL_DIR/scripts/*.sh
 
+# Scripts that scheduled jobs are allowed to run. MADMIN only ever reads this
+# directory: an operator with shell access puts scripts here, which is what
+# keeps the scheduler from being an arbitrary-command runner.
+mkdir -p $INSTALL_DIR/cron-scripts
+chown root:root $INSTALL_DIR/cron-scripts
+chmod 755 $INSTALL_DIR/cron-scripts
+if [ ! -f $INSTALL_DIR/cron-scripts/README ]; then
+    cat > $INSTALL_DIR/cron-scripts/README <<'CRONREADME'
+Executable scripts placed here can be scheduled from the MADMIN crontab page.
+
+They run as root. MADMIN never writes to this directory - add scripts over SSH
+and make them executable (chmod +x). Anything not executable is ignored.
+CRONREADME
+fi
+
 # Create virtual environment (skip if already functional)
 if [ ! -x "$INSTALL_DIR/venv/bin/python3" ]; then
     log_info "Creating virtual environment..."
@@ -361,7 +376,7 @@ Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR/backend
 Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
-ExecStart=$INSTALL_DIR/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+ExecStart=$INSTALL_DIR/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=5
 

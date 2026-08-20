@@ -58,6 +58,14 @@ class Settings(BaseSettings):
         default="/opt/madmin/backend/modules",
         description="Directory for installed modules"
     )
+    cron_scripts_dir: str = Field(
+        default="/opt/madmin/cron-scripts",
+        description=(
+            "Scripts that scheduled jobs may run. MADMIN never writes here: "
+            "scripts are placed by an operator with shell access, which is what "
+            "keeps the scheduler from being an arbitrary-command runner."
+        )
+    )
     
     # Feature flags
     mock_iptables: bool = Field(

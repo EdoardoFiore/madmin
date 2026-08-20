@@ -489,7 +489,6 @@
         "state": "Stato",
         "enable": "Abilita",
         "disable": "Disabilita",
-        "enterCommand": "Inserisci un comando",
         "cronJobAdded": "Cron job aggiunto",
         "statusUpdated": "Stato aggiornato",
         "deleteCronJob": "Elimina Cron Job",
@@ -508,7 +507,13 @@
             "weekly_monday": "Ogni lunedì",
             "monthly": "Ogni mese",
             "yearly": "Ogni anno"
-        }
+        },
+        "script": "Script",
+        "selectScript": "Seleziona uno script",
+        "scriptHint": "Gli script risiedono nella directory cron-scripts del server e si aggiungono via SSH, non da questa pagina.",
+        "arguments": "Argomenti (opzionale)",
+        "argumentsHint": "Separati da spazio. Ognuno viene quotato prima di finire nel crontab.",
+        "noScripts": "Nessuno script disponibile"
     },
     "modules": {
         "title": "Gestione Moduli",
