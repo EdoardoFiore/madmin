@@ -412,11 +412,32 @@ users.view / users.manage
 permissions.manage
 firewall.view / firewall.manage
 network.view / network.manage
-settings.view / settings.manage
+settings.view / settings.manage      <- branding, management port, SSL, password policy
+smtp.view / smtp.manage
+backup.view / backup.manage / backup.restore
+cron.view                            <- writing requires superuser, see below
+services.view / services.manage
 modules.view / modules.manage
-backup.create / backup.restore
 logs.view
 ```
+
+One slug per subsystem: `settings.*` used to govern six unrelated areas at once, so delegating SMTP
+configuration also handed over backups, systemd services and the crontab — that is, the machine.
+
+### Superuser-only operations
+
+Some actions cannot be delegated through a permission because they amount to root access:
+
+- **Writing the crontab** (`POST/DELETE/PATCH /api/cron/entries`): a scheduled job runs a command as
+  root. Beyond `require_superuser()`, the command is not free text — it must be a script that
+  already exists in `cron_scripts_dir` (default `/opt/madmin/cron-scripts`), a directory MADMIN
+  **never writes to**: scripts are added over SSH. The path and every argument are quoted for
+  `/bin/sh`, and `%` is rejected (cron reads it as a newline). `cron.view` covers reads only.
+- **Importing users from a backup archive**: `core/users.json` carries `hashed_password` and
+  `is_superuser`, so importing it overwrites existing accounts' credentials.
+  `import_config(..., import_users=current_user.is_superuser)`; when skipped it is reported in
+  `warnings`.
+- **Creating or promoting superusers** (`POST` and `PATCH /api/auth/users`).
 
 ### Cross-cutting authorization rules
 
@@ -431,6 +452,10 @@ logs.view
 - **Superusers bypass** every check (`User.has_permission`); `/auth/me` serializes their permissions
   as `["*"]`.
 - The frontend mirrors these rules for UI consistency only — the backend remains the authority.
+  `handleRoute` refuses a hand-typed route using the route→permission map built from `/api/ui/menu`,
+  whose `permission` field also accepts a list (meaning "any of these").
+- `/api/system/*` (stats, network, services, alerts, uptime) requires **authentication only**, by
+  design: the dashboard widgets serve every user.
 
 ---
 

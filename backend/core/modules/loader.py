@@ -685,6 +685,19 @@ class ModuleLoader:
             
             # 3. Remove permission records
             try:
+                # user_permission has no ON DELETE CASCADE, so a permission still
+                # granted to someone would fail the foreign key here — and on
+                # PostgreSQL that aborts the transaction, taking the table drop
+                # below down with it.
+                from core.auth.models import UserPermission
+
+                await session.execute(
+                    delete(UserPermission).where(
+                        UserPermission.permission_slug.in_(
+                            select(Permission.slug).where(Permission.module_id == module_id)
+                        )
+                    )
+                )
                 await session.execute(
                     delete(Permission).where(Permission.module_id == module_id)
                 )

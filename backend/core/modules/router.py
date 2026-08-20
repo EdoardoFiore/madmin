@@ -18,7 +18,7 @@ from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 from config import get_settings
 from .models import InstalledModule
-from .loader import module_loader
+from .loader import module_loader, MODULE_ID_RE
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -174,6 +174,10 @@ async def get_module_readme(
     current_user: User = Depends(require_permission("modules.view"))
 ):
     """Get a module's README.md content."""
+    # Validate before building a path from it, as activate_module already does
+    if not MODULE_ID_RE.match(module_id):
+        raise HTTPException(status_code=400, detail=f"Module ID non valido: {module_id}")
+
     module_path = Path(settings.modules_dir) / module_id / "README.md"
     
     if not module_path.exists():
