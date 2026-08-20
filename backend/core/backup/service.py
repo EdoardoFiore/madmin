@@ -252,7 +252,12 @@ def _safe_tar_members(tar: tarfile.TarFile, restore_path: str):
         yield member
 
 
-async def import_config(session: AsyncSession, archive_path: str) -> dict:
+async def import_config(
+    session: AsyncSession,
+    archive_path: str,
+    *,
+    import_users: bool = True,
+) -> dict:
     """
     Import configuration from a config archive.
     
@@ -261,6 +266,11 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
     2. Import core data (users, firewall, settings)
     3. For each module: activate → insert DB data → restore files → post_restore hook
     
+    import_users must be False unless the caller is a superuser: the users table
+    in an archive carries hashed_password and is_superuser, so importing it
+    overwrites the credentials of existing accounts and can mint new superusers.
+    Callers pass current_user.is_superuser.
+
     Returns detailed result dict.
     """
     if not os.path.exists(archive_path):
@@ -314,9 +324,16 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
         # 1. Users
         users_file = os.path.join(core_path, "users.json")
         if os.path.exists(users_file):
-            count = await _import_users(session, users_file)
-            result["users_imported"] = count
-            logger.info(f"Imported {count} users")
+            if import_users:
+                count = await _import_users(session, users_file)
+                result["users_imported"] = count
+                logger.info(f"Imported {count} users")
+            else:
+                result["warnings"].append(
+                    "Utenti non importati: solo un superuser puo' importare account "
+                    "(l'archivio contiene password e flag superuser)."
+                )
+                logger.warning("Skipped user import: caller is not a superuser")
         
         # 2a. Address objects & groups (must precede firewall rules so refs resolve)
         addresses_file = os.path.join(core_path, "addresses.json")

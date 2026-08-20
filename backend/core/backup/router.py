@@ -77,7 +77,7 @@ async def preview_import(
         raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     # Save uploaded file temporarily
-    temp_path = os.path.join(BACKUP_DIR, f"_preview_temp_{file.filename}")
+    temp_path = os.path.join(BACKUP_DIR, f"_preview_temp_{Path(file.filename).name}")
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         with open(temp_path, "wb") as f:
@@ -108,14 +108,14 @@ async def import_configuration(
         raise HTTPException(status_code=400, detail="File must be a .tar.gz archive")
     
     # Save uploaded file
-    temp_path = os.path.join(BACKUP_DIR, f"_import_{file.filename}")
+    temp_path = os.path.join(BACKUP_DIR, f"_import_{Path(file.filename).name}")
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         with open(temp_path, "wb") as f:
             content = await file.read()
             f.write(content)
         
-        result = await import_config(session, temp_path)
+        result = await import_config(session, temp_path, import_users=current_user.is_superuser)
         
         if not result.get("success"):
             raise HTTPException(status_code=400, detail={
@@ -151,7 +151,7 @@ async def import_from_scp_file(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found in imports folder")
     
-    result = await import_config(session, file_path)
+    result = await import_config(session, file_path, import_users=current_user.is_superuser)
     return result
 
 
@@ -223,7 +223,7 @@ async def restore_local_backup(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found in backup folder")
     
-    result = await import_config(session, file_path)
+    result = await import_config(session, file_path, import_users=current_user.is_superuser)
     return result
 
 

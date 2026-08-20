@@ -21,6 +21,7 @@ from starlette.responses import Response
 from jose import jwt, JWTError
 
 from config import get_settings
+from core.http import get_client_ip
 
 logger = logging.getLogger("madmin.audit")
 
@@ -89,16 +90,8 @@ def _extract_username(request: Request) -> str:
 
 
 def _get_client_ip(request: Request) -> str:
-    """
-    Get the real client IP from proxy headers.
-
-    Nginx is configured to set X-Real-IP and X-Forwarded-For.
-    """
-    return (
-        request.headers.get("x-real-ip")
-        or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or (request.client.host if request.client else "unknown")
-    )
+    """Get the real client IP from proxy headers (see core.http.get_client_ip)."""
+    return get_client_ip(request)
 
 
 def _is_empty_body(text: str | None) -> bool:

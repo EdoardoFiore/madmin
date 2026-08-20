@@ -1391,7 +1391,7 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
                                         <div class="d-flex align-items-center">
                                             <span class="avatar avatar-sm bg-cyan-lt me-2"><i class="ti ti-adjustments"></i></span>
                                             <strong>${t('settings.importCoreSettings')}</strong>
-                                            <span class="badge bg-cyan-lt ms-auto">${preview.core?.settings?.company_name || '-'}</span>
+                                            <span class="badge bg-cyan-lt ms-auto">${escapeHtml(preview.core?.settings?.company_name || '-')}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1629,7 +1629,7 @@ function showRestorePreviewModal(preview, filename) {
                                     <div class="card-body py-2 d-flex align-items-center">
                                         <span class="avatar avatar-xs bg-cyan-lt me-2"><i class="ti ti-adjustments"></i></span>
                                         <strong class="small">${t('settings.importCoreSettings')}</strong>
-                                        <span class="badge bg-cyan-lt ms-auto">${preview.core?.settings?.company_name || '-'}</span>
+                                        <span class="badge bg-cyan-lt ms-auto">${escapeHtml(preview.core?.settings?.company_name || '-')}</span>
                                     </div>
                                 </div>
                             </div>
@@ -1670,12 +1670,15 @@ function showRestorePreviewModal(preview, filename) {
             const result = await apiPost(`/backup/restore/${encodeURIComponent(filename)}`, {});
 
             if (result.success !== false) {
+                // Surfaces e.g. "users skipped: not a superuser", which otherwise
+                // looks like a silent no-op on the users count
+                const warnings = result.warnings?.length > 0 ? '. ' + result.warnings.join(', ') : '';
                 showToast(
                     t('settings.restoreCompleted', {
                         users: result.users_imported || 0,
                         rules: result.firewall_rules_imported || 0,
                         modules: result.modules_imported?.length || 0
-                    }) + '. ' + t('settings.importRestarting'),
+                    }) + warnings + '. ' + t('settings.importRestarting'),
                     'success'
                 );
                 setTimeout(() => location.reload(), 5000);

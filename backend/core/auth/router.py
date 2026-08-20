@@ -13,6 +13,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_session
+from core.http import get_client_ip
 from config import get_settings
 from .models import (
     Token,
@@ -193,8 +194,10 @@ async def login(
     If 2FA is enabled, returns token_type='2fa_required' and a temporary token.
     If 2FA is enforced but not set up, returns token_type='2fa_setup_required'.
     """
-    # Rate limiting — use direct client IP (Nginx sets request.client.host)
-    client_ip = request.client.host if request.client else "unknown"
+    # Rate limiting — keyed on the real caller, not on the proxy: behind
+    # Nginx the socket peer is always 127.0.0.1, which would collapse every
+    # user into one bucket and let anyone lock out the whole instance.
+    client_ip = get_client_ip(request)
     login_rate_limiter.check_rate_limit(client_ip)
 
     user = await service.authenticate_user(session, form_data.username, form_data.password)
@@ -270,7 +273,7 @@ async def verify_2fa_login(
     After 5 failed attempts, the user's 2FA is locked and must be reset by a superuser.
     """
     # Rate limiting by IP
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
     login_rate_limiter.check_rate_limit(client_ip)
 
     payload = service.decode_access_token(token)
