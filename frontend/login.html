@@ -161,6 +161,43 @@
                         <span class="spinner-border spinner-border-sm d-none" role="status"></span>
                     </button>
                 </div>
+
+                <!-- Enforced 2FA Enrollment Section (hidden by default) -->
+                <div id="2fa-setup-section" class="d-none">
+                    <div class="text-center mb-3">
+                        <i class="ti ti-shield-plus" style="font-size: 3rem; color: var(--tblr-primary);"></i>
+                    </div>
+                    <p class="text-center mb-3" data-i18n="auth.setup2faRequired">
+                        Your administrator requires two-factor authentication on this account
+                    </p>
+                    <p class="text-center text-muted small mb-3" data-i18n="auth.setup2faScan">
+                        Scan the QR code with your authenticator app, then enter the code it shows.
+                    </p>
+                    <div class="text-center mb-3">
+                        <img id="setup-qr-code" alt="QR" class="img-fluid border rounded"
+                            style="max-width: 200px; background: #fff; padding: 8px;">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small" data-i18n="auth.setup2faSecret">Or enter this key manually</label>
+                        <input type="text" class="form-control form-control-sm font-monospace" id="setup-secret" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small" data-i18n="auth.setup2faBackupCodes">Backup codes — save them now, they are shown only once</label>
+                        <div class="row g-1 border rounded p-2" id="setup-backup-codes"></div>
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" class="form-control form-control-lg text-center" id="setup-otp-code"
+                            placeholder="000000" maxlength="6" autocomplete="one-time-code" pattern="[0-9]{6}"
+                            inputmode="numeric">
+                    </div>
+                    <button type="button" class="btn btn-primary w-100 mb-2" id="complete-2fa-setup-btn">
+                        <span class="btn-text" data-i18n="auth.activate2fa">Activate 2FA</span>
+                        <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                    </button>
+                    <button type="button" class="btn btn-link w-100" id="back-to-login-setup">
+                        <i class="ti ti-arrow-left"></i> <span data-i18n="auth.backToLogin">Back to login</span>
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -246,6 +283,10 @@
         const setPasswordBtn = document.getElementById('set-password-btn');
         const newPwdInput = document.getElementById('new-password');
         const newPwdConfirmInput = document.getElementById('new-password-confirm');
+        const twoFaSetupSection = document.getElementById('2fa-setup-section');
+        const complete2faSetupBtn = document.getElementById('complete-2fa-setup-btn');
+        const setupOtpInput = document.getElementById('setup-otp-code');
+        const backToLoginSetupBtn = document.getElementById('back-to-login-setup');
 
         // State for 2FA / password-change flows
         let tempToken = null;
@@ -282,6 +323,7 @@
             form.classList.remove('d-none');
             twoFaSection.classList.add('d-none');
             pwdChangeSection.classList.add('d-none');
+            twoFaSetupSection.classList.add('d-none');
             tempToken = null;
             hideError();
         }
@@ -289,6 +331,7 @@
         function show2faForm() {
             form.classList.add('d-none');
             pwdChangeSection.classList.add('d-none');
+            twoFaSetupSection.classList.add('d-none');
             twoFaSection.classList.remove('d-none');
             otpInput.value = '';
             otpInput.focus();
@@ -298,6 +341,7 @@
         function showPwdChangeForm() {
             form.classList.add('d-none');
             twoFaSection.classList.add('d-none');
+            twoFaSetupSection.classList.add('d-none');
             pwdChangeSection.classList.remove('d-none');
             newPwdInput.value = '';
             newPwdConfirmInput.value = '';
@@ -305,9 +349,19 @@
             hideError();
         }
 
+        function show2faSetupForm() {
+            form.classList.add('d-none');
+            twoFaSection.classList.add('d-none');
+            pwdChangeSection.classList.add('d-none');
+            twoFaSetupSection.classList.remove('d-none');
+            setupOtpInput.value = '';
+            setupOtpInput.focus();
+            hideError();
+        }
+
         // Central dispatch on token_type for both /token and /token/2fa responses.
         // Returns true if a follow-up step was shown, false on final login.
-        function handleTokenResponse(data) {
+        async function handleTokenResponse(data) {
             if (data.token_type === '2fa_required') {
                 tempToken = data.access_token;
                 show2faForm();
@@ -319,9 +373,11 @@
                 return true;
             }
             if (data.token_type === '2fa_setup_required') {
-                localStorage.setItem('madmin_token', data.access_token);
-                localStorage.setItem('madmin_2fa_setup_required', 'true');
-                window.location.href = '/#/users';
+                // Pending token: kept in memory only. Writing it to localStorage would
+                // make every authenticated call 401 and bounce the user back to login.
+                tempToken = data.access_token;
+                // Awaited so the caller's spinner stays up while the QR is fetched
+                await start2faSetup();
                 return true;
             }
             // Final login
@@ -354,7 +410,7 @@
 
                 if (response.ok) {
                     const data = await response.json();
-                    handleTokenResponse(data);
+                    await handleTokenResponse(data);
                 } else {
                     const error = await response.json();
                     showError(error.detail || _t('auth.invalidCredentials'));
@@ -391,7 +447,7 @@
                 if (response.ok) {
                     const data = await response.json();
                     // May return a password_change_required step after 2FA succeeds
-                    handleTokenResponse(data);
+                    await handleTokenResponse(data);
                 } else {
                     const error = await response.json();
                     showError(error.detail || _t('auth.invalidCode'));
@@ -453,6 +509,85 @@
         newPwdConfirmInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') submitPasswordChange();
         });
+
+        // Enforced 2FA enrollment: generate the secret with the pending token,
+        // then exchange a valid code for a full session.
+        async function start2faSetup() {
+            hideError();
+
+            try {
+                const response = await fetch('/api/auth/me/2fa/setup', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${tempToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: '{}'
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    showError(error.detail || _t('auth.setup2faFailed'));
+                    return;
+                }
+
+                const data = await response.json();
+                document.getElementById('setup-qr-code').src = `data:image/png;base64,${data.qr_code}`;
+                document.getElementById('setup-secret').value = data.secret;
+                document.getElementById('setup-backup-codes').innerHTML = data.backup_codes
+                    .map(c => `<div class="col-6"><code>${c}</code></div>`).join('');
+
+                show2faSetupForm();
+            } catch (error) {
+                showError(_t('auth.connectionError'));
+                console.error('2FA setup error:', error);
+            }
+        }
+
+        async function submit2faSetup() {
+            const code = setupOtpInput.value.trim();
+
+            if (!code) {
+                showError(_t('auth.enterCode'));
+                return;
+            }
+
+            hideError();
+            setLoading(complete2faSetupBtn, true, 'auth.verifying', 'auth.activate2fa');
+
+            try {
+                const response = await fetch('/api/auth/token/2fa-setup', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${tempToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ code })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    // May return a password_change_required step after 2FA is activated
+                    await handleTokenResponse(data);
+                } else {
+                    const error = await response.json();
+                    showError(error.detail || _t('auth.invalidCode'));
+                    setupOtpInput.value = '';
+                    setupOtpInput.focus();
+                }
+            } catch (error) {
+                showError(_t('auth.connectionError'));
+                console.error('2FA setup error:', error);
+            } finally {
+                setLoading(complete2faSetupBtn, false, 'auth.verifying', 'auth.activate2fa');
+            }
+        }
+
+        complete2faSetupBtn.addEventListener('click', submit2faSetup);
+        setupOtpInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') submit2faSetup();
+        });
+        backToLoginSetupBtn.addEventListener('click', showLoginForm);
 
         // Handle Enter key on OTP input
         otpInput.addEventListener('keypress', (e) => {

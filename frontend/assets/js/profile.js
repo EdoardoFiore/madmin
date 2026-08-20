@@ -406,7 +406,6 @@ function setupVerify2FA() {
         try {
             await apiPost('/auth/me/2fa/enable', { code });
             showToast(t('app.2faActivatedSuccess'), 'success');
-            localStorage.removeItem('madmin_2fa_setup_required');
             bootstrap.Modal.getInstance(document.getElementById('profile-2fa-setup-modal'))?.hide();
             await load2FAStatus();
         } catch (error) {

@@ -405,19 +405,32 @@ OUTPUT
 
 ## Core Permissions Reference
 
+Defined in `CORE_PERMISSIONS` (`backend/core/auth/models.py`), seeded at startup:
+
 ```
 users.view / users.manage
 permissions.manage
 firewall.view / firewall.manage
-settings.view / settings.manage
-backup.view / backup.manage
-system.view
 network.view / network.manage
-services.view / services.manage
-cron.view / cron.manage
-audit.view
+settings.view / settings.manage
 modules.view / modules.manage
+backup.create / backup.restore
+logs.view
 ```
+
+### Cross-cutting authorization rules
+
+- **`permissions.manage` is a modifier of `users.manage`, not a standalone grant.** Permission
+  editing lives inside the Users screen, and the endpoints require both
+  (`require_all_permissions`): `PUT /api/auth/users/{u}/permissions` needs `users.manage` +
+  `permissions.manage`; `GET /api/auth/permissions` needs `users.view` + `permissions.manage`.
+- **No promotion above your own level.** A non-superuser can only grant permissions they hold
+  (`_assert_can_grant`) and can only act on users whose permission set is a subset of their own
+  (`_assert_can_manage_target`, applied to user PATCH/DELETE, 2FA reset and permission assignment).
+  Only a superuser can create or promote superusers.
+- **Superusers bypass** every check (`User.has_permission`); `/auth/me` serializes their permissions
+  as `["*"]`.
+- The frontend mirrors these rules for UI consistency only — the backend remains the authority.
 
 ---
 

@@ -12,6 +12,25 @@ let permissions = [];
 let editingUser = null;
 
 /**
+ * Permission slugs held by the logged-in user ('*' for superusers).
+ */
+function ownPermissions() {
+    return new Set(getUser()?.permissions || []);
+}
+
+/**
+ * Mirrors the backend guard (_assert_can_manage_target in core/auth/router.py):
+ * a non-superuser may only act on accounts whose permissions are a subset of theirs.
+ */
+function canManageTarget(target) {
+    if (getUser()?.is_superuser) return true;
+    if (target.is_superuser) return false;
+
+    const own = ownPermissions();
+    return (target.permissions || []).every(slug => own.has(slug));
+}
+
+/**
  * Render the users view
  */
 export async function render(container) {
@@ -175,7 +194,7 @@ export async function render(container) {
                                     <input type="password" class="form-control" id="user-password-confirm" minlength="8">
                                     <small class="form-hint text-danger d-none" id="password-mismatch">${t('users.passwordsDoNotMatch')}</small>
                                 </div>
-                                <div class="col-12">
+                                <div class="col-12 d-none" id="superuser-container">
                                     <label class="form-check form-switch">
                                         <input class="form-check-input" type="checkbox" id="user-superuser">
                                         <span class="form-check-label"><strong>Superuser</strong> ${t('users.superuserNote')}</span>
@@ -341,7 +360,8 @@ function setupEventListeners() {
     if (superuserCheck) {
         superuserCheck.addEventListener('change', (e) => {
             const permSection = document.getElementById('permissions-section');
-            permSection.style.display = e.target.checked ? 'none' : 'block';
+            const hide = e.target.checked || !checkPermission('permissions.manage');
+            permSection.style.display = hide ? 'none' : 'block';
         });
     }
 
@@ -381,7 +401,9 @@ async function loadData() {
     try {
         [users, permissions] = await Promise.all([
             apiGet('/auth/users'),
-            apiGet('/auth/permissions').catch(() => [])
+            checkPermission('permissions.manage')
+                ? apiGet('/auth/permissions').catch(() => [])
+                : Promise.resolve([])
         ]);
         renderUsers();
     } catch (error) {
@@ -403,8 +425,9 @@ function renderUsers() {
         // Determine if we should show action buttons
         const isSelf = user.username === currentUser?.username;
 
-        // Protected user (first setup user): no one else can edit or delete
-        const showActions = canManage && !isSelf && !user.is_protected;
+        // Protected user (first setup user): no one else can edit or delete.
+        // A more privileged target is off limits too — the backend would reject it anyway.
+        const showActions = canManage && !isSelf && !user.is_protected && canManageTarget(user);
 
         // Password status badge: force-change takes priority, then expired
         const pwdExpired = user.password_expires_at && new Date(user.password_expires_at) < new Date();
@@ -491,9 +514,15 @@ function renderGroupedPermissions(userPerms) {
         'permissions': t('users.coreGroupNames.permissions')
     };
 
+    // A non-superuser can only grant what they hold (backend: _assert_can_grant),
+    // so never offer a checkbox that would come back 403.
+    const isSuperuser = getUser()?.is_superuser || false;
+    const own = ownPermissions();
+    const grantable = isSuperuser ? permissions : permissions.filter(p => own.has(p.slug));
+
     // Group permissions dynamically by prefix (module name)
     const groups = {};
-    for (const perm of permissions) {
+    for (const perm of grantable) {
         const prefix = perm.slug.split('.')[0];
         if (!groups[prefix]) {
             groups[prefix] = [];
@@ -605,11 +634,17 @@ function openUserModal(user = null) {
         reset2faBtn.classList.add('d-none');
     }
 
+    // Superuser toggle is a superuser-only lever: granting it is rejected by the backend
+    const superuserRow = document.getElementById('superuser-container');
+    if (superuserRow) superuserRow.classList.toggle('d-none', !isSuperuser);
+
+    // permissions.manage is a modifier of users.manage: without it the section is read-only noise
     const permSection = document.getElementById('permissions-section');
-    permSection.style.display = user?.is_superuser ? 'none' : 'block';
+    const canEditPerms = checkPermission('permissions.manage');
+    permSection.style.display = (user?.is_superuser || !canEditPerms) ? 'none' : 'block';
 
     const userPerms = user?.permissions || [];
-    renderGroupedPermissions(userPerms);
+    if (canEditPerms) renderGroupedPermissions(userPerms);
 
     new bootstrap.Modal(document.getElementById('user-modal')).show();
 }
@@ -650,7 +685,9 @@ async function handleUserSubmit(e) {
 
             await apiPatch(`/auth/users/${editingUser.username}`, updateData);
 
-            if (!document.getElementById('user-superuser').checked) {
+            // Only send permissions when they were editable, otherwise the PUT 403s
+            // on a save that never touched them.
+            if (!document.getElementById('user-superuser').checked && checkPermission('permissions.manage')) {
                 const selectedPerms = [...document.querySelectorAll('.perm-check:checked')].map(c => c.value);
                 await apiPut(`/auth/users/${editingUser.username}/permissions`, selectedPerms);
             }
@@ -665,8 +702,8 @@ async function handleUserSubmit(e) {
                 is_superuser: document.getElementById('user-superuser').checked
             });
 
-            // Save permissions if not superuser
-            if (!document.getElementById('user-superuser').checked) {
+            // Save permissions if not superuser and they were editable
+            if (!document.getElementById('user-superuser').checked && checkPermission('permissions.manage')) {
                 const selectedPerms = [...document.querySelectorAll('.perm-check:checked')].map(c => c.value);
                 await apiPut(`/auth/users/${username}/permissions`, selectedPerms);
             }
@@ -768,15 +805,8 @@ async function load2FAStatus() {
             if (canDisable) setupDisable2FA();
             setupRegenerateCodes();
         } else {
-            // 2FA not enabled
-            const localRequired = localStorage.getItem('madmin_2fa_setup_required') === 'true';
-            // Only consider required if both localStorage flag AND backend enforced flag are true
-            const isRequired = localRequired && isEnforced;
-
-            // Clear stale localStorage flag if backend says not enforced
-            if (localRequired && !isEnforced) {
-                localStorage.removeItem('madmin_2fa_setup_required');
-            }
+            // 2FA not enabled — the backend enforced flag is the only source of truth
+            const isRequired = isEnforced;
 
             container.innerHTML = `
                 <div class="alert ${isRequired || isEnforced ? 'alert-danger' : 'alert-warning'} mb-3">
@@ -876,9 +906,6 @@ function setup2FAModalListeners() {
             try {
                 await apiPost('/auth/me/2fa/enable', { code });
                 showToast(t('app.2faActivatedSuccess'), 'success');
-
-                // Clear the setup required flag if it was set
-                localStorage.removeItem('madmin_2fa_setup_required');
 
                 // Close modal and refresh
                 const modal = bootstrap.Modal.getInstance(document.getElementById('2fa-setup-modal'));

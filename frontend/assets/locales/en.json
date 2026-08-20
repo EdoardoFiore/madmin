@@ -85,7 +85,13 @@
         "settingPassword": "Setting password...",
         "fillAllFields": "Please fill in all fields",
         "passwordsDoNotMatch": "Passwords do not match",
-        "passwordChangeFailed": "Could not change password"
+        "passwordChangeFailed": "Could not change password",
+        "setup2faRequired": "Your administrator requires two-factor authentication on this account",
+        "setup2faScan": "Scan the QR code with your authenticator app, then enter the code it shows.",
+        "setup2faSecret": "Or enter this key manually",
+        "setup2faBackupCodes": "Backup codes — save them now, they are shown only once",
+        "setup2faFailed": "Could not start 2FA setup",
+        "activate2fa": "Activate 2FA"
     },
     "menu": {
         "dashboard": "Dashboard",

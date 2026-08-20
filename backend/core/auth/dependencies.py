@@ -177,6 +177,34 @@ def require_any_permission(permission_slugs: List[str]) -> Callable:
     return permission_checker
 
 
+def require_all_permissions(permission_slugs: List[str]) -> Callable:
+    """
+    Dependency factory that requires ALL of the specified permissions.
+
+    Used where a capability is a modifier of another one rather than a standalone
+    grant — e.g. editing a user's permissions requires both managing users and
+    managing permissions.
+
+    Usage:
+        @router.put("/protected")
+        async def protected_route(
+            user: User = Depends(require_all_permissions(["users.manage", "permissions.manage"]))
+        ):
+            ...
+    """
+    async def permission_checker(
+        current_user: User = Depends(get_current_user)
+    ) -> User:
+        if not current_user.has_all_permissions(permission_slugs):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission denied. Required all of: {', '.join(permission_slugs)}"
+            )
+        return current_user
+
+    return permission_checker
+
+
 def require_superuser() -> Callable:
     """
     Dependency factory that requires superuser status.

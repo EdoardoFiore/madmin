@@ -6,6 +6,7 @@
  */
 
 import { apiGet, apiPatch } from '../api.js';
+import { checkPermission } from '../app.js';
 import { formatRelativeTime, escapeHtml } from '../utils.js';
 import { t, getLang } from '../i18n.js';
 
@@ -28,6 +29,9 @@ let diskChart = null;
  *  - fixed: if true, cannot be hidden
  *  - render: function returning HTML string
  *  - load: async function to populate data (null if static)
+ *  - visible: optional () => boolean; when it returns false the widget is dropped
+ *             entirely (grid + config modal). Mirrors ModuleDashboardWidget.permission,
+ *             which the backend applies to module widgets.
  */
 const CORE_WIDGETS = [
     { id: 'welcome', get title() { return t('dashboard.welcome'); }, col: 12, fixed: true, render: renderWelcome, load: loadWelcome },
@@ -36,8 +40,8 @@ const CORE_WIDGETS = [
     { id: 'resource_graphs', get title() { return t('dashboard.resourceTrend'); }, col: 12, fixed: false, render: renderResourceGraphs, load: loadResourceGraphs },
     { id: 'net_traffic', get title() { return t('dashboard.networkTraffic'); }, col: 6, fixed: false, render: renderNetTraffic, load: loadNetTraffic },
     { id: 'alerts', get title() { return t('dashboard.systemAlerts'); }, col: 6, fixed: false, render: renderAlerts, load: loadAlerts },
-    { id: 'backup_status', get title() { return t('dashboard.backupStatus'); }, col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus },
-    { id: 'quick_actions', get title() { return t('dashboard.quickActions'); }, col: 6, fixed: false, render: renderQuickActions, load: null },
+    { id: 'backup_status', get title() { return t('dashboard.backupStatus'); }, col: 6, fixed: false, render: renderBackupStatus, load: loadBackupStatus, visible: () => checkPermission('settings.view') },
+    { id: 'quick_actions', get title() { return t('dashboard.quickActions'); }, col: 6, fixed: false, render: renderQuickActions, load: null, visible: () => visibleQuickActions().length > 0 },
     { id: 'stat_cards', get title() { return t('dashboard.counters'); }, col: 12, fixed: false, render: renderStatCards, load: loadStatCards },
 ];
 
@@ -161,6 +165,14 @@ function saveWidgetPrefs(prefs) {
 }
 
 /**
+ * A widget the current user has no permission for is not just empty: it must not
+ * be rendered, loaded, or offered in the config modal.
+ */
+function isWidgetVisible(widget) {
+    return !widget.visible || widget.visible();
+}
+
+/**
  * Get ordered list of widgets to render, respecting user prefs.
  * Fixed widgets (welcome) always come first regardless of order.
  */
@@ -170,13 +182,13 @@ function getOrderedWidgets() {
 
     // Fixed widgets first
     for (const w of CORE_WIDGETS) {
-        if (w.fixed) ordered.push({ widget: w, enabled: true });
+        if (w.fixed && isWidgetVisible(w)) ordered.push({ widget: w, enabled: true });
     }
 
     // Then user-ordered widgets
     for (const pref of prefs) {
         const w = WIDGET_MAP[pref.id];
-        if (w && !w.fixed) {
+        if (w && !w.fixed && isWidgetVisible(w)) {
             ordered.push({ widget: w, enabled: pref.enabled });
         }
     }
@@ -249,7 +261,9 @@ function openWidgetConfigModal() {
     document.getElementById('widget-config-modal')?.remove();
 
     const prefs = getWidgetPrefs();
-    const nonFixed = prefs.filter(p => WIDGET_MAP[p.id] && !WIDGET_MAP[p.id].fixed);
+    const nonFixed = prefs.filter(p =>
+        WIDGET_MAP[p.id] && !WIDGET_MAP[p.id].fixed && isWidgetVisible(WIDGET_MAP[p.id])
+    );
 
     const modalHtml = `
         <div class="modal modal-blur" id="widget-config-modal" tabindex="-1">
@@ -332,7 +346,12 @@ function saveOrderFromModal() {
         nonFixedPrefs.push({ id, enabled });
     });
 
-    saveWidgetPrefs([...fixedPrefs, ...nonFixedPrefs]);
+    // Widgets hidden by permission (or by a module being off) are absent from the modal:
+    // carry their stored prefs over instead of dropping them.
+    const inModal = new Set(nonFixedPrefs.map(p => p.id));
+    const carriedOver = getWidgetPrefs().filter(p => !inModal.has(p.id) && !WIDGET_MAP[p.id]?.fixed);
+
+    saveWidgetPrefs([...fixedPrefs, ...nonFixedPrefs, ...carriedOver]);
 }
 
 /**
@@ -572,6 +591,21 @@ function renderBackupStatus() {
 
 
 
+/**
+ * Counter cards. Each one is backed by a permission-gated endpoint, so a card the
+ * user cannot read is dropped rather than left showing a dash.
+ */
+const STAT_CARDS = [
+    { id: 'system-status', get title() { return t('dashboard.systemStatus'); }, get sub() { return t('dashboard.database'); }, subId: 'db-status', permission: null },
+    { id: 'firewall-count', get title() { return t('dashboard.firewallRules'); }, get sub() { return t('dashboard.activeRules'); }, subId: null, permission: 'firewall.view' },
+    { id: 'modules-count', get title() { return t('dashboard.installedModules'); }, get sub() { return t('dashboard.activeModules'); }, subId: null, permission: 'modules.view' },
+    { id: 'users-count', get title() { return t('dashboard.usersCount'); }, get sub() { return t('dashboard.registeredUsers'); }, subId: null, permission: 'users.view' },
+];
+
+function visibleStatCards() {
+    return STAT_CARDS.filter(c => !c.permission || checkPermission(c.permission));
+}
+
 function renderStatCards() {
     return `
         <div class="card">
@@ -582,12 +616,7 @@ function renderStatCards() {
             </div>
             <div class="card-body">
                 <div class="row g-3">
-                    ${[
-            { id: 'system-status', get title() { return t('dashboard.systemStatus'); }, sub: t('dashboard.database'), subId: 'db-status' },
-            { id: 'firewall-count', get title() { return t('dashboard.firewallRules'); }, get sub() { return t('dashboard.activeRules'); }, subId: null },
-            { id: 'modules-count', get title() { return t('dashboard.installedModules'); }, get sub() { return t('dashboard.activeModules'); }, subId: null },
-            { id: 'users-count', get title() { return t('dashboard.usersCount'); }, get sub() { return t('dashboard.registeredUsers'); }, subId: null },
-        ].map(c => `
+                    ${visibleStatCards().map(c => `
                         <div class="col-sm-6 col-lg-3">
                             <div class="card card-sm">
                                 <div class="card-body">
@@ -611,7 +640,24 @@ function renderStatCards() {
     `;
 }
 
+/**
+ * Quick action buttons. Permission slugs match the sidebar entries served by
+ * /api/ui/menu, so a button never points at a page the user cannot open.
+ */
+const QUICK_ACTIONS = [
+    { href: '#users', icon: 'ti-user-plus', labelKey: 'dashboard.newUser', permission: 'users.view' },
+    { href: '#firewall', icon: 'ti-shield-plus', labelKey: 'dashboard.newRule', permission: 'firewall.view' },
+    { href: '#settings', icon: 'ti-settings', labelKey: 'dashboard.settings', permission: 'settings.view' },
+    { href: '#modules', icon: 'ti-puzzle', labelKey: 'dashboard.modules', permission: 'modules.view' },
+];
+
+function visibleQuickActions() {
+    return QUICK_ACTIONS.filter(a => !a.permission || checkPermission(a.permission));
+}
+
 function renderQuickActions() {
+    const actions = visibleQuickActions();
+
     return `
         <div class="card">
             <div class="card-header">
@@ -621,26 +667,13 @@ function renderQuickActions() {
             </div>
             <div class="card-body">
                 <div class="row g-3">
+                    ${actions.map(a => `
                     <div class="col-6">
-                        <a href="#users" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-user-plus me-2"></i>${t('dashboard.newUser')}
+                        <a href="${a.href}" class="btn btn-outline-primary w-100">
+                            <i class="ti ${a.icon} me-2"></i>${t(a.labelKey)}
                         </a>
                     </div>
-                    <div class="col-6">
-                        <a href="#firewall" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-shield-plus me-2"></i>${t('dashboard.newRule')}
-                        </a>
-                    </div>
-                    <div class="col-6">
-                        <a href="#settings" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-settings me-2"></i>${t('dashboard.settings')}
-                        </a>
-                    </div>
-                    <div class="col-6">
-                        <a href="#modules" class="btn btn-outline-primary w-100">
-                            <i class="ti ti-puzzle me-2"></i>${t('dashboard.modules')}
-                        </a>
-                    </div>
+                    `).join('')}
                 </div>
             </div>
         </div>
@@ -1049,31 +1082,40 @@ async function loadStatCards() {
         if (el) el.innerHTML = `<span class="status-dot status-dot-warning me-2"></span>${t('dashboard.loadingError')}`;
     }
 
+    // The remaining cards are only rendered when permitted: skip their calls otherwise,
+    // instead of firing a request that comes back 403.
+
     // Firewall
-    try {
-        const rules = await apiGet('/firewall/rules');
-        document.getElementById('firewall-count').textContent = rules.filter(r => r.enabled).length;
-    } catch (e) {
-        const el = document.getElementById('firewall-count');
-        if (el) el.textContent = '-';
+    if (checkPermission('firewall.view')) {
+        try {
+            const rules = await apiGet('/firewall/rules');
+            document.getElementById('firewall-count').textContent = rules.filter(r => r.enabled).length;
+        } catch (e) {
+            const el = document.getElementById('firewall-count');
+            if (el) el.textContent = '-';
+        }
     }
 
     // Modules
-    try {
-        const modules = await apiGet('/modules/available');
-        document.getElementById('modules-count').textContent = modules.filter(m => m.enabled).length;
-    } catch (e) {
-        const el = document.getElementById('modules-count');
-        if (el) el.textContent = '-';
+    if (checkPermission('modules.view')) {
+        try {
+            const modules = await apiGet('/modules/available');
+            document.getElementById('modules-count').textContent = modules.filter(m => m.enabled).length;
+        } catch (e) {
+            const el = document.getElementById('modules-count');
+            if (el) el.textContent = '-';
+        }
     }
 
     // Users
-    try {
-        const users = await apiGet('/auth/users');
-        document.getElementById('users-count').textContent = users.length;
-    } catch (e) {
-        const el = document.getElementById('users-count');
-        if (el) el.textContent = '-';
+    if (checkPermission('users.view')) {
+        try {
+            const users = await apiGet('/auth/users');
+            document.getElementById('users-count').textContent = users.length;
+        } catch (e) {
+            const el = document.getElementById('users-count');
+            if (el) el.textContent = '-';
+        }
     }
 }
 

@@ -93,30 +93,17 @@ async def get_module_widgets(
     result = []
     for w in all_widgets:
         perm = w.get("permission")
-        if perm:
-            # Check if user has the required permission
-            if not (currentUser_is_super := currentUser_has_perm(current_user, perm)):
-                continue
+        if perm and not current_user.has_permission(perm):
+            continue
         result.append({
             "module_id": w["module_id"],
             "widget_id": w["widget_id"],
             "title": w["title"],
             "col": w["col"],
         })
-    
+
     return result
 
-
-def currentUser_has_perm(user: User, permission: str) -> bool:
-    """Check if user has a specific permission."""
-    if user.is_superuser:
-        return True
-    try:
-        import json
-        perms = json.loads(user.permissions) if isinstance(user.permissions, str) else user.permissions
-        return "*" in perms or permission in perms
-    except Exception:
-        return False
 
 @router.post("/{module_id}/activate")
 async def activate_module(

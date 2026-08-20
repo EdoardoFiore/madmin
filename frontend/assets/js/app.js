@@ -210,8 +210,7 @@ async function verifyGlobal2FA() {
 
         showToast(t('app.2faActivatedSuccess'), 'success');
 
-        // Clear localStorage flag and close modal
-        localStorage.removeItem('madmin_2fa_setup_required');
+        // Close modal
         bootstrap.Modal.getInstance(document.getElementById('global-2fa-modal'))?.hide();
 
         // Reload page to refresh state

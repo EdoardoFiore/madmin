@@ -85,7 +85,13 @@
         "settingPassword": "Impostazione password...",
         "fillAllFields": "Compila tutti i campi",
         "passwordsDoNotMatch": "Le password non coincidono",
-        "passwordChangeFailed": "Impossibile cambiare la password"
+        "passwordChangeFailed": "Impossibile cambiare la password",
+        "setup2faRequired": "L'amministratore richiede l'autenticazione a due fattori su questo account",
+        "setup2faScan": "Scansiona il QR code con la tua app authenticator, poi inserisci il codice che mostra.",
+        "setup2faSecret": "Oppure inserisci questa chiave manualmente",
+        "setup2faBackupCodes": "Codici di backup — salvali ora, vengono mostrati una sola volta",
+        "setup2faFailed": "Impossibile avviare la configurazione 2FA",
+        "activate2fa": "Attiva 2FA"
     },
     "menu": {
         "dashboard": "Dashboard",

@@ -6,7 +6,7 @@ Superusers bypass all permission checks. Regular users need explicit permissions
 """
 from sqlmodel import SQLModel, Field, Relationship
 from pydantic import field_validator
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List, Set, TYPE_CHECKING
 from datetime import datetime
 import re
 import uuid
@@ -96,6 +96,17 @@ class User(SQLModel, table=True):
             return True
         user_slugs = {p.slug for p in self.permissions}
         return bool(user_slugs.intersection(permission_slugs))
+
+    def has_all_permissions(self, permission_slugs: List[str]) -> bool:
+        """Check if user has every one of the given permissions."""
+        if self.is_superuser:
+            return True
+        user_slugs = {p.slug for p in self.permissions}
+        return user_slugs.issuperset(permission_slugs)
+
+    def permission_slugs(self) -> Set[str]:
+        """Slugs granted to this user (empty for superusers, who bypass checks)."""
+        return {p.slug for p in self.permissions}
 
 
 class RevokedToken(SQLModel, table=True):
