@@ -152,14 +152,20 @@ class WgGroupRule(SQLModel, table=True):
 
 
 class WgMagicToken(SQLModel, table=True):
-    """Temporary token for client config sharing."""
+    """
+    Temporary token for client config sharing.
+
+    Valid until it expires and usable more than once: the landing page, the QR
+    and the file download are separate requests, so no single one of them means
+    "the user has the config". Issuing a new token for a client revokes the
+    previous one.
+    """
     __tablename__ = "wg_magic_token"
     
     token: str = Field(primary_key=True)
     client_id: uuid.UUID = Field(foreign_key="wg_client.id", index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime
-    used: bool = Field(default=False)
 
 
 # --- Pydantic Schemas ---

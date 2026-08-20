@@ -36,6 +36,11 @@ from core.network.service import NetworkService
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# How long a config-sharing link stays valid. The link is not single-use (see
+# send_client_config_email), so the window is the only thing limiting exposure
+# of a client's private key if the mail is forwarded or intercepted.
+MAGIC_TOKEN_TTL_HOURS = 12
+
 
 # --- SYSTEM ---
 
@@ -415,6 +420,15 @@ async def delete_instance(
     config_path = WIREGUARD_CONFIG_DIR / f"{instance.interface}.conf"
     if config_path.exists():
         config_path.unlink()
+
+    # No cascade on the FK: the tokens would outlive the clients they point at
+    await db.execute(
+        delete(WgMagicToken).where(
+            WgMagicToken.client_id.in_(
+                select(WgClient.id).where(WgClient.instance_id == instance_id)
+            )
+        )
+    )
 
     await db.delete(instance)
     await db.commit()
@@ -836,6 +850,10 @@ async def delete_client(
     await db.execute(
         delete(WgGroupMember).where(WgGroupMember.client_id == client.id)
     )
+    # No cascade on the FK: the tokens would outlive the client they point at
+    await db.execute(
+        delete(WgMagicToken).where(WgMagicToken.client_id == client.id)
+    )
     
     if wireguard_service.get_interface_status(instance.interface):
         wireguard_service.hot_reload_interface(instance.interface)
@@ -1030,7 +1048,11 @@ async def send_client_config_email(
 ):
     """
     Send client config via email with magic token link.
-    Token is valid for 48 hours and can only be used once.
+
+    The link stays usable until it expires: the landing page loads the QR code
+    on open, and a phone that scans it never requests the .conf file, so there
+    is no single request that reliably means "the user got the config". Any
+    previously issued link for this client is revoked here instead.
     """
     import secrets
     from datetime import timedelta
@@ -1061,9 +1083,15 @@ async def send_client_config_email(
     if not smtp_settings.public_download_url:
         raise HTTPException(400, "URL pubblico non configurato nelle impostazioni SMTP.")
 
-    # Generate magic token
+    # Issuing a new link revokes any earlier one for this client: without this,
+    # every re-send left another live token behind.
+    await db.execute(delete(WgMagicToken).where(
+        (WgMagicToken.client_id == client.id)
+        | (WgMagicToken.expires_at < datetime.utcnow())  # opportunistic purge
+    ))
+
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.utcnow() + timedelta(hours=48)
+    expires_at = datetime.utcnow() + timedelta(hours=MAGIC_TOKEN_TTL_HOURS)
 
     magic_token = WgMagicToken(
         token=token,
@@ -1076,6 +1104,7 @@ async def send_client_config_email(
     # Build download URL
     base_url = smtp_settings.public_download_url.rstrip('/')
     download_url = f"{base_url}/api/modules/wireguard/download/{token}"
+    expires_str = expires_at.strftime("%d/%m/%Y alle %H:%M UTC")
     
     # Send email
     body_html = f"""
@@ -1096,8 +1125,8 @@ async def send_client_config_email(
             <p><strong>Istanza:</strong> {instance.name}</p>
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;">
             <p style="color: #666; font-size: 12px;">
-                ⚠️ Questo link è valido per <strong>48 ore</strong> e può essere usato <strong>una sola volta</strong>.<br>
-                Dopo il download il link non sarà più utilizzabile.
+                ⚠️ Questo link scade il <strong>{expires_str}</strong>.<br>
+                Non condividerlo: chiunque lo apra può scaricare la tua configurazione VPN.
             </p>
         </div>
     </body>
@@ -1127,7 +1156,7 @@ async def _validate_token(token: str, db: AsyncSession):
     """
     Validate magic token and return (magic_token, client, instance, error) tuple.
     If error is not None, it contains (title, message) for the error page.
-    Token can be used multiple times within validity period.
+    Usable until it expires — see send_client_config_email for why.
     """
     result = await db.execute(select(WgMagicToken).where(WgMagicToken.token == token))
     magic_token = result.scalar_one_or_none()
@@ -1198,7 +1227,7 @@ async def download_config_file(
 ):
     """
     Download the actual .conf file.
-    Can be downloaded multiple times within validity period.
+    Usable until the token expires — see send_client_config_email.
     """
     from pathlib import Path
     
@@ -1286,7 +1315,7 @@ async def create_group(
     instance_id: str,
     data: WgGroupCreate,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Create a new firewall group."""
     result = await db.execute(select(WgInstance).where(WgInstance.id == instance_id))
@@ -1340,7 +1369,7 @@ async def delete_group(
     instance_id: str,
     group_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Delete a firewall group."""
     result = await db.execute(
@@ -1371,7 +1400,7 @@ async def reorder_groups(
     instance_id: str,
     orders: List[GroupOrderUpdate],
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Update group order for an instance. Lower order = higher priority in iptables."""
     for item in orders:
@@ -1418,7 +1447,7 @@ async def add_member(
     group_id: str,
     client_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Add a client to a group."""
     import uuid as uuid_module
@@ -1463,7 +1492,7 @@ async def remove_member(
     group_id: str,
     client_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Remove a client from a group."""
     import uuid as uuid_module
@@ -1512,7 +1541,7 @@ async def create_rule(
     group_id: str,
     data: WgGroupRuleCreate,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Create a new firewall rule."""
     result = await db.execute(
@@ -1552,7 +1581,7 @@ async def update_rule(
     rule_id: str,
     data: WgGroupRuleUpdate,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Update a firewall rule."""
     import uuid as uuid_module
@@ -1588,7 +1617,7 @@ async def delete_rule(
     group_id: str,
     rule_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Delete a firewall rule."""
     import uuid as uuid_module
@@ -1615,7 +1644,7 @@ async def reorder_rules(
     group_id: str,
     orders: List[RuleOrderUpdate],
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("wireguard.manage"))
+    _user: User = Depends(require_permission("wireguard.groups"))
 ):
     """Update rule order."""
     for item in orders:

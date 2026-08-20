@@ -39,6 +39,12 @@ from core.network.service import NetworkService
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# How long a config-sharing link stays valid. The link is not single-use (the
+# landing page is opened, then the .ovpn fetched, and a re-open must still
+# work), so the window is the only thing limiting exposure of a client's
+# credentials if the mail is forwarded or intercepted.
+MAGIC_TOKEN_TTL_HOURS = 12
+
 
 # =========================================================================
 # SYSTEM
@@ -1054,19 +1060,38 @@ async def get_client_qr(
     if not client:
         raise HTTPException(404, "Client not found or revoked")
     
-    # Create magic token
+    # A QR is only scannable if it carries an absolute URL, which means the
+    # public download host has to be configured.
+    from core.settings.models import SMTPSettings
+
+    smtp_result = await db.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
+    smtp_settings = smtp_result.scalar_one_or_none()
+    if not smtp_settings or not smtp_settings.public_download_url:
+        raise HTTPException(
+            400,
+            "URL pubblico non configurato nelle impostazioni SMTP: il QR non sarebbe utilizzabile."
+        )
+
+    # Replace any live link for this client instead of stacking another one:
+    # every view of this QR used to mint a token that stayed valid for days.
+    await db.execute(delete(OvpnMagicToken).where(
+        (OvpnMagicToken.client_id == client.id)
+        | (OvpnMagicToken.expires_at < datetime.utcnow())  # opportunistic purge
+    ))
+
     token = secrets.token_urlsafe(32)
     magic = OvpnMagicToken(
         token=token,
         client_id=client.id,
-        expires_at=datetime.utcnow() + timedelta(hours=48)
+        expires_at=datetime.utcnow() + timedelta(hours=MAGIC_TOKEN_TTL_HOURS)
     )
     db.add(magic)
     await db.commit()
     
     # Generate QR with download URL
     # Get base URL from request if possible, otherwise use placeholder
-    download_url = f"/api/modules/openvpn/download/{token}"
+    base_url = smtp_settings.public_download_url.rstrip('/')
+    download_url = f"{base_url}/api/modules/openvpn/download/{token}"
     
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
     qr.add_data(download_url)
@@ -1141,7 +1166,7 @@ async def send_client_config_email(
 ):
     """
     Send client config via email with magic token link.
-    Token is valid for 48 hours and can only be used once.
+    The link stays usable until it expires; issuing a new one revokes the old.
     """
     from core.settings.models import SMTPSettings
     from core.email import send_email
@@ -1174,8 +1199,15 @@ async def send_client_config_email(
         raise HTTPException(400, "URL pubblico non configurato nelle impostazioni SMTP.")
 
     # Generate magic token
+    # Issuing a new link revokes any earlier one for this client: without this,
+    # every re-send left another live token behind.
+    await db.execute(delete(OvpnMagicToken).where(
+        (OvpnMagicToken.client_id == client.id)
+        | (OvpnMagicToken.expires_at < datetime.utcnow())  # opportunistic purge
+    ))
+
     token = secrets.token_urlsafe(32)
-    expires_at = datetime.utcnow() + timedelta(hours=48)
+    expires_at = datetime.utcnow() + timedelta(hours=MAGIC_TOKEN_TTL_HOURS)
 
     magic_token = OvpnMagicToken(
         token=token,
@@ -1188,6 +1220,7 @@ async def send_client_config_email(
     # Build download URL
     base_url = smtp_settings.public_download_url.rstrip('/')
     download_url = f"{base_url}/api/modules/openvpn/download/{token}"
+    expires_str = expires_at.strftime("%d/%m/%Y alle %H:%M UTC")
     
     # Send email
     body_html = f"""
@@ -1208,8 +1241,8 @@ async def send_client_config_email(
             <p><strong>Istanza:</strong> {instance.name}</p>
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;">
             <p style="color: #666; font-size: 12px;">
-                ⚠️ Questo link è valido per <strong>48 ore</strong> e può essere usato <strong>una sola volta</strong>.<br>
-                Dopo il download il link non sarà più utilizzabile.
+                ⚠️ Questo link scade il <strong>{expires_str}</strong>.<br>
+                Non condividerlo: chiunque lo apra può scaricare la tua configurazione VPN.
             </p>
         </div>
     </body>
@@ -1239,7 +1272,7 @@ async def _validate_token(token: str, db: AsyncSession):
     """
     Validate magic token and return (magic_token, client, instance, error) tuple.
     If error is not None, it contains (title, message) for the error page.
-    Token can be used multiple times within validity period.
+    Usable until it expires — see send_client_config_email for why.
     """
     result = await db.execute(select(OvpnMagicToken).where(OvpnMagicToken.token == token))
     magic_token = result.scalar_one_or_none()
@@ -1254,6 +1287,9 @@ async def _validate_token(token: str, db: AsyncSession):
     client = result.scalar_one_or_none()
     if not client:
         return None, None, None, ("Client non trovato", "Il client associato a questo link non esiste più.")
+    # A token minted before revocation would otherwise keep serving the config
+    if client.revoked:
+        return None, None, None, ("Certificato revocato", "Questo client è stato revocato. Contatta l'amministratore.")
     
     result = await db.execute(select(OvpnInstance).where(OvpnInstance.id == client.instance_id))
     instance = result.scalar_one_or_none()
@@ -1308,7 +1344,7 @@ async def download_config_file(
 ):
     """
     Download the actual .ovpn file.
-    Can be downloaded multiple times within validity period.
+    Usable until the token expires — see send_client_config_email.
     """
     from pathlib import Path
     
@@ -1384,7 +1420,7 @@ async def create_group(
     instance_id: str,
     data: OvpnGroupCreate,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Create a new firewall group."""
     # Verify instance exists
@@ -1442,7 +1478,7 @@ async def delete_group(
     instance_id: str,
     group_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Delete a firewall group."""
     result = await db.execute(
@@ -1473,7 +1509,7 @@ async def reorder_groups(
     instance_id: str,
     orders: List[GroupOrderUpdate],
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Update group order for an instance. Lower order = higher priority in iptables."""
     for item in orders:
@@ -1522,7 +1558,7 @@ async def add_member(
     group_id: str,
     client_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Add a client to a group."""
     import uuid as uuid_mod
@@ -1567,7 +1603,7 @@ async def remove_member(
     group_id: str,
     client_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Remove a client from a group."""
     import uuid as uuid_mod
@@ -1615,7 +1651,7 @@ async def create_rule(
     group_id: str,
     data: OvpnGroupRuleCreate,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Create a new firewall rule."""
     # Verify group exists
@@ -1655,7 +1691,7 @@ async def update_rule(
     rule_id: str,
     data: OvpnGroupRuleUpdate,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Update a firewall rule."""
     import uuid as uuid_mod
@@ -1686,7 +1722,7 @@ async def delete_rule(
     group_id: str,
     rule_id: str,
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Delete a firewall rule."""
     import uuid as uuid_mod
@@ -1711,7 +1747,7 @@ async def reorder_rules(
     group_id: str,
     orders: List[RuleOrderUpdate],
     db: AsyncSession = Depends(get_session),
-    _user: User = Depends(require_permission("openvpn.manage"))
+    _user: User = Depends(require_permission("openvpn.groups"))
 ):
     """Update rule order."""
     for order_update in orders:
