@@ -234,7 +234,7 @@ CORE_PERMISSIONS = [
     {"slug": "smtp.manage", "description": "Modify SMTP configuration and send test emails"},
     {"slug": "backup.view", "description": "View backup settings, history and archives"},
     {"slug": "backup.manage", "description": "Configure backups, export, download and delete archives"},
-    {"slug": "backup.restore", "description": "Import and restore a configuration archive (destructive)"},
+    {"slug": "backup.restore", "description": "Import/restore a configuration archive — includes user accounts and password hashes, so it grants effective superuser access"},
     {"slug": "cron.view", "description": "View scheduled jobs and available scripts"},
     {"slug": "services.view", "description": "View system service status"},
     {"slug": "services.manage", "description": "Start, stop and restart system services"},

@@ -115,7 +115,7 @@ async def import_configuration(
             content = await file.read()
             f.write(content)
         
-        result = await import_config(session, temp_path, import_users=current_user.is_superuser)
+        result = await import_config(session, temp_path)
         
         if not result.get("success"):
             raise HTTPException(status_code=400, detail={
@@ -151,7 +151,7 @@ async def import_from_scp_file(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found in imports folder")
     
-    result = await import_config(session, file_path, import_users=current_user.is_superuser)
+    result = await import_config(session, file_path)
     return result
 
 
@@ -223,7 +223,7 @@ async def restore_local_backup(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found in backup folder")
     
-    result = await import_config(session, file_path, import_users=current_user.is_superuser)
+    result = await import_config(session, file_path)
     return result
 
 

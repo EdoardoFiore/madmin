@@ -414,7 +414,7 @@ firewall.view / firewall.manage
 network.view / network.manage
 settings.view / settings.manage      <- branding, management port, SSL, password policy
 smtp.view / smtp.manage
-backup.view / backup.manage / backup.restore
+backup.view / backup.manage / backup.restore   <- restore is root-equivalent, see below
 cron.view                            <- writing requires superuser, see below
 services.view / services.manage
 modules.view / modules.manage
@@ -424,20 +424,23 @@ logs.view
 One slug per subsystem: `settings.*` used to govern six unrelated areas at once, so delegating SMTP
 configuration also handed over backups, systemd services and the crontab — that is, the machine.
 
-### Superuser-only operations
+### Privileged operations
 
-Some actions cannot be delegated through a permission because they amount to root access:
+Two actions confer root-equivalent access. They are not ordinary permissions to hand out — granting
+either one is the decision to trust the holder as much as a superuser.
 
-- **Writing the crontab** (`POST/DELETE/PATCH /api/cron/entries`): a scheduled job runs a command as
-  root. Beyond `require_superuser()`, the command is not free text — it must be a script that
-  already exists in `cron_scripts_dir` (default `/opt/madmin/cron-scripts`), a directory MADMIN
-  **never writes to**: scripts are added over SSH. The path and every argument are quoted for
-  `/bin/sh`, and `%` is rejected (cron reads it as a newline). `cron.view` covers reads only.
-- **Importing users from a backup archive**: `core/users.json` carries `hashed_password` and
-  `is_superuser`, so importing it overwrites existing accounts' credentials.
-  `import_config(..., import_users=current_user.is_superuser)`; when skipped it is reported in
-  `warnings`.
-- **Creating or promoting superusers** (`POST` and `PATCH /api/auth/users`).
+- **Writing the crontab** (`POST/DELETE/PATCH /api/cron/entries`) — **superuser only**, no slug. A
+  scheduled job runs a command as root, so this cannot be delegated at all. Beyond
+  `require_superuser()`, the command is not free text: it must be a script that already exists in
+  `cron_scripts_dir` (default `/opt/madmin/cron-scripts`), a directory MADMIN **never writes to** —
+  scripts are added over SSH. The path and every argument are quoted for `/bin/sh`, and `%` is
+  rejected (cron reads it as a newline). `cron.view` covers reads only.
+- **Restoring a configuration archive** (`backup.restore`) — **delegable, deliberately**. A restore
+  is all-or-nothing and includes `core/users.json`, which carries `hashed_password` and
+  `is_superuser`: a crafted archive can overwrite any account's password or mint a new superuser.
+  Treat `backup.restore` as equivalent to the superuser flag. `backup.manage` (export, download,
+  scheduling) does **not** imply it.
+- **Creating or promoting superusers** (`POST` and `PATCH /api/auth/users`) is superuser-only.
 
 ### Cross-cutting authorization rules
 

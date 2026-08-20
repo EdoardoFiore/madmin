@@ -252,12 +252,7 @@ def _safe_tar_members(tar: tarfile.TarFile, restore_path: str):
         yield member
 
 
-async def import_config(
-    session: AsyncSession,
-    archive_path: str,
-    *,
-    import_users: bool = True,
-) -> dict:
+async def import_config(session: AsyncSession, archive_path: str) -> dict:
     """
     Import configuration from a config archive.
     
@@ -266,10 +261,11 @@ async def import_config(
     2. Import core data (users, firewall, settings)
     3. For each module: activate → insert DB data → restore files → post_restore hook
     
-    import_users must be False unless the caller is a superuser: the users table
-    in an archive carries hashed_password and is_superuser, so importing it
-    overwrites the credentials of existing accounts and can mint new superusers.
-    Callers pass current_user.is_superuser.
+    Restoring is all-or-nothing, including the users table — which carries
+    hashed_password and is_superuser, so it overwrites the credentials of
+    existing accounts and can mint new superusers. That is why backup.restore is
+    a root-equivalent permission (see CORE_PERMISSIONS) rather than a routine
+    one: granting it is the decision to accept that.
 
     Returns detailed result dict.
     """
@@ -321,19 +317,12 @@ async def import_config(
         # --- Import core ---
         core_path = os.path.join(root_path, "core")
         
-        # 1. Users
+        # 1. Users — includes password hashes and the superuser flag
         users_file = os.path.join(core_path, "users.json")
         if os.path.exists(users_file):
-            if import_users:
-                count = await _import_users(session, users_file)
-                result["users_imported"] = count
-                logger.info(f"Imported {count} users")
-            else:
-                result["warnings"].append(
-                    "Utenti non importati: solo un superuser puo' importare account "
-                    "(l'archivio contiene password e flag superuser)."
-                )
-                logger.warning("Skipped user import: caller is not a superuser")
+            count = await _import_users(session, users_file)
+            result["users_imported"] = count
+            logger.info(f"Imported {count} users")
         
         # 2a. Address objects & groups (must precede firewall rules so refs resolve)
         addresses_file = os.path.join(core_path, "addresses.json")
