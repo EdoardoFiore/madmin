@@ -317,12 +317,11 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
         # --- Import core ---
         core_path = os.path.join(root_path, "core")
         
-        # 1. Users — includes password hashes and the superuser flag
+        # Users are imported last, after the modules: their permission slugs only
+        # exist once the module that declares them has been activated, and
+        # _import_users silently drops any slug it cannot find. Nothing between
+        # here and there references a user row.
         users_file = os.path.join(core_path, "users.json")
-        if os.path.exists(users_file):
-            count = await _import_users(session, users_file)
-            result["users_imported"] = count
-            logger.info(f"Imported {count} users")
         
         # 2a. Address objects & groups (must precede firewall rules so refs resolve)
         addresses_file = os.path.join(core_path, "addresses.json")
@@ -438,6 +437,13 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
                 except Exception:
                     pass
         
+        # Users last — see the note where users_file is resolved
+        if os.path.exists(users_file):
+            count = await _import_users(session, users_file)
+            result["users_imported"] = count
+            logger.info(f"Imported {count} users")
+            await session.commit()
+
         result["success"] = len(result["errors"]) == 0
         
         # Schedule auto-restart after successful import
@@ -970,6 +976,8 @@ async def _export_users(session: AsyncSession) -> List[dict]:
             "totp_enforced": user.totp_enforced,
             "totp_locked": user.totp_locked,
             "backup_codes": user.backup_codes,
+            "must_change_password": user.must_change_password,
+            "password_expires_at": user.password_expires_at.isoformat() if user.password_expires_at else None,
             "preferences": user.preferences,
             "permissions": permission_slugs
         })
@@ -1217,6 +1225,16 @@ def _resolve_totp_fields(u_data: dict) -> tuple:
     return totp_secret, totp_enabled, totp_locked, backup_codes
 
 
+def _parse_dt(value):
+    """Read back an ISO timestamp written by the export (None-safe)."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _import_users(session: AsyncSession, users_file: str) -> int:
     """Import users from JSON. Creates if new, updates if existing (by username)."""
     from core.auth.models import User, UserPermission, Permission
@@ -1246,6 +1264,10 @@ async def _import_users(session: AsyncSession, users_file: str) -> int:
             existing.totp_enforced = u_data.get("totp_enforced", existing.totp_enforced)
             existing.totp_locked = totp_locked
             existing.backup_codes = backup_codes or existing.backup_codes
+            existing.must_change_password = u_data.get(
+                "must_change_password", existing.must_change_password)
+            existing.password_expires_at = _parse_dt(
+                u_data.get("password_expires_at")) or existing.password_expires_at
             existing.preferences = u_data.get("preferences", existing.preferences)
             user_id = existing.id
         else:
@@ -1262,6 +1284,8 @@ async def _import_users(session: AsyncSession, users_file: str) -> int:
                 totp_enforced=u_data.get("totp_enforced", False),
                 totp_locked=totp_locked,
                 backup_codes=backup_codes,
+                must_change_password=u_data.get("must_change_password", False),
+                password_expires_at=_parse_dt(u_data.get("password_expires_at")),
                 preferences=u_data.get("preferences", "{}")
             )
             session.add(new_user)
