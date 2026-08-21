@@ -180,22 +180,9 @@ async def init_first_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     try:
         user = await service.create_first_user(session, data.username, data.password)
-        return UserResponse(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            is_active=user.is_active,
-            is_superuser=user.is_superuser,
-            is_protected=user.is_protected,
-            totp_enabled=user.totp_enabled,
-            totp_enforced=user.totp_enforced,
-            totp_locked=user.totp_locked,
-            must_change_password=user.must_change_password,
-            password_expires_at=user.password_expires_at,
-            created_at=user.created_at,
-            last_login=user.last_login,
-            permissions=["*"]
-        )
+        # Safe despite the relationship not being eagerly loaded here: the user is
+        # a superuser, so _user_response short-circuits to ["*"] without touching it.
+        return _user_response(user)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -545,25 +532,9 @@ async def list_users(
 ):
     """List all users (requires users.view permission)."""
     users = await service.get_all_users(session)
-    return [
-        UserResponse(
-            id=u.id,
-            username=u.username,
-            email=u.email,
-            is_active=u.is_active,
-            is_superuser=u.is_superuser,
-            is_protected=u.is_protected,
-            totp_enabled=u.totp_enabled,
-            totp_enforced=u.totp_enforced,
-            totp_locked=u.totp_locked,
-            must_change_password=u.must_change_password,
-            password_expires_at=u.password_expires_at,
-            created_at=u.created_at,
-            last_login=u.last_login,
-            permissions=[p.slug for p in u.permissions]
-        )
-        for u in users
-    ]
+    # Serialize through the shared helper: a second hand-written UserResponse
+    # silently dropped every field added to the schema afterwards.
+    return [_user_response(u) for u in users]
 
 
 @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
