@@ -242,8 +242,15 @@ async def create_user(session: AsyncSession, user_data: UserCreate) -> User:
         email=user_data.email,
         hashed_password=get_password_hash(user_data.password),
         is_superuser=user_data.is_superuser,
+        totp_enforced=user_data.totp_enforced,
+        must_change_password=user_data.must_change_password,
         password_changed_at=now,
-        password_expires_at=await _compute_password_expiry(session, now)
+        # An explicit expiry wins over the global policy, same as on update
+        password_expires_at=(
+            user_data.password_expires_at
+            if user_data.password_expires_at is not None
+            else await _compute_password_expiry(session, now)
+        ),
     )
 
     session.add(user)

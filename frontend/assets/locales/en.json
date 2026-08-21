@@ -322,7 +322,8 @@
                 "access_lists": "Manage access lists",
                 "certs": "Manage certificates"
             }
-        }
+        },
+        "passwordExpiresAtNoteNew": "Leave empty to use the global password policy."
     },
     "firewall": {
         "validation": {

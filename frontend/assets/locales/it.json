@@ -322,7 +322,8 @@
                 "access_lists": "Gestione access list",
                 "certs": "Gestione certificati"
             }
-        }
+        },
+        "passwordExpiresAtNoteNew": "Lascia vuoto per usare la policy password globale."
     },
     "firewall": {
         "validation": {

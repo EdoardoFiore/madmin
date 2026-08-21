@@ -226,7 +226,7 @@ export async function render(container) {
                                         <div class="col-md-6">
                                             <label class="form-label">${t('users.passwordExpiresAt')}</label>
                                             <input type="datetime-local" class="form-control" id="user-password-expires-at">
-                                            <small class="form-hint text-muted">${t('users.passwordExpiresAtNote')}</small>
+                                            <small class="form-hint text-muted" id="password-expires-hint">${t('users.passwordExpiresAtNote')}</small>
                                         </div>
                                     </div>
                                 </div>
@@ -806,21 +806,27 @@ function openUserModal(user = null) {
     document.getElementById('user-active').checked = user?.is_active ?? true;
     document.getElementById('user-totp-enforced').checked = user?.totp_enforced || false;
 
-    // Password policy fields (only meaningful when editing an existing user)
+    // Password policy — offered on creation too: handing someone a temporary
+    // password and forcing a change at first login is the normal way to open an
+    // account, and it is applied as the account is created.
     const pwdPolicyContainer = document.getElementById('pwd-policy-container');
     document.getElementById('user-must-change-password').checked = user?.must_change_password || false;
     // datetime-local needs "YYYY-MM-DDTHH:mm"; API returns a naive ISO timestamp
     document.getElementById('user-password-expires-at').value =
         user?.password_expires_at ? user.password_expires_at.slice(0, 16) : '';
-    pwdPolicyContainer.classList.toggle('d-none', !user);
-
-    // Show "Force 2FA" option only for superusers editing other users
-    const force2faContainer = document.getElementById('force-2fa-container');
-    if (isSuperuser && user && user.username !== currentUser?.username) {
-        force2faContainer.classList.remove('d-none');
-    } else {
-        force2faContainer.classList.add('d-none');
+    pwdPolicyContainer.classList.remove('d-none');
+    // "leave empty to keep" makes no sense on a form that has nothing to keep
+    const expiresHint = document.getElementById('password-expires-hint');
+    if (expiresHint) {
+        expiresHint.textContent = user
+            ? t('users.passwordExpiresAtNote')
+            : t('users.passwordExpiresAtNoteNew');
     }
+
+    // "Force 2FA" is a superuser lever, and nobody sets it on themselves
+    const force2faContainer = document.getElementById('force-2fa-container');
+    const canForce2fa = isSuperuser && (!user || user.username !== currentUser?.username);
+    force2faContainer.classList.toggle('d-none', !canForce2fa);
 
     // Show "Reset 2FA" button for superusers editing users with 2FA enabled or locked
     const reset2faBtn = document.getElementById('btn-reset-user-2fa');
@@ -899,13 +905,25 @@ async function handleUserSubmit(e) {
 
             showToast(t('users.userUpdated'), 'success');
         } else {
-            // Create new user
-            await apiPost('/auth/users', {
+            // Create new user — the account policy travels with the creation so
+            // the account never exists in a state the admin did not ask for
+            const createData = {
                 username,
                 password,
                 email: document.getElementById('user-email').value || null,
-                is_superuser: document.getElementById('user-superuser').checked
-            });
+                is_superuser: document.getElementById('user-superuser').checked,
+                must_change_password: document.getElementById('user-must-change-password').checked
+            };
+
+            const force2faContainer = document.getElementById('force-2fa-container');
+            if (!force2faContainer.classList.contains('d-none')) {
+                createData.totp_enforced = document.getElementById('user-totp-enforced').checked;
+            }
+
+            const newExpiresAt = document.getElementById('user-password-expires-at').value;
+            if (newExpiresAt) createData.password_expires_at = newExpiresAt;
+
+            await apiPost('/auth/users', createData);
 
             // Save permissions if not superuser and they were editable
             if (!document.getElementById('user-superuser').checked && checkPermission('permissions.manage')) {

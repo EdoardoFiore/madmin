@@ -170,6 +170,12 @@ class UserCreate(SQLModel):
     password: str  # strength validated in service layer
     email: Optional[str] = None
     is_superuser: bool = False
+    # Account policy, applied as the user is created rather than by a follow-up
+    # PATCH — a failed second call would otherwise leave an account that is live
+    # but not subject to the policy the admin asked for.
+    totp_enforced: bool = False              # Force 2FA on first login
+    must_change_password: bool = False       # Force password change at first login
+    password_expires_at: Optional[datetime] = None  # Overrides the global policy
 
 
 class UserUpdate(SQLModel):
