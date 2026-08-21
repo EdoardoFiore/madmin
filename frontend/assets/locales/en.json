@@ -265,12 +265,63 @@
         "2faBackupGenerated": "Generated on: {date}",
         "2faBackupKeepSafe": "Keep this file in a safe place.",
         "2faBackupSingleUse": "Each code can be used only once.",
-        "coreGroupNames": {
+        "presetReadonly": "Read only",
+        "presetNetop": "Network operator",
+        "presetCustom": "Custom",
+        "levelNone": "None",
+        "levelView": "Read",
+        "levelManage": "Manage",
+        "permCapabilities": "Specific permissions",
+        "capRisk": "risk",
+        "manageImpliesView": "Manage includes read. Presets are a starting point — adjust any area afterwards.",
+        "cronWriteNote": "Creating and editing jobs requires superuser: a scheduled job runs as root.",
+        "superuserOnlyTitle": "Superuser only",
+        "superuserOnlyList": "Creating or promoting superusers, and writing the crontab. These cannot be granted through a permission.",
+        "noGrantablePerms": "You cannot grant any permission you do not hold yourself.",
+        "areaLabels": {
             "users": "Users",
             "firewall": "Firewall",
-            "settings": "Settings",
+            "network": "Network",
+            "settings": "Appearance and access",
+            "smtp": "Email (SMTP)",
+            "backup": "Backup",
+            "cron": "Scheduled jobs",
+            "services": "System services",
             "modules": "Modules",
-            "permissions": "Permissions"
+            "logs": "Logs",
+            "dhcp": "DHCP",
+            "dns": "DNS",
+            "openvpn": "OpenVPN",
+            "wireguard": "WireGuard",
+            "reverseproxy": "Reverse Proxy",
+            "ipsec": "IPsec"
+        },
+        "capLabels": {
+            "permissions": {
+                "manage": "Can assign permissions"
+            },
+            "backup": {
+                "restore": "Restore archives"
+            },
+            "dhcp": {
+                "reservations": "Manage reservations"
+            },
+            "dns": {
+                "zones": "Manage zones",
+                "records": "Manage records"
+            },
+            "openvpn": {
+                "clients": "Manage clients",
+                "groups": "Manage groups"
+            },
+            "wireguard": {
+                "clients": "Manage clients",
+                "groups": "Manage groups"
+            },
+            "reverseproxy": {
+                "access_lists": "Manage access lists",
+                "certs": "Manage certificates"
+            }
         }
     },
     "firewall": {
@@ -510,10 +561,16 @@
         },
         "script": "Script",
         "selectScript": "Select a script",
+        "scriptPreview": "Script contents",
+        "loadingScript": "Loading script...",
+        "scriptLoadError": "Could not read the script: {error}",
         "scriptHint": "Scripts live in the server's cron-scripts directory and are added over SSH, not from this page.",
         "arguments": "Arguments (optional)",
         "argumentsHint": "Space-separated. Each one is quoted before being written to the crontab.",
-        "noScripts": "No script available"
+        "noScripts": "No script available",
+        "viewScript": "View script",
+        "editCronJob": "Edit Cron Job",
+        "cronJobUpdated": "Cron job updated"
     },
     "modules": {
         "title": "Module Management",

@@ -416,7 +416,7 @@ settings.view / settings.manage      <- branding, management port, SSL, password
 smtp.view / smtp.manage
 backup.view / backup.manage / backup.restore   <- restore is root-equivalent, see below
 cron.view                            <- writing requires superuser, see below
-services.view / services.manage
+services.manage
 modules.view / modules.manage
 logs.view
 ```
@@ -454,6 +454,10 @@ either one is the decision to trust the holder as much as a superuser.
   Only a superuser can create or promote superusers.
 - **Superusers bypass** every check (`User.has_permission`); `/auth/me` serializes their permissions
   as `["*"]`.
+- **`<area>.manage` implies `<area>.view`** (`User.effective_permission_slugs`). Managing an area
+  necessarily means seeing it, so the two are one control in the permission editor — a level, not a
+  pair of checkboxes. The stored grant is only `<area>.manage`; the editor reads the raw set so
+  saving never persists the implied slug.
 - The frontend mirrors these rules for UI consistency only — the backend remains the authority.
   `handleRoute` refuses a hand-typed route using the route→permission map built from `/api/ui/menu`,
   whose `permission` field also accepts a list (meaning "any of these").

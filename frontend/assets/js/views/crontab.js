@@ -4,13 +4,15 @@
  * UI for viewing and managing crontab entries.
  */
 
-import { apiGet, apiPost, apiDelete, apiPatch } from '../api.js';
-import { showToast, escapeHtml, confirmDialog } from '../utils.js';
+import { apiGet, apiPost, apiPut, apiDelete, apiPatch } from '../api.js';
+import { showToast, escapeHtml, escapeAttr, confirmDialog } from '../utils.js';
 import { getUser } from '../app.js';
 import { t } from '../i18n.js';
 
 let presets = {};
 let scripts = [];
+let scriptContents = new Map();
+let editingEntryId = null;
 
 /**
  * Render the crontab view
@@ -54,7 +56,7 @@ export async function render(container) {
             <div class="modal-dialog modal-lg">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">${t('crontab.newCronJob')}</h5>
+                        <h5 class="modal-title" id="modal-add-cron-title">${t('crontab.newCronJob')}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -98,10 +100,23 @@ export async function render(container) {
                             </div>
                             <div class="col-12">
                                 <label class="form-label">${t('crontab.script')}</label>
-                                <select class="form-select" id="cron-script">
-                                    <option value="">${t('crontab.selectScript')}</option>
-                                </select>
+                                <div class="input-group">
+                                    <select class="form-select" id="cron-script">
+                                        <option value="">${t('crontab.selectScript')}</option>
+                                    </select>
+                                    <button type="button" class="btn btn-outline-secondary" id="btn-toggle-script-preview"
+                                            title="${t('crontab.viewScript')}" disabled>
+                                        <i class="ti ti-eye"></i>
+                                    </button>
+                                </div>
                                 <small class="form-hint">${t('crontab.scriptHint')}</small>
+                            </div>
+                            <div class="col-12 d-none" id="cron-script-preview-wrap">
+                                <label class="form-label d-flex justify-content-between align-items-center">
+                                    <span>${t('crontab.scriptPreview')}</span>
+                                    <code class="text-muted small" id="cron-script-preview-name"></code>
+                                </label>
+                                <pre id="cron-script-preview" class="p-3 bg-dark text-light rounded mb-0" style="max-height: 300px; overflow: auto; font-size: 0.85rem;"></pre>
                             </div>
                             <div class="col-12">
                                 <label class="form-label">${t('crontab.arguments')}</label>
@@ -134,10 +149,7 @@ function setupEventListeners() {
     document.getElementById('btn-refresh-cron')?.addEventListener('click', loadCrontab);
 
     // Add button
-    document.getElementById('btn-add-cron')?.addEventListener('click', () => {
-        const modal = new bootstrap.Modal(document.getElementById('modal-add-cron'));
-        modal.show();
-    });
+    document.getElementById('btn-add-cron')?.addEventListener('click', () => openCronModal());
 
     // Preset selector
     document.getElementById('cron-preset')?.addEventListener('change', (e) => {
@@ -156,6 +168,24 @@ function setupEventListeners() {
     // Schedule field changes
     ['cron-minute', 'cron-hour', 'cron-day', 'cron-month', 'cron-weekday'].forEach(id => {
         document.getElementById(id)?.addEventListener('input', updatePreview);
+    });
+
+    // Selecting a script only arms the eye: the preview is long and would
+    // push the rest of the form off screen if it opened by itself.
+    document.getElementById('cron-script')?.addEventListener('change', (e) => {
+        const btn = document.getElementById('btn-toggle-script-preview');
+        if (btn) btn.disabled = !e.target.value;
+        closeScriptPreview();
+    });
+
+    document.getElementById('btn-toggle-script-preview')?.addEventListener('click', () => {
+        const wrap = document.getElementById('cron-script-preview-wrap');
+        if (!wrap) return;
+        if (wrap.classList.contains('d-none')) {
+            showScriptPreview(document.getElementById('cron-script')?.value || '');
+        } else {
+            closeScriptPreview();
+        }
     });
 
     // Save button
@@ -187,7 +217,9 @@ async function loadCrontab() {
     try {
         const data = await apiGet('/cron/entries');
         const entries = data.entries || [];
-        presets = data.presets || {};
+        // The API returns presets as [{label, value}]; index them by label so the
+        // preset <select> can look a schedule up by its key.
+        presets = Object.fromEntries((data.presets || []).map(p => [p.label, p.value]));
 
         await loadScripts();
 
@@ -196,7 +228,9 @@ async function loadCrontab() {
         if (presetSelect) {
             presetSelect.innerHTML = `<option value="">${t('crontab.custom')}</option>`;
             for (const [key, value] of Object.entries(presets)) {
-                const label = t(`crontab.presetLabels.${key}`) || key;
+                const i18nKey = `crontab.presetLabels.${key}`;
+                const translated = t(i18nKey);
+                const label = translated === i18nKey ? key : translated;
                 presetSelect.innerHTML += `<option value="${key}">${label} (${value})</option>`;
             }
         }
@@ -222,6 +256,7 @@ async function loadCrontab() {
                             <th>${t('crontab.schedule')}</th>
                             <th>${t('common.description')}</th>
                             <th>${t('common.command')}</th>
+                            <th class="w-1"></th>
                             ${canManage ? `<th class="w-1">${t('common.actions')}</th>` : ''}
                         </tr>
                     </thead>
@@ -241,6 +276,14 @@ async function loadCrontab() {
             btn.addEventListener('click', () => deleteCronJob(parseInt(btn.dataset.deleteCron)));
         });
 
+        document.querySelectorAll('[data-peek-cron]').forEach(btn => {
+            btn.addEventListener('click', () => togglePeek(parseInt(btn.dataset.peekCron), btn.dataset.script));
+        });
+
+        document.querySelectorAll('[data-edit-cron]').forEach(btn => {
+            btn.addEventListener('click', () => openCronModal(entries[parseInt(btn.dataset.editCron)], parseInt(btn.dataset.editCron)));
+        });
+
     } catch (error) {
         console.error('Error loading crontab:', error);
         container.innerHTML = `
@@ -257,6 +300,9 @@ async function loadCrontab() {
  */
 function renderCronRow(entry, index, canManage) {
     const isEnabled = entry.enabled;
+    // Entries added by hand over SSH may not point at an allowlisted script:
+    // those stay read-only, with no eye and no edit button.
+    const job = parseJobCommand(entry.command);
     const statusClass = isEnabled ? 'bg-success-lt' : 'bg-secondary-lt';
     const statusText = isEnabled ? t('common.active') : t('common.disabled');
 
@@ -264,7 +310,7 @@ function renderCronRow(entry, index, canManage) {
         // Comment-only row
         return `
             <tr class="text-muted">
-                <td colspan="${canManage ? 5 : 4}">
+                <td colspan="${canManage ? 6 : 5}">
                     <i class="ti ti-message-circle me-1"></i> ${escapeHtml(entry.comment)}
                 </td>
             </tr>
@@ -287,9 +333,22 @@ function renderCronRow(entry, index, canManage) {
                     ${escapeHtml(entry.command || '')}
                 </code>
             </td>
+            <td class="w-1">
+                ${job ? `
+                <button class="btn btn-sm btn-ghost-secondary" data-peek-cron="${index}"
+                        data-script="${escapeAttr(job.script)}" title="${t('crontab.viewScript')}">
+                    <i class="ti ti-eye"></i>
+                </button>
+                ` : ''}
+            </td>
             ${canManage ? `
             <td>
                 <div class="btn-group">
+                    ${job ? `
+                    <button class="btn btn-sm btn-outline-primary" data-edit-cron="${index}" title="${t('common.edit')}">
+                        <i class="ti ti-pencil"></i>
+                    </button>
+                    ` : ''}
                     <button class="btn btn-sm btn-outline-${isEnabled ? 'warning' : 'success'}"
                             data-toggle-cron="${index}" title="${isEnabled ? t('crontab.disable') : t('crontab.enable')}">
                         <i class="ti ti-${isEnabled ? 'player-pause' : 'player-play'}"></i>
@@ -301,7 +360,45 @@ function renderCronRow(entry, index, canManage) {
             </td>
             ` : ''}
         </tr>
+        <tr class="d-none" id="cron-peek-${index}">
+            <td colspan="${canManage ? 6 : 5}" class="p-0">
+                <pre class="p-3 mb-0 bg-dark text-light" style="max-height: 300px; overflow: auto; font-size: 0.85rem;"></pre>
+            </td>
+        </tr>
     `;
+}
+
+/**
+ * Show or hide the script behind a job, inline under its row.
+ */
+async function togglePeek(index, name) {
+    const row = document.getElementById(`cron-peek-${index}`);
+    if (!row) return;
+
+    const btn = document.querySelector(`[data-peek-cron="${index}"] i`);
+    if (!row.classList.contains('d-none')) {
+        row.classList.add('d-none');
+        if (btn) btn.className = 'ti ti-eye';
+        return;
+    }
+
+    row.classList.remove('d-none');
+    if (btn) btn.className = 'ti ti-eye-off';
+
+    const pre = row.querySelector('pre');
+    if (scriptContents.has(name)) {
+        pre.textContent = scriptContents.get(name);
+        return;
+    }
+
+    pre.textContent = t('crontab.loadingScript');
+    try {
+        const data = await apiGet(`/cron/scripts/${encodeURIComponent(name)}`);
+        scriptContents.set(name, data.content || '');
+        pre.textContent = data.content || '';
+    } catch (error) {
+        pre.textContent = t('crontab.scriptLoadError', { error: error.message });
+    }
 }
 
 /**
@@ -314,6 +411,10 @@ function renderCronRow(entry, index, canManage) {
 async function loadScripts() {
     const select = document.getElementById('cron-script');
     if (!select) return;
+
+    // A refresh may have changed the scripts on disk: drop the cached contents
+    scriptContents = new Map();
+    showScriptPreview('');
 
     try {
         scripts = await apiGet('/cron/scripts');
@@ -334,7 +435,122 @@ async function loadScripts() {
 }
 
 /**
- * Save a new cron job
+ * Show the contents of the selected script.
+ *
+ * Read-only: the endpoint has no write counterpart, and the directory stays
+ * off-limits to MADMIN. Contents are cached per script name for the lifetime
+ * of the view so re-selecting does not refetch.
+ */
+async function showScriptPreview(name) {
+    const wrap = document.getElementById('cron-script-preview-wrap');
+    const pre = document.getElementById('cron-script-preview');
+    const label = document.getElementById('cron-script-preview-name');
+    if (!wrap || !pre) return;
+
+    if (!name) {
+        closeScriptPreview();
+        return;
+    }
+
+    wrap.classList.remove('d-none');
+    setPreviewIcon(true);
+    if (label) label.textContent = name;
+    pre.textContent = t('crontab.loadingScript');
+
+    if (scriptContents.has(name)) {
+        pre.textContent = scriptContents.get(name);
+        return;
+    }
+
+    try {
+        const data = await apiGet(`/cron/scripts/${encodeURIComponent(name)}`);
+        const content = data.content || '';
+        scriptContents.set(name, content);
+        // The select may have moved on while the request was in flight
+        if (document.getElementById('cron-script')?.value !== name) return;
+        pre.textContent = content;
+    } catch (error) {
+        if (document.getElementById('cron-script')?.value !== name) return;
+        pre.textContent = t('crontab.scriptLoadError', { error: error.message });
+    }
+}
+
+function closeScriptPreview() {
+    const wrap = document.getElementById('cron-script-preview-wrap');
+    const pre = document.getElementById('cron-script-preview');
+    const label = document.getElementById('cron-script-preview-name');
+    if (!wrap) return;
+    wrap.classList.add('d-none');
+    if (pre) pre.textContent = '';
+    if (label) label.textContent = '';
+    setPreviewIcon(false);
+}
+
+function setPreviewIcon(open) {
+    const icon = document.querySelector('#btn-toggle-script-preview i');
+    if (icon) icon.className = open ? 'ti ti-eye-off' : 'ti ti-eye';
+}
+
+/**
+ * Recover script + arguments from a crontab command line.
+ *
+ * The line was written by build_command, so it is the absolute script path
+ * followed by shell-quoted arguments. Entries added by hand over SSH may not
+ * match the scripts directory at all — those return null and stay read-only.
+ */
+function parseJobCommand(command) {
+    if (!command) return null;
+
+    const tokens = [];
+    const re = /'([^']*)'|"([^"]*)"|(\S+)/g;
+    let m;
+    while ((m = re.exec(command)) !== null) {
+        tokens.push(m[1] ?? m[2] ?? m[3]);
+    }
+    if (tokens.length === 0) return null;
+
+    const name = tokens[0].split('/').pop();
+    if (!scripts.some(sc => sc.name === name)) return null;
+
+    return { script: name, args: tokens.slice(1) };
+}
+
+/**
+ * Open the job modal, empty for a new job or filled in for an existing one.
+ */
+function openCronModal(entry = null, index = null) {
+    editingEntryId = entry ? index : null;
+
+    const title = document.getElementById('modal-add-cron-title');
+    if (title) title.textContent = entry ? t('crontab.editCronJob') : t('crontab.newCronJob');
+
+    const parts = (entry?.schedule || '* * * * *').split(/\s+/);
+    const fields = ['cron-minute', 'cron-hour', 'cron-day', 'cron-month', 'cron-weekday'];
+    fields.forEach((id, i) => {
+        const el = document.getElementById(id);
+        if (el) el.value = parts[i] || '*';
+    });
+
+    const job = entry ? parseJobCommand(entry.command) : null;
+    const scriptSelect = document.getElementById('cron-script');
+    if (scriptSelect) scriptSelect.value = job?.script || '';
+
+    const argsInput = document.getElementById('cron-args');
+    if (argsInput) argsInput.value = (job?.args || []).join(' ');
+
+    const previewBtn = document.getElementById('btn-toggle-script-preview');
+    if (previewBtn) previewBtn.disabled = !job?.script;
+    closeScriptPreview();
+
+    const presetSelect = document.getElementById('cron-preset');
+    if (presetSelect) presetSelect.value = '';
+
+    updatePreview();
+    new bootstrap.Modal(document.getElementById('modal-add-cron')).show();
+}
+
+/**
+ * Save the job — creating a new one or replacing the one being edited.
  */
 async function saveCronJob() {
     const schedule = [
@@ -357,9 +573,15 @@ async function saveCronJob() {
     const args = rawArgs ? rawArgs.split(/\s+/) : [];
 
     try {
-        await apiPost('/cron/entries', { schedule, script, args });
-        showToast(t('crontab.cronJobAdded'), 'success');
+        if (editingEntryId === null) {
+            await apiPost('/cron/entries', { schedule, script, args });
+            showToast(t('crontab.cronJobAdded'), 'success');
+        } else {
+            await apiPut(`/cron/entries/${editingEntryId}`, { schedule, script, args });
+            showToast(t('crontab.cronJobUpdated'), 'success');
+        }
         bootstrap.Modal.getInstance(document.getElementById('modal-add-cron'))?.hide();
+        editingEntryId = null;
         await loadCrontab();
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');

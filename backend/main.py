@@ -492,7 +492,7 @@ def create_app() -> FastAPI:
             {"label": "menu.crontab", "icon": "clock", "route": "#crontab", "permission": "cron.view"},
             {"label": "menu.logs", "icon": "file-text", "route": "#logs", "permission": "logs.view"},
             {"label": "menu.settings", "icon": "settings", "route": "#settings",
-             "permission": ["settings.view", "smtp.view", "backup.view", "services.view"]},
+             "permission": ["settings.view", "smtp.view", "backup.view", "services.manage"]},
             {"label": "menu.modules", "icon": "puzzle", "route": "#modules", "permission": "modules.view"},
         ]
         

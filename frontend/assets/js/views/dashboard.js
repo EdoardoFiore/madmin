@@ -647,7 +647,7 @@ function renderStatCards() {
 const QUICK_ACTIONS = [
     { href: '#users', icon: 'ti-user-plus', labelKey: 'dashboard.newUser', permission: 'users.view' },
     { href: '#firewall', icon: 'ti-shield-plus', labelKey: 'dashboard.newRule', permission: 'firewall.view' },
-    { href: '#settings', icon: 'ti-settings', labelKey: 'dashboard.settings', permission: ['settings.view', 'smtp.view', 'backup.view', 'services.view'] },
+    { href: '#settings', icon: 'ti-settings', labelKey: 'dashboard.settings', permission: ['settings.view', 'smtp.view', 'backup.view', 'services.manage'] },
     { href: '#modules', icon: 'ti-puzzle', labelKey: 'dashboard.modules', permission: 'modules.view' },
 ];
 

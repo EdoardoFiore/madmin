@@ -88,25 +88,42 @@ class User(SQLModel, table=True):
         """Check if user has a specific permission."""
         if self.is_superuser:
             return True
-        return any(p.slug == permission_slug for p in self.permissions)
+        return permission_slug in self.effective_permission_slugs()
 
     def has_any_permission(self, permission_slugs: List[str]) -> bool:
         """Check if user has any of the given permissions."""
         if self.is_superuser:
             return True
-        user_slugs = {p.slug for p in self.permissions}
-        return bool(user_slugs.intersection(permission_slugs))
+        return bool(self.effective_permission_slugs().intersection(permission_slugs))
 
     def has_all_permissions(self, permission_slugs: List[str]) -> bool:
         """Check if user has every one of the given permissions."""
         if self.is_superuser:
             return True
-        user_slugs = {p.slug for p in self.permissions}
-        return user_slugs.issuperset(permission_slugs)
+        return self.effective_permission_slugs().issuperset(permission_slugs)
 
     def permission_slugs(self) -> Set[str]:
-        """Slugs granted to this user (empty for superusers, who bypass checks)."""
+        """
+        Slugs explicitly granted to this user (empty for superusers, who bypass
+        checks). This is what the permission editor reads and writes — the
+        implied ones must not leak into it, or saving would persist them.
+        """
         return {p.slug for p in self.permissions}
+
+    def effective_permission_slugs(self) -> Set[str]:
+        """
+        Granted slugs plus the ones they imply.
+
+        Managing an area necessarily means seeing it, so `<area>.manage` implies
+        `<area>.view`. Without this, granting only `settings.manage` hid the very
+        page it was meant to unlock.
+        """
+        granted = self.permission_slugs()
+        implied = {
+            f"{slug.rsplit('.', 1)[0]}.view"
+            for slug in granted if slug.endswith('.manage')
+        }
+        return granted | implied
 
 
 class RevokedToken(SQLModel, table=True):
@@ -236,7 +253,6 @@ CORE_PERMISSIONS = [
     {"slug": "backup.manage", "description": "Configure backups, export, download and delete archives"},
     {"slug": "backup.restore", "description": "Import/restore a configuration archive — includes user accounts and password hashes, so it grants effective superuser access"},
     {"slug": "cron.view", "description": "View scheduled jobs and available scripts"},
-    {"slug": "services.view", "description": "View system service status"},
     {"slug": "services.manage", "description": "Start, stop and restart system services"},
     {"slug": "modules.view", "description": "View installed modules"},
     {"slug": "modules.manage", "description": "Install, remove, configure modules"},

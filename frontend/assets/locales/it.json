@@ -265,12 +265,63 @@
         "2faBackupGenerated": "Generati il: {date}",
         "2faBackupKeepSafe": "Conserva questo file in un luogo sicuro.",
         "2faBackupSingleUse": "Ogni codice può essere usato una sola volta.",
-        "coreGroupNames": {
+        "presetReadonly": "Sola lettura",
+        "presetNetop": "Operatore di rete",
+        "presetCustom": "Personalizzato",
+        "levelNone": "Nessuno",
+        "levelView": "Lettura",
+        "levelManage": "Gestione",
+        "permCapabilities": "Permessi specifici",
+        "capRisk": "rischio",
+        "manageImpliesView": "La gestione include la lettura. I preset sono un punto di partenza: puoi correggere ogni area dopo averlo applicato.",
+        "cronWriteNote": "Creare e modificare job richiede superuser: un job pianificato gira come root.",
+        "superuserOnlyTitle": "Riservato ai superuser",
+        "superuserOnlyList": "Creare o promuovere superuser, e scrivere nel crontab. Non sono concedibili tramite permesso.",
+        "noGrantablePerms": "Non puoi concedere permessi che non possiedi.",
+        "areaLabels": {
             "users": "Utenti",
             "firewall": "Firewall",
-            "settings": "Impostazioni",
+            "network": "Rete",
+            "settings": "Aspetto e accesso",
+            "smtp": "Email (SMTP)",
+            "backup": "Backup",
+            "cron": "Job pianificati",
+            "services": "Servizi di sistema",
             "modules": "Moduli",
-            "permissions": "Permessi"
+            "logs": "Log",
+            "dhcp": "DHCP",
+            "dns": "DNS",
+            "openvpn": "OpenVPN",
+            "wireguard": "WireGuard",
+            "reverseproxy": "Reverse Proxy",
+            "ipsec": "IPsec"
+        },
+        "capLabels": {
+            "permissions": {
+                "manage": "Può assegnare permessi"
+            },
+            "backup": {
+                "restore": "Ripristino archivi"
+            },
+            "dhcp": {
+                "reservations": "Gestione prenotazioni"
+            },
+            "dns": {
+                "zones": "Gestione zone",
+                "records": "Gestione record"
+            },
+            "openvpn": {
+                "clients": "Gestione client",
+                "groups": "Gestione gruppi"
+            },
+            "wireguard": {
+                "clients": "Gestione client",
+                "groups": "Gestione gruppi"
+            },
+            "reverseproxy": {
+                "access_lists": "Gestione access list",
+                "certs": "Gestione certificati"
+            }
         }
     },
     "firewall": {
@@ -510,10 +561,16 @@
         },
         "script": "Script",
         "selectScript": "Seleziona uno script",
+        "scriptPreview": "Contenuto dello script",
+        "loadingScript": "Caricamento script...",
+        "scriptLoadError": "Impossibile leggere lo script: {error}",
         "scriptHint": "Gli script risiedono nella directory cron-scripts del server e si aggiungono via SSH, non da questa pagina.",
         "arguments": "Argomenti (opzionale)",
         "argumentsHint": "Separati da spazio. Ognuno viene quotato prima di finire nel crontab.",
-        "noScripts": "Nessuno script disponibile"
+        "noScripts": "Nessuno script disponibile",
+        "viewScript": "Vedi script",
+        "editCronJob": "Modifica Cron Job",
+        "cronJobUpdated": "Cron job aggiornato"
     },
     "modules": {
         "title": "Gestione Moduli",

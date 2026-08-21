@@ -330,6 +330,32 @@ class CronService:
         return CronService.set_crontab(entries)
 
     @staticmethod
+    def update_entry(entry_id: int, schedule: str, script: str, args: List[str]) -> Tuple[bool, str]:
+        """
+        Replace an existing entry's schedule and command.
+
+        Keeps the entry's position and enabled state: editing a job should not
+        silently re-enable one the operator had switched off.
+
+        Raises ValueError if the script is not in the allowed directory.
+        """
+        command = CronService.build_command(script, args)
+
+        success, entries = CronService.get_crontab()
+        if not success:
+            return False, "Failed to read current crontab"
+
+        if entry_id < 0 or entry_id >= len(entries):
+            return False, "Invalid entry ID"
+
+        entry = entries[entry_id]
+        entry["schedule"] = schedule
+        entry["command"] = command
+        entry.pop("raw", None)  # stale: it still holds the pre-edit line
+
+        return CronService.set_crontab(entries)
+
+    @staticmethod
     def delete_entry(entry_id: int) -> Tuple[bool, str]:
         """Delete a crontab entry by index."""
         success, entries = CronService.get_crontab()

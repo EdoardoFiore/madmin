@@ -108,7 +108,7 @@ def _assert_can_grant(actor: User, permission_slugs: List[str]) -> None:
     if actor.is_superuser:
         return
 
-    excess = sorted(set(permission_slugs) - actor.permission_slugs())
+    excess = sorted(set(permission_slugs) - actor.effective_permission_slugs())
     if excess:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -134,7 +134,7 @@ def _assert_can_manage_target(actor: User, target: User) -> None:
             detail="Only superusers can manage superuser accounts"
         )
 
-    excess = sorted(target.permission_slugs() - actor.permission_slugs())
+    excess = sorted(target.effective_permission_slugs() - actor.effective_permission_slugs())
     if excess:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1024,7 +1024,7 @@ async def can_edit_user(
 
     # A non-superuser cannot act on a more privileged account (see _assert_can_manage_target)
     if user.id != current_user.id and not current_user.is_superuser:
-        if user.is_superuser or (user.permission_slugs() - current_user.permission_slugs()):
+        if user.is_superuser or (user.effective_permission_slugs() - current_user.effective_permission_slugs()):
             can_edit = False
             can_change_password = False
             can_delete = False

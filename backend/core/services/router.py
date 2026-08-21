@@ -31,7 +31,7 @@ def _delayed_restart(service_name: str, delay: float = 0.5):
 @router.get("/{service_name}/status")
 async def get_service_status(
     service_name: str,
-    _user: User = Depends(require_permission("services.view"))
+    _user: User = Depends(require_permission("services.manage"))
 ):
     """
     Get the status of a systemd service.

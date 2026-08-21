@@ -231,9 +231,32 @@ export async function render(container) {
                                     </div>
                                 </div>
                                 <div class="col-12" id="permissions-section">
-                                    <label class="form-label">${t('users.permissions')}</label>
+                                    <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+                                        <label class="form-label mb-0 flex-fill">${t('users.permissions')}</label>
+                                        <div class="form-selectgroup" id="permission-presets">
+                                            <label class="form-selectgroup-item">
+                                                <input type="radio" name="perm-preset" value="readonly" class="form-selectgroup-input perm-preset">
+                                                <span class="form-selectgroup-label"><i class="ti ti-eye me-1"></i>${t('users.presetReadonly')}</span>
+                                            </label>
+                                            <label class="form-selectgroup-item">
+                                                <input type="radio" name="perm-preset" value="netop" class="form-selectgroup-input perm-preset">
+                                                <span class="form-selectgroup-label"><i class="ti ti-tool me-1"></i>${t('users.presetNetop')}</span>
+                                            </label>
+                                            <label class="form-selectgroup-item">
+                                                <input type="radio" name="perm-preset" value="custom" class="form-selectgroup-input perm-preset" checked>
+                                                <span class="form-selectgroup-label"><i class="ti ti-adjustments me-1"></i>${t('users.presetCustom')}</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="text-muted small mb-3">
+                                        <i class="ti ti-info-circle me-1"></i>${t('users.manageImpliesView')}
+                                    </div>
                                     <div id="permissions-list" class="row g-3">
                                         <!-- Permissions will be loaded here grouped -->
+                                    </div>
+                                    <div class="alert alert-secondary mt-3 mb-0 py-2 px-3">
+                                        <div class="small fw-bold mb-1"><i class="ti ti-crown me-1"></i>${t('users.superuserOnlyTitle')}</div>
+                                        <div class="small text-muted">${t('users.superuserOnlyList')}</div>
                                     </div>
                                 </div>
                             </div>
@@ -355,6 +378,10 @@ function setupEventListeners() {
     if (form) {
         form.addEventListener('submit', handleUserSubmit);
     }
+
+    document.querySelectorAll('.perm-preset').forEach(radio => {
+        radio.addEventListener('change', (e) => applyPreset(e.target.value));
+    });
 
     const superuserCheck = document.getElementById('user-superuser');
     if (superuserCheck) {
@@ -501,88 +528,261 @@ function renderUsers() {
     });
 }
 
+/**
+ * Permission areas, in the order they are offered.
+ *
+ * An "area" is the slug prefix. Inside one, `.view` and `.manage` are levels on
+ * a single control rather than independent checkboxes — managing implies seeing
+ * (User.effective_permission_slugs on the backend), so offering them separately
+ * only ever produced nonsense combinations. Anything else in the area is a
+ * capability: an extra power granted on top of the level.
+ */
+const AREA_META = {
+    users: { icon: 'ti-users', order: 10 },
+    firewall: { icon: 'ti-shield', order: 20 },
+    network: { icon: 'ti-network', order: 30 },
+    settings: { icon: 'ti-palette', order: 40 },
+    smtp: { icon: 'ti-mail', order: 50 },
+    backup: { icon: 'ti-database', order: 60 },
+    cron: { icon: 'ti-clock', order: 70 },
+    services: { icon: 'ti-server-cog', order: 80 },
+    modules: { icon: 'ti-puzzle', order: 90 },
+    logs: { icon: 'ti-file-text', order: 100 },
+};
+
+// Capabilities that hand over more than the area they sit in
+const DANGEROUS_CAPS = new Set(['backup.restore']);
+
+// permissions.manage has no area of its own: it only modifies user management,
+// and showing it as a separate "Permessi" card made it look independent.
+const FOLDED_INTO_USERS = 'permissions.manage';
+
+/**
+ * Group the grantable permissions into areas with a level and capabilities.
+ */
+function buildPermissionAreas(grantable) {
+    const areas = {};
+
+    for (const perm of grantable) {
+        const [prefix, ...rest] = perm.slug.split('.');
+        const action = rest.join('.');
+
+        // Fold permissions.manage into the Users area as a capability
+        const areaKey = perm.slug === FOLDED_INTO_USERS ? 'users' : prefix;
+        const area = areas[areaKey] || (areas[areaKey] = {
+            key: areaKey,
+            hasView: false,
+            hasManage: false,
+            caps: [],
+        });
+
+        if (perm.slug === FOLDED_INTO_USERS) {
+            area.caps.push(perm);
+        } else if (action === 'view') {
+            area.hasView = true;
+        } else if (action === 'manage') {
+            area.hasManage = true;
+        } else {
+            area.caps.push(perm);
+        }
+    }
+
+    return Object.values(areas).sort((a, b) => {
+        const ao = AREA_META[a.key]?.order ?? 500;
+        const bo = AREA_META[b.key]?.order ?? 500;
+        return ao - bo || a.key.localeCompare(b.key);
+    });
+}
+
+function areaLabel(key) {
+    const translated = t(`users.areaLabels.${key}`);
+    if (translated !== `users.areaLabels.${key}`) return translated;
+    return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function capLabel(slug) {
+    const translated = t(`users.capLabels.${slug}`);
+    if (translated !== `users.capLabels.${slug}`) return translated;
+    // Module capabilities have no translation: prettify the slug's action part
+    const action = slug.split('.').slice(1).join('.');
+    return action.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+}
+
 function renderGroupedPermissions(userPerms) {
     const permList = document.getElementById('permissions-list');
-    let html = '';
-
-    // Define display names for core groups
-    const coreGroupNames = {
-        'users': t('users.coreGroupNames.users'),
-        'firewall': t('users.coreGroupNames.firewall'),
-        'settings': t('users.coreGroupNames.settings'),
-        'modules': t('users.coreGroupNames.modules'),
-        'permissions': t('users.coreGroupNames.permissions')
-    };
+    if (!permList) return;
 
     // A non-superuser can only grant what they hold (backend: _assert_can_grant),
-    // so never offer a checkbox that would come back 403.
+    // so never offer a control that would come back 403.
     const isSuperuser = getUser()?.is_superuser || false;
     const own = ownPermissions();
     const grantable = isSuperuser ? permissions : permissions.filter(p => own.has(p.slug));
+    const held = new Set(userPerms);
 
-    // Group permissions dynamically by prefix (module name)
-    const groups = {};
-    for (const perm of grantable) {
-        const prefix = perm.slug.split('.')[0];
-        if (!groups[prefix]) {
-            groups[prefix] = [];
-        }
-        groups[prefix].push(perm);
-    }
+    const areas = buildPermissionAreas(grantable);
 
-    // Sort groups: core groups first, then module groups alphabetically
-    const coreOrder = ['users', 'firewall', 'settings', 'modules', 'permissions'];
-    const sortedGroupKeys = Object.keys(groups).sort((a, b) => {
-        const aIsCore = coreOrder.includes(a);
-        const bIsCore = coreOrder.includes(b);
-        if (aIsCore && !bIsCore) return -1;
-        if (!aIsCore && bIsCore) return 1;
-        if (aIsCore && bIsCore) return coreOrder.indexOf(a) - coreOrder.indexOf(b);
-        return a.localeCompare(b);
-    });
+    const cards = areas.map(area => {
+        const meta = AREA_META[area.key] || {};
+        const icon = meta.icon || 'ti-puzzle-2';
+        const level = held.has(`${area.key}.manage`) ? 'manage'
+            : held.has(`${area.key}.view`) ? 'view'
+                : 'none';
 
-    // Render each group
-    for (const groupKey of sortedGroupKeys) {
-        const groupPerms = groups[groupKey];
-        // Determine display name: core names or capitalize module name
-        const displayName = coreGroupNames[groupKey] ||
-            groupKey.charAt(0).toUpperCase() + groupKey.slice(1);
+        // Areas with no .manage slug (cron, logs) are read-or-nothing
+        const levels = [
+            { value: 'none', label: t('users.levelNone'), icon: 'ti-minus' },
+            ...(area.hasView ? [{ value: 'view', label: t('users.levelView'), icon: 'ti-eye' }] : []),
+            ...(area.hasManage ? [{ value: 'manage', label: t('users.levelManage'), icon: 'ti-pencil' }] : []),
+        ];
 
-        // Determine icon based on group
-        let icon = 'ti-folder';
-        if (groupKey === 'users') icon = 'ti-users';
-        else if (groupKey === 'firewall') icon = 'ti-shield';
-        else if (groupKey === 'settings') icon = 'ti-settings';
-        else if (groupKey === 'modules') icon = 'ti-puzzle';
-        else if (groupKey === 'permissions') icon = 'ti-lock';
-        else if (groupKey === 'wireguard') icon = 'ti-lock';
-        // Modules get puzzle-2 icon by default
-        else icon = 'ti-puzzle-2';
+        const levelHtml = levels.map(l => `
+            <label class="form-selectgroup-item flex-fill">
+                <input type="radio" name="lvl-${area.key}" value="${l.value}"
+                       class="form-selectgroup-input perm-level" data-area="${area.key}"
+                       ${level === l.value ? 'checked' : ''}>
+                <span class="form-selectgroup-label d-block text-center py-1 px-2">
+                    <i class="ti ${l.icon} me-1"></i>${l.label}
+                </span>
+            </label>
+        `).join('');
 
-        html += `
-            <div class="col-md-6">
-                <div class="card card-sm">
-                    <div class="card-header py-2">
-                        <h4 class="card-title m-0"><i class="ti ${icon} me-2"></i>${displayName}</h4>
-                    </div>
-                    <div class="card-body py-2">
-                        ${groupPerms.map(p => {
-            const action = p.slug.split('.').slice(1).join('.');
+        const capsHtml = area.caps.length === 0 ? '' : `
+            <div class="mt-3 pt-2 border-top perm-caps" data-area="${area.key}">
+                <div class="text-muted small mb-2">${t('users.permCapabilities')}</div>
+                ${area.caps.map(cap => {
+            const danger = DANGEROUS_CAPS.has(cap.slug);
             return `
-                            <label class="form-check mb-1">
-                                <input class="form-check-input perm-check" type="checkbox" value="${p.slug}"
-                                       ${userPerms.includes(p.slug) ? 'checked' : ''}>
-                                <span class="form-check-label">${action}</span>
-                            </label>
-                        `;
+                    <label class="form-check form-switch mb-1 d-flex align-items-center">
+                        <input class="form-check-input perm-cap" type="checkbox" value="${escapeAttr(cap.slug)}"
+                               data-area="${area.key}" ${held.has(cap.slug) ? 'checked' : ''}
+                               ${level === 'none' ? 'disabled' : ''}>
+                        <span class="form-check-label flex-fill">
+                            ${escapeHtml(capLabel(cap.slug))}
+                            ${danger ? `<span class="badge bg-red-lt ms-1">${t('users.capRisk')}</span>` : ''}
+                        </span>
+                        <i class="ti ti-info-circle text-muted ms-2" data-bs-toggle="tooltip"
+                           title="${escapeAttr(cap.description || cap.slug)}"></i>
+                    </label>
+                `;
         }).join('')}
+            </div>
+        `;
+
+        // Say out loud why an area offers no "manage" instead of leaving a gap
+        const note = !area.hasManage && area.key === 'cron'
+            ? `<div class="text-muted small mt-2"><i class="ti ti-lock me-1"></i>${t('users.cronWriteNote')}</div>`
+            : '';
+
+        return `
+            <div class="col-md-6">
+                <div class="card card-sm h-100">
+                    <div class="card-body p-3">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="ti ${icon} me-2 text-muted"></i>
+                            <strong class="flex-fill">${escapeHtml(areaLabel(area.key))}</strong>
+                        </div>
+                        <div class="form-selectgroup w-100 d-flex gap-1">${levelHtml}</div>
+                        ${capsHtml}
+                        ${note}
                     </div>
                 </div>
             </div>
         `;
-    }
+    }).join('');
 
-    permList.innerHTML = html;
+    permList.innerHTML = cards || `<div class="col-12 text-muted small">${t('users.noGrantablePerms')}</div>`;
+
+    // Capabilities make no sense without at least read access to their area
+    permList.querySelectorAll('.perm-level').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const area = e.target.dataset.area;
+            const off = e.target.value === 'none';
+            permList.querySelectorAll(`.perm-cap[data-area="${area}"]`).forEach(cap => {
+                cap.disabled = off;
+                if (off) cap.checked = false;
+            });
+            markPresetCustom();
+        });
+    });
+    permList.querySelectorAll('.perm-cap').forEach(cap => {
+        cap.addEventListener('change', markPresetCustom);
+    });
+
+    permList.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
+        new bootstrap.Tooltip(el);
+    });
+}
+
+/**
+ * Read the picker back into a flat slug list.
+ *
+ * "Gestione" emits only `<area>.manage`: `.view` is implied by the backend, and
+ * storing both would make the editor's own state ambiguous on reload.
+ */
+function collectPermissions() {
+    const slugs = [];
+
+    document.querySelectorAll('.perm-level:checked').forEach(radio => {
+        const area = radio.dataset.area;
+        if (radio.value === 'view') slugs.push(`${area}.view`);
+        else if (radio.value === 'manage') slugs.push(`${area}.manage`);
+    });
+
+    document.querySelectorAll('.perm-cap:checked').forEach(cap => {
+        if (!cap.disabled) slugs.push(cap.value);
+    });
+
+    return slugs;
+}
+
+/**
+ * Apply a preset to the picker.
+ *
+ * readonly — read every area, change nothing.
+ * netop    — read everything, plus run the day-to-day operational areas:
+ *            firewall, network, modules and the installed modules themselves.
+ *            Deliberately excludes user management, backups, SMTP and branding,
+ *            i.e. everything that could reconfigure the box or hand it to
+ *            someone else.
+ */
+function applyPreset(preset) {
+    if (preset === 'custom') return;
+
+    const MANAGED_CORE = new Set(['firewall', 'network', 'modules']);
+    const coreAreas = new Set(Object.keys(AREA_META));
+
+    document.querySelectorAll('.perm-level').forEach(radio => {
+        const area = radio.dataset.area;
+        const isModuleArea = !coreAreas.has(area);
+        let want = 'view';
+
+        if (preset === 'netop' && (MANAGED_CORE.has(area) || isModuleArea)) {
+            want = 'manage';
+        }
+
+        // An area with no such level falls back to the strongest one it has
+        const available = new Set(
+            [...document.querySelectorAll(`.perm-level[data-area="${area}"]`)].map(r => r.value)
+        );
+        if (!available.has(want)) want = available.has('view') ? 'view' : 'none';
+
+        radio.checked = radio.value === want;
+    });
+
+    document.querySelectorAll('.perm-cap').forEach(cap => {
+        const area = cap.dataset.area;
+        const isModuleArea = !coreAreas.has(area);
+        const level = document.querySelector(`.perm-level[data-area="${area}"]:checked`)?.value;
+
+        cap.disabled = level === 'none';
+        // Module capabilities come with the module; dangerous ones never do
+        cap.checked = preset === 'netop' && isModuleArea && !DANGEROUS_CAPS.has(cap.value);
+    });
+}
+
+function markPresetCustom() {
+    const custom = document.querySelector('.perm-preset[value="custom"]');
+    if (custom) custom.checked = true;
 }
 
 function openUserModal(user = null) {
@@ -644,7 +844,12 @@ function openUserModal(user = null) {
     permSection.style.display = (user?.is_superuser || !canEditPerms) ? 'none' : 'block';
 
     const userPerms = user?.permissions || [];
-    if (canEditPerms) renderGroupedPermissions(userPerms);
+    if (canEditPerms) {
+        // The stored set is what it is; a preset is only ever an entry point
+        const custom = document.querySelector('.perm-preset[value="custom"]');
+        if (custom) custom.checked = true;
+        renderGroupedPermissions(userPerms);
+    }
 
     new bootstrap.Modal(document.getElementById('user-modal')).show();
 }
@@ -688,7 +893,7 @@ async function handleUserSubmit(e) {
             // Only send permissions when they were editable, otherwise the PUT 403s
             // on a save that never touched them.
             if (!document.getElementById('user-superuser').checked && checkPermission('permissions.manage')) {
-                const selectedPerms = [...document.querySelectorAll('.perm-check:checked')].map(c => c.value);
+                const selectedPerms = collectPermissions();
                 await apiPut(`/auth/users/${editingUser.username}/permissions`, selectedPerms);
             }
 
@@ -704,7 +909,7 @@ async function handleUserSubmit(e) {
 
             // Save permissions if not superuser and they were editable
             if (!document.getElementById('user-superuser').checked && checkPermission('permissions.manage')) {
-                const selectedPerms = [...document.querySelectorAll('.perm-check:checked')].map(c => c.value);
+                const selectedPerms = collectPermissions();
                 await apiPut(`/auth/users/${username}/permissions`, selectedPerms);
             }
 

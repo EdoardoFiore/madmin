@@ -149,6 +149,31 @@ async def add_cron_entry(
     return {"success": True, "message": message}
 
 
+@router.put("/entries/{entry_id}", response_model=CronActionResponse)
+async def update_cron_entry(
+    entry_id: int,
+    data: CronEntryCreate,
+    _user: User = Depends(require_superuser())
+):
+    """
+    Change an existing job's schedule or command. Superuser only.
+    """
+    if not cron_service.validate_schedule(data.schedule):
+        raise HTTPException(status_code=400, detail="Invalid cron schedule")
+
+    try:
+        success, message = cron_service.update_entry(
+            entry_id, data.schedule, data.script, data.args
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+
+    return {"success": True, "message": message}
+
+
 @router.delete("/entries/{entry_id}", response_model=CronActionResponse)
 async def delete_cron_entry(
     entry_id: int,
