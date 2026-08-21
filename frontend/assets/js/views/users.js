@@ -248,12 +248,21 @@ export async function render(container) {
                                             </label>
                                         </div>
                                     </div>
-                                    <div class="text-muted small mb-3">
-                                        <i class="ti ti-info-circle me-1"></i>${t('users.manageImpliesView')}
+                                    <div class="d-flex align-items-center gap-2 mb-3">
+                                        <div class="text-muted small flex-fill">
+                                            <i class="ti ti-info-circle me-1"></i>${t('users.manageImpliesView')}
+                                        </div>
+                                        <button type="button" class="btn btn-sm btn-ghost-secondary flex-shrink-0"
+                                                id="btn-toggle-perm-detail">
+                                            <i class="ti ti-chevron-down me-1"></i>${t('users.showDetail')}
+                                        </button>
                                     </div>
-                                    <div id="permissions-list" class="row g-3">
-                                        <!-- Permissions will be loaded here grouped -->
+                                    <div id="permissions-detail" class="d-none">
+                                        <div id="permissions-list" class="row g-3">
+                                            <!-- Permissions will be loaded here grouped -->
+                                        </div>
                                     </div>
+                                    <div id="module-defaults" class="mt-3 d-none"></div>
                                     <div class="alert alert-secondary mt-3 mb-0 py-2 px-3">
                                         <div class="small fw-bold mb-1"><i class="ti ti-crown me-1"></i>${t('users.superuserOnlyTitle')}</div>
                                         <div class="small text-muted">${t('users.superuserOnlyList')}</div>
@@ -380,7 +389,17 @@ function setupEventListeners() {
     }
 
     document.querySelectorAll('.perm-preset').forEach(radio => {
-        radio.addEventListener('change', (e) => applyPreset(e.target.value));
+        radio.addEventListener('change', (e) => {
+            applyPreset(e.target.value);
+            // Choosing "custom" means you intend to edit the detail; a preset
+            // does not close it again, so you can check what it just did.
+            if (e.target.value === 'custom') setPermissionDetail(true);
+        });
+    });
+
+    document.getElementById('btn-toggle-perm-detail')?.addEventListener('click', () => {
+        const detail = document.getElementById('permissions-detail');
+        setPermissionDetail(detail?.classList.contains('d-none'));
     });
 
     const superuserCheck = document.getElementById('user-superuser');
@@ -780,6 +799,107 @@ function applyPreset(preset) {
     });
 }
 
+/**
+ * Show or hide the per-area detail.
+ *
+ * Collapsed by default: most accounts are opened with a preset, and the full
+ * grid of areas buries the choice that actually matters.
+ */
+function setPermissionDetail(open) {
+    const detail = document.getElementById('permissions-detail');
+    const btn = document.getElementById('btn-toggle-perm-detail');
+    if (!detail) return;
+
+    detail.classList.toggle('d-none', !open);
+    if (btn) {
+        btn.innerHTML = open
+            ? `<i class="ti ti-chevron-up me-1"></i>${t('users.hideDetail')}`
+            : `<i class="ti ti-chevron-down me-1"></i>${t('users.showDetail')}`;
+    }
+}
+
+/**
+ * Render the policy for modules activated later.
+ *
+ * A module's slugs do not exist when the account is created, so an operator who
+ * can activate a module would otherwise be unable to manage what they installed.
+ * Superuser-only: it grants permissions on things nobody has reviewed yet.
+ */
+function renderModuleDefaults(user) {
+    const wrap = document.getElementById('module-defaults');
+    if (!wrap) return;
+
+    if (!getUser()?.is_superuser) {
+        wrap.classList.add('d-none');
+        wrap.innerHTML = '';
+        return;
+    }
+    wrap.classList.remove('d-none');
+
+    const level = user?.module_default_level || 'none';
+    const caps = user?.module_default_capabilities || false;
+    const levels = [
+        { value: 'none', label: t('users.levelNone'), icon: 'ti-minus' },
+        { value: 'view', label: t('users.levelView'), icon: 'ti-eye' },
+        { value: 'manage', label: t('users.levelManage'), icon: 'ti-pencil' },
+    ];
+
+    wrap.innerHTML = `
+        <div class="card card-sm">
+            <div class="card-body p-3">
+                <div class="d-flex align-items-center mb-1">
+                    <i class="ti ti-package me-2 text-muted"></i>
+                    <strong class="flex-fill">${t('users.moduleDefaultsTitle')}</strong>
+                </div>
+                <div class="text-muted small mb-2">${t('users.moduleDefaultsHint')}</div>
+                <div class="form-selectgroup d-flex gap-1" style="max-width: 24rem;">
+                    ${levels.map(l => `
+                    <label class="form-selectgroup-item flex-fill">
+                        <input type="radio" name="module-default-level" value="${l.value}"
+                               class="form-selectgroup-input" id="mdl-${l.value}"
+                               ${level === l.value ? 'checked' : ''}>
+                        <span class="form-selectgroup-label d-block text-center py-1 px-2">
+                            <i class="ti ${l.icon} me-1"></i>${l.label}
+                        </span>
+                    </label>
+                    `).join('')}
+                </div>
+                <label class="form-check form-switch mt-2 mb-0">
+                    <input class="form-check-input" type="checkbox" id="module-default-caps"
+                           ${caps ? 'checked' : ''} ${level === 'manage' ? '' : 'disabled'}>
+                    <span class="form-check-label">${t('users.moduleDefaultsCaps')}</span>
+                </label>
+            </div>
+        </div>
+    `;
+
+    // Capabilities are powers on top of managing the module
+    wrap.querySelectorAll('input[name="module-default-level"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const capsInput = document.getElementById('module-default-caps');
+            if (!capsInput) return;
+            capsInput.disabled = e.target.value !== 'manage';
+            if (capsInput.disabled) capsInput.checked = false;
+        });
+    });
+}
+
+/**
+ * The module default policy, or null when the card is not on screen
+ * (non-superuser, or the permissions section is hidden).
+ */
+function collectModuleDefaults() {
+    const wrap = document.getElementById('module-defaults');
+    if (!wrap || wrap.classList.contains('d-none')) return null;
+
+    const level = wrap.querySelector('input[name="module-default-level"]:checked')?.value || 'none';
+    const caps = document.getElementById('module-default-caps');
+    return {
+        module_default_level: level,
+        module_default_capabilities: level === 'manage' && !!caps?.checked,
+    };
+}
+
 function markPresetCustom() {
     const custom = document.querySelector('.perm-preset[value="custom"]');
     if (custom) custom.checked = true;
@@ -855,6 +975,8 @@ function openUserModal(user = null) {
         const custom = document.querySelector('.perm-preset[value="custom"]');
         if (custom) custom.checked = true;
         renderGroupedPermissions(userPerms);
+        renderModuleDefaults(user);
+        setPermissionDetail(false);
     }
 
     new bootstrap.Modal(document.getElementById('user-modal')).show();
@@ -892,6 +1014,8 @@ async function handleUserSubmit(e) {
             const expiresAt = document.getElementById('user-password-expires-at').value;
             if (expiresAt) updateData.password_expires_at = expiresAt;
 
+            Object.assign(updateData, collectModuleDefaults() || {});
+
             if (password) updateData.password = password;
 
             await apiPatch(`/auth/users/${editingUser.username}`, updateData);
@@ -922,6 +1046,8 @@ async function handleUserSubmit(e) {
 
             const newExpiresAt = document.getElementById('user-password-expires-at').value;
             if (newExpiresAt) createData.password_expires_at = newExpiresAt;
+
+            Object.assign(createData, collectModuleDefaults() || {});
 
             await apiPost('/auth/users', createData);
 

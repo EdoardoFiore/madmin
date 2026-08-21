@@ -78,6 +78,13 @@ class User(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: Optional[datetime] = Field(default=None)
 
+    # What to grant this user on modules activated *later*. A module's slugs do
+    # not exist yet when the account is created, so without this an operator who
+    # can activate a module could never manage the thing they just installed.
+    # Superuser-only to set: it hands out permissions nobody reviewed.
+    module_default_level: str = Field(default="none", max_length=10)  # none | view | manage
+    module_default_capabilities: bool = Field(default=False)  # the module's extra slugs too
+
     # Preferences (JSON string)
     preferences: str = Field(default="{}")
 
@@ -176,6 +183,8 @@ class UserCreate(SQLModel):
     totp_enforced: bool = False              # Force 2FA on first login
     must_change_password: bool = False       # Force password change at first login
     password_expires_at: Optional[datetime] = None  # Overrides the global policy
+    module_default_level: str = "none"       # none | view | manage, superuser-only
+    module_default_capabilities: bool = False
 
 
 class UserUpdate(SQLModel):
@@ -187,6 +196,8 @@ class UserUpdate(SQLModel):
     totp_enforced: Optional[bool] = None  # Force 2FA on user
     must_change_password: Optional[bool] = None  # Force password change at next login
     password_expires_at: Optional[datetime] = None  # Manual per-user expiry override
+    module_default_level: Optional[str] = None       # none | view | manage, superuser-only
+    module_default_capabilities: Optional[bool] = None
 
 
 class UserPreferencesUpdate(SQLModel):
@@ -215,6 +226,8 @@ class UserResponse(SQLModel):
     created_at: datetime
     last_login: Optional[datetime]
     permissions: List[str] = []  # List of permission slugs
+    module_default_level: str = "none"
+    module_default_capabilities: bool = False
     preferences: str = "{}"
 
 

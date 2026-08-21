@@ -323,7 +323,12 @@
                 "certs": "Gestione certificati"
             }
         },
-        "passwordExpiresAtNoteNew": "Lascia vuoto per usare la policy password globale."
+        "passwordExpiresAtNoteNew": "Lascia vuoto per usare la policy password globale.",
+        "showDetail": "Dettaglio",
+        "hideDetail": "Nascondi dettaglio",
+        "moduleDefaultsTitle": "Moduli attivati in futuro",
+        "moduleDefaultsHint": "I permessi di un modulo non esistono ancora quando crei questo account. Imposta cosa ottiene sui moduli attivati d'ora in poi — così chi può installare un modulo può anche gestirlo.",
+        "moduleDefaultsCaps": "Includi i permessi specifici del modulo (client, zone, certificati…)"
     },
     "firewall": {
         "validation": {

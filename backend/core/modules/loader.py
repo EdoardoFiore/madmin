@@ -129,15 +129,22 @@ class ModuleLoader:
         module_id: str,
         permissions: List[ModulePermission]
     ) -> None:
-        """Register a module's permissions in the database."""
+        """
+        Register a module's permissions in the database.
+
+        A slug that is new here is new to the whole system, so this is the one
+        moment where the per-user module default policy can be applied: those
+        accounts were configured before this module existed.
+        """
         from core.auth.models import Permission
-        
+
+        new_slugs = []
         for perm in permissions:
             result = await session.execute(
                 select(Permission).where(Permission.slug == perm.slug)
             )
             existing = result.scalar_one_or_none()
-            
+
             if not existing:
                 permission = Permission(
                     slug=perm.slug,
@@ -145,7 +152,59 @@ class ModuleLoader:
                     module_id=module_id
                 )
                 session.add(permission)
+                new_slugs.append(perm.slug)
                 logger.info(f"Registered permission {perm.slug} for module {module_id}")
+
+        if new_slugs:
+            # The Permission rows must exist before the FK on user_permission
+            await session.flush()
+            await self._apply_module_defaults(session, module_id, new_slugs)
+
+    async def _apply_module_defaults(
+        self,
+        session: AsyncSession,
+        module_id: str,
+        new_slugs: List[str]
+    ) -> None:
+        """
+        Grant a newly registered module's slugs per each user's default policy.
+
+        Runs once per slug, the first time the module is registered. From then on
+        they are ordinary grants an admin can revoke from the user editor.
+        """
+        from core.auth.models import User, UserPermission
+
+        generic = {f"{module_id}.view", f"{module_id}.manage"}
+        # Anything that is not the view/manage pair is a capability
+        capabilities = [slug for slug in new_slugs if slug not in generic]
+
+        users = (await session.execute(
+            select(User).where(User.module_default_level != "none")
+        )).scalars().all()
+
+        granted = 0
+        for user in users:
+            if user.is_superuser:
+                continue  # already bypasses every check
+
+            wanted = []
+            level_slug = f"{module_id}.{user.module_default_level}"
+            if level_slug in new_slugs:
+                wanted.append(level_slug)
+            # Capabilities are powers on top of managing the module
+            if user.module_default_capabilities and user.module_default_level == "manage":
+                wanted.extend(capabilities)
+
+            for slug in wanted:
+                session.add(UserPermission(user_id=user.id, permission_slug=slug))
+                granted += 1
+
+        if granted:
+            await session.flush()
+            logger.info(
+                f"Applied module default policy for {module_id}: "
+                f"{granted} grant(s) across {len(users)} user(s)"
+            )
     
     async def register_module_chains(
         self,

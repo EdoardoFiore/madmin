@@ -441,6 +441,10 @@ either one is the decision to trust the holder as much as a superuser.
   Treat `backup.restore` as equivalent to the superuser flag. `backup.manage` (export, download,
   scheduling) does **not** imply it.
 - **Creating or promoting superusers** (`POST` and `PATCH /api/auth/users`) is superuser-only.
+- **The module default policy** (`module_default_level` / `module_default_capabilities` on a user) is
+  superuser-only. It grants permissions on modules that do not exist yet, so `_assert_can_grant` has
+  nothing to compare against at the time the decision is made. The grants are applied once, when a
+  module's slugs are first registered, and are ordinary revocable rows afterwards.
 
 ### Cross-cutting authorization rules
 

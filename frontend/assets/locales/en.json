@@ -323,7 +323,12 @@
                 "certs": "Manage certificates"
             }
         },
-        "passwordExpiresAtNoteNew": "Leave empty to use the global password policy."
+        "passwordExpiresAtNoteNew": "Leave empty to use the global password policy.",
+        "showDetail": "Detail",
+        "hideDetail": "Hide detail",
+        "moduleDefaultsTitle": "Modules activated later",
+        "moduleDefaultsHint": "A module's permissions do not exist yet when this account is created. Set what this user gets on modules activated from now on — so someone who can install a module can also run it.",
+        "moduleDefaultsCaps": "Include the module's specific permissions (clients, zones, certificates…)"
     },
     "firewall": {
         "validation": {

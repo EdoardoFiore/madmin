@@ -94,8 +94,29 @@ def _user_response(user: User) -> UserResponse:
         created_at=user.created_at,
         last_login=user.last_login,
         permissions=[p.slug for p in user.permissions] if not user.is_superuser else ["*"],
+        module_default_level=getattr(user, "module_default_level", "none"),
+        module_default_capabilities=getattr(user, "module_default_capabilities", False),
         preferences=getattr(user, "preferences", "{}")
     )
+
+
+def _assert_can_set_module_defaults(actor: User, data) -> None:
+    """
+    Only a superuser may set the module default policy.
+
+    It grants permissions on modules that do not exist yet, so nobody can review
+    what is being handed out at the time it is decided — _assert_can_grant has
+    nothing to compare against.
+    """
+    if actor.is_superuser:
+        return
+
+    if getattr(data, "module_default_level", None) not in (None, "none") or \
+            getattr(data, "module_default_capabilities", None):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only superusers can set default permissions for future modules"
+        )
 
 
 def _assert_can_grant(actor: User, permission_slugs: List[str]) -> None:
@@ -559,6 +580,8 @@ async def create_user(
             detail="Only superusers can grant superuser status"
         )
 
+    _assert_can_set_module_defaults(current_user, user_data)
+
     try:
         user = await service.create_user(session, user_data)
         await session.commit()
@@ -608,6 +631,8 @@ async def update_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only superusers can grant superuser status"
         )
+
+    _assert_can_set_module_defaults(current_user, user_data)
 
     # Never let a non-superuser act on a more privileged account (editing yourself is fine)
     if user.id != current_user.id:

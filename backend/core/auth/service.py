@@ -244,6 +244,8 @@ async def create_user(session: AsyncSession, user_data: UserCreate) -> User:
         is_superuser=user_data.is_superuser,
         totp_enforced=user_data.totp_enforced,
         must_change_password=user_data.must_change_password,
+        module_default_level=user_data.module_default_level,
+        module_default_capabilities=user_data.module_default_capabilities,
         password_changed_at=now,
         # An explicit expiry wins over the global policy, same as on update
         password_expires_at=(
@@ -294,6 +296,10 @@ async def update_user(session: AsyncSession, user_id: uuid.UUID, user_data: User
         user.must_change_password = user_data.must_change_password
     if user_data.password_expires_at is not None:
         user.password_expires_at = user_data.password_expires_at
+    if user_data.module_default_level is not None:
+        user.module_default_level = user_data.module_default_level
+    if user_data.module_default_capabilities is not None:
+        user.module_default_capabilities = user_data.module_default_capabilities
 
     session.add(user)
     await session.flush()
