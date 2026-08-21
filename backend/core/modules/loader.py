@@ -174,8 +174,12 @@ class ModuleLoader:
         """
         from core.auth.models import User, UserPermission
 
-        generic = {f"{module_id}.view", f"{module_id}.manage"}
-        # Anything that is not the view/manage pair is a capability
+        # The slug prefix is not always the module id — strongswan declares
+        # ipsec.* — so read it off the slugs themselves. A module may in
+        # principle declare more than one.
+        prefixes = {slug.split(".", 1)[0] for slug in new_slugs}
+        generic = {f"{p}.{lvl}" for p in prefixes for lvl in ("view", "manage")}
+        # Anything that is not a view/manage pair is a capability
         capabilities = [slug for slug in new_slugs if slug not in generic]
 
         users = (await session.execute(
@@ -187,10 +191,11 @@ class ModuleLoader:
             if user.is_superuser:
                 continue  # already bypasses every check
 
-            wanted = []
-            level_slug = f"{module_id}.{user.module_default_level}"
-            if level_slug in new_slugs:
-                wanted.append(level_slug)
+            wanted = [
+                f"{prefix}.{user.module_default_level}"
+                for prefix in prefixes
+                if f"{prefix}.{user.module_default_level}" in new_slugs
+            ]
             # Capabilities are powers on top of managing the module
             if user.module_default_capabilities and user.module_default_level == "manage":
                 wanted.extend(capabilities)
