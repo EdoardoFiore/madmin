@@ -8,7 +8,7 @@
  *  3. Outbound NAT      — nat/POSTROUTING SNAT/MASQUERADE (incl. read-only
  *                          policy-NAT companions and the managed nav NAT).
  */
-import { apiGet, apiPatch, apiDelete } from '../../api.js';
+import { apiGet, apiPatch, apiPut, apiDelete } from '../../api.js';
 import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../../utils.js';
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
@@ -137,8 +137,10 @@ function renderPolicy() {
             <i class="ti ti-arrow-right mx-1 text-muted"></i>
             ${outIf === '*' ? t('firewall.editor.anyInterface') : escapeHtml(outIf)}`;
         body += `
-            <div class="fw-pair-group">
-                <div class="px-3 py-2 bg-light border-top fw-pair-header d-flex align-items-center">
+            <div class="fw-pair-group" data-pair="${escapeHtml(key)}">
+                <div class="px-3 py-2 bg-light border-top fw-pair-header d-flex align-items-center"
+                     ${canManage ? `draggable="true" title="${escapeHtml(t('firewall.std.dragSection'))}"` : ''}>
+                    ${canManage ? '<i class="ti ti-grip-vertical me-2 text-muted fw-handle"></i>' : ''}
                     <i class="ti ti-arrows-right-left me-2 text-muted"></i>
                     <strong>${pairLabel}</strong>
                     <span class="badge bg-secondary-lt ms-2">${list.length}</span>
@@ -169,7 +171,10 @@ function renderPolicy() {
     wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${implicitDeny}</div></div>`;
 
     bindRowActions(wrap, 'policy');
-    if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
+    if (canManage) {
+        wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
+        setupSectionDrag(wrap);
+    }
 }
 
 function policyRow(r, canManage) {
@@ -380,28 +385,66 @@ function ruleOf(e) {
 }
 
 // ---------------------------------------------------------------------------
-// Drag & drop reordering within an interface-pair group
+// Drag & drop reordering: rows within an interface-pair group, and whole
+// sections (pair groups) relative to each other. Both show an insertion-line
+// preview (fw-drop-above / fw-drop-below) at the exact drop position.
 // ---------------------------------------------------------------------------
+
+/** True when the cursor is in the top half of the element (insert before). */
+function dropBefore(e, el) {
+    const r = el.getBoundingClientRect();
+    return e.clientY < r.top + r.height / 2;
+}
+
+function clearDropMarkers(scope) {
+    scope.querySelectorAll('.fw-drop-above, .fw-drop-below').forEach(el =>
+        el.classList.remove('fw-drop-above', 'fw-drop-below'));
+}
 
 function setupDragDrop(tbody) {
     let dragged = null;
     tbody.querySelectorAll('.fw-drag').forEach(row => {
         row.addEventListener('dragstart', (e) => {
             dragged = row;
-            row.classList.add('opacity-50');
+            row.classList.add('dragging');
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', row.dataset.id);
         });
-        row.addEventListener('dragend', () => { row.classList.remove('opacity-50'); dragged = null; });
-        row.addEventListener('dragover', (e) => e.preventDefault());
-        row.addEventListener('drop', async (e) => {
-            e.preventDefault();
+        row.addEventListener('dragend', () => {
+            row.classList.remove('dragging');
+            clearDropMarkers(tbody);
+            dragged = null;
+        });
+        row.addEventListener('dragover', (e) => {
+            // Only handle row drags from this tbody; section drags (and rows of
+            // other groups) must bubble up to the section-level handlers.
             if (!dragged || dragged === row) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'move';
+            clearDropMarkers(tbody);
+            row.classList.add(dropBefore(e, row) ? 'fw-drop-above' : 'fw-drop-below');
+        });
+        row.addEventListener('drop', async (e) => {
+            if (!dragged || dragged === row) return;   // let section drops bubble
+            e.preventDefault();
+            e.stopPropagation();
+            clearDropMarkers(tbody);
             const draggedRule = rules.find(r => r.id === dragged.dataset.id);
             const targetRule = rules.find(r => r.id === row.dataset.id);
             if (!draggedRule || !targetRule) return;
+            // Translate the previewed insert position (before/after target) into
+            // the backend's absolute new_order (which shifts the in-between rules).
+            const before = dropBefore(e, row);
+            let newOrder;
+            if (draggedRule.order < targetRule.order) {
+                newOrder = before ? targetRule.order - 1 : targetRule.order;
+            } else {
+                newOrder = before ? targetRule.order : targetRule.order + 1;
+            }
+            if (newOrder === draggedRule.order) return;
             try {
-                await apiPatch(`/firewall/rules/${draggedRule.id}/reorder`, { new_order: targetRule.order });
+                await apiPatch(`/firewall/rules/${draggedRule.id}/reorder`, { new_order: newOrder });
                 showToast(t('firewall.orderUpdated'), 'success');
                 await reload();
             } catch (err) {
@@ -409,4 +452,76 @@ function setupDragDrop(tbody) {
             }
         });
     });
+}
+
+/**
+ * Section (interface-pair group) reordering. Dropping a section renumbers ALL
+ * forward policies flat — sections in the new visual order, rules keeping
+ * their relative order within each section — so the engine's first-seen
+ * grouping (and jump precedence in MADMIN_FORWARD) follows the UI exactly.
+ * E.g. drag the "any → eth0" section below specific pairs to give those
+ * precedence.
+ */
+function setupSectionDrag(wrap) {
+    let dragged = null;
+    wrap.querySelectorAll('.fw-pair-group').forEach(group => {
+        const header = group.querySelector('.fw-pair-header');
+        if (!header) return;
+        header.addEventListener('dragstart', (e) => {
+            dragged = group;
+            group.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', `section:${group.dataset.pair}`);
+        });
+        header.addEventListener('dragend', () => {
+            group.classList.remove('dragging');
+            clearDropMarkers(wrap);
+            dragged = null;
+        });
+        group.addEventListener('dragover', (e) => {
+            if (!dragged || dragged === group) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            clearDropMarkers(wrap);
+            group.classList.add(dropBefore(e, group) ? 'fw-drop-above' : 'fw-drop-below');
+        });
+        group.addEventListener('drop', async (e) => {
+            if (!dragged || dragged === group) return;
+            e.preventDefault();
+            clearDropMarkers(wrap);
+            await onSectionDrop(wrap, dragged, group, dropBefore(e, group));
+        });
+    });
+}
+
+async function onSectionDrop(wrap, draggedEl, targetEl, before) {
+    // New section sequence from the DOM, with the dragged one re-inserted.
+    const seqEls = [...wrap.querySelectorAll('.fw-pair-group')].filter(g => g !== draggedEl);
+    const idx = seqEls.indexOf(targetEl);
+    if (idx === -1) return;
+    seqEls.splice(before ? idx : idx + 1, 0, draggedEl);
+    const seq = seqEls.map(g => g.dataset.pair);
+
+    // Flat renumber of every forward policy following the new sequence.
+    const policies = rules
+        .filter(r => r.table_name === 'filter' && r.chain === 'FORWARD' && !isAutoRow(r))
+        .sort((a, b) => a.order - b.order);
+    const byPair = new Map();
+    for (const r of policies) {
+        const key = `${r.in_interface || '*'}|${r.out_interface || '*'}`;
+        if (!byPair.has(key)) byPair.set(key, []);
+        byPair.get(key).push(r);
+    }
+    const orders = [];
+    let i = 0;
+    for (const key of seq) {
+        for (const r of (byPair.get(key) || [])) orders.push({ id: r.id, order: i++ });
+    }
+    try {
+        await apiPut('/firewall/rules/order', orders);
+        showToast(t('firewall.orderUpdated'), 'success');
+        await reload();
+    } catch (err) {
+        showToast(t('common.errorPrefix') + err.message, 'error');
+    }
 }

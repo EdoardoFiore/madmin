@@ -54,14 +54,19 @@ def forward_subchain_name(in_if: str, out_if: str) -> str:
     """
     Deterministic subchain name for a (in_interface, out_interface) pair.
 
-    iptables chain names are limited to 28 chars while interface names can be
-    up to 15, so the pair is truncated to 6 chars each and disambiguated with a
-    4-hex-char hash of the full pair (vlan100/vlan101 share the prefix but get
-    different hashes). Max length: 5 + 6 + 1 + 6 + 1 + 4 = 23.
+    Either side may be empty (wildcard); it renders as "any" in the readable
+    part while the hash is still taken over the raw pair so wildcard groups stay
+    distinct (e.g. ""|eth0 vs ens19|eth0). iptables chain names are limited to
+    28 chars while interface names can be up to 15, so each side is truncated to
+    6 chars and disambiguated with a 4-hex-char hash of the full pair
+    (vlan100/vlan101 share the prefix but get different hashes). Max length:
+    5 + 6 + 1 + 6 + 1 + 4 = 23.
     """
     pair_hash = hashlib.sha1(f"{in_if}|{out_if}".encode()).hexdigest()[:4]
 
     def san(name: str) -> str:
+        if not name:
+            return "any"
         return re.sub(r'[^A-Za-z0-9_.]', '_', name)[:6]
 
     return f"{FORWARD_SUBCHAIN_PREFIX}{san(in_if)}_{san(out_if)}_{pair_hash}"

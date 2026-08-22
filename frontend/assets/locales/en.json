@@ -274,6 +274,7 @@
         },
         "std": {
             "newPolicy": "New Policy",
+            "dragSection": "Drag to reorder the section (evaluation precedence)",
             "anyAddr": "any",
             "masquerade": "Masquerade",
             "policyTitle": "Firewall Policy",

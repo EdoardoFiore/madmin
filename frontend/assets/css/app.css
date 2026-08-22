@@ -660,3 +660,36 @@ html {
 .spin {
     animation: madmin-spin 0.8s linear infinite;
 }
+/* == Firewall Standard view: drag & drop ==
+   Same palette as the Advanced view (.draggable-row.dragging / .drag-over),
+   plus a directional edge marking the exact insert position. */
+.fw-drag {
+    transition: background-color 0.15s ease;
+}
+.fw-drag.dragging,
+.fw-pair-group.dragging {
+    opacity: 0.5;
+    background: #e3f2fd !important;
+}
+tr.fw-drop-above,
+tr.fw-drop-below {
+    background: #d4edda !important;
+}
+tr.fw-drop-above > td {
+    box-shadow: inset 0 2px 0 0 #28a745;
+}
+tr.fw-drop-below > td {
+    box-shadow: inset 0 -2px 0 0 #28a745;
+}
+.fw-pair-group.fw-drop-above {
+    box-shadow: inset 0 3px 0 0 #28a745;
+}
+.fw-pair-group.fw-drop-below {
+    box-shadow: inset 0 -3px 0 0 #28a745;
+}
+.fw-pair-header[draggable="true"] {
+    cursor: grab;
+}
+.fw-pair-header[draggable="true"]:active {
+    cursor: grabbing;
+}

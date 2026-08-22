@@ -90,28 +90,32 @@ def _build_forward_layout(
     """
     Build the MADMIN_FORWARD body with per-interface-pair subchains.
 
-    Rules with both interfaces set are grouped into a per-pair subchain,
-    dispatched by a single `-i X -o Y -j MFWD_*` jump emitted at the position
-    of the pair's first rule; partial/wildcard rules stay inline. Evaluation is
-    therefore grouped by pair at the group's first-occurrence position — the
-    same grouping the Standard UI displays. A packet matching no rule in its
-    pair subchain falls through (implicit RETURN) and continues in
-    MADMIN_FORWARD toward later wildcard rules, DNAT companions and the
-    implicit deny.
+    Any rule with at least one interface set (in, out, or both) is grouped into
+    a per-pair subchain, dispatched by a single jump — `-i X`, `-o Y`, or
+    `-i X -o Y` per whichever sides are specified — emitted at the position of
+    the pair's first rule. This makes iptables mirror the Standard UI 1:1 (every
+    interface group is its own MFWD_* chain) and lets a packet skip a whole
+    group in one interface test. Only the fully-wildcard pair (neither interface
+    set) stays inline. A packet matching no rule in its subchain falls through
+    (implicit RETURN) and continues in MADMIN_FORWARD toward later wildcard
+    rules, DNAT companions and the implicit deny.
 
     Returns (forward_lines, {subchain_name: [lines]}).
     """
     lines: List[str] = []
     subchains: Dict[str, List[str]] = {}
     for rule in forward_rules:
-        if rule.in_interface and rule.out_interface:
-            name = iptables.forward_subchain_name(rule.in_interface, rule.out_interface)
+        if rule.in_interface or rule.out_interface:
+            name = iptables.forward_subchain_name(rule.in_interface or "", rule.out_interface or "")
             if name not in subchains:
                 subchains[name] = []
-                lines.append(
-                    f"-A {iptables.MADMIN_FORWARD_CHAIN}"
-                    f" -i {rule.in_interface} -o {rule.out_interface} -j {name}"
-                )
+                jump = f"-A {iptables.MADMIN_FORWARD_CHAIN}"
+                if rule.in_interface:
+                    jump += f" -i {rule.in_interface}"
+                if rule.out_interface:
+                    jump += f" -o {rule.out_interface}"
+                jump += f" -j {name}"
+                lines.append(jump)
             subchains[name].append(_restore_line(name, rule, eff_map))
         else:
             lines.append(_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map))

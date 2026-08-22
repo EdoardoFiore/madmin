@@ -274,6 +274,7 @@
         },
         "std": {
             "newPolicy": "Nuova regola",
+            "dragSection": "Trascina per riordinare la sezione (priorità di valutazione)",
             "anyAddr": "qualsiasi",
             "masquerade": "Masquerade",
             "policyTitle": "Regole Firewall",
