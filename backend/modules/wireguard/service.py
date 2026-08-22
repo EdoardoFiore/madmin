@@ -5,6 +5,7 @@ Business logic for WireGuard operations: key generation, config management,
 interface control, IP allocation, QR code generation.
 """
 import subprocess
+import hashlib
 import logging
 import urllib.request
 from typing import Tuple, List, Optional
@@ -485,15 +486,29 @@ PersistentKeepalive = 25
     WG_NAT_CHAIN = "MOD_WG_NAT"
     
     @staticmethod
-    def _get_group_chain_name(chain_id: str, group_name: str) -> str:
-        """Generate a group chain name that fits within iptables 29-char limit.
+    def _hashed_chain_name(prefix: str, scope: str, name: str) -> str:
+        """Build a chain name that fits iptables' limit without colliding.
 
-        Format: WG_GRP_{instance_8chars}_{group_8chars}
-        Total: 7 + 8 + 1 + 8 = 24 chars max
+        Truncating the name alone is not enough: "nicoletta_rossi" and
+        "nicoletta_bianchi" share their first characters and would land in the
+        same chain, the second apply flushing the first one's rules. Each side is
+        cut to 6 chars and disambiguated with 4 hex of a sha1 over the
+        untruncated pair — the scheme core.firewall.iptables uses for its
+        forward subchains.
+
+        Length: len(prefix) + 6 + 1 + 6 + 1 + 4.
         """
-        inst_part = chain_id[:8]
-        grp_part = group_name[:8]
-        return f"WG_GRP_{inst_part}_{grp_part}"
+        pair_hash = hashlib.sha1(f"{scope}|{name}".encode()).hexdigest()[:4]
+
+        def san(value: str) -> str:
+            return ''.join(c if c.isalnum() else '_' for c in value)[:6]
+
+        return f"{prefix}{san(scope)}_{san(name)}_{pair_hash}"
+
+    @staticmethod
+    def _get_group_chain_name(chain_id: str, group_name: str) -> str:
+        """Group chain name — WG_GRP_{inst_6}_{group_6}_{hash_4}, 25 chars."""
+        return WireGuardService._hashed_chain_name("WG_GRP_", chain_id, group_name)
 
     @staticmethod
     def initialize_module_firewall_chains() -> bool:
@@ -1058,16 +1073,125 @@ PersistentKeepalive = 25
     
     @staticmethod
     def _get_client_chain_name(instance_id: str, client_name: str) -> str:
-        """Generate client chain name (max 29 chars).
-        
-        Format: WG_CLI_{inst_6}_{cli_10}
-        Total: 7 + 6 + 1 + 10 = 24 chars max
-        """
-        inst_part = instance_id.replace('wg_', '')[:6]
-        # Sanitize client name: replace invalid chars with underscore
-        safe_name = ''.join(c if c.isalnum() else '_' for c in client_name)[:10]
-        return f"WG_CLI_{inst_part}_{safe_name}"
+        """Client filter chain name — WG_CLI_{inst_6}_{cli_6}_{hash_4}, 25 chars."""
+        return WireGuardService._hashed_chain_name(
+            "WG_CLI_", instance_id.replace('wg_', ''), client_name
+        )
     
+    @staticmethod
+    def _get_client_nat_chain_name(instance_id: str, client_name: str) -> str:
+        """NAT counterpart of _get_client_chain_name — 26 chars."""
+        return WireGuardService._hashed_chain_name(
+            "WG_CNAT_", instance_id.replace('wg_', ''), client_name
+        )
+
+    @staticmethod
+    def apply_client_nat_rules(
+        instance_id: str,
+        client_ip: str,
+        client_name: str,
+        allowed_ips: str,
+        has_overrides: bool = False,
+        remote_lans: list = None,
+        site_to_site_lans: list = None,
+        interface: str = None,
+    ) -> bool:
+        """Apply per-client SNAT for the destinations its override adds.
+
+        The instance NAT chain only masquerades {instance_subnet} towards the
+        instance's own routes (apply_instance_firewall_rules), so two things
+        leave un-NATed and lose their return path:
+          - any destination a per-client AllowedIPs override adds (including a
+            client set to 0.0.0.0/0 on a split-tunnel instance, where the
+            instance chain has no catch-all MASQUERADE at all);
+          - traffic sourced from a client's remote_lans, whose source is not
+            the VPN subnet.
+
+        One MASQUERADE per override destination, jumped to from the client's own
+        /32 and from each LAN behind it. The chain ends with RETURN, so whatever
+        it does not cover still falls through to the instance rules.
+
+        `! -o {interface}` is the only guard the rules need: a destination that
+        is another VPN peer (or the instance subnet itself) leaves through the
+        tunnel and must keep its real source, everything else is masqueraded on
+        whichever interface routing picks — no need to know which one that is.
+        """
+        chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
+        nat_chain = f"WG_{chain_id}_NAT"
+        client_nat = WireGuardService._get_client_nat_chain_name(instance_id, client_name)
+        sources = [f"{client_ip.split('/')[0]}/32"]
+
+        # Purged by target, not by exact spec, so a changed client IP or an
+        # edited remote_lans list cannot leave a stale jump behind.
+        core_iptables.purge_jumps_to(nat_chain, client_nat, "nat")
+
+        # A client with no overrides is covered by the instance rules, unless it
+        # carries remote LANs, which those rules never match on.
+        if not has_overrides and not (remote_lans or []):
+            core_iptables.delete_chain(client_nat, "nat")
+            return True
+
+        def _v4(value) -> Optional[str]:
+            """Keep IPv4 CIDRs only — an IPv6 entry (::/0 is in every config, and
+            older rows predate validation) would make the iptables call fail."""
+            try:
+                net = ip_network(str(value).strip(), strict=False)
+            except (ValueError, AttributeError):
+                return None
+            return str(net) if net.version == 4 else None
+
+        networks = [n for n in (_v4(a) for a in (allowed_ips or '').split(',')) if n]
+        sources += [n for n in (_v4(l) for l in (remote_lans or [])) if n]
+        if not networks:
+            logger.info(f"Client {client_name}: no IPv4 destination to NAT, skipping client chain")
+            core_iptables.delete_chain(client_nat, "nat")
+            return True
+
+        logger.info(f"Applying client NAT for {client_name} (chain: {client_nat})")
+        logger.info(f"  Sources: {sources} -> destinations: {networks}")
+
+        core_iptables.create_or_flush_chain(client_nat, "nat")
+
+        # NAT-exempt first: site-to-site LANs must keep their original source,
+        # and ACCEPT is terminal for the nat hook (as in the instance chain).
+        for lan in [n for n in (_v4(l) for l in (site_to_site_lans or [])) if n]:
+            core_iptables.run_safe("nat", [
+                "-A", client_nat, "-d", lan,
+                "-m", "comment", "--comment", f"s2s_{client_name}",
+                "-j", "ACCEPT",
+            ])
+
+        out_spec = ["!", "-o", interface] if interface else []
+        for network in networks:
+            core_iptables.run_safe("nat", [
+                "-A", client_nat, "-d", network, *out_spec, "-j", "MASQUERADE"
+            ])
+            logger.info(f"  Added NAT rule: -d {network} {' '.join(out_spec)} -j MASQUERADE")
+
+        # Fall through to the instance rules for anything not matched above
+        core_iptables.run_safe("nat", ["-A", client_nat, "-j", "RETURN"])
+
+        # Jump at position 1: the instance rules below match -s {instance_subnet},
+        # which already covers this client, so the override must be evaluated first.
+        for src in sources:
+            core_iptables.run_safe("nat", [
+                "-I", nat_chain, "1", "-s", src, "-j", client_nat
+            ])
+            logger.info(f"  Jump inserted in {nat_chain}: -s {src} -j {client_nat}")
+
+        return True
+
+    @staticmethod
+    def remove_client_nat_rules(instance_id: str, client_name: str) -> bool:
+        """Remove a client's NAT chain and every jump pointing at it."""
+        chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
+        nat_chain = f"WG_{chain_id}_NAT"
+        client_nat = WireGuardService._get_client_nat_chain_name(instance_id, client_name)
+
+        core_iptables.purge_jumps_to(nat_chain, client_nat, "nat")
+        core_iptables.delete_chain(client_nat, "nat")
+        return True
+
     @staticmethod
     def apply_client_firewall_rules(
         instance_id: str,
@@ -1076,7 +1200,9 @@ PersistentKeepalive = 25
         allowed_ips: str,
         instance_subnet: str = None,
         has_overrides: bool = False,
-        remote_lans: list = None
+        remote_lans: list = None,
+        site_to_site_lans: list = None,
+        interface: str = None,
     ) -> bool:
         """Apply per-client firewall enforcement.
         
@@ -1088,7 +1214,21 @@ PersistentKeepalive = 25
         
         OPTIMIZATION: Only creates chain if has_overrides=True.
         Standard clients (no overrides) fall through to generic instance rules.
+
+        Filter enforcement alone is not enough for an override that widens the
+        client's routes: the instance NAT chain masquerades the VPN subnet only
+        towards the instance's own routes, so the extra destinations would be
+        accepted here and then leave un-NATed. apply_client_nat_rules keeps the
+        nat side in sync.
         """
+        WireGuardService.apply_client_nat_rules(
+            instance_id, client_ip, client_name, allowed_ips,
+            has_overrides=has_overrides,
+            remote_lans=remote_lans,
+            site_to_site_lans=site_to_site_lans,
+            interface=interface,
+        )
+
         chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
         client_chain = WireGuardService._get_client_chain_name(instance_id, client_name)
         instance_fwd = f"WG_{chain_id}_FWD"
@@ -1281,6 +1421,9 @@ PersistentKeepalive = 25
         # Delete chain
         core_iptables.delete_chain(client_chain, "filter")
 
+        # NAT side (chain + every jump pointing at it)
+        WireGuardService.remove_client_nat_rules(instance_id, client_name)
+
         return True
     
     @staticmethod
@@ -1317,7 +1460,9 @@ PersistentKeepalive = 25
                 effective["effective_allowed_ips"],
                 instance_subnet=instance.subnet,
                 has_overrides=effective["has_overrides"],
-                remote_lans=client.remote_lans or []
+                remote_lans=client.remote_lans or [],
+                site_to_site_lans=instance.site_to_site_lans if instance.site_to_site else [],
+                interface=instance.interface,
             )
         
         logger.info(f"Applied firewall rules for {len(clients)} clients")
@@ -1359,6 +1504,9 @@ PersistentKeepalive = 25
 
             # Delete chain
             core_iptables.delete_chain(client_chain, "filter")
+
+            # NAT side
+            WireGuardService.remove_client_nat_rules(instance_id, client.name)
         
         logger.info(f"Removed firewall chains for {len(clients)} clients")
         return True

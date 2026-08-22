@@ -328,6 +328,11 @@ async def update_instance_site_to_site(
             site_to_site=instance.site_to_site,
             site_to_site_lans=instance.site_to_site_lans,
         )
+        # apply_instance_firewall_rules flushes the instance chains, taking the
+        # group and per-client jumps with them: rebuild both, and let the client
+        # NAT chains pick up the new NAT-exempt LANs.
+        await wireguard_service.apply_group_firewall_rules(instance.id, db)
+        await wireguard_service.apply_all_client_firewall_rules(instance.id, db)
 
     client_count_result = await db.execute(
         select(func.count()).select_from(WgClient).where(WgClient.instance_id == instance_id)
@@ -779,7 +784,9 @@ async def create_client(
             effective["effective_allowed_ips"],
             instance_subnet=instance.subnet,
             has_overrides=effective["has_overrides"],
-            remote_lans=remote_lans
+            remote_lans=remote_lans,
+            site_to_site_lans=instance.site_to_site_lans if instance.site_to_site else [],
+            interface=instance.interface,
         )
     
     await db.commit()
@@ -957,7 +964,9 @@ async def update_client(
             effective["effective_allowed_ips"],
             instance_subnet=instance.subnet,
             has_overrides=effective["has_overrides"],
-            remote_lans=client.remote_lans or []
+            remote_lans=client.remote_lans or [],
+            site_to_site_lans=instance.site_to_site_lans if instance.site_to_site else [],
+            interface=instance.interface,
         )
 
     # Get effective values for response

@@ -4,12 +4,46 @@ WireGuard Module - Database Models
 SQLModel tables for WireGuard instances, clients, groups, and rules.
 """
 import re
+import ipaddress
 from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
 from sqlalchemy import Text
 from pydantic import field_validator
 import uuid
+
+
+def validate_allowed_ips(value: Optional[str]) -> Optional[str]:
+    """Validate a WireGuard AllowedIPs string: comma-separated CIDRs.
+
+    Both families are accepted (a config normally carries ::/0 alongside
+    0.0.0.0/0) and each entry is normalized, so "10.10.0.5/24" is stored as
+    "10.10.0.0/24" and a bare address as /32. An empty value is left as-is:
+    the routers read it as "remove the override / keep the default".
+
+    These strings drive both the generated .conf and the per-client NAT chain
+    (WireGuardService.apply_client_nat_rules), where an unparsable entry used
+    to translate into an iptables call that failed silently.
+    """
+    if value is None:
+        return None
+    if not value.strip():
+        return value
+
+    normalized = []
+    for entry in value.split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            net = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            raise ValueError(f"'{entry}' non è una rete CIDR valida (es. 10.0.0.0/24, 0.0.0.0/0)")
+        if str(net) not in normalized:
+            normalized.append(str(net))
+    if not normalized:
+        raise ValueError("AllowedIPs non contiene alcuna rete valida")
+    return ", ".join(normalized)
 
 
 class WgInstance(SQLModel, table=True):
@@ -180,6 +214,11 @@ class WgInstanceCreate(SQLModel):
     default_allowed_ips: str = "0.0.0.0/0, ::/0"  # Default routes for clients
     endpoint: Optional[str] = None  # Public IP/domain for client configs
 
+    @field_validator('default_allowed_ips')
+    @classmethod
+    def _validate_default_allowed_ips(cls, v: Optional[str]) -> Optional[str]:
+        return validate_allowed_ips(v)
+
 
 class WgInstanceRead(SQLModel):
     id: str
@@ -241,6 +280,11 @@ class WgClientCreate(SQLModel):
         if len(v) > 64:
             raise ValueError('Il nome non può superare 64 caratteri')
         return v
+
+    @field_validator('allowed_ips')
+    @classmethod
+    def _validate_allowed_ips(cls, v: Optional[str]) -> Optional[str]:
+        return validate_allowed_ips(v)
 
 
 class WgClientRead(SQLModel):
@@ -351,8 +395,18 @@ class WgInstanceDefaultsUpdate(SQLModel):
     default_allowed_ips: Optional[str] = None  # Default routes for clients
     dns_servers: Optional[List[str]] = None  # Default DNS for clients
 
+    @field_validator('default_allowed_ips')
+    @classmethod
+    def _validate_default_allowed_ips(cls, v: Optional[str]) -> Optional[str]:
+        return validate_allowed_ips(v)
+
 
 class WgClientUpdate(SQLModel):
     """Schema for updating per-client overrides."""
     allowed_ips: Optional[str] = None  # Override routes (NULL = use instance default)
     dns: Optional[str] = None  # Override DNS (NULL = use instance default)
+
+    @field_validator('allowed_ips')
+    @classmethod
+    def _validate_allowed_ips(cls, v: Optional[str]) -> Optional[str]:
+        return validate_allowed_ips(v)

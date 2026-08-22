@@ -428,6 +428,40 @@ def remove_jump_rule(source_chain: str, target_chain: str, table: str = "filter"
     return success
 
 
+def purge_jumps_to(source_chain: str, target_chain: str, table: str = "filter") -> int:
+    """
+    Remove every rule in source_chain that jumps to target_chain, whatever its
+    match is.
+
+    remove_jump_rule only deletes the bare `-j target` form, so a jump carrying
+    matches (e.g. `-s 10.8.0.5/32 -j WG_CNAT_x`) survives it — and survives a
+    change to those matches, leaving a stale duplicate behind. This reads the
+    chain with -S and deletes each jump by its own spec instead.
+
+    Returns the number of rules deleted.
+    """
+    if settings.mock_iptables:
+        logger.debug(f"[MOCK] purge jumps {source_chain} -> {target_chain}")
+        return 0
+
+    success, output = _run_iptables(table, ["-S", source_chain], suppress_errors=True)
+    if not success or not output:
+        return 0
+
+    removed = 0
+    for line in output.strip().split("\n"):
+        parts = line.split()
+        # Only rule lines ("-A chain ... -j target"), not the -N declaration
+        if len(parts) < 4 or parts[0] != "-A" or parts[-2:] != ["-j", target_chain]:
+            continue
+        ok, _ = _run_iptables(table, ["-D"] + parts[1:], suppress_errors=True)
+        if ok:
+            removed += 1
+    if removed:
+        logger.debug(f"Purged {removed} jump(s) {source_chain} -> {target_chain} ({table})")
+    return removed
+
+
 # =============================================================================
 # SAFE WRAPPERS (bool return, never raise — for module use)
 # =============================================================================
