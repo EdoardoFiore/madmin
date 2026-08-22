@@ -8,15 +8,16 @@
  *  3. Outbound NAT      — nat/POSTROUTING SNAT/MASQUERADE (incl. read-only
  *                          policy-NAT companions and the managed nav NAT).
  */
-import { apiGet, apiPatch, apiPut, apiDelete } from '../../api.js';
-import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '../../utils.js';
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete } from '../../api.js';
+import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml, formatBytes, formatDate } from '../../utils.js';
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
-import { serviceLabel, isAutoRow, isManagedNat } from './shared.js';
+import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
+let counters = new Map(); // rule uuid -> {rule_id, packets, bytes, window_start, updated_at}
 let containerEl = null;
 
 export async function render(container, _params = []) {
@@ -56,6 +57,70 @@ async function reload() {
     renderPolicy();
     renderPortForward();
     renderOutboundNat();
+    // Fire-and-forget: rows render immediately with inert counter icons: the
+    // hover popover attaches once this resolves (see populateCounterPopovers).
+    // No polling/refresh button — this is the "on page load" auto-refresh.
+    loadCounters();
+}
+
+/** GET /firewall/counters — durable per-rule hit/traffic totals (see backend
+ * models.RuleCounter). Never blocks the row render above: kernel counters are
+ * ephemeral, iptables-save is a real subprocess call, and rules must appear
+ * instantly regardless of how long that takes. */
+async function loadCounters() {
+    try {
+        const list = await apiGet('/firewall/counters');
+        counters = new Map(list.map(c => [c.rule_id, c]));
+    } catch (e) {
+        counters = new Map();
+    }
+    populateCounterPopovers();
+}
+
+/** Attach the hover popover to every counter icon currently in the DOM.
+ * Content/title are baked onto the element (mirrors the addr-ref-chip pattern
+ * in advanced.js) right before instantiating the Popover, so Bootstrap always
+ * reads fresh data — icons rendered before loadCounters() resolves simply
+ * stay inert until this runs. */
+function populateCounterPopovers() {
+    containerEl?.querySelectorAll('.fw-counter[data-counter-id]').forEach(el => {
+        el.setAttribute('title', t('firewall.std.counterTitle'));
+        el.setAttribute('data-bs-content', counterPopoverHtml(counters.get(el.dataset.counterId)));
+        bootstrap.Popover.getOrCreateInstance(el, {
+            html: true, trigger: 'hover focus', placement: 'top', container: 'body',
+            delay: { show: 1000, hide: 100 },
+        });
+    });
+}
+
+function counterPopoverHtml(c) {
+    if (!c) {
+        return `<span class="text-muted small">${escapeHtml(t('firewall.std.counterNone'))}</span>`;
+    }
+    const row = (label, value) => `
+        <div class="d-flex justify-content-between align-items-center">
+            <span class="text-muted me-3">${escapeHtml(label)}</span>
+            <span>${value}</span>
+        </div>`;
+    return `
+        <div class="small" style="min-width:190px">
+            <div class="d-flex justify-content-between align-items-baseline">
+                <strong>${formatBytes(c.bytes)}</strong>
+                <span class="text-muted ms-3">${c.packets.toLocaleString()} pkt</span>
+            </div>
+            <hr class="my-1">
+            ${row(t('firewall.std.counterFirstUsed'), formatDate(c.window_start))}
+            ${row(t('firewall.std.counterLastUsed'), formatDate(c.updated_at))}
+        </div>`;
+}
+
+/** Inline hover-details icon for a rule's counters, keyed by counterRuleId
+ * (resolves auto/companion rows back to the owning policy's uuid). Empty
+ * string for rows with no countable id (auto-implicit-deny). */
+function counterIcon(r) {
+    const cid = counterRuleId(r);
+    if (!cid) return '';
+    return `<i class="ti ti-chart-histogram fw-counter text-muted" data-counter-id="${cid}" style="cursor:help"></i>`;
 }
 
 /** Open the editor in-place, returning to this view on close. */
@@ -84,10 +149,85 @@ function renderAddrCell(literal, refs) {
     return `<span class="text-muted">${t('firewall.std.anyAddr')}</span>`;
 }
 
+/** DNAT internal target: an address-object reference (badge + optional
+ * :port) or the literal ip[:port] column — see to_destination_object_id. */
+function internalTargetCell(r) {
+    if (r.to_destination_object_id) {
+        const port = r.to_destination_port ? `:${escapeHtml(r.to_destination_port)}` : '';
+        return `<span class="badge bg-azure-lt"><i class="ti ti-box me-1"></i>${escapeHtml(r.to_destination_object_name || r.to_destination_object_id)}</span><code class="ms-1">${port}</code>`;
+    }
+    return `<code>${escapeHtml(r.to_destination || '')}</code>`;
+}
+
+/** Badge for rules carrying a match/behavior Standard never shows (state,
+ * rate limit, logging — Advanced-only fields, preserved silently on save). */
+function advancedMatchBadge(r) {
+    if (!hasAdvancedMatch(r)) return '';
+    return `<span class="badge bg-yellow-lt ms-1" title="${escapeHtml(t('firewall.std.advancedMatchHint'))}">
+        <i class="ti ti-adjustments me-1"></i>${t('firewall.std.advancedMatchBadge')}</span>`;
+}
+
 function natCell(rule) {
     return rule.policy_nat
         ? `<span class="badge bg-green-lt"><i class="ti ti-arrows-exchange me-1"></i>${t('firewall.std.masquerade')}</span>`
         : `<span class="text-muted">—</span>`;
+}
+
+/** Read-only block for the engine-generated FORWARD companions (a port
+ * forward's ACCEPT toward the translated destination, plus the LAN-side
+ * hairpin ACCEPT). apply_rules appends these AFTER every user policy and
+ * before the implicit deny (orchestrator.apply_rules), which is why a user
+ * DROP placed above can silently kill a port forward. Rendering them in that
+ * exact position is what makes the ordering visible instead of surprising —
+ * without it the Standard view reads as "policies, then deny" and the cause
+ * of a dead forward is only findable in the Advanced view. */
+function renderAutoForward() {
+    const list = rules.filter(r => r.table_name === 'filter' && r.chain === 'FORWARD'
+        && isAutoRow(r) && r.id !== 'auto-implicit-deny');
+    if (!list.length) return '';
+    const hint = escapeHtml(t('firewall.std.autoFwdHint'));
+    return `
+        <div class="fw-pair-group">
+            <div class="px-3 py-2 bg-light border-top fw-pair-header d-flex align-items-center" title="${hint}">
+                <i class="ti ti-lock me-2 text-muted"></i>
+                <strong>${t('firewall.std.autoFwdTitle')}</strong>
+                <span class="badge bg-secondary-lt ms-2">${list.length}</span>
+                <i class="ti ti-info-circle ms-2 text-muted"></i>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-vcenter card-table mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width:42px"></th>
+                            <th>${t('firewall.inInterface')}</th>
+                            <th>${t('firewall.std.colSource')}</th>
+                            <th>${t('firewall.std.colDest')}</th>
+                            <th>${t('firewall.std.colService')}</th>
+                            <th>${t('firewall.action')}</th>
+                            <th>${t('firewall.std.colOrigin')}</th>
+                            <th style="width:34px"></th>
+                        </tr>
+                    </thead>
+                    <tbody>${list.map(r => autoForwardRow(r, hint)).join('')}</tbody>
+                </table>
+            </div>
+        </div>`;
+}
+
+function autoForwardRow(r, hint) {
+    return `
+        <tr data-id="${r.id}">
+            <td class="text-muted"><i class="ti ti-lock" title="${hint}"></i></td>
+            <td>${r.in_interface
+                ? `<code>${escapeHtml(r.in_interface)}</code>`
+                : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
+            <td>${renderAddrCell(r.source, r.source_refs)}</td>
+            <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
+            <td><span class="text-muted">${serviceLabel(r)}</span></td>
+            <td>${actionBadge(r.action)}</td>
+            <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
+            <td>${counterIcon(r)}</td>
+        </tr>`;
 }
 
 function renderPolicy() {
@@ -123,10 +263,15 @@ function renderPolicy() {
             <i class="ti ti-info-circle ms-2 text-muted"></i>
         </div>`;
 
+    // Companions are appended by the engine after every user policy — rendered
+    // in that same position here, in both the populated and the empty case (a
+    // port forward can exist with no forward policy at all).
+    const autoBlock = renderAutoForward();
+
     if (!policies.length) {
         wrap.innerHTML = `<div class="card">${header}<div class="card-body">${
             emptyState('ti-arrow-guide', t('firewall.std.noPolicies'), t('firewall.std.noPoliciesHint'))
-        }</div>${implicitDeny}</div>`;
+        }</div>${autoBlock}${implicitDeny}</div>`;
         return;
     }
 
@@ -156,6 +301,7 @@ function renderPolicy() {
                                 <th>${t('firewall.action')}</th>
                                 <th>${t('firewall.std.colNat')}</th>
                                 <th>${t('firewall.comment')}</th>
+                                <th style="width:34px"></th>
                                 <th>${t('firewall.std.colStatus')}</th>
                                 <th class="text-end"></th>
                             </tr>
@@ -168,7 +314,7 @@ function renderPolicy() {
             </div>`;
     }
 
-    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${implicitDeny}</div></div>`;
+    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${autoBlock}${implicitDeny}</div></div>`;
 
     bindRowActions(wrap, 'policy');
     if (canManage) {
@@ -189,25 +335,41 @@ function policyRow(r, canManage) {
                 <td>${actionBadge(r.action)}</td>
                 <td>${natCell(r)}</td>
                 <td><span class="badge bg-azure-lt"><i class="ti ti-lock me-1"></i>${t('firewall.managedNat')}</span></td>
+                <td>${counterIcon(r)}</td>
                 <td></td>
                 <td></td>
             </tr>`;
     }
+    const locked = isLockedForMode(r, 'policy');
+    const draggable = canManage && !locked;
     return `
-        <tr class="${disabled} fw-drag" data-id="${r.id}" draggable="${canManage}">
-            <td>${canManage ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
+        <tr class="${disabled} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+            <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
             <td>${renderAddrCell(r.source, r.source_refs)}</td>
             <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
-            <td><span class="text-muted">${serviceLabel(r)}</span></td>
+            <td><span class="text-muted">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
             <td>${actionBadge(r.action)}</td>
             <td>${natCell(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
+            <td>${counterIcon(r)}</td>
             <td>${enableToggle(r, canManage)}</td>
-            <td class="text-end">${canManage ? rowButtons() : ''}</td>
+            <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>
         </tr>`;
 }
 
-function rowButtons() {
+/** Edit/duplicate/delete button group. When locked (rule's action isn't one
+ * the current Standard editor mode can represent, e.g. a LOG policy or a
+ * REDIRECT port forward) edit/duplicate are disabled to avoid the editor
+ * silently coercing the action into something else on save; delete stays
+ * available since removing the rule can't misrepresent it. */
+function rowButtons(locked = false) {
+    if (locked) {
+        return `
+            <div class="btn-group btn-group-sm">
+                <button class="btn btn-ghost-secondary" disabled title="${escapeHtml(t('firewall.std.manageFromAdvanced'))}"><i class="ti ti-lock"></i></button>
+                <button class="btn btn-ghost-danger fw-del" title="${t('common.delete')}"><i class="ti ti-trash"></i></button>
+            </div>`;
+    }
     return `
         <div class="btn-group btn-group-sm">
             <button class="btn btn-ghost-secondary fw-dup" title="${t('common.copy')}"><i class="ti ti-copy"></i></button>
@@ -255,23 +417,31 @@ function renderPortForward() {
             <div class="table-responsive">
                 <table class="table table-vcenter card-table mb-0">
                     <thead><tr>
+                        <th style="width:42px"></th>
                         <th>${t('firewall.comment')}</th>
                         <th>${t('firewall.inInterface')}</th>
                         <th>${t('firewall.std.external')}</th>
                         <th>${t('firewall.std.internal')}</th>
+                        <th style="width:34px"></th>
                         <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
-                    <tbody>
-                        ${list.map(r => `
-                            <tr class="${r.enabled ? '' : 'opacity-50'}" data-id="${r.id}">
+                    <tbody class="fw-sortable">
+                        ${list.map(r => {
+                            const locked = isLockedForMode(r, 'portforward');
+                            const draggable = canManage && !locked;
+                            return `
+                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+                                <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
-                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span></td>
-                                <td><code>${escapeHtml(r.to_destination || '')}</code></td>
+                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
+                                <td>${internalTargetCell(r)} ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
+                                <td>${counterIcon(r)}</td>
                                 <td>${enableToggle(r, canManage)}</td>
-                                <td class="text-end">${canManage ? rowButtons() : ''}</td>
-                            </tr>`).join('')}
+                                <td class="text-end">${canManage ? rowButtons(locked) : ''}</td>
+                            </tr>`;
+                        }).join('')}
                     </tbody>
                 </table>
             </div>`;
@@ -280,6 +450,7 @@ function renderPortForward() {
     wrap.innerHTML = `<div class="card">${header}${inner}</div>`;
     document.getElementById('btn-new-portfwd')?.addEventListener('click', () => edit('portforward', null));
     bindRowActions(wrap, 'portforward');
+    if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
 }
 
 // ---------------------------------------------------------------------------
@@ -311,24 +482,32 @@ function renderOutboundNat() {
             <div class="table-responsive">
                 <table class="table table-vcenter card-table mb-0">
                     <thead><tr>
+                        <th style="width:42px"></th>
                         <th>${t('firewall.std.colSource')}</th>
                         <th>${t('firewall.std.colDest')}</th>
+                        <th>${t('firewall.std.colService')}</th>
                         <th>${t('firewall.outInterface')}</th>
                         <th>${t('firewall.action')}</th>
+                        <th style="width:34px"></th>
                         <th>${t('firewall.std.colStatus')}</th>
                         <th class="text-end"></th>
                     </tr></thead>
-                    <tbody>
+                    <tbody class="fw-sortable">
                         ${list.map(r => {
                             const locked = isAutoRow(r) || isManagedNat(r);
+                            const actionLocked = isLockedForMode(r, 'outnat');
+                            const draggable = canManage && !locked;
                             return `
-                            <tr class="${r.enabled ? '' : 'opacity-50'}" data-id="${r.id}">
+                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+                                <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${renderAddrCell(r.source, r.source_refs)}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
+                                <td><span class="text-muted">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
                                 <td>${r.out_interface ? `<code>${escapeHtml(r.out_interface)}</code>` : '<span class="text-muted">—</span>'}</td>
                                 <td>${actionBadge(r.action)} ${locked ? `<span class="badge bg-azure-lt ms-1"><i class="ti ti-lock me-1"></i>${t('firewall.autoRule')}</span>` : ''}</td>
+                                <td>${counterIcon(r)}</td>
                                 <td>${enableToggle(r, canManage)}</td>
-                                <td class="text-end">${(canManage && !locked) ? rowButtons() : ''}</td>
+                                <td class="text-end">${(canManage && !locked) ? rowButtons(actionLocked) : ''}</td>
                             </tr>`;
                         }).join('')}
                     </tbody>
@@ -339,6 +518,7 @@ function renderOutboundNat() {
     wrap.innerHTML = `<div class="card">${header}${inner}</div>`;
     document.getElementById('btn-new-outnat')?.addEventListener('click', () => edit('outnat', null));
     bindRowActions(wrap, 'outnat');
+    if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +533,31 @@ function bindRowActions(wrap, mode) {
             await apiPatch(`/firewall/rules/${r.id}`, { enabled });
             showToast(enabled ? t('firewall.std.ruleEnabled') : t('firewall.std.ruleDisabled'), 'success');
             await reload();
+            // Enabling a DROP/REJECT policy blocks new connections, but
+            // already-established ones keep flowing until conntrack is
+            // flushed — offer to do it now (only makes sense on enable).
+            if (mode === 'policy' && enabled && ['DROP', 'REJECT'].includes(r.action)) {
+                const confirmed = await confirmDialog(
+                    t('firewall.terminateSessionsTitle'),
+                    t('firewall.terminateSessionsDesc', { action: r.action }),
+                    t('firewall.terminateBtn'),
+                    'btn-warning'
+                );
+                if (confirmed) {
+                    try {
+                        const result = await apiPost(`/firewall/rules/${r.id}/flush-conntrack`, {});
+                        const count = result.flushed ?? 0;
+                        showToast(
+                            count > 0
+                                ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
+                                : t('firewall.noActiveSessions'),
+                            'success'
+                        );
+                    } catch (err) {
+                        showToast(t('common.errorPrefix') + err.message, 'error');
+                    }
+                }
+            }
         } catch (err) {
             e.target.checked = !enabled;
             showToast(t('common.errorPrefix') + err.message, 'error');
@@ -464,7 +669,7 @@ function setupDragDrop(tbody) {
  */
 function setupSectionDrag(wrap) {
     let dragged = null;
-    wrap.querySelectorAll('.fw-pair-group').forEach(group => {
+    wrap.querySelectorAll('.fw-pair-group[data-pair]').forEach(group => {
         const header = group.querySelector('.fw-pair-header');
         if (!header) return;
         header.addEventListener('dragstart', (e) => {
@@ -496,7 +701,9 @@ function setupSectionDrag(wrap) {
 
 async function onSectionDrop(wrap, draggedEl, targetEl, before) {
     // New section sequence from the DOM, with the dragged one re-inserted.
-    const seqEls = [...wrap.querySelectorAll('.fw-pair-group')].filter(g => g !== draggedEl);
+    // [data-pair] excludes the read-only auto-companion block, which is not a
+    // user-orderable section.
+    const seqEls = [...wrap.querySelectorAll('.fw-pair-group[data-pair]')].filter(g => g !== draggedEl);
     const idx = seqEls.indexOf(targetEl);
     if (idx === -1) return;
     seqEls.splice(before ? idx : idx + 1, 0, draggedEl);

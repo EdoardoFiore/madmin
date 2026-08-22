@@ -8,6 +8,7 @@ import re
 from typing import Optional, List
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship
+from sqlalchemy import Column, BigInteger
 from pydantic import field_validator
 import uuid
 import ipaddress
@@ -143,15 +144,17 @@ class IpsecTrafficStats(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     tunnel_id: uuid.UUID = Field(foreign_key="ipsec_tunnel.id", index=True)
     
-    # Traffic counters (cumulative values at collection time)
-    bytes_in: int = Field(default=0)
-    bytes_out: int = Field(default=0)
-    packets_in: int = Field(default=0)
-    packets_out: int = Field(default=0)
-    
+    # Traffic counters (cumulative values at collection time).
+    # BIGINT: cumulative byte counters overflow a 32-bit INTEGER (max ~2.1 GB)
+    # on any busy tunnel, which crashes the whole stats INSERT batch.
+    bytes_in: int = Field(default=0, sa_column=Column(BigInteger))
+    bytes_out: int = Field(default=0, sa_column=Column(BigInteger))
+    packets_in: int = Field(default=0, sa_column=Column(BigInteger))
+    packets_out: int = Field(default=0, sa_column=Column(BigInteger))
+
     # Delta values (difference from previous collection)
-    bytes_in_delta: int = Field(default=0)
-    bytes_out_delta: int = Field(default=0)
+    bytes_in_delta: int = Field(default=0, sa_column=Column(BigInteger))
+    bytes_out_delta: int = Field(default=0, sa_column=Column(BigInteger))
     
     # Timestamp for this data point
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)

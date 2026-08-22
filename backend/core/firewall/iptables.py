@@ -34,6 +34,16 @@ MADMIN_PREROUTING_NAT_CHAIN = "MADMIN_PREROUTING"
 MADMIN_POSTROUTING_NAT_CHAIN = "MADMIN_POSTROUTING"
 MADMIN_OUTPUT_NAT_CHAIN = "MADMIN_OUTPUT_NAT"
 
+# Conntrack-mark region reserved for policy-NAT (bits 16-23, up to 255
+# concurrent NAT policies). This is a CONNTRACK mark (ctmark, set via
+# CONNMARK --set-xmark / matched via -m connmark), not a packet mark
+# (fwmark, set via MARK / matched via -m mark) — different netfilter
+# namespaces entirely. WireGuard's fwmark 51820 (0xCA6C, bits 2-15) can
+# never collide even numerically: 0xCA6C & 0x00FF0000 == 0. MADMIN never
+# emits `CONNMARK --restore-mark`, so this ctmark never leaks into a
+# packet mark or a routing decision.
+POLICY_NAT_MARK_MASK = 0x00FF0000
+
 # Mangle table chains
 MADMIN_PREROUTING_MANGLE_CHAIN = "MADMIN_PREROUTING_MANGLE"
 MADMIN_INPUT_MANGLE_CHAIN = "MADMIN_INPUT_MANGLE"
@@ -91,6 +101,64 @@ def list_forward_subchains() -> List[str]:
         if line.startswith(f":{FORWARD_SUBCHAIN_PREFIX}"):
             chains.append(line[1:].split(" ")[0])
     return chains
+
+
+# =============================================================================
+# COUNTERS
+# =============================================================================
+
+# A saved rule line looks like: [123:45678] -A MADMIN_FORWARD -s 10.0.0.0/24
+# -j ACCEPT -m comment --comment "ID_a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# (iptables-save quotes the comment match value regardless of content).
+_COUNTER_LINE_RE = re.compile(r'^\[(\d+):(\d+)\]\s+-A\s+\S+\s+(.*)$')
+_COUNTER_COMMENT_RE = re.compile(
+    r'--comment\s+"?(?:ID_|MADMIN_AUTO_[A-Z]+_|MADMIN_NATMARK_)'
+    r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"?'
+)
+
+
+def read_rule_counters() -> Dict[str, Tuple[int, int]]:
+    """
+    Read current kernel packet/byte counters for every MADMIN-managed rule,
+    summed per rule UUID.
+
+    Every user rule carries a comment tag with its DB id — `ID_<uuid>`
+    (rule_to_restore_line) — and auto-generated companions carry
+    `MADMIN_AUTO_<TYPE>_<uuid>` / `MADMIN_NATMARK_<uuid>` (orchestrator.py). A
+    single DB rule can expand into several kernel lines (e.g. a policy_nat
+    FORWARD rule -> ACCEPT + MASQUERADE + CONNMARK companions); their counters
+    are summed here so callers see one total per rule id.
+
+    Returns {} in mock mode or if iptables-save fails — the caller
+    (orchestrator.snapshot_counters) treats that as "nothing to accumulate
+    this round", never as a reset to zero.
+    """
+    if settings.mock_iptables:
+        return {}
+    try:
+        result = subprocess.run(
+            ["iptables-save", "-c"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning(f"Could not read rule counters: {e}")
+        return {}
+
+    totals: Dict[str, Tuple[int, int]] = {}
+    for line in result.stdout.splitlines():
+        m = _COUNTER_LINE_RE.match(line)
+        if not m:
+            continue
+        cm = _COUNTER_COMMENT_RE.search(m.group(3))
+        if not cm:
+            continue
+        packets, byte_count = int(m.group(1)), int(m.group(2))
+        rule_id = cm.group(1)
+        prev_p, prev_b = totals.get(rule_id, (0, 0))
+        totals[rule_id] = (prev_p + packets, prev_b + byte_count)
+    return totals
 
 
 # =============================================================================
@@ -307,12 +375,18 @@ def split_ip_port(value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
 _UNSET = object()
 
 
-def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET) -> str:
+def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET,
+                          to_destination=_UNSET) -> str:
     """Convert a MachineFirewallRule to an iptables-restore format line (-A ...).
 
     `source`/`destination` may be overridden with an effective value (e.g. a
     'set:<ipset>' token resolved from the rule's address-object references)
-    without mutating the ORM object; if omitted, the rule's own columns are used.
+    without mutating the ORM object; if omitted, the rule's own columns are
+    used. `to_destination` may likewise be overridden with the DNAT target
+    resolved from an address-object reference (see orchestrator
+    effective_to_destination) — a DNAT with to_destination_object_id set
+    carries no literal to_destination column, so the caller must resolve and
+    pass one for the rule to rewrite to anything at all.
     """
     args = build_rule_args(
         chain=madmin_chain,
@@ -327,7 +401,7 @@ def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UN
         comment=f"ID_{rule.id}",
         limit_rate=rule.limit_rate,
         limit_burst=rule.limit_burst,
-        to_destination=rule.to_destination,
+        to_destination=rule.to_destination if to_destination is _UNSET else to_destination,
         to_source=rule.to_source,
         to_ports=rule.to_ports,
         log_prefix=rule.log_prefix,
@@ -742,14 +816,16 @@ def build_rule_args(
     log_prefix: Optional[str] = None,
     log_level: Optional[str] = None,
     reject_with: Optional[str] = None,
+    connmark_match: Optional[str] = None,
+    set_xmark: Optional[str] = None,
     operation: str = "-A"
 ) -> List[str]:
     """
     Build iptables command arguments for a rule.
-    
+
     Args:
         chain: Target chain name
-        action: Rule action (ACCEPT, DROP, REJECT, MASQUERADE, etc.)
+        action: Rule action (ACCEPT, DROP, REJECT, MASQUERADE, CONNMARK, etc.)
         protocol: Protocol (tcp, udp, icmp, all)
         source: Source IP/CIDR
         destination: Destination IP/CIDR
@@ -765,6 +841,8 @@ def build_rule_args(
         log_prefix: Log prefix
         log_level: Log level
         reject_with: Reject type (e.g. icmp-port-unreachable)
+        connmark_match: "-m connmark --mark <value>[/<mask>]" match (policy-NAT scoping)
+        set_xmark: "--set-xmark <value>[/<mask>]" for action=CONNMARK
         operation: -A (append), -I (insert), -D (delete)
 
     Returns:
@@ -798,7 +876,10 @@ def build_rule_args(
     
     if state:
         args.extend(["-m", "state", "--state", state])
-    
+
+    if connmark_match:
+        args.extend(["-m", "connmark", "--mark", connmark_match])
+
     if port and protocol in ("tcp", "udp"):
         # Support both single port and range
         if "," in str(port):
@@ -817,6 +898,9 @@ def build_rule_args(
         args.extend(["-m", "comment", "--comment", safe_comment])
     
     args.extend(["-j", action])
+
+    if action == "CONNMARK" and set_xmark:
+        args.extend(["--set-xmark", set_xmark])
 
     if action == "DNAT" and to_destination:
         args.extend(["--to-destination", to_destination])

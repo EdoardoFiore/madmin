@@ -91,9 +91,13 @@ class NetworkService:
                 
                 # Parse addresses
                 ipv4_list = []
+                addr_info = []  # [{"address", "netmask"}, ...] — per-address netmask,
+                                 # needed to compute subnets (iface_info["netmask"]
+                                 # below only ever keeps the first address's).
                 for addr in addrs:
                     if addr.family.name == 'AF_INET':
                         ipv4_list.append(addr.address)
+                        addr_info.append({"address": addr.address, "netmask": addr.netmask})
                         if not iface_info["ipv4"]:
                             iface_info["ipv4"] = addr.address
                             iface_info["netmask"] = addr.netmask
@@ -125,6 +129,7 @@ class NetworkService:
                 iface_info["state"] = "up" if iface_info["is_up"] else "down"
                 iface_info["addresses"] = ipv4_list
                 iface_info["secondary_ips"] = ipv4_list[1:]
+                iface_info["addr_info"] = addr_info
 
                 interfaces.append(iface_info)
             

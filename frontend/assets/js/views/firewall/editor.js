@@ -17,7 +17,7 @@ import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { setPageActions, checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces, interfaceSelect } from './interfaces.js';
-import { SERVICE_PRESETS, validateRuleConstraints } from './shared.js';
+import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
 let st = null;   // editor state
@@ -27,11 +27,22 @@ let st = null;   // editor state
 const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
 export async function openEditor({ container, mode, rule = null, duplicate = false, onClose }) {
+    // A rule whose action falls outside this mode's fixed action set (e.g. a
+    // LOG policy, a REDIRECT port forward) can't be represented by this form:
+    // opening it would silently coerce the action into something else on
+    // save. The Standard view already disables edit/duplicate for these rows
+    // (see rowButtons in standard.js); this is defense in depth.
+    if (rule && isLockedForMode(rule, mode)) {
+        showToast(t('firewall.std.manageFromAdvanced'), 'error');
+        onClose?.();
+        return;
+    }
     const isEdit = !!rule && !duplicate;
     st = {
         container, mode, onClose,
         isEdit,
         rule: isEdit ? rule : null,
+        origAction: rule?.action || null,
         objects: [], groups: [],
         activeField: null,
         panel: null,
@@ -242,14 +253,21 @@ function formFields(rule) {
             <div class="col-md-6">
                 <label class="form-label d-block">${t('firewall.std.colNat')}</label>
                 <label class="form-check form-switch">
-                    <input class="form-check-input" type="checkbox" id="ed-nat" ${rule?.policy_nat ? 'checked' : ''}>
+                    <input class="form-check-input" type="checkbox" id="ed-nat" ${(rule ? rule.policy_nat : true) ? 'checked' : ''}>
                     <span class="form-check-label">${t('firewall.editor.natHint')}</span>
                 </label>
             </div>
             ${enabledHtml(rule)}`;
     }
     if (mode === 'portforward') {
-        const [ip, iport] = splitIpPort(rule?.to_destination);
+        const hasIntObj = !!rule?.to_destination_object_id;
+        const [ip, literalPort] = splitIpPort(rule?.to_destination);
+        const iport = hasIntObj ? (rule?.to_destination_port || '') : literalPort;
+        // Object targets are restricted to /32 cidr (a single host — see
+        // backend effective_to_destination): a range or wider CIDR can't be
+        // a DNAT rewrite target or a plain -d match on the companions.
+        const intObjOptions = (st.objects || [])
+            .filter(o => o.enabled && o.type === 'cidr' && o.value.endsWith('/32'));
         return `
             ${nameHtml(rule)}
             <div class="col-md-6">
@@ -270,20 +288,44 @@ function formFields(rule) {
             ${addrFieldHtml('destination', t('firewall.editor.extIp'), t('firewall.editor.extIpHint'))}
             <div class="col-md-6">
                 <label class="form-label">${t('firewall.editor.intIp')}</label>
-                <input type="text" class="form-control" id="ed-intip" value="${escapeHtml(ip)}" placeholder="10.0.0.5">
+                <input type="text" class="form-control" id="ed-intip" value="${escapeHtml(ip)}"
+                       placeholder="10.0.0.5" ${hasIntObj ? 'disabled' : ''}>
             </div>
             <div class="col-md-6">
                 <label class="form-label">${t('firewall.editor.intPort')}</label>
                 <input type="text" class="form-control" id="ed-intport" value="${escapeHtml(iport)}" placeholder="443">
             </div>
+            <div class="col-12">
+                <label class="form-label">${t('firewall.editor.intObj')}</label>
+                <select class="form-select" id="ed-intobj">
+                    <option value="">—</option>
+                    ${intObjOptions.map(o => `<option value="${o.id}" ${hasIntObj && rule.to_destination_object_id === o.id ? 'selected' : ''}>${escapeHtml(o.name)} (${escapeHtml(o.value)})</option>`).join('')}
+                </select>
+                <small class="form-hint">${t('firewall.editor.intObjHint')}</small>
+            </div>
             ${addrFieldHtml('source', t('firewall.editor.sourceRestrict'))}
+            <div class="col-12">
+                <label class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="ed-hairpin" ${rule?.hairpin ? 'checked' : ''}>
+                    <span class="form-check-label">${t('firewall.editor.hairpin')}</span>
+                </label>
+                <small class="form-hint">${t('firewall.editor.hairpinHint')}</small>
+            </div>
             ${enabledHtml(rule)}`;
     }
     // outnat
     const action = rule?.action || 'MASQUERADE';
+    // Destination and service are valid matches in nat/POSTROUTING (-d/-p/--dport)
+    // and were previously Advanced-only: the Standard list rendered a
+    // Destination column the editor could not show, so a destination-scoped
+    // SNAT looked unscoped here while silently staying scoped on save
+    // (PATCH exclude_unset). Editing them where they are displayed removes
+    // that blind spot.
     return `
         ${nameHtml(rule)}
         ${addrFieldHtml('source', t('firewall.std.colSource'))}
+        ${addrFieldHtml('destination', t('firewall.std.colDest'), t('firewall.editor.outNatDestHint'))}
+        ${serviceHtml(rule)}
         <div class="col-md-6">
             <label class="form-label">${t('firewall.outInterface')}</label>
             ${interfaceSelect('ed-out', rule?.out_interface || '')}
@@ -341,6 +383,19 @@ function bindForm() {
         container.querySelector('#ed-tosource-wrap')?.classList.toggle('d-none', e.target.value !== 'SNAT');
     });
 
+    // Internal target: literal IP and address object are mutually exclusive.
+    container.querySelector('#ed-intobj')?.addEventListener('change', (e) => {
+        const intIp = container.querySelector('#ed-intip');
+        if (!intIp) return;
+        if (e.target.value) { intIp.value = ''; intIp.disabled = true; }
+        else { intIp.disabled = false; }
+    });
+    container.querySelector('#ed-intip')?.addEventListener('input', (e) => {
+        if (!e.target.value) return;
+        const intObj = container.querySelector('#ed-intobj');
+        if (intObj) intObj.value = '';
+    });
+
     // Combined address fields
     container.querySelectorAll('.fw-addr-field').forEach(fieldEl => {
         const field = fieldEl.dataset.field;
@@ -374,12 +429,19 @@ function openEntries() {
     if (el) bootstrap.Offcanvas.getOrCreateInstance(el).show();
 }
 
-/** Hide the port field when the protocol carries no port (all / ICMP). */
+/** Hide the port field when the protocol carries no port (all / ICMP). Also
+ * clears its value: the engine only emits --dport for tcp/udp, so a port left
+ * behind in the hidden field would be saved and silently ignored. */
 function updatePortVisibility() {
     const wrap = st?.container.querySelector('#ed-port-wrap');
     if (!wrap) return;
     const proto = st.container.querySelector('#ed-proto')?.value || '';
-    wrap.classList.toggle('d-none', proto === '' || proto === 'icmp');
+    const hidden = proto === '' || proto === 'icmp';
+    wrap.classList.toggle('d-none', hidden);
+    if (hidden) {
+        const portInput = st.container.querySelector('#ed-port');
+        if (portInput) portInput.value = '';
+    }
 }
 
 /** Grey out, in each interface select, the value already chosen in the other. */
@@ -485,74 +547,142 @@ async function save() {
     const name = container.querySelector('#ed-name')?.value.trim() || null;
     const enabled = container.querySelector('#ed-enabled')?.checked !== false;
 
-    let data;
-    try {
-        if (mode === 'policy') {
-            const src = await resolveDirection('source');
-            const dst = await resolveDirection('destination');
-            const action = container.querySelector('input[name="ed-action"]:checked')?.value || 'ACCEPT';
-            data = {
-                table_name: 'filter', chain: 'FORWARD', action,
-                comment: name,
-                in_interface: container.querySelector('#ed-in').value || null,
-                out_interface: container.querySelector('#ed-out').value || null,
-                protocol: container.querySelector('#ed-proto').value || null,
-                port: container.querySelector('#ed-port').value || null,
-                source: src.literal, source_refs: src.refs,
-                destination: dst.literal, destination_refs: dst.refs,
-                policy_nat: container.querySelector('#ed-nat').checked,
-                enabled,
-            };
-        } else if (mode === 'portforward') {
-            const src = await resolveDirection('source');
-            const dst = await resolveDirection('destination');
+    // Phase 1: read and validate every field that doesn't need a network call.
+    // Must run BEFORE resolveDirection (phase 2), which materialises literal
+    // address chips as address objects via POST — if validation ran after,
+    // a rejected save left those objects orphaned.
+    let plain;
+    if (mode === 'policy') {
+        // The Deny radio only ever represents DROP or REJECT (both render
+        // checked, see formFields policy branch); preserve REJECT when the
+        // rule already was REJECT and Deny stays selected, otherwise DROP.
+        const selected = container.querySelector('input[name="ed-action"]:checked')?.value || 'ACCEPT';
+        const action = selected === 'ACCEPT' ? 'ACCEPT'
+            : (st.origAction === 'REJECT' ? 'REJECT' : 'DROP');
+        const proto = container.querySelector('#ed-proto').value || null;
+        plain = {
+            table_name: 'filter', chain: 'FORWARD', action,
+            comment: name,
+            in_interface: container.querySelector('#ed-in').value || null,
+            out_interface: container.querySelector('#ed-out').value || null,
+            protocol: proto,
+            // The engine only matches --dport for tcp/udp; a port set under
+            // any other protocol is dead data (see backend port/protocol guard).
+            port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
+            policy_nat: container.querySelector('#ed-nat').checked,
+            enabled,
+        };
+    } else if (mode === 'portforward') {
+        const intObjId = container.querySelector('#ed-intobj')?.value || '';
+        const iport = container.querySelector('#ed-intport').value.trim();
+        // Literal IP and address object are mutually exclusive internal
+        // targets (see #ed-intobj change handler); explicit nulls on both
+        // branches below so switching between them clears the other on PATCH.
+        let toDestination = null, toDestinationObjectId = null, toDestinationPort = null;
+        if (intObjId) {
+            toDestinationObjectId = intObjId;
+            toDestinationPort = iport || null;
+        } else {
             const ip = container.querySelector('#ed-intip').value.trim();
-            const iport = container.querySelector('#ed-intport').value.trim();
             if (!ip) { showToast(t('firewall.editor.intIpRequired'), 'error'); return; }
             if (!IPV4_RE.test(ip)) { showToast(t('firewall.validation.ipv4Only'), 'error'); return; }
-            data = {
-                table_name: 'nat', chain: 'PREROUTING', action: 'DNAT',
-                comment: name,
-                in_interface: container.querySelector('#ed-in').value || null,
-                protocol: container.querySelector('#ed-proto').value || 'tcp',
-                port: container.querySelector('#ed-port').value || null,
-                to_destination: iport ? `${ip}:${iport}` : ip,
-                source: src.literal, source_refs: src.refs,
-                destination: dst.literal, destination_refs: dst.refs,
-                enabled,
-            };
-        } else { // outnat
-            const src = await resolveDirection('source');
-            const action = container.querySelector('#ed-nataction').value;
-            data = {
-                table_name: 'nat', chain: 'POSTROUTING', action,
-                comment: name,
-                out_interface: container.querySelector('#ed-out').value || null,
-                to_source: action === 'SNAT' ? (container.querySelector('#ed-tosource').value || null) : null,
-                source: src.literal, source_refs: src.refs,
-                enabled,
-            };
+            toDestination = iport ? `${ip}:${iport}` : ip;
         }
+        plain = {
+            table_name: 'nat', chain: 'PREROUTING', action: 'DNAT',
+            comment: name,
+            in_interface: container.querySelector('#ed-in').value || null,
+            protocol: container.querySelector('#ed-proto').value || 'tcp',
+            port: container.querySelector('#ed-port').value || null,
+            to_destination: toDestination,
+            to_destination_object_id: toDestinationObjectId,
+            to_destination_port: toDestinationPort,
+            hairpin: container.querySelector('#ed-hairpin')?.checked || false,
+            enabled,
+        };
+    } else { // outnat
+        const action = container.querySelector('#ed-nataction').value;
+        const toSource = container.querySelector('#ed-tosource')?.value.trim() || '';
+        if (action === 'SNAT' && !IPV4_RE.test(toSource)) {
+            showToast(t('firewall.validation.snatToSource'), 'error');
+            return;
+        }
+        const proto = container.querySelector('#ed-proto').value || null;
+        plain = {
+            table_name: 'nat', chain: 'POSTROUTING', action,
+            comment: name,
+            out_interface: container.querySelector('#ed-out').value || null,
+            protocol: proto,
+            // Same tcp/udp-only guard as the policy branch: the engine emits
+            // --dport for those protocols only (backend _validate_port_protocol).
+            port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
+            to_source: action === 'SNAT' ? toSource : null,
+            enabled,
+        };
+    }
+
+    const constraintError = validateRuleConstraints(plain);
+    if (constraintError) { showToast(constraintError, 'error'); return; }
+
+    // Phase 2: resolve address chips (may create address objects — only
+    // reached once every other field has already passed validation). Every
+    // mode now carries both directions (outnat included, see formFields).
+    let data;
+    try {
+        const src = await resolveDirection('source');
+        const dst = await resolveDirection('destination');
+        data = {
+            ...plain,
+            source: src.literal, source_refs: src.refs,
+            destination: dst.literal, destination_refs: dst.refs,
+        };
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
         return;
     }
 
-    const constraintError = validateRuleConstraints(data);
-    if (constraintError) { showToast(constraintError, 'error'); return; }
-
+    // Phase 3: submit.
+    let saved;
     try {
         if (st.isEdit) {
-            await apiPatch(`/firewall/rules/${st.rule.id}`, data);
+            saved = await apiPatch(`/firewall/rules/${st.rule.id}`, data);
             showToast(t('firewall.ruleUpdated'), 'success');
         } else {
-            await apiPost('/firewall/rules', data);
+            saved = await apiPost('/firewall/rules', data);
             showToast(t('firewall.ruleCreated'), 'success');
         }
         st.dirty = false;
         close();
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
+        return;
+    }
+
+    // A newly-active DROP/REJECT policy blocks new connections, but
+    // already-established ones keep flowing until conntrack is flushed —
+    // offer to do it now (confirmDialog mounts on document.body, independent
+    // of the editor container close() just tore down).
+    if (mode === 'policy' && data.enabled && (data.action === 'DROP' || data.action === 'REJECT')) {
+        const confirmed = await confirmDialog(
+            t('firewall.terminateSessionsTitle'),
+            t('firewall.terminateSessionsDesc', { action: data.action }),
+            t('firewall.terminateBtn'),
+            'btn-warning'
+        );
+        if (confirmed) {
+            try {
+                const result = await apiPost(`/firewall/rules/${saved.id}/flush-conntrack`, {});
+                const count = result.flushed ?? 0;
+                showToast(
+                    count > 0
+                        ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
+                        : t('firewall.noActiveSessions'),
+                    'success'
+                );
+            } catch (err) {
+                showToast(t('common.errorPrefix') + err.message, 'error');
+            }
+        }
     }
 }
 

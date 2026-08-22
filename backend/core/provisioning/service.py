@@ -361,6 +361,12 @@ class ProvisioningService:
         NAT is owned by the forward policy: a filter/FORWARD ACCEPT iface->WAN with
         policy_nat=True. apply_rules emits the paired POSTROUTING MASQUERADE
         companion.
+
+        Also converts the legacy shape in place: before policy_nat this rule was a
+        standalone nat/POSTROUTING MASQUERADE. Such a row can still arrive on a
+        clean install through a config import taken from an older system, and
+        setting policy_nat on it without moving it would leave a state the API
+        itself rejects (policy_nat is filter/FORWARD-only) and apply_rules ignores.
         """
         from core.firewall.models import MachineFirewallRule
         from core.network.utils import get_default_interface
@@ -372,15 +378,17 @@ class ProvisioningService:
         )
         rule = result.scalar_one_or_none()
 
+        async def _next_forward_order() -> int:
+            return ((await session.execute(
+                select(func.max(MachineFirewallRule.order)).where(
+                    MachineFirewallRule.chain == "FORWARD"
+                )
+            )).scalar() or 0) + 1
+
         # Real WAN = default-route interface (e.g. ens18), falling back to the
         # legacy eth0 name. Re-resolved each reconcile so the NAT egress self-heals.
         wan = get_default_interface() or next(iter(WAN_INTERFACES))
         if rule is None:
-            max_order = (await session.execute(
-                select(func.max(MachineFirewallRule.order)).where(
-                    MachineFirewallRule.chain == "FORWARD"
-                )
-            )).scalar() or 0
             rule = MachineFirewallRule(
                 chain="FORWARD",
                 action="ACCEPT",
@@ -389,12 +397,27 @@ class ProvisioningService:
                 table_name="filter",
                 policy_nat=True,
                 comment=MANAGED_NAT_SENTINEL,
-                order=max_order + 1,
+                order=await _next_forward_order(),
                 enabled=True,
             )
             session.add(rule)
             logger.info(f"Managed LAN: created nav NAT policy {iface}->{wan} (policy_nat)")
         else:
+            if rule.table_name != "filter":
+                # Legacy nat/POSTROUTING MASQUERADE -> forward policy owning its
+                # NAT. to_source/to_ports are MASQUERADE leftovers with no meaning
+                # on a filter rule; order was computed against the nat table and
+                # says nothing about FORWARD evaluation, so re-append it.
+                rule.table_name = "filter"
+                rule.chain = "FORWARD"
+                rule.action = "ACCEPT"
+                rule.to_source = None
+                rule.to_ports = None
+                rule.order = await _next_forward_order()
+                logger.info(
+                    f"Managed LAN: converted legacy nav NAT rule to a policy_nat "
+                    f"forward policy {iface}->{wan}"
+                )
             rule.in_interface = iface
             rule.out_interface = wan
             rule.policy_nat = True

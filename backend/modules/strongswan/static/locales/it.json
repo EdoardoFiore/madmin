@@ -169,5 +169,17 @@
   "loading": "Caricamento...",
   "loadError": "Impossibile caricare i dati",
   "wActiveChildSas": "Child SA attive",
-  "wNoTunnelsConfigured": "Nessun tunnel configurato"
+  "wNoTunnelsConfigured": "Nessun tunnel configurato",
+  "dpdActionRestart": "Restart",
+  "dpdActionClear": "Clear",
+  "dpdActionNone": "Disabilita",
+  "natTraversalEnable": "Abilita",
+  "natTraversalDisable": "Disabilita",
+  "natTraversalForce": "Forza",
+  "startActionStart": "Start (inizia subito)",
+  "startActionTrap": "On Demand (trap)",
+  "startActionNone": "Manuale (none)",
+  "closeActionRestart": "Restart",
+  "closeActionTrap": "Hold (trap)",
+  "closeActionNone": "Nessuna"
 }

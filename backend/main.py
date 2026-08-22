@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from sqlalchemy import select
 from config import MADMIN_VERSION
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -143,6 +144,66 @@ async def lifespan(app: FastAPI):
             await session.rollback()
             logger.error(f"Legacy geo: migration failed: {e}", exc_info=True)
 
+    # One-shot migration (idempotent): neutralise the legacy catch-all FORWARD
+    # DROP. Older installs seeded one as an ordinary DB rule (defaults.py, before
+    # the engine owned an implicit deny) and it still arrives here through a
+    # config import taken from such a system. apply_rules now appends the DNAT
+    # FORWARD companions AFTER every user rule, so that catch-all sits above them
+    # and kills every port forward on the box.
+    #
+    # Disabled rather than deleted: the row stays visible in the Standard view so
+    # the admin can see what happened. Dropping it changes nothing about which
+    # traffic is denied — MADMIN_IMPLICIT_DENY runs last and denies exactly the
+    # same thing; all it stops doing is shadowing the companions.
+    #
+    # The marker comment is also the idempotency guard: the query only matches
+    # comment-less rules, so a second boot is a no-op, and an admin who
+    # deliberately re-enables the rule is not overruled on every restart.
+    async with async_session_maker() as session:
+        try:
+            from core.firewall.models import MachineFirewallRule, FirewallRuleAddress
+
+            legacy = (await session.execute(
+                select(MachineFirewallRule).where(
+                    MachineFirewallRule.table_name == "filter",
+                    MachineFirewallRule.chain == "FORWARD",
+                    MachineFirewallRule.action == "DROP",
+                    MachineFirewallRule.enabled == True,  # noqa: E712
+                    MachineFirewallRule.comment.is_(None) | (MachineFirewallRule.comment == ""),
+                    # No match fields at all — a scoped DROP is a real policy.
+                    MachineFirewallRule.protocol.is_(None),
+                    MachineFirewallRule.source.is_(None),
+                    MachineFirewallRule.destination.is_(None),
+                    MachineFirewallRule.port.is_(None),
+                    MachineFirewallRule.in_interface.is_(None),
+                    MachineFirewallRule.out_interface.is_(None),
+                    MachineFirewallRule.state.is_(None),
+                )
+            )).scalars().all()
+
+            disabled = 0
+            for rule in legacy:
+                # Address object/group refs also make it a scoped policy, and they
+                # live outside the rule row (see FirewallRuleAddress).
+                has_refs = (await session.execute(
+                    select(FirewallRuleAddress).where(FirewallRuleAddress.rule_id == rule.id)
+                )).scalars().first()
+                if has_refs is not None:
+                    continue
+                rule.enabled = False
+                rule.comment = "Catch-all legacy — sostituito dal nega implicito"
+                session.add(rule)
+                disabled += 1
+            if disabled:
+                await session.commit()
+                logger.info(
+                    f"Disabled {disabled} legacy catch-all FORWARD DROP rule(s): the engine's "
+                    "implicit deny replaces them, and they shadowed the DNAT forward companions"
+                )
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Legacy FORWARD catch-all migration failed: {e}", exc_info=True)
+
     # Apply firewall rules from database
     async with async_session_maker() as session:
         try:
@@ -204,7 +265,6 @@ async def lifespan(app: FastAPI):
     # Start scheduled backup task
     from core.settings.models import BackupSettings
     from core.backup.service import run_backup
-    from sqlalchemy import select
     from datetime import datetime
     
     backup_task_running = True

@@ -10,7 +10,7 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL } from './shared.js';
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints } from './shared.js';
 
 let rules = [];
 let editingRule = null;
@@ -39,11 +39,12 @@ const ALL_COLUMNS = {
     to_ports: { get label() { return t('firewall.columnLabels.to_ports'); }, tables: ['nat'] },
     log_prefix: { get label() { return t('firewall.columnLabels.log_prefix'); } },
     limit_rate: { get label() { return t('firewall.columnLabels.limit_rate'); } },
+    policy_nat: { get label() { return t('firewall.columnLabels.policy_nat'); }, tables: ['filter'] },
     comment: { get label() { return t('firewall.columnLabels.comment'); } }
 };
 
 const DEFAULT_COLUMNS = {
-    filter: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment'],
+    filter: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'policy_nat', 'comment'],
     nat: ['protocol', 'source', 'destination', 'port', 'in_interface', 'out_interface', 'to_destination', 'to_source', 'comment'],
     mangle: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment'],
     raw: ['protocol', 'source', 'destination', 'port', 'state', 'in_interface', 'out_interface', 'comment']
@@ -296,6 +297,14 @@ export async function render(container) {
                                         <input class="form-check-input" type="checkbox" id="rule-enabled" checked>
                                         <span class="form-check-label">${t('firewall.ruleActive')}</span>
                                     </label>
+                                </div>
+                                <div class="col-md-6 field-policy-nat" style="display:none">
+                                    <label class="form-label">${t('firewall.columnLabels.policy_nat')}</label>
+                                    <label class="form-check form-switch mt-2">
+                                        <input class="form-check-input" type="checkbox" id="rule-policy-nat">
+                                        <span class="form-check-label">${t('firewall.policyNatLabel')}</span>
+                                    </label>
+                                    <small class="form-hint">${t('firewall.policyNatHint')}</small>
                                 </div>
                                 <div class="col-12">
                                     <label class="form-label">${t('firewall.comment')}</label>
@@ -647,7 +656,13 @@ function setupEventListeners() {
         updateModalChains(e.target.value);
         updateModalActions(e.target.value);
         toggleActionFields();
+        togglePolicyNatField();
         updateIptablesPreview();
+    });
+
+    // Modal chain change - policy_nat is only meaningful on filter/FORWARD
+    document.getElementById('rule-chain')?.addEventListener('change', () => {
+        togglePolicyNatField();
     });
 
     // Action change - show/hide specific fields
@@ -730,6 +745,25 @@ function updateModalActions(table) {
     const actionSelect = document.getElementById('rule-action');
     const actions = TABLE_ACTIONS[table];
     actionSelect.innerHTML = actions.map(a => `<option value="${a}">${a}</option>`).join('');
+}
+
+/**
+ * Show the outbound-NAT switch only for filter/FORWARD rules (the only chain
+ * apply_rules will honor policy_nat on, see backend policy_nat_fields).
+ * Uncheck when hidden so a stale checked value never rides along after a
+ * table/chain switch.
+ */
+function togglePolicyNatField() {
+    const wrap = document.querySelector('.field-policy-nat');
+    if (!wrap) return;
+    const table = document.getElementById('rule-table')?.value;
+    const chain = document.getElementById('rule-chain')?.value;
+    const show = table === 'filter' && chain === 'FORWARD';
+    wrap.style.display = show ? 'block' : 'none';
+    if (!show) {
+        const cb = document.getElementById('rule-policy-nat');
+        if (cb) cb.checked = false;
+    }
 }
 
 /**
@@ -855,6 +889,84 @@ function renderRules() {
         }
 
         const orderedColumns = getOrderedVisibleColumns();
+
+        // filter/FORWARD: the engine dispatches rules with both interfaces set
+        // into per-pair subchains, evaluated at the pair's first-rule position
+        // (see orchestrator._build_forward_layout) — a flat order-sorted table
+        // misrepresents that. Group the same way standard.js's Policy section
+        // does, so the two views agree on what actually happens.
+        if (currentTable === 'filter' && chain === 'FORWARD') {
+            const userRules = chainRules.filter(r => !r.auto_generated);
+            const autoRules = chainRules.filter(r => r.auto_generated);
+
+            const groups = new Map();
+            for (const r of userRules) {
+                const key = `${r.in_interface || '*'}|${r.out_interface || '*'}`;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(r);
+            }
+
+            const theadHtml = `
+                <thead>
+                    <tr>
+                        <th class="rule-order" style="width: 60px;">#</th>
+                        <th>${t('firewall.action')}</th>
+                        ${orderedColumns.map(col => `<th>${ALL_COLUMNS[col].label}</th>`).join('')}
+                        <th class="rule-actions"></th>
+                    </tr>
+                </thead>`;
+
+            let groupsHtml = '';
+            for (const [key, list] of groups) {
+                const [inIf, outIf] = key.split('|');
+                const pairLabel = `${inIf === '*' ? t('firewall.editor.anyInterface') : escapeHtml(inIf)}
+                    <i class="ti ti-arrow-right mx-1 text-muted"></i>
+                    ${outIf === '*' ? t('firewall.editor.anyInterface') : escapeHtml(outIf)}`;
+                groupsHtml += `
+                    <div class="mb-3">
+                        <div class="px-2 py-1 bg-light border-bottom d-flex align-items-center">
+                            <i class="ti ti-arrows-right-left me-2 text-muted"></i>
+                            <strong>${pairLabel}</strong>
+                            <span class="badge bg-secondary-lt ms-2">${list.length}</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-vcenter firewall-table mb-0">
+                                ${theadHtml}
+                                <tbody class="sortable-container" data-chain="${chain}" data-pair="${escapeHtml(key)}">
+                                    ${list.map(rule => renderRuleRow(rule, orderedColumns)).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>`;
+            }
+
+            const autoHtml = autoRules.length ? `
+                <div class="table-responsive">
+                    <table class="table table-vcenter firewall-table mb-0">
+                        ${theadHtml}
+                        <tbody>
+                            ${autoRules.map(rule => renderRuleRow(rule, orderedColumns)).join('')}
+                        </tbody>
+                    </table>
+                </div>` : '';
+
+            container.innerHTML = `
+                <div class="text-muted small mb-2"><i class="ti ti-info-circle me-1"></i>${t('firewall.forwardGroupHint')}</div>
+                ${groupsHtml}
+                ${autoHtml}
+            `;
+
+            setupRowEvents(container);
+            container.querySelectorAll('.sortable-container').forEach(tbody => setupDragDrop(tbody));
+
+            container.querySelectorAll('.addr-ref-chip[data-bs-toggle="popover"]').forEach(el => {
+                bootstrap.Popover.getOrCreateInstance(el, {
+                    html: true, trigger: 'hover focus', placement: 'top', container: 'body',
+                    delay: { show: 500, hide: 100 },
+                });
+            });
+            continue;
+        }
 
         container.innerHTML = `
             <div class="table-responsive">
@@ -1035,11 +1147,19 @@ function renderCell(rule, column) {
         case 'comment': return `<span class="text-muted">${rule.comment ? esc(rule.comment) : '-'}</span>`;
         case 'in_interface': return rule.in_interface ? `<code>${esc(rule.in_interface)}</code>` : '-';
         case 'out_interface': return rule.out_interface ? `<code>${esc(rule.out_interface)}</code>` : '-';
-        case 'to_destination': return rule.to_destination ? `<code>${esc(rule.to_destination)}</code>` : '-';
+        case 'to_destination':
+            if (rule.to_destination_object_id) {
+                const port = rule.to_destination_port ? `:${esc(rule.to_destination_port)}` : '';
+                return `<span class="badge bg-azure-lt"><i class="ti ti-box me-1"></i>${esc(rule.to_destination_object_name || rule.to_destination_object_id)}</span><code class="ms-1">${port}</code>`;
+            }
+            return rule.to_destination ? `<code>${esc(rule.to_destination)}</code>` : '-';
         case 'to_source': return rule.to_source ? `<code>${esc(rule.to_source)}</code>` : '-';
         case 'to_ports': return rule.to_ports ? `<code>${esc(rule.to_ports)}</code>` : '-';
         case 'log_prefix': return rule.log_prefix ? `<code>${esc(rule.log_prefix)}</code>` : '-';
         case 'limit_rate': return rule.limit_rate ? `${esc(rule.limit_rate)}${rule.limit_burst ? ` (burst: ${rule.limit_burst})` : ''}` : '-';
+        case 'policy_nat': return rule.policy_nat
+            ? `<span class="badge bg-green-lt"><i class="ti ti-arrows-exchange me-1"></i>${t('firewall.std.masquerade')}</span>`
+            : '<span class="text-muted">-</span>';
         default: return '-';
     }
 }
@@ -1304,6 +1424,8 @@ function openRuleModal(rule = null, isDuplicate = false) {
     document.getElementById('rule-limit-rate').value = rule?.limit_rate || '';
     document.getElementById('rule-limit-burst').value = rule?.limit_burst || '';
     document.getElementById('rule-enabled').checked = rule?.enabled !== false;
+    document.getElementById('rule-policy-nat').checked = rule?.policy_nat || false;
+    togglePolicyNatField();
     document.getElementById('rule-comment').value = rule?.comment || '';
 
     // New fields
@@ -1335,12 +1457,18 @@ async function handleRuleSubmit(e) {
 
     const srcDir = getDirectionPayload('source');
     const dstDir = getDirectionPayload('destination');
+    const table_name = document.getElementById('rule-table').value;
+    const chain = document.getElementById('rule-chain').value;
+    const protocol = document.getElementById('rule-protocol').value || null;
     const data = {
-        table_name: document.getElementById('rule-table').value,
-        chain: document.getElementById('rule-chain').value,
+        table_name,
+        chain,
         action: document.getElementById('rule-action').value,
-        protocol: document.getElementById('rule-protocol').value || null,
-        port: document.getElementById('rule-port').value || null,
+        protocol,
+        // The engine only matches --dport for tcp/udp (build_rule_args); a port
+        // left in the (possibly hidden, e.g. after loading a legacy rule) field
+        // under any other protocol is dead data — never send it.
+        port: (protocol === 'tcp' || protocol === 'udp') ? (document.getElementById('rule-port').value || null) : null,
         source: srcDir.literal,
         destination: dstDir.literal,
         source_refs: srcDir.refs,
@@ -1352,6 +1480,11 @@ async function handleRuleSubmit(e) {
         limit_burst: parseInt(document.getElementById('rule-limit-burst').value) || null,
         enabled: document.getElementById('rule-enabled').checked,
         comment: document.getElementById('rule-comment').value || null,
+        // Only meaningful on filter/FORWARD (backend router rejects it elsewhere);
+        // gating here mirrors togglePolicyNatField and keeps duplicate-from-Advanced
+        // from silently dropping the flag (previously omitted entirely).
+        policy_nat: (table_name === 'filter' && chain === 'FORWARD')
+            ? (document.getElementById('rule-policy-nat')?.checked || false) : false,
 
         // New fields
         to_destination: document.getElementById('rule-to-destination').value || null,
@@ -1383,35 +1516,6 @@ async function handleRuleSubmit(e) {
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');
     }
-}
-
-// Hook (chain) in cui ciascun match/azione è valido per netfilter.
-const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD'];
-const OUT_IFACE_VALID_CHAINS = ['POSTROUTING', 'OUTPUT', 'FORWARD'];
-const NAT_ACTION_VALID_CHAINS = {
-    DNAT: ['PREROUTING', 'OUTPUT'],
-    REDIRECT: ['PREROUTING', 'OUTPUT'],
-    SNAT: ['POSTROUTING'],
-    MASQUERADE: ['POSTROUTING'],
-};
-
-/**
- * Validate rule field/chain (hook) compatibility client-side, mirroring the
- * backend denylist. Returns a translated error string, or null if valid.
- */
-function validateRuleConstraints(data) {
-    const chain = data.chain;
-    if (data.in_interface && !IN_IFACE_VALID_CHAINS.includes(chain)) {
-        return t('firewall.validation.inIfaceHook', { chain });
-    }
-    if (data.out_interface && !OUT_IFACE_VALID_CHAINS.includes(chain)) {
-        return t('firewall.validation.outIfaceHook', { chain });
-    }
-    const validChains = NAT_ACTION_VALID_CHAINS[data.action];
-    if (validChains && !validChains.includes(chain)) {
-        return t('firewall.validation.natActionHook', { action: data.action, chain });
-    }
-    return null;
 }
 
 /**

@@ -999,7 +999,108 @@ connections {{
             await db.rollback()
         
         return collected
-    
+
+    async def reconcile_tunnel_states(self, db) -> int:
+        """
+        Watchdog: force tunnels whose desired state is UP back to ESTABLISHED
+        when charon has silently dropped them (peer flap, DPD timeout without
+        auto-recovery, charon restart losing an in-memory SA, ...).
+
+        Runs alongside the traffic collector (COLLECTION_INTERVAL) so a tunnel
+        found down overnight is re-initiated within ~1 minute instead of
+        staying down until the next MADMIN/app restart (previously the only
+        reconciliation point — see hooks/on_startup.py). Idempotent and
+        errors are isolated per tunnel so one bad peer doesn't block the rest.
+
+        Returns:
+            Number of tunnels successfully forced back to ESTABLISHED/connecting.
+        """
+        import asyncio
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecTunnel
+
+        recovered = 0
+        try:
+            result = await db.execute(
+                select(IpsecTunnel).where(IpsecTunnel.enabled == True)  # noqa: E712
+            )
+            tunnels = result.scalars().all()
+
+            for tunnel in tunnels:
+                try:
+                    status = await asyncio.to_thread(self.get_tunnel_status, tunnel.name)
+                    ike_state = status.get("ike_state") if status else "DISCONNECTED"
+
+                    if ike_state == "ESTABLISHED":
+                        if tunnel.status != "established":
+                            tunnel.status = "established"
+                        await self._reconcile_child_sas(tunnel, status, db)
+                        continue
+                    if ike_state == "CONNECTING":
+                        # Negotiation already in flight — don't pile on another initiate.
+                        continue
+
+                    logger.warning(
+                        f"IPsec tunnel {tunnel.name} desired UP but found {ike_state}; "
+                        f"forcing reconnect"
+                    )
+                    if await self.bring_tunnel_up(tunnel, db):
+                        recovered += 1
+                        logger.info(f"Reconnected IPsec tunnel {tunnel.name} after state drift")
+                    else:
+                        logger.error(f"Failed to force-reconnect IPsec tunnel {tunnel.name}")
+                except Exception as e:
+                    logger.error(f"Reconciliation failed for tunnel {tunnel.name}: {e}")
+
+            await db.commit()
+        except Exception as e:
+            logger.error(f"Tunnel state reconciliation failed: {e}")
+            await db.rollback()
+
+        return recovered
+
+    async def _reconcile_child_sas(self, tunnel, status: Dict[str, Any], db) -> None:
+        """
+        For an ESTABLISHED tunnel, force-reinitiate any enabled Child SA that
+        isn't INSTALLED.
+
+        A parent IKE SA staying up does NOT guarantee its Child SAs are —
+        with start_action=start a child is expected to be up immediately and
+        does not wait for traffic (unlike trap), so a lost child after a link
+        flap can go unnoticed by an IKE-level-only check. dpd_action/close_action
+        normally get charon to redo this itself, but this is a defense-in-depth
+        watchdog for when that doesn't happen.
+        """
+        import asyncio
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecChildSa
+
+        result = await db.execute(
+            select(IpsecChildSa).where(
+                IpsecChildSa.tunnel_id == tunnel.id, IpsecChildSa.enabled == True  # noqa: E712
+            )
+        )
+        children = result.scalars().all()
+        if not children:
+            return
+
+        child_states = {c.get("name"): c.get("state") for c in status.get("child_sas", [])}
+        for child in children:
+            state = child_states.get(child.name)
+            if state == "INSTALLED":
+                continue
+            logger.warning(
+                f"Child SA {child.name} of tunnel {tunnel.name} is {state or 'MISSING'} "
+                f"while IKE SA is ESTABLISHED; forcing reinitiate"
+            )
+            try:
+                if await asyncio.to_thread(self.initiate_child_sa, tunnel.name, child.name):
+                    logger.info(f"Reinitiated Child SA {child.name}")
+                else:
+                    logger.error(f"Failed to reinitiate Child SA {child.name}")
+            except Exception as e:
+                logger.error(f"Error reinitiating Child SA {child.name}: {e}")
+
     async def get_traffic_history(
         self, 
         tunnel_id: uuid.UUID, 
@@ -1217,20 +1318,34 @@ connections {{
     def _setup_nat_exemption(self, comment: str, local_ts: str, remote_ts: str) -> bool:
         """
         Add NAT-exemption ACCEPT rules in MOD_IPSEC_NAT for every local/remote
-        subnet pair. ACCEPT is terminating in the nat table, so it short-circuits
-        the host SNAT/MASQUERADE in MADMIN_POSTROUTING and preserves the original
-        source — required for the packet to match the IPsec traffic selector.
+        subnet pair, in BOTH directions. ACCEPT is terminating in the nat table,
+        so it short-circuits the host SNAT/MASQUERADE in MADMIN_POSTROUTING and
+        preserves the original source IP.
+
+        Both directions are required because the host MASQUERADE catches
+        tunnel-selected traffic whichever way it is routed out:
+        - local -> remote: a LAN host reaching the peer must keep its real source
+          so the packet matches the IPsec traffic selector (else it isn't tunneled).
+        - remote -> local: a device on the peer side reaching a LAN service (e.g. a
+          branch printer hitting the HQ print/auth server) must not be collapsed
+          onto the gateway IP, or the service sees every branch as one source and
+          per-source auth/authorization breaks.
+        When no MASQUERADE would match, the ACCEPT is a harmless no-op.
         """
         success = True
-        for local in self._split_ts(local_ts):
-            for remote in self._split_ts(remote_ts):
-                args = [
-                    '-s', local, '-d', remote,
-                    '-m', 'comment', '--comment', comment,
-                    '-j', 'ACCEPT'
-                ]
-                if not core_iptables.run_safe('nat', ['-C', self.IPSEC_NAT_CHAIN] + args, suppress_errors=True):
-                    success &= core_iptables.run_safe('nat', ['-A', self.IPSEC_NAT_CHAIN] + args)
+        subnets_local = self._split_ts(local_ts)
+        subnets_remote = self._split_ts(remote_ts)
+        # (src, dst) pairs for both directions of every subnet combination
+        pairs = [(l, r) for l in subnets_local for r in subnets_remote]
+        pairs += [(r, l) for l in subnets_local for r in subnets_remote]
+        for src, dst in pairs:
+            args = [
+                '-s', src, '-d', dst,
+                '-m', 'comment', '--comment', comment,
+                '-j', 'ACCEPT'
+            ]
+            if not core_iptables.run_safe('nat', ['-C', self.IPSEC_NAT_CHAIN] + args, suppress_errors=True):
+                success &= core_iptables.run_safe('nat', ['-A', self.IPSEC_NAT_CHAIN] + args)
         return success
 
     def _remove_nat_exemption(self, comment: str) -> None:
@@ -1320,6 +1435,25 @@ connections {{
         core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
         core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
 
+    async def apply_tunnel_firewall(self, tunnel, db) -> bool:
+        """(Re)create a tunnel's firewall chains + NAT exemptions from its
+        persisted child SAs. Idempotent.
+
+        Used by the on_startup reconcile hook for tunnels that charon already
+        brought up (ESTABLISHED) before we run: their SAs are up but the iptables
+        rules — notably the bidirectional MOD_IPSEC_NAT exemptions — are not
+        persisted, so they must be rebuilt from code. bring_tunnel_up handles the
+        same for tunnels it initiates itself.
+        """
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecChildSa
+
+        result = await db.execute(
+            select(IpsecChildSa).where(IpsecChildSa.tunnel_id == tunnel.id)
+        )
+        children = result.scalars().all()
+        return await self.setup_tunnel_firewall_chains(tunnel, children, db)
+
     async def bring_tunnel_up(self, tunnel, db) -> bool:
         """
         Generate the tunnel config, load it and initiate the IPsec tunnel.
@@ -1370,6 +1504,15 @@ connections {{
 
         await asyncio.to_thread(self.save_tunnel_config, tunnel.name, config)
         await asyncio.to_thread(self.load_all_connections)
+
+        # Rebuild firewall chains + (bidirectional) NAT exemptions from code on
+        # every start/boot, so they never depend on iptables persistence.
+        # Idempotent; a firewall failure must not block tunnel initiation.
+        try:
+            await self.setup_tunnel_firewall_chains(tunnel, children, db)
+        except Exception as e:
+            logger.error(f"Firewall setup for tunnel {tunnel.name} failed: {e}")
+
         success = await asyncio.to_thread(self.initiate_tunnel, tunnel.name)
         if not success:
             return False

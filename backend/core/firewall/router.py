@@ -21,10 +21,13 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 
 from .models import (
+    MachineFirewallRule,
     MachineFirewallRuleCreate,
     MachineFirewallRuleUpdate,
     MachineFirewallRuleResponse,
     RuleOrderUpdate,
+    RuleCounter,
+    RuleCounterResponse,
     ModuleChainResponse,
     RuleAddressRefResponse,
     AddressObject,
@@ -41,11 +44,12 @@ from .models import (
     ADDRESS_OBJECT_TYPES,
 )
 from .orchestrator import (
-    firewall_orchestrator, dnat_forward_fields, policy_nat_fields,
+    firewall_orchestrator, dnat_forward_fields, policy_nat_fields, hairpin_masq_fields,
+    redirect_input_fields, dnat_input_fields, effective_to_destination,
     IMPLICIT_DENY_COMMENT,
 )
 from .iptables import IptablesError, flush_conntrack_for_rule
-from .protected_ports import validate_protected_port_collision
+from .protected_ports import validate_protected_port_collision, port_specs_overlap
 from . import addresses, geoip
 
 logger = logging.getLogger(__name__)
@@ -56,7 +60,7 @@ router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
 # Hook (chain) in cui ciascun match/azione è valido per netfilter.
 # Denylist applicata DOPO la validazione table/chain/action: blocca solo le
 # combinazioni note-incompatibili, lasciando passare quelle non elencate.
-_IN_IFACE_VALID = {"PREROUTING", "INPUT", "FORWARD"}
+_IN_IFACE_VALID = {"PREROUTING", "INPUT", "FORWARD", "POSTROUTING"}
 _OUT_IFACE_VALID = {"POSTROUTING", "OUTPUT", "FORWARD"}
 _NAT_TARGET_HOOK = {
     "DNAT": {"PREROUTING", "OUTPUT"},
@@ -180,7 +184,7 @@ def _validate_rule_constraints(table: str, chain: str, action: str,
         raise HTTPException(
             status_code=400,
             detail=f"Interfaccia di ingresso (-i) non valida nella catena {chain}: "
-                   f"disponibile solo in PREROUTING, INPUT, FORWARD."
+                   f"disponibile solo in PREROUTING, INPUT, FORWARD, POSTROUTING."
         )
     if out_interface and chain not in _OUT_IFACE_VALID:
         raise HTTPException(
@@ -195,9 +199,137 @@ def _validate_rule_constraints(table: str, chain: str, action: str,
         )
 
 
-def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
+def _validate_port_protocol(protocol: Optional[str], port: Optional[str]) -> None:
+    """Reject a port match without a tcp/udp protocol: build_rule_args only
+    emits --dport for protocol in (tcp, udp) (iptables.py), so a port stored
+    against any other protocol (or none) is silently ignored by the engine —
+    the rule ends up matching far more traffic than its port suggests."""
+    if port and protocol not in ("tcp", "udp"):
+        raise HTTPException(
+            status_code=400,
+            detail="La porta è applicabile solo con protocollo TCP o UDP: "
+                   "impostare il protocollo o rimuovere la porta."
+        )
+
+
+async def _validate_duplicate_port_forward(
+    session: AsyncSession,
+    *,
+    exclude_rule_id: Optional[uuid.UUID],
+    action: str,
+    protocol: Optional[str],
+    port: Optional[str],
+    in_interface: Optional[str],
+    source: Optional[str],
+    destination: Optional[str],
+    has_source_refs: bool,
+    has_destination_refs: bool,
+) -> None:
+    """
+    Reject a nat/PREROUTING DNAT|REDIRECT that would silently shadow (or be
+    shadowed by) another enabled port-forward rule: iptables evaluates in
+    order and only the first match wins, so an identical-enough duplicate
+    is dead code that never fires.
+
+    A rule using address-object/group refs for source or destination is
+    opaque here (its effective match depends on ipset contents resolved at
+    apply time) — such rules are skipped entirely rather than risk a false
+    positive/negative. Literal comparison is strict string equality, so
+    "1.2.3.4" and "1.2.3.4/32" are treated as different (a real, if unusual,
+    differentiator) — deliberately conservative: only flag true duplicates.
+    """
+    if has_source_refs or has_destination_refs:
+        return
+
+    query = (
+        select(MachineFirewallRule)
+        .where(MachineFirewallRule.table_name == "nat")
+        .where(MachineFirewallRule.chain == "PREROUTING")
+        .where(MachineFirewallRule.action.in_(("DNAT", "REDIRECT")))
+        .where(MachineFirewallRule.enabled == True)
+    )
+    if exclude_rule_id is not None:
+        query = query.where(MachineFirewallRule.id != exclude_rule_id)
+    candidates = (await session.execute(query)).scalars().all()
+    if not candidates:
+        return
+
+    other_ids = [c.id for c in candidates]
+    refs_res = await session.execute(
+        select(FirewallRuleAddress.rule_id).where(FirewallRuleAddress.rule_id.in_(other_ids))
+    )
+    ids_with_refs = {row[0] for row in refs_res.all()}
+
+    proto_l = (protocol or "").lower()
+    src_l = (source or "").strip()
+    dst_l = (destination or "").strip()
+
+    for other in candidates:
+        if other.id in ids_with_refs:
+            continue
+        other_proto = (other.protocol or "").lower()
+        if proto_l and other_proto and proto_l != other_proto:
+            continue
+        if not port_specs_overlap(port, other.port):
+            continue
+        if in_interface and other.in_interface and in_interface != other.in_interface:
+            continue
+        other_dst = (other.destination or "").strip()
+        if dst_l and other_dst and dst_l != other_dst:
+            continue
+        other_src = (other.source or "").strip()
+        if src_l and other_src and src_l != other_src:
+            continue
+        raise HTTPException(
+            status_code=409,
+            detail=f"Regola duplicata: confligge con il port forwarding "
+                   f"'{other.comment or str(other.id)[:8]}' "
+                   f"(porta {other.port or 'tutte'}, protocollo {other.protocol or 'tutti'}). "
+                   f"Cambiare porta, protocollo o interfaccia, oppure rimuovere la regola esistente."
+        )
+
+
+async def _validate_dnat_target_object(session: AsyncSession, obj_id: str) -> str:
+    """
+    Validate a to_destination_object_id and return the referenced object's
+    value. Only /32 cidr objects are accepted as a DNAT target:
+    --to-destination rewrites to exactly one address, and every companion
+    (FORWARD/INPUT/hairpin) embeds the target as a plain -d match, which
+    neither a range nor a wider CIDR can be. See orchestrator.effective_to_destination.
+    """
+    obj = await session.get(AddressObject, _uuid(obj_id))
+    if not obj:
+        raise HTTPException(status_code=400, detail=f"Oggetto indirizzo non trovato: {obj_id}")
+    if not obj.enabled:
+        raise HTTPException(status_code=400, detail=f"Oggetto indirizzo disabilitato: {obj.name}")
+    if obj.type != "cidr" or not obj.value.endswith("/32"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"La destinazione DNAT può referenziare solo un oggetto indirizzo di tipo "
+                   f"CIDR /32 (host singolo): '{obj.name}' non è valido."
+        )
+    return obj.value
+
+
+async def _dnat_obj_names_map(session: AsyncSession, rules) -> dict:
+    """Return {rule_id: object_name} for rules whose to_destination_object_id
+    is set, so responses can show a human name instead of a bare UUID."""
+    obj_ids = {r.to_destination_object_id for r in rules if getattr(r, "to_destination_object_id", None)}
+    if not obj_ids:
+        return {}
+    ores = await session.execute(select(AddressObject).where(AddressObject.id.in_(obj_ids)))
+    objs = {o.id: o.name for o in ores.scalars().all()}
+    return {
+        r.id: objs[r.to_destination_object_id]
+        for r in rules
+        if getattr(r, "to_destination_object_id", None) and r.to_destination_object_id in objs
+    }
+
+
+def _rule_to_response(rule, refs_map=None, dnat_obj_names=None) -> MachineFirewallRuleResponse:
     """Convert database model to API response, including resolved address refs."""
     refs_map = refs_map or {}
+    dnat_obj_names = dnat_obj_names or {}
     return MachineFirewallRuleResponse(
         id=str(rule.id),
         chain=rule.chain,
@@ -214,6 +346,9 @@ def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
         limit_rate=rule.limit_rate,
         limit_burst=rule.limit_burst,
         to_destination=rule.to_destination,
+        to_destination_object_id=str(rule.to_destination_object_id) if rule.to_destination_object_id else None,
+        to_destination_object_name=dnat_obj_names.get(rule.id),
+        to_destination_port=rule.to_destination_port,
         to_source=rule.to_source,
         to_ports=rule.to_ports,
         log_prefix=rule.log_prefix,
@@ -224,24 +359,31 @@ def _rule_to_response(rule, refs_map=None) -> MachineFirewallRuleResponse:
         order=rule.order,
         enabled=rule.enabled,
         policy_nat=rule.policy_nat,
+        hairpin=rule.hairpin,
         created_at=rule.created_at,
         updated_at=rule.updated_at
     )
 
 
-def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
-    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a policy_nat companion."""
+def _auto_nat_response(policy, default_if: Optional[str] = None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a
+    policy_nat companion. The real companion matches by conntrack mark, not
+    by flow (see policy_nat_fields) — no single protocol/port/source/
+    destination value represents it, so those stay None; the comment
+    identifies the owning policy instead. default_if mirrors apply_rules'
+    fallback to the default-route interface when the policy sets none."""
     fields = policy_nat_fields(policy)
+    out_if = fields["out_interface"] or default_if
     return MachineFirewallRuleResponse(
         id=f"auto-nat-{policy.id}",
         chain="POSTROUTING",
         action="MASQUERADE",
-        protocol=fields["protocol"],
-        source=fields["source"],
-        destination=fields["destination"],
-        port=fields["port"],
+        protocol=None,
+        source=None,
+        destination=None,
+        port=None,
         in_interface=None,  # -i does not exist in POSTROUTING
-        out_interface=fields["out_interface"],
+        out_interface=out_if,
         state=None,
         limit_rate=None,
         limit_burst=None,
@@ -251,7 +393,7 @@ def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
         log_prefix=None,
         log_level=None,
         reject_with=None,
-        comment=f"→ policy NAT {policy.in_interface or 'any'}→{policy.out_interface or 'any'}",
+        comment=f"→ NAT (connmark) per policy: {policy.comment or str(policy.id)[:8]}",
         table_name="nat",
         order=999_998,  # companions sit after user POSTROUTING rules
         enabled=True,
@@ -261,15 +403,105 @@ def _auto_nat_response(policy) -> MachineFirewallRuleResponse:
     )
 
 
-def _auto_forward_response(dnat) -> MachineFirewallRuleResponse:
-    """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT companion."""
-    fields = dnat_forward_fields(dnat)
+def _auto_hairpin_nat_response(dnat, to_destination: Optional[str] = None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a
+    DNAT's hairpin-NAT companion. The real companion is emitted once per LAN
+    subnet (topology-resolved at apply time) so no single `source` value can
+    represent it here — the comment carries the context instead.
+
+    to_destination: resolved via firewall_orchestrator.resolve_dnat_targets()
+    by the caller (falls back to dnat.to_destination when not given)."""
+    fields = hairpin_masq_fields(dnat, to_destination)
+    label = to_destination if to_destination is not None else dnat.to_destination
+    return MachineFirewallRuleResponse(
+        id=f"auto-hairpin-{dnat.id}",
+        chain="POSTROUTING",
+        action="MASQUERADE",
+        protocol=fields["protocol"],
+        source=None,
+        destination=fields["destination"],
+        port=fields["port"],
+        in_interface=None,  # -i does not exist in POSTROUTING
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=f"→ hairpin {label}",
+        table_name="nat",
+        order=999_998,  # companions sit after user POSTROUTING rules
+        enabled=True,
+        auto_generated=True,
+        created_at=dnat.created_at,
+        updated_at=dnat.updated_at,
+    )
+
+
+def _auto_hairpin_forward_response(dnat, to_destination: Optional[str] = None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic FORWARD ACCEPT row mirroring a hairpin
+    DNAT's LAN-side forward companion. apply_rules emits one such ACCEPT per
+    LAN subnet (source=<subnet>) for LAN-originated reflected traffic — the
+    DNAT's own FORWARD companion (_auto_forward_response) carries -i <wan> and
+    never matches it. Like the hairpin MASQUERADE row, source collapses to None
+    (no single subnet represents it); the comment carries the context. Shares
+    hairpin_masq_fields with apply_rules so destination/port stay in sync."""
+    fields = hairpin_masq_fields(dnat, to_destination)
+    label = to_destination if to_destination is not None else dnat.to_destination
+    return MachineFirewallRuleResponse(
+        id=f"auto-hairpin-fwd-{dnat.id}",
+        chain="FORWARD",
+        action="ACCEPT",
+        protocol=fields["protocol"],
+        source=None,
+        destination=fields["destination"],
+        port=fields["port"],
+        in_interface=None,
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=f"→ hairpin {label}",
+        table_name="filter",
+        order=999_998,  # companions sit after user policies, before the implicit deny
+        enabled=True,
+        auto_generated=True,
+        created_at=dnat.created_at,
+        updated_at=dnat.updated_at,
+    )
+
+
+def _auto_forward_response(dnat, to_destination: Optional[str] = None, refs_map=None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic FORWARD ACCEPT row that mirrors a DNAT
+    companion. to_destination: resolved via resolve_dnat_targets() by the
+    caller (falls back to dnat.to_destination when not given).
+
+    Must mirror the DNAT's own source object/group refs (not just its literal
+    `source` column) — apply_rules() already honors them for the real iptables
+    rule via eff_map, but this display-only row previously showed the literal
+    column, which is None whenever the source is an address object/group.
+    """
+    refs_map = refs_map or {}
+    fields = dnat_forward_fields(dnat, to_destination)
+    label = to_destination if to_destination is not None else dnat.to_destination
+    source_refs = refs_map.get((dnat.id, "source"), [])
     return MachineFirewallRuleResponse(
         id=f"auto-dnat-{dnat.id}",
         chain="FORWARD",
         action="ACCEPT",
         protocol=fields["protocol"],
-        source=fields["source"],
+        source=None if source_refs else fields["source"],
+        source_refs=source_refs,
         destination=fields["destination"],
         port=fields["port"],
         in_interface=fields["in_interface"],
@@ -283,13 +515,51 @@ def _auto_forward_response(dnat) -> MachineFirewallRuleResponse:
         log_prefix=None,
         log_level=None,
         reject_with=None,
-        comment=f"→ DNAT {dnat.to_destination}",
+        comment=f"→ DNAT {label}",
         table_name="filter",
         order=999_998,  # companions sit after user policies, before the implicit deny
         enabled=True,
         auto_generated=True,
         created_at=dnat.created_at,
         updated_at=dnat.updated_at,
+    )
+
+
+def _auto_input_response(rule, fields: dict, label: str) -> MachineFirewallRuleResponse:
+    """
+    Build the read-only synthetic INPUT ACCEPT row mirroring a REDIRECT or
+    DNAT-to-self companion (both deliver to the gateway itself). order=-1 sorts
+    it before user INPUT rules, matching real evaluation order (see apply_rules
+    — the companion is prepended, not appended, unlike the FORWARD companions).
+    Advanced renders auto_generated rows with a lock icon instead of the order
+    number, so -1 never surfaces to the user.
+    """
+    return MachineFirewallRuleResponse(
+        id=f"auto-rdr-{rule.id}",
+        chain="INPUT",
+        action="ACCEPT",
+        protocol=fields["protocol"],
+        source=fields["source"],
+        destination=fields.get("destination"),
+        port=fields["port"],
+        in_interface=fields["in_interface"],
+        out_interface=None,
+        state=None,
+        limit_rate=None,
+        limit_burst=None,
+        to_destination=None,
+        to_source=None,
+        to_ports=None,
+        log_prefix=None,
+        log_level=None,
+        reject_with=None,
+        comment=label,
+        table_name="filter",
+        order=-1,
+        enabled=True,
+        auto_generated=True,
+        created_at=rule.created_at,
+        updated_at=rule.updated_at,
     )
 
 
@@ -338,17 +608,77 @@ async def list_rules(
     """List all firewall rules, optionally filtered by chain."""
     rules = await firewall_orchestrator.get_all_rules(session, chain)
     refs_map = await _rule_refs_map(session, [r.id for r in rules])
-    responses = [_rule_to_response(r, refs_map) for r in rules]
+    dnat_obj_names = await _dnat_obj_names_map(session, rules)
+    responses = [_rule_to_response(r, refs_map, dnat_obj_names) for r in rules]
     # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
-        responses.extend(_auto_forward_response(d) for d in dnat_rules)
+        dnat_targets = await firewall_orchestrator.resolve_dnat_targets(session, dnat_rules)
+        dnat_refs_map = await _rule_refs_map(session, [d.id for d in dnat_rules])
+        responses.extend(
+            _auto_forward_response(d, dnat_targets.get(d.id), dnat_refs_map) for d in dnat_rules
+        )
+        # Hairpin DNATs also emit a LAN-side FORWARD ACCEPT (apply_rules
+        # hairpin_forward_lines) that the DNAT's own -i <wan> companion above
+        # never covers. Surface it here so the FORWARD listing mirrors the
+        # engine — ordered after the DNAT companions, before the implicit deny,
+        # exactly as apply_rules appends them.
+        hairpin_fwd_rules = await firewall_orchestrator.get_enabled_hairpin_rules(session)
+        hairpin_fwd_targets = await firewall_orchestrator.resolve_dnat_targets(session, hairpin_fwd_rules)
+        responses.extend(
+            _auto_hairpin_forward_response(d, hairpin_fwd_targets.get(d.id)) for d in hairpin_fwd_rules
+        )
         responses.append(_implicit_deny_response())
     # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
     if chain in (None, "POSTROUTING"):
+        from core.network.utils import get_default_interface
+        default_if = get_default_interface()
         nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
-        responses.extend(_auto_nat_response(p) for p in nat_policies)
+        responses.extend(_auto_nat_response(p, default_if) for p in nat_policies)
+        hairpin_rules = await firewall_orchestrator.get_enabled_hairpin_rules(session)
+        hairpin_targets = await firewall_orchestrator.resolve_dnat_targets(session, hairpin_rules)
+        responses.extend(_auto_hairpin_nat_response(d, hairpin_targets.get(d.id)) for d in hairpin_rules)
+    # Surface auto-generated INPUT ACCEPT companions (REDIRECT / DNAT-to-self)
+    if chain in (None, "INPUT"):
+        input_companions = await firewall_orchestrator.get_enabled_input_companion_rules(session)
+        for r in input_companions["redirect"]:
+            fields = redirect_input_fields(r)
+            label = f"→ REDIRECT :{fields['port']}" if fields["port"] else "→ REDIRECT"
+            responses.append(_auto_input_response(r, fields, label))
+        dnat_self_targets = await firewall_orchestrator.resolve_dnat_targets(
+            session, input_companions["dnat_self"]
+        )
+        for r in input_companions["dnat_self"]:
+            target = dnat_self_targets.get(r.id)
+            fields = dnat_input_fields(r, target)
+            responses.append(_auto_input_response(r, fields, f"→ DNAT self {target}"))
     return responses
+
+
+@router.get("/counters", response_model=List[RuleCounterResponse])
+async def get_rule_counters(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Durable per-rule hit-count/traffic totals (see models.RuleCounter — kernel
+    iptables counters are zeroed on every apply, so these accumulate deltas
+    across applies/reboots). Snapshots the live kernel state on every call so
+    totals are fresh; the Standard view fetches this once on page load
+    (fire-and-forget, no polling) and renders it as a per-rule hover popover.
+    """
+    await firewall_orchestrator.snapshot_counters(session)
+    result = await session.execute(select(RuleCounter))
+    return [
+        RuleCounterResponse(
+            rule_id=str(c.rule_id),
+            packets=c.packets,
+            bytes=c.bytes,
+            window_start=c.window_start,
+            updated_at=c.updated_at,
+        )
+        for c in result.scalars().all()
+    ]
 
 
 @router.get("/rules/{rule_id}", response_model=MachineFirewallRuleResponse)
@@ -368,7 +698,8 @@ async def get_rule(
         raise HTTPException(status_code=404, detail="Rule not found")
 
     refs_map = await _rule_refs_map(session, [rule.id])
-    return _rule_to_response(rule, refs_map)
+    dnat_obj_names = await _dnat_obj_names_map(session, [rule])
+    return _rule_to_response(rule, refs_map, dnat_obj_names)
 
 
 @router.post("/rules", response_model=MachineFirewallRuleResponse, status_code=status.HTTP_201_CREATED)
@@ -383,10 +714,41 @@ async def create_rule(
         table, rule_data.chain, rule_data.action,
         rule_data.in_interface, rule_data.out_interface
     )
+    _validate_port_protocol(rule_data.protocol, rule_data.port)
     if rule_data.policy_nat and not (table == "filter" and rule_data.chain == "FORWARD"):
         raise HTTPException(
             status_code=400,
             detail="policy_nat è disponibile solo su regole filter/FORWARD."
+        )
+    if rule_data.to_destination_object_id and not (table == "nat" and rule_data.action == "DNAT"):
+        raise HTTPException(
+            status_code=400,
+            detail="to_destination_object_id è disponibile solo su regole DNAT in nat/PREROUTING o nat/OUTPUT."
+        )
+    effective_dest = rule_data.to_destination
+    if rule_data.to_destination_object_id:
+        obj_value = await _validate_dnat_target_object(session, rule_data.to_destination_object_id)
+        effective_dest = effective_to_destination(rule_data, obj_value)
+    if rule_data.hairpin and not (
+        table == "nat" and rule_data.chain == "PREROUTING"
+        and rule_data.action == "DNAT" and effective_dest
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="hairpin è disponibile solo su regole DNAT in nat/PREROUTING con destinazione interna."
+        )
+    if table == "nat" and rule_data.chain == "PREROUTING" and rule_data.action in ("DNAT", "REDIRECT"):
+        await _validate_duplicate_port_forward(
+            session,
+            exclude_rule_id=None,
+            action=rule_data.action,
+            protocol=rule_data.protocol,
+            port=rule_data.port,
+            in_interface=rule_data.in_interface,
+            source=rule_data.source,
+            destination=rule_data.destination,
+            has_source_refs=bool(rule_data.source_refs),
+            has_destination_refs=bool(rule_data.destination_refs),
         )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
@@ -398,7 +760,7 @@ async def create_rule(
             chain=rule_data.chain,
             protocol=rule_data.protocol,
             port=rule_data.port,
-            to_destination=rule_data.to_destination,
+            to_destination=effective_dest,
             to_ports=rule_data.to_ports,
         )
     except ValueError as e:
@@ -408,7 +770,8 @@ async def create_rule(
         rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
         await session.commit()
         refs_map = await _rule_refs_map(session, [rule.id])
-        return _rule_to_response(rule, refs_map)
+        dnat_obj_names = await _dnat_obj_names_map(session, [rule])
+        return _rule_to_response(rule, refs_map, dnat_obj_names)
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -463,6 +826,72 @@ async def update_rule(
             status_code=400,
             detail="policy_nat è disponibile solo su regole filter/FORWARD."
         )
+    eff_action = update_data.get("action", existing.action)
+    eff_to_destination_object_id = update_data.get(
+        "to_destination_object_id",
+        str(existing.to_destination_object_id) if existing.to_destination_object_id else None
+    )
+    if eff_to_destination_object_id and not (eff_table == "nat" and eff_action == "DNAT"):
+        raise HTTPException(
+            status_code=400,
+            detail="to_destination_object_id è disponibile solo su regole DNAT in nat/PREROUTING o nat/OUTPUT."
+        )
+    if eff_to_destination_object_id:
+        from types import SimpleNamespace
+        eff_to_destination_port = update_data.get("to_destination_port", existing.to_destination_port)
+        obj_value = await _validate_dnat_target_object(session, eff_to_destination_object_id)
+        eff_to_destination = effective_to_destination(
+            SimpleNamespace(to_destination_port=eff_to_destination_port), obj_value
+        )
+    else:
+        eff_to_destination = update_data.get("to_destination", existing.to_destination)
+    if update_data.get("hairpin", existing.hairpin) and not (
+        eff_table == "nat" and eff_chain == "PREROUTING"
+        and eff_action == "DNAT" and eff_to_destination
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="hairpin è disponibile solo su regole DNAT in nat/PREROUTING con destinazione interna."
+        )
+    # Only re-check the port/protocol trap when this write actually touches the
+    # service definition: an update that just toggles `enabled` or reorders a
+    # legacy port-without-proto row must keep working untouched.
+    if "port" in update_data or "protocol" in update_data:
+        _validate_port_protocol(
+            update_data.get("protocol", existing.protocol),
+            update_data.get("port", existing.port),
+        )
+    # Re-check duplicate port-forwards whenever the write touches a field the
+    # conflict check depends on, INCLUDING `enabled`: re-enabling a rule that
+    # was disabled precisely because it duplicated another one must not
+    # silently resurrect the conflict.
+    _dup_check_fields = {
+        "table_name", "chain", "action", "protocol", "port", "in_interface",
+        "source", "destination", "source_refs", "destination_refs", "enabled",
+    }
+    if (eff_table == "nat" and eff_chain == "PREROUTING" and eff_action in ("DNAT", "REDIRECT")
+            and update_data.get("enabled", existing.enabled)
+            and (_dup_check_fields & update_data.keys())):
+        existing_dirs_res = await session.execute(
+            select(FirewallRuleAddress.direction).where(FirewallRuleAddress.rule_id == rule_uuid)
+        )
+        existing_dirs = {row[0] for row in existing_dirs_res.all()}
+        eff_has_source_refs = (bool(update_data["source_refs"]) if "source_refs" in update_data
+                                else "source" in existing_dirs)
+        eff_has_destination_refs = (bool(update_data["destination_refs"]) if "destination_refs" in update_data
+                                     else "destination" in existing_dirs)
+        await _validate_duplicate_port_forward(
+            session,
+            exclude_rule_id=rule_uuid,
+            action=eff_action,
+            protocol=update_data.get("protocol", existing.protocol),
+            port=update_data.get("port", existing.port),
+            in_interface=update_data.get("in_interface", existing.in_interface),
+            source=update_data.get("source", existing.source),
+            destination=update_data.get("destination", existing.destination),
+            has_source_refs=eff_has_source_refs,
+            has_destination_refs=eff_has_destination_refs,
+        )
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
     try:
@@ -473,7 +902,7 @@ async def update_rule(
             chain=update_data.get("chain", existing.chain),
             protocol=update_data.get("protocol", existing.protocol),
             port=update_data.get("port", existing.port),
-            to_destination=update_data.get("to_destination", existing.to_destination),
+            to_destination=eff_to_destination,
             to_ports=update_data.get("to_ports", existing.to_ports),
         )
     except ValueError as e:
@@ -487,7 +916,8 @@ async def update_rule(
         await session.commit()
 
         refs_map = await _rule_refs_map(session, [rule.id])
-        return _rule_to_response(rule, refs_map)
+        dnat_obj_names = await _dnat_obj_names_map(session, [rule])
+        return _rule_to_response(rule, refs_map, dnat_obj_names)
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -647,11 +1077,15 @@ async def reorder_single_rule(
                     r.order -= 1
         
         rule.order = new_order
-        await session.commit()
-        
-        # Re-apply rules
+        await session.flush()
+
+        # Re-apply rules BEFORE committing: if the kernel rejects the new
+        # ruleset, the except IptablesError below must roll back the order
+        # mutations too, or DB and kernel state permanently diverge.
         await firewall_orchestrator.apply_rules(session)
-        
+
+        await session.commit()
+
         return {"status": "ok", "message": f"Rule moved to position {new_order}"}
     except IptablesError as e:
         await session.rollback()
@@ -886,6 +1320,7 @@ async def update_address_object(
         obj.description = data["description"]
     if "enabled" in data:
         obj.enabled = data["enabled"]
+    value_changed = "type" in data or "value" in data
     obj.updated_at = datetime.utcnow()
     session.add(obj)
     try:
@@ -894,7 +1329,21 @@ async def update_address_object(
         await session.rollback()
         raise HTTPException(status_code=409, detail="Nome oggetto già in uso")
     await session.refresh(obj)
-    await firewall_orchestrator.resync_addresses(session)
+
+    # A DNAT-target object's value is baked into the chain as a literal
+    # --to-destination at apply time — unlike every other usage, it's never
+    # matched via its ipset. resync_addresses only refreshes ipset membership
+    # and would leave the DNAT rewriting to the now-stale value; a changed
+    # value on a referenced object needs a full apply_rules().
+    is_dnat_target = value_changed and (await session.execute(
+        select(MachineFirewallRule.id)
+        .where(MachineFirewallRule.to_destination_object_id == obj.id)
+        .limit(1)
+    )).first() is not None
+    if is_dnat_target:
+        await firewall_orchestrator.apply_rules(session)
+    else:
+        await firewall_orchestrator.resync_addresses(session)
     await session.commit()
     return _object_to_response(obj)
 
@@ -980,6 +1429,13 @@ async def delete_address_object(
     if in_rule.scalar_one_or_none():
         raise HTTPException(status_code=409,
             detail=f"Oggetto '{obj.name}' usato in una regola: rimuovilo prima dalla regola.")
+    in_dnat_target = await session.execute(
+        select(MachineFirewallRule.id).where(MachineFirewallRule.to_destination_object_id == oid).limit(1)
+    )
+    if in_dnat_target.first():
+        raise HTTPException(status_code=409,
+            detail=f"Oggetto '{obj.name}' usato come destinazione di un port forwarding: "
+                   f"rimuovilo prima dalla regola.")
     await session.delete(obj)
     await session.flush()
     await firewall_orchestrator.resync_addresses(session)
@@ -1110,7 +1566,8 @@ async def export_rules(
     """
     rules = await firewall_orchestrator.get_all_rules(session)
     refs_map = await _rule_refs_map(session, [r.id for r in rules])
-    export_data = [_rule_to_response(r, refs_map).model_dump() for r in rules]
+    dnat_obj_names = await _dnat_obj_names_map(session, rules)
+    export_data = [_rule_to_response(r, refs_map, dnat_obj_names).model_dump() for r in rules]
 
     return JSONResponse(
         content=jsonable_encoder(export_data),
@@ -1198,6 +1655,26 @@ async def import_rules(
                     session, rule_dict.get("source_refs"), errors, f"Rule #{i+1} (source)")
                 clean_data["destination_refs"] = await _resolve_imported_refs(
                     session, rule_dict.get("destination_refs"), errors, f"Rule #{i+1} (destination)")
+
+                # to_destination_object_id is exported by name (see
+                # to_destination_object_name) — the raw id is meaningless
+                # across systems, so remap it the same way address refs are;
+                # never carry over the source system's raw id verbatim.
+                obj_name = rule_dict.get("to_destination_object_name")
+                if obj_name:
+                    dnat_obj = (await session.execute(
+                        select(AddressObject).where(AddressObject.name == obj_name)
+                    )).scalar_one_or_none()
+                    if dnat_obj:
+                        clean_data["to_destination_object_id"] = str(dnat_obj.id)
+                    else:
+                        errors.append(
+                            f"Rule #{i+1}: oggetto indirizzo di destinazione '{obj_name}' "
+                            f"non trovato, riferimento DNAT saltato"
+                        )
+                        clean_data["to_destination_object_id"] = None
+                else:
+                    clean_data["to_destination_object_id"] = None
 
                 # Create rule (validates data implicitly via Pydantic model in orchestrator or here)
                 # Orchestrator create_rule accepts dict and creates model

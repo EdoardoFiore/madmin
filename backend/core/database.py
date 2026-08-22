@@ -59,7 +59,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         # Import all models to ensure they're registered
         from core.auth.models import User, Permission, UserPermission, RevokedToken, LoginAttempt
-        from core.firewall.models import MachineFirewallRule, ModuleChain
+        from core.firewall.models import MachineFirewallRule, ModuleChain, RuleCounter
         from core.modules.models import InstalledModule
         from core.settings.models import SystemSettings, SMTPSettings, BackupSettings
         from core.audit.models import AuditLog
@@ -67,6 +67,28 @@ async def init_db() -> None:
         
         await conn.run_sync(SQLModel.metadata.create_all)
         logger.info("Database tables created successfully")
+
+        # Idempotent column migrations for pre-existing databases: create_all
+        # only adds new tables, never new columns on tables that already exist.
+        # Must run here (not the main.py startup migration block) because
+        # provisioning_service.reconcile() and firewall_orchestrator.initialize()
+        # run right after init_db() and already SELECT MachineFirewallRule with
+        # the new model attribute — a DB missing the column would fail there.
+        await conn.execute(text(
+            "ALTER TABLE machine_firewall_rule "
+            "ADD COLUMN IF NOT EXISTS hairpin BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        # DNAT target can reference an address object (cidr /32 or range)
+        # instead of a hand-typed IP — see MachineFirewallRule.to_destination_object_id.
+        await conn.execute(text(
+            "ALTER TABLE machine_firewall_rule "
+            "ADD COLUMN IF NOT EXISTS to_destination_object_id UUID "
+            "REFERENCES firewall_address_object(id)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE machine_firewall_rule "
+            "ADD COLUMN IF NOT EXISTS to_destination_port VARCHAR(20)"
+        ))
 
 
 async def check_db_connection() -> bool:
