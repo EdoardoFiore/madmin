@@ -1213,14 +1213,13 @@ class OpenVPNService:
 
     @staticmethod
     def _get_group_chain_name(chain_id: str, group_name: str) -> str:
-        """Generate a group chain name that fits within iptables 29-char limit.
+        """Group chain name — OVPN_GRP_{inst_6}_{group_6}_{hash_4}, 27 chars.
 
-        Format: OVPN_GRP_{instance_8chars}_{group_8chars}
-        Total: 9 + 8 + 1 + 8 = 26 chars max
+        The hash is what keeps two groups sharing their first characters apart:
+        plain truncation put them in the same chain, and applying one flushed
+        the other's rules.
         """
-        inst_part = chain_id[:8]
-        grp_part = group_name[:8]
-        return f"OVPN_GRP_{inst_part}_{grp_part}"
+        return core_iptables.hashed_chain_name("OVPN_GRP_", chain_id, group_name)
     
     @staticmethod
     def initialize_module_firewall_chains() -> bool:

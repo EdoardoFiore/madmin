@@ -527,9 +527,15 @@ async def import_client_instance(
     instance_id = f"wcli_{sanitized}"
     iface_name = f"wcli{re.sub(r'[^a-zA-Z0-9]', '', sanitized)[:11]}"[:15]
 
-    existing = await db.execute(select(WgInstance).where(WgInstance.id == instance_id))
+    # Both are truncations of the same name, and they truncate differently:
+    # a distinct instance_id can still yield an interface already in use.
+    existing = await db.execute(
+        select(WgInstance).where(
+            (WgInstance.id == instance_id) | (WgInstance.interface == iface_name)
+        )
+    )
     if existing.scalar_one_or_none():
-        raise HTTPException(400, f"Istanza '{instance_id}' già esistente")
+        raise HTTPException(400, f"Istanza '{instance_id}' o interfaccia '{iface_name}' già esistente")
 
     if parsed["peer_endpoint"]:
         dup = await db.execute(
@@ -1339,26 +1345,9 @@ async def create_group(
     if existing.scalar_one_or_none():
         raise HTTPException(400, "Gruppo già esistente")
     
-    # Check for chain name collision due to truncation
-    # Chain names are truncated to 8 chars for instance and 8 chars for group
-    chain_id = instance_id.replace('wg_', '') if instance_id.startswith('wg_') else instance_id
-    truncated_group = sanitized_name[:8]
-    
-    # Get all existing groups for this instance
-    result = await db.execute(select(WgGroup).where(WgGroup.instance_id == instance_id))
-    existing_groups = result.scalars().all()
-    
-    for existing_grp in existing_groups:
-        existing_name = existing_grp.id.replace(instance_id + '_', '')
-        if existing_name[:8] == truncated_group:
-            # Collision detected!
-            raise HTTPException(
-                400, 
-                f"Nome gruppo causa collisione con '{existing_grp.name}' - "
-                f"entrambi iniziano con '{truncated_group}'. "
-                f"Scegli un nome che NON inizi con '{truncated_group}'."
-            )
-    
+    # No truncation guard needed: chain names carry a hash of the full name
+    # (iptables.hashed_chain_name), so two groups sharing a prefix stay distinct.
+
     # Get next order value for this instance
     max_order_result = await db.execute(
         select(func.max(WgGroup.order)).where(WgGroup.instance_id == instance_id)

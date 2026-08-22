@@ -6,6 +6,7 @@ Handles chain creation, rule application, and command execution.
 Supports all standard iptables tables: filter, nat, mangle, raw.
 """
 import subprocess
+import hashlib
 import logging
 import os
 import re
@@ -225,6 +226,25 @@ def delete_chain(chain_name: str, table: str = "filter") -> bool:
 
 
 IPTABLES_MAX_CHAIN_LEN = 29
+
+
+def hashed_chain_name(prefix: str, scope: str, name: str) -> str:
+    """Build a chain name that fits IPTABLES_MAX_CHAIN_LEN without colliding.
+
+    For the module chains named after user-chosen strings (a VPN client, a
+    firewall group). Truncating those alone collides — "nicoletta_personale" and
+    "nicoletta_ufficio" share their first characters and would land in one
+    chain, the second apply flushing the first one's rules — so each side is cut
+    to 6 chars and disambiguated with 4 hex of a sha1 over the untruncated pair.
+
+    Length: len(prefix) + 6 + 1 + 6 + 1 + 4.
+    """
+    pair_hash = hashlib.sha1(f"{scope}|{name}".encode()).hexdigest()[:4]
+
+    def san(value: str) -> str:
+        return re.sub(r'[^A-Za-z0-9]', '_', value)[:6]
+
+    return f"{prefix}{san(scope)}_{san(name)}_{pair_hash}"
 
 
 def create_or_flush_chain(chain_name: str, table: str = "filter") -> bool:

@@ -5,7 +5,6 @@ Business logic for WireGuard operations: key generation, config management,
 interface control, IP allocation, QR code generation.
 """
 import subprocess
-import hashlib
 import logging
 import urllib.request
 from typing import Tuple, List, Optional
@@ -486,29 +485,9 @@ PersistentKeepalive = 25
     WG_NAT_CHAIN = "MOD_WG_NAT"
     
     @staticmethod
-    def _hashed_chain_name(prefix: str, scope: str, name: str) -> str:
-        """Build a chain name that fits iptables' limit without colliding.
-
-        Truncating the name alone is not enough: "nicoletta_rossi" and
-        "nicoletta_bianchi" share their first characters and would land in the
-        same chain, the second apply flushing the first one's rules. Each side is
-        cut to 6 chars and disambiguated with 4 hex of a sha1 over the
-        untruncated pair — the scheme core.firewall.iptables uses for its
-        forward subchains.
-
-        Length: len(prefix) + 6 + 1 + 6 + 1 + 4.
-        """
-        pair_hash = hashlib.sha1(f"{scope}|{name}".encode()).hexdigest()[:4]
-
-        def san(value: str) -> str:
-            return ''.join(c if c.isalnum() else '_' for c in value)[:6]
-
-        return f"{prefix}{san(scope)}_{san(name)}_{pair_hash}"
-
-    @staticmethod
     def _get_group_chain_name(chain_id: str, group_name: str) -> str:
         """Group chain name — WG_GRP_{inst_6}_{group_6}_{hash_4}, 25 chars."""
-        return WireGuardService._hashed_chain_name("WG_GRP_", chain_id, group_name)
+        return core_iptables.hashed_chain_name("WG_GRP_", chain_id, group_name)
 
     @staticmethod
     def initialize_module_firewall_chains() -> bool:
@@ -1074,14 +1053,14 @@ PersistentKeepalive = 25
     @staticmethod
     def _get_client_chain_name(instance_id: str, client_name: str) -> str:
         """Client filter chain name — WG_CLI_{inst_6}_{cli_6}_{hash_4}, 25 chars."""
-        return WireGuardService._hashed_chain_name(
+        return core_iptables.hashed_chain_name(
             "WG_CLI_", instance_id.replace('wg_', ''), client_name
         )
     
     @staticmethod
     def _get_client_nat_chain_name(instance_id: str, client_name: str) -> str:
         """NAT counterpart of _get_client_chain_name — 26 chars."""
-        return WireGuardService._hashed_chain_name(
+        return core_iptables.hashed_chain_name(
             "WG_CNAT_", instance_id.replace('wg_', ''), client_name
         )
 

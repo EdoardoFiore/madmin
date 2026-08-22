@@ -1432,27 +1432,9 @@ async def create_group(
     sanitized_name = re.sub(r'[^a-z0-9]', '', data.name.lower())
     group_id = f"{instance_id}_{sanitized_name}"
     
-    # Check for chain name collision due to truncation
-    # Chain names are truncated to 8 chars for instance and 8 chars for group
-    chain_id = instance_id.replace('tun', '') if instance_id.startswith('tun') else instance_id
-    truncated_inst = chain_id[:8]
-    truncated_group = sanitized_name[:8]
-    
-    # Get all existing groups for this instance
-    result = await db.execute(select(OvpnGroup).where(OvpnGroup.instance_id == instance_id))
-    existing_groups = result.scalars().all()
-    
-    for existing in existing_groups:
-        existing_name = existing.id.replace(instance_id + '_', '')
-        if existing_name[:8] == truncated_group:
-            # Collision detected!
-            raise HTTPException(
-                400, 
-                f"Nome gruppo causa collisione con '{existing.name}' - "
-                f"entrambi iniziano con '{truncated_group}'. "
-                f"Scegli un nome che NON inizi con '{truncated_group}'."
-            )
-    
+    # No truncation guard needed: chain names carry a hash of the full name
+    # (iptables.hashed_chain_name), so two groups sharing a prefix stay distinct.
+
     # Get next order value for this instance
     max_order_result = await db.execute(
         select(func.max(OvpnGroup.order)).where(OvpnGroup.instance_id == instance_id)
