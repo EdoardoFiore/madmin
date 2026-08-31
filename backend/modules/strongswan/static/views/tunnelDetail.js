@@ -189,16 +189,18 @@ function renderDetail(container, tunnelId) {
                                 ${tunnel.status === 'established' ? 'UP' : tunnel.status === 'connecting' ? 'CONNECTING' : 'DOWN'}
                             </span>
                         </div>
-                        <div class="text-muted">
+                        <div class="text-muted d-flex align-items-center flex-wrap">
                             <code>${escapeHtml(tunnel.local_address || '%any')}</code>
                             <i class="ti ti-arrows-exchange mx-2"></i>
                             <code>${escapeHtml(tunnel.remote_address)}</code>
-                        </div>
-                        <!-- The connection name is what appears in swanctl and in
-                             the charon log; the tunnel name never does. -->
-                        <div class="text-muted small mt-1">
-                            <i class="ti ti-terminal-2 me-1"></i>
-                            <code>${escapeHtml(tunnel.conn_name || '')}</code>
+                            <!-- The connection name is the handle that shows up in
+                                 swanctl and in the charon log; the tunnel name never
+                                 does. Kept quiet and on the same line: it is a
+                                 debugging aid, not part of what identifies the
+                                 tunnel to the reader. -->
+                            ${tunnel.conn_name ? `
+                            <span class="ms-3 small font-monospace opacity-50"
+                                  title="${t('strongswan.connNameHint')}">${escapeHtml(tunnel.conn_name)}</span>` : ''}
                         </div>
                         ${children.filter(c => c.enabled).length === 0 ? `
                         <div class="alert alert-warning py-2 px-3 mt-2 mb-0 d-inline-flex align-items-center">

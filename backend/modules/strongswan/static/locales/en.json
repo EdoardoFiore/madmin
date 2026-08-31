@@ -37,6 +37,7 @@
   "noPhase2": "No Phase 2 configured",
   "noPhase2Hint": "Add a Phase 2 to define traffic selectors",
   "noEnabledChildWarning": "No enabled Phase 2: the tunnel carries no traffic until you add one",
+  "connNameHint": "Connection name in swanctl and in the charon log",
   "addPhase2": "Add Phase 2",
   "phase2TableName": "Name",
   "phase2LocalSubnet": "Local Subnet",
