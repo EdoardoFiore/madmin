@@ -1234,6 +1234,14 @@ connections {{
         from modules.strongswan.models import IpsecChildSa
         
         success = True
+
+        # The module chains survive a restart but are recreated empty on a box
+        # that never had them (a fresh deploy, a restored archive), and only
+        # POST /tunnels used to fill MOD_IPSEC_INPUT. Without it the peer cannot
+        # reach UDP 500/4500: the tunnel still comes up while we initiate, on
+        # conntrack alone, then dies whenever the peer has to start an exchange.
+        # Idempotent, so every path that (re)builds the chains can assert it.
+        success &= self.setup_ipsec_input_rules()
         
         for child_sa in child_sas:
             if not child_sa.enabled:
