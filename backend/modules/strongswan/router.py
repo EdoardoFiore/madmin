@@ -286,9 +286,13 @@ async def delete_tunnel(
     # Remove config file
     await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.id)
 
-    # Every chain, jump and NAT exemption of this tunnel, found by id — no Child
-    # SA list and no ordering involved.
-    await strongswan_service.remove_tunnel_firewall_chains(tunnel.id)
+    # Chains, jumps and NAT exemptions of this tunnel's Child SAs, addressed by
+    # id — no ordering involved. Anything older that this list cannot name is
+    # collected by the prune below, which decides from the database.
+    child_ids = (await db.execute(
+        select(IpsecChildSa.id).where(IpsecChildSa.tunnel_id == tunnel.id)
+    )).scalars().all()
+    await strongswan_service.remove_tunnel_firewall_chains(tunnel.id, child_ids)
     
     # Delete traffic stats first (to avoid FK constraint violation)
     from modules.strongswan.models import IpsecTrafficStats

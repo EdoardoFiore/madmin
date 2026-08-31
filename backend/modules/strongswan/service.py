@@ -53,20 +53,22 @@ def secret_label(tunnel_id) -> str:
 
 
 def rule_token(tunnel_id, child_id) -> str:
-    """iptables comment identifying the rules of one Child SA. Matched by exact
-    equality — never as a substring, which would let one tunnel's cleanup delete
-    another's rules."""
-    return f"{CHAIN_PREFIX}{key_of(tunnel_id)}_{key_of(child_id)}"
+    """iptables comment identifying the rules of one Child SA.
+
+    Built with the shared chain-name builder the VPN modules use, so the whole
+    project has one naming scheme. It is fed the primary keys rather than the
+    user-facing names: the readable fragments it keeps would otherwise go stale
+    (or orphan every chain) the moment a tunnel or Child SA is renamed.
+
+    Matched by exact equality — never as a substring, which would let one
+    tunnel's cleanup delete another's rules.
+    """
+    return core_iptables.hashed_chain_name(CHAIN_PREFIX, str(tunnel_id), str(child_id))
 
 
 def chain_name(tunnel_id, child_id, direction: str) -> str:
-    """Per-Child-SA filter chain (direction: 'IN' or 'OUT'). 27 chars."""
+    """Per-Child-SA filter chain (direction: 'IN' or 'OUT'). 28 chars."""
     return f"{rule_token(tunnel_id, child_id)}_{direction}"
-
-
-def tunnel_prefix(tunnel_id) -> str:
-    """Common prefix of every chain/token belonging to one tunnel."""
-    return f"{CHAIN_PREFIX}{key_of(tunnel_id)}_"
 
 
 class StrongSwanService:
@@ -1462,15 +1464,21 @@ connections {{
                 removed += 1
         return removed
 
-    async def remove_tunnel_firewall_chains(self, tunnel_id) -> bool:
-        """Remove every firewall object belonging to a tunnel.
+    async def remove_tunnel_firewall_chains(self, tunnel_id, child_ids) -> bool:
+        """Remove the firewall objects of a tunnel's Child SAs.
 
-        Keyed on the tunnel id alone: it needs neither the Child SA list nor its
-        ordering, so it cannot miss (or mis-target) a chain after a Child SA has
-        been added, removed or renamed.
+        Keyed on the ids, so it does not depend on the order of the Child SA
+        list the way the old index-based naming did. Whatever predates this list
+        — a Child SA row already gone, a chain from an older build — is left to
+        prune_orphan_firewall_objects, which decides from the database rather
+        than from a name prefix.
         """
-        prefix = tunnel_prefix(tunnel_id)
-        removed = self._purge_firewall_objects(lambda token: token.startswith(prefix))
+        tokens = {rule_token(tunnel_id, child_id) for child_id in child_ids}
+        if not tokens:
+            return True
+        removed = self._purge_firewall_objects(
+            lambda t: any(t == token or t.startswith(f"{token}_") for token in tokens)
+        )
         logger.info(f"Removed {removed} firewall object(s) for tunnel {conn_name(tunnel_id)}")
         return True
 
