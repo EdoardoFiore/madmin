@@ -1560,7 +1560,9 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
                         continue
                     if meta["nullable"] or meta["has_default"]:
                         continue  # DB sets NULL or its own default
-                    ok, value = _default_for_type(meta["data_type"])
+                    ok, value = _model_default(table_name, col_name)
+                    if not ok:
+                        ok, value = _default_for_type(meta["data_type"])
                     if not ok:
                         logger.warning(
                             f"Cannot backfill NOT NULL column '{col_name}' on "
@@ -1616,6 +1618,30 @@ async def _get_table_columns(session: AsyncSession, table_name: str) -> dict:
             "has_default": column_default is not None,
         }
     return columns
+
+
+def _model_default(table_name: str, column_name: str):
+    """Return (ok, value) — the default the SQLModel column declares, if any.
+
+    information_schema only reports server-side defaults, while MADMIN's models
+    declare theirs in Python (`Field(default=...)`). Without this, a column added
+    after an old backup was taken is backfilled with a bare type default: an
+    empty string where the model says "ACCEPT" or "trap", which then produces
+    silently broken iptables and swanctl directives instead of a visible error.
+
+    Callable defaults (uuid4, utcnow) are left to _default_for_type, which
+    generates a fresh value of the right shape.
+    """
+    from sqlmodel import SQLModel
+
+    table = SQLModel.metadata.tables.get(table_name)
+    if table is None or column_name not in table.columns:
+        return False, None
+
+    default = table.columns[column_name].default
+    if default is None or not getattr(default, "is_scalar", False):
+        return False, None
+    return True, default.arg
 
 
 def _default_for_type(data_type: str):
