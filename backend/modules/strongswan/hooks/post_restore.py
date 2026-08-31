@@ -46,7 +46,7 @@ async def run(session: AsyncSession):
                 "start_action": child.start_action,
                 "close_action": child.close_action
             }
-            for child in children
+            for child in children if child.enabled
         ]
         
         # Generate config using existing function
@@ -68,17 +68,23 @@ async def run(session: AsyncSession):
             child_sas=child_sas
         )
         
-        # Write config file
-        config_path = SWANCTL_CONF_DIR / f"madmin_{tunnel.name}.conf"
-        config_path.write_text(config)
+        # Write config file. The path derives from the tunnel id, which the
+        # archive carries, so a restored tunnel keeps the identity it had.
+        # A tunnel restored as stopped gets no fragment: charon would otherwise
+        # load it at the next reload and start answering its peer.
+        service.sync_tunnel_config(tunnel, config)
 
-        logger.info(f"Regenerated config for tunnel {tunnel.name}")
+        logger.info(
+            f"Regenerated config for tunnel {tunnel.name}"
+            if tunnel.enabled else
+            f"Tunnel {tunnel.name} restored as stopped; no swanctl fragment written"
+        )
 
     # Regenerate the secrets file (PSK) — config files alone are not enough:
     # without it charon has no key and IKE_SA initiation fails after restore.
     secrets_entries = [
         service.generate_secrets_entry(
-            name=tunnel.name,
+            tunnel_id=tunnel.id,
             remote_id=tunnel.remote_id,
             remote_address=tunnel.remote_address,
             psk=tunnel.psk,
@@ -88,5 +94,9 @@ async def run(session: AsyncSession):
     ]
     service.update_secrets_file(secrets_entries)
     logger.info(f"Regenerated secrets file: {len(secrets_entries)} PSK entries")
+
+    # Config files of tunnels that no longer exist in the restored DB would keep
+    # resurrecting their connections at every reload.
+    await service.prune_orphan_firewall_objects(session)
 
     logger.info(f"strongSwan post_restore complete: {len(tunnels)} tunnels regenerated")

@@ -36,6 +36,7 @@
   "firewallLoadError": "Errore nel caricamento del firewall: {msg}",
   "noPhase2": "Nessuna Phase 2 configurata",
   "noPhase2Hint": "Aggiungi una Phase 2 per definire i traffic selectors",
+  "noEnabledChildWarning": "Nessuna Phase 2 attiva: il tunnel non trasporta traffico finché non ne aggiungi una",
   "addPhase2": "Add Phase 2",
   "phase2TableName": "Nome",
   "phase2LocalSubnet": "Local Subnet",

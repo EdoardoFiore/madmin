@@ -117,7 +117,7 @@ async def create_tunnel(
         nat_traversal=tunnel.nat_traversal,
         child_sas=[]  # No Child SAs yet
     )
-    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
+    await run_in_threadpool(strongswan_service.sync_tunnel_config, tunnel, config)
     
     # Update secrets if PSK
     if tunnel.auth_method == "psk" and tunnel.psk:
@@ -203,10 +203,12 @@ async def update_tunnel(
     
     tunnel.updated_at = datetime.utcnow()
 
-    # If name changed, delete old config file
+    # Renaming is purely cosmetic: the connection name, the config file, the
+    # firewall chains and the NAT exemptions all derive from the tunnel id, so
+    # nothing has to be torn down and the tunnel stays up. Only the header
+    # comment inside the config file changes, and it is rewritten below.
     if data.name and data.name != old_name:
-        await run_in_threadpool(strongswan_service.delete_tunnel_config, old_name)
-        await run_in_threadpool(strongswan_service.flush_tunnel_forward_rules, old_name)
+        logger.info(f"Renamed IPsec tunnel {old_name} -> {tunnel.name}")
     
     # Regenerate configuration
     child_sas_data = [
@@ -239,7 +241,7 @@ async def update_tunnel(
         nat_traversal=tunnel.nat_traversal,
         child_sas=child_sas_data
     )
-    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
+    await run_in_threadpool(strongswan_service.sync_tunnel_config, tunnel, config)
     
     # Update secrets
     if tunnel.auth_method == "psk":
@@ -247,7 +249,7 @@ async def update_tunnel(
     
     # Reload
     await run_in_threadpool(strongswan_service.load_all_connections)
-    
+
     await db.commit()
     await db.refresh(tunnel)
     
@@ -274,26 +276,19 @@ async def delete_tunnel(
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
-    # Terminate if active
-    await run_in_threadpool(strongswan_service.terminate_tunnel, tunnel.name)
+    tunnel_name = tunnel.name
+
+    # Terminate the SA, then unload the connection: terminating alone leaves the
+    # connection loaded in charon, which would keep answering the peer.
+    await run_in_threadpool(strongswan_service.terminate_tunnel, tunnel.id)
+    await run_in_threadpool(strongswan_service.unload_connection, tunnel.id)
     
     # Remove config file
-    await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.name)
+    await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.id)
 
-    # Clean up firewall chains for all Child SAs
-    # Must be done before deleting from DB
-    result_children = await db.execute(
-        select(IpsecChildSa)
-        .where(IpsecChildSa.tunnel_id == tunnel.id)
-        .order_by(IpsecChildSa.name)
-    )
-    all_children = result_children.scalars().all()
-    
-    # Pass the full list so indices are calculated correctly during removal
-    await strongswan_service.remove_tunnel_firewall_chains(tunnel, all_children)
-    
-    # Remove firewall rules
-    await run_in_threadpool(strongswan_service.flush_tunnel_forward_rules, tunnel.name)
+    # Every chain, jump and NAT exemption of this tunnel, found by id — no Child
+    # SA list and no ordering involved.
+    await strongswan_service.remove_tunnel_firewall_chains(tunnel.id)
     
     # Delete traffic stats first (to avoid FK constraint violation)
     from modules.strongswan.models import IpsecTrafficStats
@@ -310,10 +305,14 @@ async def delete_tunnel(
     
     # Reload
     await run_in_threadpool(strongswan_service.load_all_connections)
+
+    # Safety net: anything this tunnel left behind (or an earlier version did)
+    # is now unaccounted for in the DB and gets collected.
+    await strongswan_service.prune_orphan_firewall_objects(db)
     
-    logger.info(f"Deleted IPsec tunnel: {tunnel.name}")
+    logger.info(f"Deleted IPsec tunnel: {tunnel_name}")
     
-    return {"status": "deleted", "name": tunnel.name}
+    return {"status": "deleted", "name": tunnel_name}
 
 
 # --- TUNNEL CONTROL ---
@@ -365,13 +364,13 @@ async def stop_tunnel(
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
     # 1. Terminate active SA
-    await run_in_threadpool(strongswan_service.terminate_tunnel, tunnel.name)
+    await run_in_threadpool(strongswan_service.terminate_tunnel, tunnel.id)
     
     # 2. Unload connection from runtime (prevents auto-response)
-    await run_in_threadpool(strongswan_service.unload_connection, tunnel.name)
+    await run_in_threadpool(strongswan_service.unload_connection, tunnel.id)
     
     # 3. Delete config file (prevents loading on restart)
-    await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.name)
+    await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.id)
     
     # 4. Update DB
     tunnel.enabled = False
@@ -396,7 +395,7 @@ async def get_tunnel_status(
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
-    status = await run_in_threadpool(strongswan_service.get_tunnel_status, tunnel.name)
+    status = await run_in_threadpool(strongswan_service.get_tunnel_status, tunnel.id)
 
     # Update DB status based on VICI state
     if status["ike_state"] == "ESTABLISHED":
@@ -555,7 +554,7 @@ async def create_child_sa(
         nat_traversal=tunnel.nat_traversal,
         child_sas=child_sas_data
     )
-    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
+    await run_in_threadpool(strongswan_service.sync_tunnel_config, tunnel, config)
     
     # Setup firewall chains for this Child SA
     all_children_result = await db.execute(
@@ -570,7 +569,7 @@ async def create_child_sa(
     # Load only this tunnel's connection (leaves other tunnels untouched)
     await run_in_threadpool(
         strongswan_service.load_single_connection,
-        tunnel.name,
+        tunnel.id,
         ike_version=tunnel.ike_version,
         mode=tunnel.mode,
         local_address=tunnel.local_address,
@@ -628,18 +627,15 @@ async def update_child_sa(
     )
     tunnel = result.scalar_one_or_none()
     
-    # Refresh firewall chains if traffic selectors changed
-    if data.local_ts or data.remote_ts:
-        # Full refresh to handle any index changes
-        all_children_result = await db.execute(
-            select(IpsecChildSa)
-            .where(IpsecChildSa.tunnel_id == tunnel.id)
-            .order_by(IpsecChildSa.name)
-            .options(selectinload(IpsecChildSa.firewall_rules))
-        )
-        current_children = all_children_result.scalars().all()
-        await strongswan_service.remove_tunnel_firewall_chains(tunnel, current_children)
-        await strongswan_service.setup_tunnel_firewall_chains(tunnel, current_children, db)
+    # Refresh firewall chains when the traffic selectors changed, and drop them
+    # when the Child SA was disabled — a disabled Child SA is absent from the
+    # connection, so leaving its chains behind would be a residue. Only this
+    # Child SA is touched: its siblings keep their own id-derived names.
+    if not child.enabled:
+        await strongswan_service.remove_child_firewall_chain(tunnel.id, child.id)
+    elif data.local_ts or data.remote_ts or data.enabled:
+        await strongswan_service.remove_child_firewall_chain(tunnel.id, child.id)
+        await strongswan_service.setup_tunnel_firewall_chains(tunnel, [child], db)
     
     # Regenerate config
     child_sas_data = [
@@ -672,12 +668,12 @@ async def update_child_sa(
         nat_traversal=tunnel.nat_traversal,
         child_sas=child_sas_data
     )
-    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
+    await run_in_threadpool(strongswan_service.sync_tunnel_config, tunnel, config)
 
     # Load only this tunnel's connection (leaves other tunnels untouched)
     await run_in_threadpool(
         strongswan_service.load_single_connection,
-        tunnel.name,
+        tunnel.id,
         ike_version=tunnel.ike_version,
         mode=tunnel.mode,
         local_address=tunnel.local_address,
@@ -721,25 +717,18 @@ async def delete_child_sa(
         raise HTTPException(status_code=404, detail="Child SA not found")
     
     tunnel = child.tunnel
+    child_name = child.name
     
-    # 1. Fetch all current children (including the one to be deleted) to clean up old chains
+    # 1. Remove only this Child SA's firewall objects — the siblings' chains are
+    #    named after their own ids, so nothing else has to be rebuilt.
     if tunnel:
-        all_children_result = await db.execute(
-            select(IpsecChildSa)
-            .where(IpsecChildSa.tunnel_id == tunnel.id)
-            .order_by(IpsecChildSa.name)
-        )
-        current_children = all_children_result.scalars().all()
-        
-        # Remove ALL firewall chains for this tunnel
-        # This handles shifting indices correctly by wiping the slate clean
-        await strongswan_service.remove_tunnel_firewall_chains(tunnel, current_children)
+        await strongswan_service.remove_child_firewall_chain(tunnel.id, child.id)
     
     # 2. Delete child from DB
     await db.delete(child)
     await db.commit()
     
-    # 3. Handle remaining children tasks (Firewall & Config)
+    # 3. Handle remaining children tasks (Config)
     if tunnel:
         # Fetch remaining children
         remaining_result = await db.execute(
@@ -749,9 +738,6 @@ async def delete_child_sa(
             .options(selectinload(IpsecChildSa.firewall_rules))
         )
         remaining_children = remaining_result.scalars().all()
-        
-        # Setup firewall chains again (with new indices)
-        await strongswan_service.setup_tunnel_firewall_chains(tunnel, remaining_children, db)
         
         # Regenerate config
         child_sas_data = [
@@ -784,12 +770,12 @@ async def delete_child_sa(
             nat_traversal=tunnel.nat_traversal,
             child_sas=child_sas_data
         )
-        await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
+        await run_in_threadpool(strongswan_service.sync_tunnel_config, tunnel, config)
 
         # Load only this tunnel's connection (leaves other tunnels untouched)
         await run_in_threadpool(
             strongswan_service.load_single_connection,
-            tunnel.name,
+            tunnel.id,
             ike_version=tunnel.ike_version,
             mode=tunnel.mode,
             local_address=tunnel.local_address,
@@ -807,9 +793,11 @@ async def delete_child_sa(
 
     await db.commit()
 
-    logger.info(f"Deleted Child SA {child.name}")
+    await strongswan_service.prune_orphan_firewall_objects(db)
+
+    logger.info(f"Deleted Child SA {child_name}")
     
-    return {"status": "deleted", "name": child.name}
+    return {"status": "deleted", "name": child_name}
 
 
 @router.post("/tunnels/{tunnel_id}/children/{child_id}/start")
@@ -832,7 +820,7 @@ async def start_child_sa(
         
     success = await run_in_threadpool(
         strongswan_service.initiate_child_sa, 
-        child.tunnel.name, 
+        child.tunnel.id, 
         child.name
     )
     
@@ -862,7 +850,7 @@ async def stop_child_sa(
         
     success = await run_in_threadpool(
         strongswan_service.terminate_child_sa, 
-        child.tunnel.name, 
+        child.tunnel.id, 
         child.name
     )
     
@@ -1154,7 +1142,7 @@ async def _update_all_secrets(db: AsyncSession):
     for tunnel in tunnels:
         if tunnel.psk:
             entry = strongswan_service.generate_secrets_entry(
-                name=tunnel.name,
+                tunnel_id=tunnel.id,
                 remote_id=tunnel.remote_id,
                 remote_address=tunnel.remote_address,
                 psk=tunnel.psk

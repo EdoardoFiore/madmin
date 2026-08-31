@@ -9,7 +9,7 @@ from typing import Optional, List
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, BigInteger
-from pydantic import field_validator
+from pydantic import computed_field, field_validator
 import uuid
 import ipaddress
 
@@ -263,6 +263,19 @@ class IpsecTunnelRead(SQLModel):
     updated_at: datetime
     child_sa_count: int = 0
     child_sas: List["IpsecChildSaRead"] = []
+
+    @computed_field
+    @property
+    def conn_name(self) -> str:
+        """Name of the connection in charon, derived from the tunnel id.
+
+        Surfaced to the UI because it is the only handle that appears in
+        `swanctl` output and in the charon log — the user-facing name never
+        does, precisely so that renaming a tunnel cannot orphan anything.
+        """
+        from modules.strongswan.service import conn_name
+
+        return conn_name(self.id)
 
 
 class IpsecChildSaCreate(SQLModel):

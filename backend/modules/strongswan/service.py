@@ -4,6 +4,7 @@ IPsec VPN Module - Service Layer
 Business logic for IPsec operations: VICI API communication,
 config file generation, tunnel management, and firewall rules.
 """
+import hashlib
 import subprocess
 import logging
 from pathlib import Path
@@ -16,6 +17,56 @@ logger = logging.getLogger(__name__)
 
 SWANCTL_CONF_DIR = Path("/etc/swanctl/conf.d")
 VICI_SOCKET = "/var/run/charon.vici"
+
+# --- Stable identities -------------------------------------------------------
+#
+# Every name strongSwan and iptables see is derived from a DB primary key, never
+# from the user-visible tunnel/Child SA name. Renaming is therefore purely
+# cosmetic, and nothing is ever orphaned by an edit. The keys are short digests
+# so the chain names stay inside the iptables limit: a chain name whose length
+# reaches XT_EXTENSION_MAXNAMELEN (29) is rejected, so 28 characters is the most
+# iptables accepts and IPSEC_<8>_<8>_OUT lands on 27.
+
+CONN_PREFIX = "madmin_"
+CHAIN_PREFIX = "IPSEC_"
+SECRETS_FILENAME = "madmin_secrets.conf"
+
+
+def key_of(value) -> str:
+    """Short, stable digest of a primary key (8 hex chars)."""
+    return hashlib.sha256(str(value).encode()).hexdigest()[:8]
+
+
+def conn_name(tunnel_id) -> str:
+    """charon connection name for a tunnel."""
+    return f"{CONN_PREFIX}{key_of(tunnel_id)}"
+
+
+def config_path(tunnel_id) -> Path:
+    """swanctl.conf fragment holding a tunnel's connection."""
+    return SWANCTL_CONF_DIR / f"{conn_name(tunnel_id)}.conf"
+
+
+def secret_label(tunnel_id) -> str:
+    """Label of a tunnel's PSK entry in the shared secrets file."""
+    return f"ike-{CONN_PREFIX}{key_of(tunnel_id)}"
+
+
+def rule_token(tunnel_id, child_id) -> str:
+    """iptables comment identifying the rules of one Child SA. Matched by exact
+    equality — never as a substring, which would let one tunnel's cleanup delete
+    another's rules."""
+    return f"{CHAIN_PREFIX}{key_of(tunnel_id)}_{key_of(child_id)}"
+
+
+def chain_name(tunnel_id, child_id, direction: str) -> str:
+    """Per-Child-SA filter chain (direction: 'IN' or 'OUT'). 27 chars."""
+    return f"{rule_token(tunnel_id, child_id)}_{direction}"
+
+
+def tunnel_prefix(tunnel_id) -> str:
+    """Common prefix of every chain/token belonging to one tunnel."""
+    return f"{CHAIN_PREFIX}{key_of(tunnel_id)}_"
 
 
 class StrongSwanService:
@@ -36,6 +87,10 @@ class StrongSwanService:
     # Human-readable reason of the last failed initiate_tunnel(), surfaced to the
     # API so the user sees the real cause instead of generic plugin noise.
     last_initiate_error: str = ""
+
+    # Tunnels already reported as childless by the watchdog, so the warning is
+    # logged once per tunnel instead of once per reconciliation cycle.
+    _childless_warned: set = set()
     
     def _get_vici_session(self):
         """
@@ -168,8 +223,9 @@ class StrongSwanService:
         Returns:
             swanctl.conf file content
         """
-        # Connection name (filesystem safe)
-        conn_name = f"madmin_{name}"
+        # Connection name: derived from the tunnel id, so a rename never
+        # invalidates it. The readable name stays in the header comment below.
+        conn = conn_name(tunnel_id)
         
         # Build children section.
         # esp_lifetime maps to rekey_time, not life_time: life_time is the hard
@@ -222,7 +278,7 @@ class StrongSwanService:
 # Generated: {datetime.utcnow().isoformat()}
 
 connections {{
-    {conn_name} {{
+    {conn} {{
         version = {ike_version}
         local_addrs = {local_address if local_address else '%any'}
         remote_addrs = {remote_address}
@@ -243,7 +299,7 @@ connections {{
     
     def generate_secrets_entry(
         self,
-        name: str,
+        tunnel_id,
         remote_id: Optional[str],
         remote_address: str,
         psk: str
@@ -259,19 +315,19 @@ connections {{
         Returns:
             Secret configuration snippet
         """
-        secret_name = f"madmin-{name}"
+        label = secret_label(tunnel_id)
         secret_id = self._resolve_remote_id(remote_id, remote_address)
 
         return f"""
-    ike-{secret_name} {{
+    {label} {{
         id = {secret_id}
         secret = "{psk}"
     }}
 """
     
-    def save_tunnel_config(self, name: str, config: str) -> bool:
+    def save_tunnel_config(self, tunnel_id, config: str) -> bool:
         """Save tunnel configuration to file."""
-        config_file = SWANCTL_CONF_DIR / f"madmin_{name}.conf"
+        config_file = config_path(tunnel_id)
         try:
             SWANCTL_CONF_DIR.mkdir(parents=True, exist_ok=True)
             config_file.write_text(config)
@@ -288,7 +344,7 @@ connections {{
         Args:
             secrets_entries: List of secret configuration snippets
         """
-        secrets_file = SWANCTL_CONF_DIR / "madmin_secrets.conf"
+        secrets_file = SWANCTL_CONF_DIR / SECRETS_FILENAME
         try:
             content = "# MADMIN IPsec VPN secrets - managed by MADMIN\nsecrets {"
             for entry in secrets_entries:
@@ -304,9 +360,22 @@ connections {{
             logger.error(f"Failed to update secrets file: {e}")
             return False
     
-    def delete_tunnel_config(self, name: str) -> bool:
+    def sync_tunnel_config(self, tunnel, config: str) -> bool:
+        """Write the tunnel's swanctl fragment, or remove it when the tunnel is
+        stopped.
+
+        A fragment left on disk is reloaded by charon at every `--load-all`, so a
+        stopped tunnel that still has one keeps answering its peer — which is why
+        /stop deletes it. Every edit path goes through here so that the file
+        always mirrors the desired state instead of resurrecting it.
+        """
+        if getattr(tunnel, "enabled", True):
+            return self.save_tunnel_config(tunnel.id, config)
+        return self.delete_tunnel_config(tunnel.id)
+
+    def delete_tunnel_config(self, tunnel_id) -> bool:
         """Delete tunnel configuration file."""
-        config_file = SWANCTL_CONF_DIR / f"madmin_{name}.conf"
+        config_file = config_path(tunnel_id)
         try:
             if config_file.exists():
                 config_file.unlink()
@@ -335,7 +404,7 @@ connections {{
 
     def build_vici_conn(
         self,
-        name: str,
+        tunnel_id,
         ike_version: str,
         mode: str,
         local_address: str,
@@ -358,7 +427,7 @@ connections {{
         a global `swanctl --load-all` (which would re-evaluate start_action for
         every other tunnel too).
         """
-        conn_name = f"madmin_{name}"
+        conn = conn_name(tunnel_id)
 
         children: Dict[str, Any] = {}
         for child in child_sas:
@@ -381,7 +450,7 @@ connections {{
         if effective_remote_id:
             remote["id"] = effective_remote_id
 
-        conn: Dict[str, Any] = {
+        conn_body: Dict[str, Any] = {
             "version": str(ike_version),
             "local_addrs": [local_address if local_address else "%any"],
             "remote_addrs": [remote_address],
@@ -395,43 +464,43 @@ connections {{
         }
         # Set only when active, mirroring generate_tunnel_config().
         if self._is_aggressive(ike_version, mode):
-            conn["aggressive"] = "yes"
+            conn_body["aggressive"] = "yes"
 
-        return {conn_name: conn}
+        return {conn: conn_body}
 
-    def load_single_connection(self, name: str, **conn_kwargs) -> bool:
+    def load_single_connection(self, tunnel_id, **conn_kwargs) -> bool:
         """
         Load a single tunnel into charon via VICI, leaving all other connections
         untouched. Falls back gracefully when VICI is unavailable — the config
         file is already on disk and will be picked up by the next full reload /
         on_startup. Accepts the same keyword args as build_vici_conn().
         """
+        conn = conn_name(tunnel_id)
         session = self._get_vici_session()
         if not session:
             logger.warning(
-                f"VICI unavailable; connection madmin_{name} saved to disk only "
+                f"VICI unavailable; connection {conn} saved to disk only "
                 f"(will load on next reload)"
             )
             return False
         try:
-            conn = self.build_vici_conn(name, **conn_kwargs)
-            session.load_conn(conn)
-            logger.info(f"Loaded single connection madmin_{name} via VICI")
+            session.load_conn(self.build_vici_conn(tunnel_id, **conn_kwargs))
+            logger.info(f"Loaded single connection {conn} via VICI")
             return True
         except Exception as e:
-            logger.error(f"Failed to load connection {name} via VICI: {e}")
+            logger.error(f"Failed to load connection {conn} via VICI: {e}")
             return False
 
-    def initiate_tunnel(self, name: str, child_name: Optional[str] = None) -> bool:
+    def initiate_tunnel(self, tunnel_id, child_name: Optional[str] = None) -> bool:
         """
         Initiate an IPsec tunnel.
         
         Args:
-            name: Tunnel name (without madmin_ prefix)
+            tunnel_id: Tunnel primary key (the connection name is derived from it)
             child_name: Optional specific Child SA to initiate
         """
-        conn_name = f"madmin_{name}"
-        args = ['--initiate', '--ike', conn_name, '--timeout', '5']
+        conn = conn_name(tunnel_id)
+        args = ['--initiate', '--ike', conn, '--timeout', '5']
         if child_name:
             args.extend(['--child', child_name])
         
@@ -445,35 +514,33 @@ connections {{
         self.last_initiate_error = ""
 
         if result.returncode == 0:
-            logger.info(f"Initiated tunnel {name}")
+            logger.info(f"Initiated tunnel {conn}")
             return True
         elif any(x in combined.lower() for x in ["timeout", "not established after"]):
-            logger.warning(f"Initiate tunnel {name} timed out waiting for peer (background retry active)")
+            logger.warning(f"Initiate tunnel {conn} timed out waiting for peer (background retry active)")
             return True
         else:
             reason = self._extract_initiate_reason(combined)
             self.last_initiate_error = reason
-            logger.error(f"Failed to initiate tunnel {name}: {reason}")
+            logger.error(f"Failed to initiate tunnel {conn}: {reason}")
             return False
             
-    def initiate_child_sa(self, tunnel_name: str, child_name: str) -> bool:
+    def initiate_child_sa(self, tunnel_id, child_name: str) -> bool:
         """
         Initiate a specific Child SA (Phase 2).
-        
+
+        Scoped with --ike: Child SA names are only unique within their
+        connection, so targeting by --child alone would hit another tunnel's
+        child of the same name.
+
         Args:
-            tunnel_name: Parent tunnel name (without madmin_ prefix)
+            tunnel_id: Parent tunnel primary key
             child_name: Child SA name
         """
-        # In swanctl.conf, children are nested. Reference via child name directly usually works 
-        # but to be safe/specific we might depend on how they are named.
-        # StrongSwan swanctl usually targets child by name.
-        # If the child name is unique globally in swanctl, just child_name works.
-        # But we name them just "child1", "child2" etc? No, user gives them names. 
-        # If user gives duplicate names across tunnels, safe reference is needed?
-        # Swanctl documentation says --child <name>. 
-        
-        # Let's try --child <child_name>
-        result = self._run_swanctl(['--initiate', '--child', child_name, '--timeout', '5'])
+        result = self._run_swanctl([
+            '--initiate', '--ike', conn_name(tunnel_id),
+            '--child', child_name, '--timeout', '5'
+        ])
         
         if result.returncode == 0:
             logger.info(f"Initiated child SA {child_name}")
@@ -485,25 +552,26 @@ connections {{
             logger.error(f"Failed to initiate child {child_name}: {result.stderr}")
             return False
     
-    def terminate_tunnel(self, name: str) -> bool:
+    def terminate_tunnel(self, tunnel_id) -> bool:
         """Terminate an IPsec tunnel."""
-        conn_name = f"madmin_{name}"
-        result = self._run_swanctl(['--terminate', '--ike', conn_name])
+        conn = conn_name(tunnel_id)
+        result = self._run_swanctl(['--terminate', '--ike', conn])
         if result.returncode == 0:
-            logger.info(f"Terminated tunnel {name}")
+            logger.info(f"Terminated tunnel {conn}")
             return True
         else:
             # Tunnel may not be active, which is fine
-            logger.info(f"Tunnel {name} termination result: {result.stderr.strip()}")
+            logger.info(f"Tunnel {conn} termination result: {result.stderr.strip()}")
             return True
             
-    def terminate_child_sa(self, tunnel_name: str, child_name: str) -> bool:
+    def terminate_child_sa(self, tunnel_id, child_name: str) -> bool:
         """
-        Terminate a specific Child SA.
+        Terminate a specific Child SA, scoped to its parent connection (see
+        initiate_child_sa for why --ike is required).
         """
-        # VICI/One might need IKE ID or Child ID. 
-        # swanctl --terminate --child <name>
-        result = self._run_swanctl(['--terminate', '--child', child_name])
+        result = self._run_swanctl([
+            '--terminate', '--ike', conn_name(tunnel_id), '--child', child_name
+        ])
         
         if result.returncode == 0:
             logger.info(f"Terminated child SA {child_name}")
@@ -534,20 +602,52 @@ connections {{
             
         return active
     
-    def unload_connection(self, name: str) -> bool:
+    def list_active_conn_names(self) -> set:
+        """Names of the connections that currently hold an IKE_SA.
+
+        Used by the startup migration: charon keeps an SA alive after its
+        connection has been unloaded, and such an orphan still holds the kernel
+        policies for its traffic selectors — which then block the replacement
+        connection from installing its own.
+        """
+        names = set()
+        session = self._get_vici_session()
+        if not session:
+            return names
+        try:
+            for sa in session.list_sas():
+                for ike_name in sa.keys():
+                    if isinstance(ike_name, bytes):
+                        ike_name = ike_name.decode('utf-8', errors='ignore')
+                    names.add(ike_name)
+        except Exception as e:
+            logger.error(f"Failed to list active SAs: {e}")
+        return names
+
+    def terminate_connection_by_name(self, conn: str) -> bool:
+        """Terminate an IKE_SA by raw connection name.
+
+        Only for connections MADMIN can no longer address by tunnel id, i.e.
+        leftovers from the versions that named connections after the tunnel.
+        """
+        result = self._run_swanctl(['--terminate', '--ike', conn])
+        logger.info(f"Terminated stale connection {conn}: rc={result.returncode}")
+        return result.returncode == 0
+
+    def unload_connection(self, tunnel_id) -> bool:
         """Unload connection from StrongSwan runtime."""
         session = self._get_vici_session()
         if not session:
             return False
             
-        conn_name = f"madmin_{name}"
+        conn = conn_name(tunnel_id)
         try:
             # unload_conn expects request dict with connection name
-            session.unload_conn({"name": conn_name})
-            logger.info(f"Unloaded connection {name}")
+            session.unload_conn({"name": conn})
+            logger.info(f"Unloaded connection {conn}")
             return True
         except Exception as e:
-            logger.error(f"Failed to unload connection {name}: {e}")
+            logger.error(f"Failed to unload connection {conn}: {e}")
             return False
 
     @staticmethod
@@ -563,7 +663,7 @@ connections {{
             "child_sas": []
         }
 
-    def get_tunnel_status(self, name: str) -> Dict[str, Any]:
+    def get_tunnel_status(self, tunnel_id) -> Dict[str, Any]:
         """
         Get real-time status of a tunnel via VICI.
 
@@ -576,7 +676,7 @@ connections {{
         if not session:
             return self._disconnected_status()
 
-        conn_name = f"madmin_{name}"
+        conn = conn_name(tunnel_id)
 
         try:
             # List Security Associations
@@ -589,7 +689,7 @@ connections {{
                 for ike_name, ike_data in sa.items():
                     name_str = ike_name.decode('utf-8', errors='ignore') if isinstance(ike_name, bytes) else ike_name
 
-                    if name_str == conn_name:
+                    if name_str == conn:
                         matches.append(ike_data)
 
             if not matches:
@@ -684,19 +784,19 @@ connections {{
             logger.error(f"Failed to list SAs: {e}")
             return []
     
-    def get_tunnel_logs(self, name: str, lines: int = 100, remote_address: str = None) -> Dict:
+    def get_tunnel_logs(self, tunnel_id, lines: int = 100, remote_address: str = None) -> Dict:
         """
         Get StrongSwan logs filtered by tunnel name with error detection.
         
         Args:
-            name: Tunnel name (without madmin_ prefix)
+            tunnel_id: Tunnel primary key (the connection name is derived from it)
             lines: Number of log lines to fetch
             remote_address: Optional remote peer address to filter by (IP or FQDN)
             
         Returns:
             Dict with logs list and detected errors
         """
-        conn_name = f"madmin_{name}"
+        conn = conn_name(tunnel_id)
         
         # Valid remote address for filtering (ignore empty or %any)
         filter_remote = remote_address if remote_address and remote_address not in ['%any', '0.0.0.0/0'] else None
@@ -734,7 +834,9 @@ connections {{
             for line in all_lines:
                 # Include lines mentioning our connection or general IKE messages
                 # Also include remote address matches if available (for initial negotiation)
-                if (conn_name in line) or (name in line) or (filter_remote and filter_remote in line):
+                # charon only ever prints the connection name, never the
+                # user-facing tunnel name, so match on that and on the peer.
+                if (conn in line) or (filter_remote and filter_remote in line):
                     logs.append(line)
                     
                     # Check for error patterns
@@ -809,127 +911,6 @@ connections {{
             logger.info("IPsec INPUT rules configured")
         return success
     
-    def setup_forward_rules(self, local_ts: str, remote_ts: str, tunnel_name: str) -> bool:
-        """
-        Setup FORWARD rules for a Child SA traffic selector.
-        
-        Allows traffic between local and remote subnets.
-        Uses comments to track rules and prevent duplicates.
-        """
-        comment = f"IPSEC_{tunnel_name}"
-        success = True
-        
-        # Check if rules already exist by looking at current rules
-        _, existing_rules = core_iptables.run_safe_with_output(
-            'filter', ['-S', self.IPSEC_FORWARD_CHAIN], suppress_errors=True
-        )
-        
-        # Forward: local -> remote
-        rule_signature_1 = f"-s {local_ts} -d {remote_ts}"
-        if rule_signature_1 not in existing_rules:
-            success &= core_iptables.run_safe('filter', [
-                '-A', self.IPSEC_FORWARD_CHAIN, '-s', local_ts, '-d', remote_ts,
-                '-m', 'comment', '--comment', comment, '-j', 'ACCEPT'
-            ])
-        else:
-            logger.debug(f"Rule {rule_signature_1} already exists, skipping")
-        
-        # Forward: remote -> local
-        rule_signature_2 = f"-s {remote_ts} -d {local_ts}"
-        if rule_signature_2 not in existing_rules:
-            success &= core_iptables.run_safe('filter', [
-                '-A', self.IPSEC_FORWARD_CHAIN, '-s', remote_ts, '-d', local_ts,
-                '-m', 'comment', '--comment', comment, '-j', 'ACCEPT'
-            ])
-        else:
-            logger.debug(f"Rule {rule_signature_2} already exists, skipping")
-        
-        if success:
-            logger.info(f"FORWARD rules for {local_ts} <-> {remote_ts} configured")
-        return success
-    
-    
-    def remove_forward_rules(self, local_ts: str, remote_ts: str) -> bool:
-        """
-        Remove FORWARD rules for a traffic selector pair.
-        Finds and removes rules matching the source/dest combination.
-        """
-        success = True
-        
-        # Get current rules with line numbers
-        try:
-            result = subprocess.run(
-                ['iptables', '-t', 'filter', '-S', self.IPSEC_FORWARD_CHAIN],
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                return False
-            
-            rules = result.stdout.strip().split('\n')
-            
-            # Find rules matching our traffic selectors
-            for rule in rules:
-                if f'-s {local_ts}' in rule and f'-d {remote_ts}' in rule:
-                    # Convert -A to -D for deletion
-                    delete_cmd = rule.replace('-A ', '-D ', 1).split()
-                    if delete_cmd:
-                        core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
-                        logger.debug(f"Deleted rule: {rule}")
-                
-                if f'-s {remote_ts}' in rule and f'-d {local_ts}' in rule:
-                    delete_cmd = rule.replace('-A ', '-D ', 1).split()
-                    if delete_cmd:
-                        core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
-                        logger.debug(f"Deleted rule: {rule}")
-            
-            logger.info(f"Removed FORWARD rules for {local_ts} <-> {remote_ts}")
-            
-        except Exception as e:
-            logger.error(f"Failed to remove FORWARD rules: {e}")
-            success = False
-        
-        return success
-    
-    def flush_tunnel_forward_rules(self, tunnel_name: str) -> bool:
-        """Remove all FORWARD rules for a specific tunnel."""
-        comment = f"IPSEC_{tunnel_name}"
-        
-        # Get current rules and remove those with matching comment
-        # This is a simplified approach - iptables-save/restore would be more robust
-        try:
-            result = subprocess.run(
-                ['iptables', '-t', 'filter', '-L', self.IPSEC_FORWARD_CHAIN, '-n', '--line-numbers'],
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                return False
-            
-            # Parse and collect rule numbers to delete (in reverse order)
-            lines = result.stdout.strip().split('\n')[2:]  # Skip headers
-            rules_to_delete = []
-            
-            for line in lines:
-                if comment in line:
-                    rule_num = line.split()[0]
-                    rules_to_delete.append(int(rule_num))
-            
-            # Delete in reverse order to maintain correct indices
-            for rule_num in sorted(rules_to_delete, reverse=True):
-                core_iptables.run_safe('filter', [
-                    '-D', self.IPSEC_FORWARD_CHAIN, str(rule_num)
-                ])
-            
-            logger.info(f"Removed {len(rules_to_delete)} FORWARD rules for tunnel {tunnel_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to flush tunnel forward rules: {e}")
-            return False
-    
     # --- Traffic Statistics Collection ---
     
     async def collect_traffic_stats(self, db) -> int:
@@ -954,7 +935,7 @@ connections {{
             
             for tunnel in tunnels:
                 # Get current traffic from VICI
-                status = self.get_tunnel_status(tunnel.name)
+                status = self.get_tunnel_status(tunnel.id)
                 # get_tunnel_status now always returns a dict; only record stats
                 # for established tunnels (skip DISCONNECTED/CONNECTING — no traffic).
                 if not status or status.get("ike_state") != "ESTABLISHED":
@@ -1057,7 +1038,7 @@ connections {{
 
             for tunnel in tunnels:
                 try:
-                    status = await asyncio.to_thread(self.get_tunnel_status, tunnel.name)
+                    status = await asyncio.to_thread(self.get_tunnel_status, tunnel.id)
                     ike_state = status.get("ike_state") if status else "DISCONNECTED"
 
                     if ike_state == "ESTABLISHED":
@@ -1068,6 +1049,19 @@ connections {{
                     if ike_state == "CONNECTING":
                         # Negotiation already in flight — don't pile on another initiate.
                         continue
+
+                    # A tunnel with no enabled Child SA can never come up. Retrying
+                    # it every minute would only rewrite a childless connection and
+                    # flood the log, so warn once and leave it alone.
+                    if not await self._has_enabled_child_sa(tunnel, db):
+                        if tunnel.id not in self._childless_warned:
+                            self._childless_warned.add(tunnel.id)
+                            logger.warning(
+                                f"IPsec tunnel {tunnel.name} is enabled but has no Child SA; "
+                                f"skipping reconnect until one is added"
+                            )
+                        continue
+                    self._childless_warned.discard(tunnel.id)
 
                     logger.warning(
                         f"IPsec tunnel {tunnel.name} desired UP but found {ike_state}; "
@@ -1087,6 +1081,19 @@ connections {{
             await db.rollback()
 
         return recovered
+
+    async def _has_enabled_child_sa(self, tunnel, db) -> bool:
+        """Whether the tunnel has at least one Child SA to negotiate."""
+        from sqlalchemy import select, func
+        from modules.strongswan.models import IpsecChildSa
+
+        result = await db.execute(
+            select(func.count()).select_from(IpsecChildSa).where(
+                IpsecChildSa.tunnel_id == tunnel.id,
+                IpsecChildSa.enabled == True,  # noqa: E712
+            )
+        )
+        return (result.scalar() or 0) > 0
 
     async def _reconcile_child_sas(self, tunnel, status: Dict[str, Any], db) -> None:
         """
@@ -1123,7 +1130,7 @@ connections {{
                 f"while IKE SA is ESTABLISHED; forcing reinitiate"
             )
             try:
-                if await asyncio.to_thread(self.initiate_child_sa, tunnel.name, child.name):
+                if await asyncio.to_thread(self.initiate_child_sa, tunnel.id, child.name):
                     logger.info(f"Reinitiated Child SA {child.name}")
                 else:
                     logger.error(f"Failed to reinitiate Child SA {child.name}")
@@ -1218,24 +1225,6 @@ connections {{
 
     # --- Firewall Chain Management ---
     
-    def _truncate_chain_name(self, tunnel_name: str, child_sa_num: int, direction: str) -> str:
-        """
-        Generate chain name with truncation if needed to stay under iptables limit.
-        """
-        import hashlib
-        
-        prefix = "IPSEC_"
-        suffix = f"_{child_sa_num}_{direction}"
-        max_length = 29
-        available = max_length - len(prefix) - len(suffix)
-        
-        if len(tunnel_name) <= available:
-            return f"{prefix}{tunnel_name}{suffix}"
-        
-        hash_short = hashlib.md5(tunnel_name.encode()).hexdigest()[:3]
-        truncated = tunnel_name[:available - 4]
-        return f"{prefix}{truncated}_{hash_short}{suffix}"
-    
     async def setup_tunnel_firewall_chains(self, tunnel, child_sas, db) -> bool:
         """Create firewall chains for all Child SAs of a tunnel."""
         from sqlalchemy import select
@@ -1244,22 +1233,38 @@ connections {{
         
         success = True
         
-        for idx, child_sa in enumerate(child_sas, start=1):
+        for child_sa in child_sas:
             if not child_sa.enabled:
                 logger.debug(f"Skipping disabled Child SA: {child_sa.name}")
                 continue
             
-            chain_out = self._truncate_chain_name(tunnel.name, idx, "OUT")
-            chain_in = self._truncate_chain_name(tunnel.name, idx, "IN")
+            chain_out = chain_name(tunnel.id, child_sa.id, "OUT")
+            chain_in = chain_name(tunnel.id, child_sa.id, "IN")
             
             logger.info(f"Setting up firewall chains: {chain_out}, {chain_in}")
             
             core_iptables.run_safe('filter', ['-N', chain_out], suppress_errors=True)
             core_iptables.run_safe('filter', ['-N', chain_in], suppress_errors=True)
+
+            # -N is allowed to fail (chain already there), so confirm both chains
+            # really exist: without them the jump rules below are silently skipped
+            # and the tunnel comes up with no forwarding at all.
+            missing = [
+                c for c in (chain_out, chain_in)
+                if not core_iptables.run_safe('filter', ['-S', c], suppress_errors=True)
+            ]
+            if missing:
+                logger.error(
+                    f"Cannot create firewall chains {missing} for Child SA "
+                    f"{child_sa.name}: traffic for this tunnel will not be forwarded"
+                )
+                success = False
+                continue
+
             core_iptables.run_safe('filter', ['-F', chain_out])
             core_iptables.run_safe('filter', ['-F', chain_in])
             
-            comment = f"IPSEC_{tunnel.name}_{idx}"
+            comment = rule_token(tunnel.id, child_sa.id)
             
             # Check and add OUT jump rule
             rule_out_args = [
@@ -1377,92 +1382,157 @@ connections {{
                 success &= core_iptables.run_safe('nat', ['-A', self.IPSEC_NAT_CHAIN] + args)
         return success
 
-    def _remove_nat_exemption(self, comment: str) -> None:
-        """Remove NAT-exemption rules in MOD_IPSEC_NAT matching the given comment."""
+    # --- Rule/chain scanning primitives ---
+    #
+    # Everything below keys off rule_token()/chain_name(), matched by exact
+    # equality or by an explicit "<token>_" prefix. Never by substring: comments
+    # of different tunnels used to share prefixes, so a substring match let one
+    # tunnel's cleanup delete another tunnel's rules.
+
+    @staticmethod
+    def _rule_comment(rule: str) -> Optional[str]:
+        """The --comment value of an `iptables -S` line, or None."""
+        tokens = rule.split()
+        if tokens[:1] != ['-A'] or '--comment' not in tokens:
+            return None
+        ci = tokens.index('--comment')
+        return tokens[ci + 1] if ci + 1 < len(tokens) else None
+
+    def _delete_commented_rules(self, table: str, chain: str, matches) -> int:
+        """Delete every rule of `chain` whose comment satisfies matches(comment).
+
+        Deletes by rule text rather than by line number, so removing one rule
+        cannot shift the position of the next one still to be removed.
+        """
+        removed = 0
         try:
             result = subprocess.run(
-                ['iptables', '-t', 'nat', '-S', self.IPSEC_NAT_CHAIN],
-                capture_output=True, text=True
+                ['iptables', '-t', table, '-S', chain], capture_output=True, text=True
             )
             if result.returncode != 0:
-                return
-            for rule in result.stdout.strip().split('\n'):
-                tokens = rule.split()
-                if tokens[:1] != ['-A'] or '--comment' not in tokens:
-                    continue
-                ci = tokens.index('--comment')
-                if ci + 1 < len(tokens) and tokens[ci + 1] == comment:
-                    core_iptables.run_safe('nat', rule.replace('-A ', '-D ', 1).split(), suppress_errors=True)
+                return 0
+            for rule in result.stdout.strip().splitlines():
+                comment = self._rule_comment(rule)
+                if comment and matches(comment):
+                    core_iptables.run_safe(
+                        table, rule.replace('-A ', '-D ', 1).split(), suppress_errors=True
+                    )
+                    removed += 1
         except Exception as e:
-            logger.error(f"Failed to remove NAT exemption for {comment}: {e}")
+            logger.error(f"Failed to scan {table} chain {chain}: {e}")
+        return removed
 
-    async def remove_tunnel_firewall_chains(self, tunnel, child_sas) -> bool:
-        """Remove all firewall chains for a tunnel."""
-        success = True
-        
-        for idx, child_sa in enumerate(child_sas, start=1):
-            chain_out = self._truncate_chain_name(tunnel.name, idx, "OUT")
-            chain_in = self._truncate_chain_name(tunnel.name, idx, "IN")
-            
-            logger.info(f"Removing firewall chains: {chain_out}, {chain_in}")
-            
-            try:
-                result = subprocess.run(
-                    ['iptables', '-t', 'filter', '-S', self.IPSEC_FORWARD_CHAIN],
-                    capture_output=True, text=True
-                )
-                
-                if result.returncode == 0:
-                    rules = result.stdout.strip().split('\n')
-                    for rule in rules:
-                        if f'-j {chain_out}' in rule or f'-j {chain_in}' in rule:
-                            delete_cmd = rule.replace('-A ', '-D ', 1).split()
-                            core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
-            
-            except Exception as e:
-                logger.error(f"Failed to remove jump rules: {e}")
-                success = False
+    def _existing_child_chains(self) -> List[str]:
+        """Per-Child-SA chains present in the filter table.
 
-            self._remove_nat_exemption(f"IPSEC_{tunnel.name}_{idx}")
-
-            core_iptables.run_safe('filter', ['-F', chain_out], suppress_errors=True)
-            core_iptables.run_safe('filter', ['-X', chain_out], suppress_errors=True)
-            core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
-            core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
-
-        return success
-
-    async def remove_specific_firewall_chain(self, tunnel_name: str, index: int):
-        """Remove firewall chains for a specific child SA index."""
-        chain_out = self._truncate_chain_name(tunnel_name, index, "OUT")
-        chain_in = self._truncate_chain_name(tunnel_name, index, "IN")
-        
-        logger.info(f"Removing specific firewall chains: {chain_out}, {chain_in}")
-        
-        # Remove jump rules
+        Only IPSEC_* — the module chains (MOD_IPSEC_*) are declared in
+        manifest.json and owned by the core orchestrator, never by this code.
+        """
+        chains = []
         try:
-            # Note: subprocess.run is blocking, but effectively quick for iptables -S
             result = subprocess.run(
-                ['iptables', '-t', 'filter', '-S', self.IPSEC_FORWARD_CHAIN],
-                capture_output=True, text=True
+                ['iptables', '-t', 'filter', '-S'], capture_output=True, text=True
             )
-            
-            if result.returncode == 0:
-                rules = result.stdout.strip().split('\n')
-                for rule in rules:
-                    if f'-j {chain_out}' in rule or f'-j {chain_in}' in rule:
-                        delete_cmd = rule.replace('-A ', '-D ', 1).split()
-                        core_iptables.run_safe('filter', delete_cmd, suppress_errors=True)
+            if result.returncode != 0:
+                return chains
+            for line in result.stdout.strip().splitlines():
+                tokens = line.split()
+                if tokens[:1] == ['-N'] and len(tokens) > 1 and tokens[1].startswith(CHAIN_PREFIX):
+                    chains.append(tokens[1])
         except Exception as e:
-            logger.error(f"Failed to remove jump rules: {e}")
+            logger.error(f"Failed to list IPsec chains: {e}")
+        return chains
 
-        self._remove_nat_exemption(f"IPSEC_{tunnel_name}_{index}")
+    def _drop_chain(self, name: str) -> None:
+        """Flush and delete one chain, ignoring "already gone"."""
+        core_iptables.run_safe('filter', ['-F', name], suppress_errors=True)
+        core_iptables.run_safe('filter', ['-X', name], suppress_errors=True)
 
-        # Flush and delete chains
-        core_iptables.run_safe('filter', ['-F', chain_out], suppress_errors=True)
-        core_iptables.run_safe('filter', ['-X', chain_out], suppress_errors=True)
-        core_iptables.run_safe('filter', ['-F', chain_in], suppress_errors=True)
-        core_iptables.run_safe('filter', ['-X', chain_in], suppress_errors=True)
+    def _purge_firewall_objects(self, matches) -> int:
+        """Remove every jump, NAT exemption and chain whose token satisfies
+        matches(). The single entry point behind both the targeted removals and
+        the orphan collector, so they can never drift apart.
+        """
+        removed = self._delete_commented_rules('filter', self.IPSEC_FORWARD_CHAIN, matches)
+        removed += self._delete_commented_rules('nat', self.IPSEC_NAT_CHAIN, matches)
+
+        for chain in self._existing_child_chains():
+            if matches(chain):
+                self._drop_chain(chain)
+                removed += 1
+        return removed
+
+    async def remove_tunnel_firewall_chains(self, tunnel_id) -> bool:
+        """Remove every firewall object belonging to a tunnel.
+
+        Keyed on the tunnel id alone: it needs neither the Child SA list nor its
+        ordering, so it cannot miss (or mis-target) a chain after a Child SA has
+        been added, removed or renamed.
+        """
+        prefix = tunnel_prefix(tunnel_id)
+        removed = self._purge_firewall_objects(lambda token: token.startswith(prefix))
+        logger.info(f"Removed {removed} firewall object(s) for tunnel {conn_name(tunnel_id)}")
+        return True
+
+    async def remove_child_firewall_chain(self, tunnel_id, child_id) -> bool:
+        """Remove the firewall objects of a single Child SA, leaving its
+        siblings untouched."""
+        token = rule_token(tunnel_id, child_id)
+        removed = self._purge_firewall_objects(
+            lambda t: t == token or t.startswith(f"{token}_")
+        )
+        logger.info(f"Removed {removed} firewall object(s) for Child SA {token}")
+        return True
+
+    async def prune_orphan_firewall_objects(self, db) -> int:
+        """Garbage-collect every IPsec firewall object and swanctl config file
+        that the database no longer accounts for.
+
+        The expected set is exactly what setup_tunnel_firewall_chains would
+        create right now (enabled Child SAs of existing tunnels), so this also
+        clears leftovers from earlier versions, which named chains after the
+        mutable tunnel name and orphaned them on every rename.
+        """
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecTunnel, IpsecChildSa
+
+        result = await db.execute(select(IpsecTunnel))
+        tunnels = {t.id: t for t in result.scalars().all()}
+
+        result = await db.execute(select(IpsecChildSa))
+        children = result.scalars().all()
+
+        expected: set[str] = set()
+        for child in children:
+            if not child.enabled or child.tunnel_id not in tunnels:
+                continue
+            token = rule_token(child.tunnel_id, child.id)
+            expected.update({token, f"{token}_IN", f"{token}_OUT"})
+
+        removed = self._purge_firewall_objects(
+            lambda token: token.startswith(CHAIN_PREFIX) and token not in expected
+        )
+
+        # Same treatment for the config files: a fragment charon still loads
+        # would resurrect a connection that no longer exists in the DB.
+        # A fragment belongs on disk only for a tunnel whose desired state is up
+        # (see sync_tunnel_config); anything else would be reloaded into charon.
+        keep = {SECRETS_FILENAME} | {
+            config_path(t.id).name for t in tunnels.values() if t.enabled
+        }
+        for conf_file in SWANCTL_CONF_DIR.glob(f"{CONN_PREFIX}*.conf"):
+            if conf_file.name in keep:
+                continue
+            try:
+                conf_file.unlink()
+                removed += 1
+                logger.info(f"Removed orphan swanctl config: {conf_file}")
+            except Exception as e:
+                logger.error(f"Failed to remove orphan config {conf_file}: {e}")
+
+        if removed:
+            logger.info(f"Pruned {removed} orphan IPsec object(s)")
+        return removed
 
     async def apply_tunnel_firewall(self, tunnel, db) -> bool:
         """(Re)create a tunnel's firewall chains + NAT exemptions from its
@@ -1514,6 +1584,18 @@ connections {{
             for c in children if c.enabled
         ]
 
+        # A connection without children negotiates an IKE_SA and nothing else:
+        # no policy is installed, no traffic flows, and the watchdog would keep
+        # republishing it every minute. Fail loudly instead.
+        if not child_sas_data:
+            self.last_initiate_error = (
+                "Nessuna Child SA abilitata: il tunnel non trasporterebbe traffico"
+            )
+            logger.error(
+                f"Refusing to start tunnel {tunnel.name}: no enabled Child SA"
+            )
+            return False
+
         config = self.generate_tunnel_config(
             tunnel_id=tunnel.id,
             name=tunnel.name,
@@ -1532,7 +1614,7 @@ connections {{
             child_sas=child_sas_data,
         )
 
-        await asyncio.to_thread(self.save_tunnel_config, tunnel.name, config)
+        await asyncio.to_thread(self.save_tunnel_config, tunnel.id, config)
         await asyncio.to_thread(self.load_all_connections)
 
         # Rebuild firewall chains + (bidirectional) NAT exemptions from code on
@@ -1543,11 +1625,11 @@ connections {{
         except Exception as e:
             logger.error(f"Firewall setup for tunnel {tunnel.name} failed: {e}")
 
-        success = await asyncio.to_thread(self.initiate_tunnel, tunnel.name)
+        success = await asyncio.to_thread(self.initiate_tunnel, tunnel.id)
         if not success:
             return False
 
-        real_status = await asyncio.to_thread(self.get_tunnel_status, tunnel.name)
+        real_status = await asyncio.to_thread(self.get_tunnel_status, tunnel.id)
         if real_status and real_status["ike_state"] == "ESTABLISHED":
             tunnel.status = "established"
         else:

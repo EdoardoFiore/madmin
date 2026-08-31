@@ -194,6 +194,17 @@ function renderDetail(container, tunnelId) {
                             <i class="ti ti-arrows-exchange mx-2"></i>
                             <code>${escapeHtml(tunnel.remote_address)}</code>
                         </div>
+                        <!-- The connection name is what appears in swanctl and in
+                             the charon log; the tunnel name never does. -->
+                        <div class="text-muted small mt-1">
+                            <i class="ti ti-terminal-2 me-1"></i>
+                            <code>${escapeHtml(tunnel.conn_name || '')}</code>
+                        </div>
+                        ${children.filter(c => c.enabled).length === 0 ? `
+                        <div class="alert alert-warning py-2 px-3 mt-2 mb-0 d-inline-flex align-items-center">
+                            <i class="ti ti-alert-triangle me-2"></i>
+                            <span>${t('strongswan.noEnabledChildWarning')}</span>
+                        </div>` : ''}
                     </div>
                     <div class="d-flex align-items-center gap-2">
                         ${canManage ? `
