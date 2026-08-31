@@ -225,7 +225,12 @@ def delete_chain(chain_name: str, table: str = "filter") -> bool:
     return success
 
 
-IPTABLES_MAX_CHAIN_LEN = 29
+# iptables rejects a chain name whose length REACHES XT_EXTENSION_MAXNAMELEN
+# (29, the buffer size including the NUL), so 28 is the longest it accepts. The
+# limit used to be written as 29, which let a 28+1-char name through the guard
+# and fail at the iptables call instead — silently, wherever the caller
+# suppressed errors.
+IPTABLES_MAX_CHAIN_LEN = 28
 
 
 def hashed_chain_name(prefix: str, scope: str, name: str) -> str:
