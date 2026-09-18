@@ -172,8 +172,25 @@ sudo bash scripts/setup-madmin.sh -u <admin-username> -p '<admin-password>'
 
 | Argument | Description |
 |----------|-------------|
-| `-u`, `--username` | Admin account username to create |
-| `-p`, `--password` | Admin account password |
+| `-u`, `--username` | Admin account username to create. **Required** |
+| `-p`, `--password` | Admin account password. **Required** |
+
+There are no default credentials: without both arguments the install aborts.
+
+#### Credential requirements
+
+The installer validates username and password **before** touching the system, and aborts
+with nothing installed if they do not match. These are the same rules the backend enforces
+on `POST /api/auth/init`, on user creation and on password change; they are fixed and not
+configurable from Settings.
+
+| Field | Rule |
+|-------|------|
+| Username | 3-50 characters, only letters, digits, `.`, `_` and `-` (`^[a-zA-Z0-9._-]{3,50}$`) |
+| Password | At least 8 characters, and at least one uppercase letter, one digit and one special character from `!@#$%^&*()-_=+[]{}\|;:,.<>?` |
+
+Wrap the password in single quotes, so the shell does not expand `!`, `$` or `*`:
+`-p 'Str0ng!pass'`.
 
 #### Auto-provisioning flags
 

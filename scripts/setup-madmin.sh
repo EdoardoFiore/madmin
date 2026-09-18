@@ -114,6 +114,47 @@ fi
 
 print_banner
 
+# --- Admin credentials check ---
+# The backend enforces these same rules (backend/core/auth/service.py:
+# validate_username / validate_password_strength) when this script calls
+# POST /api/auth/init — which happens only at the very end of the install.
+# Checking them here turns "fully installed system with no administrator
+# account" into an immediate error, before anything is touched.
+validate_admin_credentials() {
+    local errors=0
+
+    if ! printf '%s' "$ADMIN_USERNAME" | grep -Eq '^[a-zA-Z0-9._-]{3,50}$'; then
+        log_error "Invalid username '$ADMIN_USERNAME': use only letters, digits, '.', '_' or '-' (3-50 characters)."
+        errors=1
+    fi
+
+    if [ ${#ADMIN_PASSWORD} -lt 8 ]; then
+        log_error 'Invalid password: must be at least 8 characters long.'
+        errors=1
+    fi
+    if ! printf '%s' "$ADMIN_PASSWORD" | grep -q '[A-Z]'; then
+        log_error 'Invalid password: must contain at least one uppercase letter.'
+        errors=1
+    fi
+    if ! printf '%s' "$ADMIN_PASSWORD" | grep -q '[0-9]'; then
+        log_error 'Invalid password: must contain at least one digit.'
+        errors=1
+    fi
+    # ']' first and '-' last: both are literal inside the bracket expression.
+    if ! printf '%s' "$ADMIN_PASSWORD" | grep -q '[]!@#$%^&*()_=+[{}|;:,.<>?-]'; then
+        log_error 'Invalid password: must contain at least one special character (!@#$%^&*()-_=+[]{}|;:,.<>?).'
+        errors=1
+    fi
+
+    if [ $errors -ne 0 ]; then
+        log_error 'Nothing has been installed. Fix the credentials and run again:'
+        log_error '  sudo bash setup-madmin.sh -u <username> -p <password>'
+        exit 1
+    fi
+}
+
+validate_admin_credentials
+
 # Re-enable unattended-upgrades when the script ends (even on error)
 trap reenable_unattended_upgrades EXIT
 
@@ -477,7 +518,7 @@ INIT_HTTP=$(curl -s -o /tmp/madmin_init.json -w "%{http_code}" -X POST http://lo
     -d "$INIT_BODY")
 if [ "$INIT_HTTP" = "201" ]; then
     log_success "Administrator user created: $ADMIN_USERNAME"
-elif [ "$INIT_HTTP" = "400" ] || [ "$INIT_HTTP" = "409" ]; then
+elif [ "$INIT_HTTP" = "409" ]; then
     log_info "Administrator user '$ADMIN_USERNAME' already exists, skipping."
 else
     log_error "Failed to create administrator user (HTTP $INIT_HTTP): $(cat /tmp/madmin_init.json)"
