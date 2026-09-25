@@ -277,7 +277,10 @@ fi
 # Install dependencies
 log_info "Installing Python dependencies..."
 $INSTALL_DIR/venv/bin/pip install --upgrade pip
-$INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/backend/requirements.txt
+# requirements.lock pins every package to a tested version: without it a fresh
+# install takes whatever is newest on PyPI and can break on an upstream release.
+$INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/backend/requirements.txt \
+    -c $INSTALL_DIR/backend/requirements.lock
 
 # Create .env file
 cat > $INSTALL_DIR/backend/.env << EOF
@@ -483,7 +486,7 @@ print(' '.join(deps))
 
     if [ -n "$PIP_DEPS" ]; then
         log_info "  Installing pip packages: $PIP_DEPS"
-        $INSTALL_DIR/venv/bin/pip install $PIP_DEPS
+        $INSTALL_DIR/venv/bin/pip install $PIP_DEPS -c $INSTALL_DIR/backend/requirements.lock
     fi
 
     log_success "  $MODULE_NAME — dependencies installed."
