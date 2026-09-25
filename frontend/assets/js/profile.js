@@ -7,7 +7,7 @@
  */
 
 import { apiGet, apiPost, apiPatch, apiDeleteWithBody } from './api.js';
-import { showToast, confirmDialog } from './utils.js';
+import { showToast, confirmDialog, copyButton, strengthMeter, clearOtpInput, refreshStrengthMeters } from './utils.js';
 import { getUser } from './app.js';
 import { t } from './i18n.js';
 
@@ -31,6 +31,7 @@ export function openProfileModal() {
     document.getElementById('profile-current-password').value = '';
     document.getElementById('profile-new-password').value = '';
     document.getElementById('profile-confirm-password').value = '';
+    refreshStrengthMeters(document.getElementById('profile-password-form'));
 
     new bootstrap.Modal(document.getElementById('profile-modal')).show();
     load2FAStatus();
@@ -82,7 +83,9 @@ function buildModal() {
                                         </div>
                                         <div class="col-12">
                                             <input type="password" class="form-control" id="profile-new-password"
-                                                   placeholder="${t('users.newPassword')}" required minlength="8">
+                                                   placeholder="${t('users.newPassword')}" required minlength="8"
+                                                   autocomplete="new-password">
+                                            ${strengthMeter('#profile-new-password')}
                                         </div>
                                         <div class="col-12">
                                             <input type="password" class="form-control" id="profile-confirm-password"
@@ -131,14 +134,18 @@ function buildModal() {
                             </div>
                             <div class="col-md-6">
                                 <h5 class="mb-3">${t('users.orManually')}</h5>
-                                <div class="mb-3">
+                                <div class="input-group mb-3">
                                     <input type="text" class="form-control font-monospace text-center" id="profile-secret-key" readonly>
+                                    ${copyButton('#profile-secret-key', 'btn btn-icon')}
                                 </div>
                                 <hr>
                                 <h5 class="mb-3">${t('users.verifyCode')}</h5>
-                                <input type="text" class="form-control form-control-lg text-center font-monospace mb-3"
-                                       id="profile-verify-setup-code" maxlength="6" pattern="[0-9]{6}"
-                                       placeholder="000000" inputmode="numeric">
+                                <div class="text-center mb-3">
+                                    <div class="otp" data-bs-toggle="otp">
+                                        <input type="text" id="profile-verify-setup-code" maxlength="6"
+                                               autocomplete="one-time-code" aria-label="${t('users.verifyCode')}">
+                                    </div>
+                                </div>
                                 <button class="btn btn-primary w-100" id="profile-btn-verify-2fa">
                                     <i class="ti ti-check me-1"></i>${t('users.activate2fa')}
                                 </button>
@@ -147,9 +154,12 @@ function buildModal() {
                         <hr>
                         <div class="d-flex justify-content-between align-items-center">
                             <h5 class="mb-0"><i class="ti ti-key me-2"></i>${t('users.backupCodes')}</h5>
-                            <button type="button" class="btn btn-sm btn-outline-primary" id="profile-btn-download-setup-codes">
-                                <i class="ti ti-download me-1"></i>${t('common.download')}
-                            </button>
+                            <div class="btn-list">
+                                ${copyButton('#profile-backup-codes-list', 'btn btn-sm btn-icon btn-outline-primary')}
+                                <button type="button" class="btn btn-sm btn-outline-primary" id="profile-btn-download-setup-codes">
+                                    <i class="ti ti-download me-1"></i>${t('common.download')}
+                                </button>
+                            </div>
                         </div>
                         <div id="profile-backup-codes-list" class="row g-2 mt-2"></div>
                     </div>
@@ -215,6 +225,7 @@ function buildModal() {
                         <div id="profile-backup-codes-display" class="row g-2"></div>
                     </div>
                     <div class="modal-footer">
+                        ${copyButton('#profile-backup-codes-display', 'btn btn-icon btn-outline-primary')}
                         <button type="button" class="btn btn-outline-primary" id="profile-download-displayed-codes">
                             <i class="ti ti-download me-1"></i>${t('common.download')}
                         </button>
@@ -364,13 +375,12 @@ function setupEnable2FA() {
             twoFaSetupData = await apiPost('/auth/me/2fa/setup', {});
             document.getElementById('profile-qr-code-img').src = `data:image/png;base64,${twoFaSetupData.qr_code}`;
             document.getElementById('profile-secret-key').value = twoFaSetupData.secret;
-            document.getElementById('profile-verify-setup-code').value = '';
+            clearOtpInput(document.getElementById('profile-verify-setup-code'));
 
-            document.getElementById('profile-backup-codes-list').innerHTML = twoFaSetupData.backup_codes.map(c => `
-                <div class="col-6 col-md-4">
-                    <span class="badge bg-secondary-lt font-monospace w-100 py-2">${c}</span>
-                </div>
-            `).join('');
+            // One code per line in textContent: the copy button copies it as is
+            document.getElementById('profile-backup-codes-list').innerHTML = twoFaSetupData.backup_codes.map(c =>
+                `<div class="col-6 col-md-4"><span class="badge bg-secondary-lt font-monospace w-100 py-2">${c}</span></div>`
+            ).join('\n');
 
             document.getElementById('profile-btn-download-setup-codes').onclick = () => {
                 downloadBackupCodes(twoFaSetupData.backup_codes);
@@ -483,7 +493,7 @@ function setupRegenerateCodes() {
                 otpModal.hide();
                 document.getElementById('profile-backup-codes-display').innerHTML = result.backup_codes.map(c =>
                     `<div class="col-6"><code class="fs-4">${c}</code></div>`
-                ).join('');
+                ).join('\n');
                 document.getElementById('profile-download-displayed-codes').onclick = () => {
                     downloadBackupCodes(result.backup_codes);
                 };

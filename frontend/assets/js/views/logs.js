@@ -7,8 +7,8 @@
  */
 
 import { apiGet } from '../api.js';
-import { showToast, escapeHtml } from '../utils.js';
-import { t } from '../i18n.js';
+import { showToast, escapeHtml, escapeAttr } from '../utils.js';
+import { t, getLang } from '../i18n.js';
 
 // State
 let currentTab = 'audit';
@@ -55,6 +55,44 @@ export async function render(container) {
     }
 
     renderAuditTab();
+}
+
+/**
+ * Date range filter of the audit log (Tabler Datepicker, range mode).
+ * The calendar holds [from, to] and writes "from – to" in the field itself;
+ * the filter is applied when the popup closes, so picking the first day of a
+ * range does not reload the table on its own.
+ */
+function setupAuditDateRange() {
+    const input = document.getElementById('audit-date-range');
+    if (!input || !window.tabler?.Datepicker) return;
+
+    // Created here, with its options, before tabler.js would create a plain one on focus
+    const picker = window.tabler.Datepicker.getOrCreateInstance(input, {
+        selectionMode: 'multiple-ranged',
+        locale: getLang(),
+        selectedDates: [auditFilters.from_date, auditFilters.to_date].filter(Boolean),
+    });
+
+    const setRange = (from, to) => {
+        if (from === auditFilters.from_date && to === auditFilters.to_date) return;
+        auditFilters.from_date = from;
+        auditFilters.to_date = to;
+        auditPage = 1;
+        loadAuditData();
+    };
+
+    input.addEventListener('hidden.bs.datepicker', () => {
+        const dates = picker.getSelectedDates().sort();
+        // A single day picked is a one-day range
+        setRange(dates[0] || '', dates.at(-1) || '');
+    });
+
+    document.getElementById('audit-date-clear')?.addEventListener('click', () => {
+        picker.setSelectedDates([]);
+        input.value = '';
+        setRange('', '');
+    });
 }
 
 /**
@@ -109,12 +147,16 @@ async function renderAuditTab() {
                     <option value="read" ${auditFilters.category === 'read' ? 'selected' : ''}>${t('logs.readsOnly')}</option>
                 </select>
                 <div class="d-flex align-items-center gap-1">
-                    <span class="text-muted" style="font-size: .75rem;">${t('logs.from')}</span>
-                    <input type="date" class="form-control form-control-sm" id="audit-from-date"
-                           value="${auditFilters.from_date}" style="width: 130px;">
-                    <span class="text-muted" style="font-size: .75rem;">${t('logs.to')}</span>
-                    <input type="date" class="form-control form-control-sm" id="audit-to-date"
-                           value="${auditFilters.to_date}" style="width: 130px;">
+                    <div class="input-icon" style="width: 220px;">
+                        <span class="input-icon-addon"><i class="ti ti-calendar"></i></span>
+                        <input type="text" class="form-control form-control-sm" id="audit-date-range" readonly
+                               data-bs-toggle="datepicker" placeholder="${escapeAttr(t('logs.dateRange'))}"
+                               aria-label="${escapeAttr(t('logs.dateRange'))}">
+                    </div>
+                    <button class="btn btn-sm btn-icon btn-ghost-secondary" id="audit-date-clear"
+                            title="${escapeAttr(t('logs.clearDates'))}" aria-label="${escapeAttr(t('logs.clearDates'))}">
+                        <i class="ti ti-x"></i>
+                    </button>
                 </div>
                 <button class="btn btn-sm btn-ghost-secondary" id="btn-audit-export" title="${t('logs.exportCsv')}">
                     <i class="ti ti-download"></i>
@@ -139,8 +181,7 @@ async function renderAuditTab() {
     document.getElementById('audit-search')?.addEventListener('change', applyAuditFilters);
     document.getElementById('audit-user-filter')?.addEventListener('change', applyAuditFilters);
     document.getElementById('audit-category-filter')?.addEventListener('change', applyAuditFilters);
-    document.getElementById('audit-from-date')?.addEventListener('change', applyAuditFilters);
-    document.getElementById('audit-to-date')?.addEventListener('change', applyAuditFilters);
+    setupAuditDateRange();
     document.getElementById('btn-audit-refresh')?.addEventListener('click', () => loadAuditData());
     document.getElementById('btn-audit-export')?.addEventListener('click', exportAuditCsv);
 
@@ -187,8 +228,6 @@ function applyAuditFilters() {
     auditFilters.search = document.getElementById('audit-search')?.value || '';
     auditFilters.user = document.getElementById('audit-user-filter')?.value || '';
     auditFilters.category = document.getElementById('audit-category-filter')?.value ?? 'write';
-    auditFilters.from_date = document.getElementById('audit-from-date')?.value || '';
-    auditFilters.to_date = document.getElementById('audit-to-date')?.value || '';
     auditPage = 1;
     loadAuditData();
 }
@@ -369,14 +408,19 @@ function _showCodeModal(title, icon, formattedHtml, rawText) {
                     <div class="modal-header">
                         <h5 class="modal-title"><i class="${icon} me-2"></i>${escapeHtml(title)}</h5>
                         <div class="ms-auto d-flex gap-2">
-                            <button type="button" class="btn btn-sm btn-ghost-primary" id="btn-copy-audit-detail" title="${t('common.copy')}">
-                                <i class="ti ti-copy me-1"></i>${t('common.copy')}
+                            <button type="button" class="btn btn-sm btn-ghost-primary" data-bs-toggle="clipboard"
+                                    data-bs-target="#audit-detail-raw">
+                                <span class="clipboard-label"><i class="ti ti-copy me-1"></i>${t('common.copy')}</span>
+                                <span class="clipboard-feedback"><i class="ti ti-check me-1"></i>${t('common.copied')}</span>
                             </button>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                     </div>
                     <div class="modal-body p-0">
                         <pre style="margin:0; padding:1.5rem; background: #1e293b; color: #c8d3e0; border-radius: 0 0 4px 4px;"><code>${formattedHtml}</code></pre>
+                        <!-- What the copy button copies: the raw text, not the highlighted HTML.
+                             Not a data-bs-text attribute: Bootstrap JSON-parses data-bs-* values. -->
+                        <textarea id="audit-detail-raw" hidden>${escapeHtml(rawText)}</textarea>
                     </div>
                 </div>
             </div>
@@ -385,19 +429,6 @@ function _showCodeModal(title, icon, formattedHtml, rawText) {
 
     document.getElementById(modalId)?.remove();
     document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-    // Copy button
-    document.getElementById('btn-copy-audit-detail')?.addEventListener('click', () => {
-        navigator.clipboard.writeText(rawText).then(() => {
-            const btn = document.getElementById('btn-copy-audit-detail');
-            if (btn) {
-                btn.innerHTML = `<i class="ti ti-check me-1"></i>${t('common.copied')}`;
-                setTimeout(() => { btn.innerHTML = `<i class="ti ti-copy me-1"></i>${t('common.copy')}`; }, 2000);
-            }
-        }).catch(() => {
-            showToast(t('logs.copyError'), 'error');
-        });
-    });
 
     const modal = new bootstrap.Modal(document.getElementById(modalId));
     modal.show();

@@ -45,7 +45,8 @@
         "of": "of",
         "total": "total",
         "results": "results",
-        "configure": "Configure"
+        "configure": "Configure",
+        "copyError": "Copy failed"
     },
     "auth": {
         "login": "Sign in",
@@ -647,7 +648,9 @@
         "hideAudit": "Hide AUDIT",
         "load": "Load",
         "noLogFound": "No logs found",
-        "linesLabel": "{count} lines"
+        "linesLabel": "{count} lines",
+        "dateRange": "Date range",
+        "clearDates": "Clear dates"
     },
     "settings": {
         "personalization": "Personalization",
@@ -852,5 +855,12 @@
         "minutesAgo": "{n} min ago",
         "hoursAgo": "{n} hours ago",
         "daysAgo": "{n} days ago"
+    },
+    "password": {
+        "weak": "Weak",
+        "fair": "Fair",
+        "good": "Good",
+        "strong": "Strong",
+        "strengthLabel": "Password strength"
     }
 }

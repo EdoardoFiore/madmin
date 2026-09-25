@@ -363,58 +363,171 @@ export function isValidIP(val) {
     return /^(\d{1,3}\.){3}\d{1,3}$/.test(val);
 }
 
+// == Tabler components ==
+//
+// tabler.js creates its components once, when it loads. Views render their
+// markup later, so the components they declare are created here instead: once
+// for the page, then for every element added to the DOM afterwards.
+// Datepicker is not listed: tabler.js creates it itself on first focus or
+// click, and a view that needs options creates it explicitly with them.
+const TABLER_COMPONENTS = [
+    ['[data-bs-toggle="otp"]', 'OtpInput'],
+    ['[data-bs-toggle="clipboard"]', 'Clipboard'],
+    ['[data-bs-strength]', 'Strength'],
+];
+
 /**
- * Copy text to clipboard with fallback
- * @param {string} text 
- * @returns {Promise<boolean>}
+ * Create the Tabler components declared inside root (root included).
+ * @param {ParentNode} root
  */
-export async function copyToClipboard(text) {
-    if (!text) {
-        console.warn('copyToClipboard: No text provided');
-        return false;
-    }
-
-    // Try Clipboard API first (if secure context)
-    if (navigator.clipboard && window.isSecureContext) {
-        try {
-            await navigator.clipboard.writeText(text);
-            console.log('Copied to clipboard via API');
-            return true;
-        } catch (err) {
-            console.warn('Clipboard API failed, trying fallback', err);
+export function initTablerComponents(root = document) {
+    if (!window.tabler) return;
+    for (const [selector, name] of TABLER_COMPONENTS) {
+        const found = [...root.querySelectorAll(selector)];
+        if (root.matches?.(selector)) found.unshift(root);
+        for (const el of found) {
+            try {
+                window.tabler[name].getOrCreateInstance(el);
+            } catch (e) {
+                console.error(`Tabler ${name} init failed`, e);
+            }
         }
-    } else {
-        console.log('Clipboard API unavailable or insecure context, using fallback');
     }
+}
 
-    // Fallback: textarea + execCommand
-    try {
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-
-        // Ensure it's not visible but part of DOM
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-9999px';
-        textArea.style.top = '0';
-        textArea.setAttribute('readonly', '');
-        document.body.appendChild(textArea);
-
-        textArea.focus();
-        textArea.select();
-        textArea.setSelectionRange(0, 99999); // For mobile devices
-
-        const success = document.execCommand('copy');
-        document.body.removeChild(textArea);
-
-        if (success) {
-            console.log('Copied to clipboard via fallback');
-            return true;
-        } else {
-            console.error('Fallback execCommand returned false');
-            return false;
+/**
+ * Create the Tabler components already in the page, then those of every
+ * element added to it later. Call once at startup.
+ */
+export function watchTablerComponents() {
+    initTablerComponents(document);
+    new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType === Node.ELEMENT_NODE) initTablerComponents(node);
+            }
         }
-    } catch (err) {
-        console.error('Fallback copy failed completely', err);
-        return false;
-    }
+    }).observe(document.body, { childList: true, subtree: true });
+
+    // The `reset` event fires before the fields are emptied
+    document.addEventListener('reset', (e) => setTimeout(() => refreshStrengthMeters(e.target)));
+
+    // Clipboard needs a secure context: MADMIN runs on HTTPS, a plain-http dev
+    // setup is where this fires.
+    document.addEventListener('error.bs.clipboard', () => showToast(t('common.copyError'), 'error'));
+}
+
+/**
+ * Copy button (Tabler Clipboard). It copies the value of an input or the text
+ * of the element matched by target; the check icon replaces the copy icon for a moment.
+ * @param {string} target - CSS selector of the source element
+ * @param {string} [cls] - button classes
+ * @returns {string} HTML
+ */
+export function copyButton(target, cls = 'btn btn-icon btn-outline-secondary') {
+    return `
+        <button type="button" class="${cls}" data-bs-toggle="clipboard" data-bs-target="${escapeAttr(target)}"
+                title="${escapeAttr(t('common.copy'))}" aria-label="${escapeAttr(t('common.copy'))}">
+            <span class="clipboard-label"><i class="ti ti-copy"></i></span>
+            <span class="clipboard-feedback"><i class="ti ti-check text-success"></i></span>
+        </button>`;
+}
+
+/**
+ * Password strength meter (Tabler Strength) for the field matched by input.
+ * Place it right after the field, in the same parent. It is a hint only: the
+ * password policy is enforced by the backend.
+ * @param {string} input - CSS selector of the password field
+ * @returns {string} HTML
+ */
+export function strengthMeter(input) {
+    const messages = {
+        weak: t('password.weak'),
+        fair: t('password.fair'),
+        good: t('password.good'),
+        strong: t('password.strong'),
+    };
+    return `
+        <div class="strength" data-bs-strength data-bs-input="${escapeAttr(input)}"
+             data-bs-messages="${escapeAttr(JSON.stringify(messages))}"
+             aria-label="${escapeAttr(t('password.strengthLabel'))}">
+            <div class="strength-segment"></div><div class="strength-segment"></div>
+            <div class="strength-segment"></div><div class="strength-segment"></div>
+        </div>
+        <div class="strength-text"></div>`;
+}
+
+/**
+ * Re-rate the strength meters inside root. The meter listens to `input`
+ * events only, so a field emptied by code or by form.reset() keeps showing
+ * the old level until this runs.
+ * @param {ParentNode} root
+ */
+export function refreshStrengthMeters(root = document) {
+    root.querySelectorAll('.strength[data-bs-strength]').forEach(el => {
+        window.tabler?.Strength.getInstance(el)?.evaluate();
+    });
+}
+
+/**
+ * Clear an OTP field (Tabler OtpInput): setting .value alone leaves the slots
+ * showing the old digits.
+ * @param {HTMLInputElement|null} input
+ */
+export function clearOtpInput(input) {
+    if (!input) return;
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+}
+
+/**
+ * Legend for an ApexCharts chart (Tabler Legend): one button per series,
+ * clicking it hides or shows that series.
+ * @param {Array<{label: string, color: string, value?: string, valueId?: string}>} items
+ *        in series order; valueId gives the value span an id to update later
+ * @param {object} [opts]
+ * @param {boolean} [opts.large] - big value under the label (legend-lg)
+ * @returns {string} HTML
+ */
+export function chartLegend(items, { large = false } = {}) {
+    return `
+        <div class="legend-list${large ? ' legend-list-divided' : ''}">
+            ${items.map((item, i) => `
+                <button type="button" class="legend${large ? ' legend-lg' : ''}" data-series-index="${i}"
+                        style="--tblr-legend-color: ${escapeAttr(item.color)}" aria-pressed="true">
+                    <span class="legend-dot"></span>${escapeHtml(item.label)}
+                    <span class="legend-value"${item.valueId ? ` id="${escapeAttr(item.valueId)}"` : ''}>${escapeHtml(item.value ?? '')}</span>
+                </button>`).join('')}
+        </div>`;
+}
+
+/**
+ * Make the legend rendered by chartLegend toggle the series of a chart.
+ * getChart is called on every click, so a chart rebuilt later is still reached.
+ * @param {HTMLElement|null} legendEl - element containing the legend
+ * @param {() => object|null} getChart - returns the current ApexCharts instance
+ */
+export function bindChartLegend(legendEl, getChart) {
+    legendEl?.addEventListener('click', (e) => {
+        const btn = e.target.closest('.legend[data-series-index]');
+        const chart = getChart();
+        if (!btn || !chart) return;
+        const series = chart.w.globals.seriesNames[Number(btn.dataset.seriesIndex)];
+        if (series === undefined) return;
+        const visible = chart.toggleSeries(series);
+        btn.classList.toggle('legend-off', !visible);
+        btn.setAttribute('aria-pressed', String(Boolean(visible)));
+    });
+}
+
+/**
+ * Show every series again in a legend rendered by chartLegend, after its
+ * chart was redrawn with all series visible.
+ * @param {HTMLElement|null} legendEl
+ */
+export function resetChartLegend(legendEl) {
+    legendEl?.querySelectorAll('.legend[data-series-index]').forEach(btn => {
+        btn.classList.remove('legend-off');
+        btn.setAttribute('aria-pressed', 'true');
+    });
 }

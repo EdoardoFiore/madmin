@@ -7,7 +7,7 @@
 
 import { apiGet, apiPatch } from '../api.js';
 import { checkPermission } from '../app.js';
-import { formatRelativeTime, escapeHtml } from '../utils.js';
+import { formatRelativeTime, escapeHtml, chartLegend, bindChartLegend } from '../utils.js';
 import { t, getLang } from '../i18n.js';
 
 let autoRefreshInterval = null;
@@ -543,6 +543,7 @@ function renderNetTraffic() {
                 </div>
             </div>
             <div class="card-body">
+                <div id="net-traffic-legend" class="mb-2"></div>
                 <div id="chart-net-traffic" style="height: 200px;">
                     <div class="text-muted text-center py-5">
                         <span class="spinner-border spinner-border-sm"></span> ${t('common.loading')}
@@ -876,12 +877,14 @@ async function loadNetTraffic() {
 
 async function loadNetTrafficGraph(iface, hours) {
     const container = document.getElementById('chart-net-traffic');
+    const legendEl = document.getElementById('net-traffic-legend');
     if (!container) return;
 
     try {
         const history = await apiGet(`/system/network/history?hours=${hours}&interface=${iface}`);
 
         if (history.length === 0) {
+            if (legendEl) legendEl.innerHTML = '';
             container.innerHTML = `<div class="text-muted text-center py-4"><i class="ti ti-clock me-2"></i>${t('dashboard.waitingForTrafficData')}</div>`;
             return;
         }
@@ -922,14 +925,24 @@ async function loadNetTrafficGraph(iface, hours) {
             yaxis: { min: 0, labels: { show: true, formatter: v => v.toFixed(0) + ' ' + unit } },
             tooltip: { y: { formatter: v => v.toFixed(2) + ' ' + unit } },
             grid: { show: true, borderColor: '#e0e0e0', strokeDashArray: 3 },
-            legend: { position: 'top', horizontalAlign: 'right' }
+            // Tabler legend above the chart instead: it also shows the latest rate
+            legend: { show: false }
         };
 
         netTrafficChart = new ApexCharts(container, options);
         netTrafficChart.render();
 
+        // A new chart shows every series, so the legend is rebuilt all on
+        if (legendEl) {
+            legendEl.innerHTML = chartLegend([
+                { label: 'TX', color: options.colors[0], value: `${txDisplay.at(-1)} ${unit}` },
+                { label: 'RX', color: options.colors[1], value: `${rxDisplay.at(-1)} ${unit}` },
+            ]);
+        }
+
     } catch (error) {
         console.error('Error loading net traffic graph:', error);
+        if (legendEl) legendEl.innerHTML = '';
         container.innerHTML = `<div class="text-muted text-center py-4">${t('dashboard.errorLoadingData')}</div>`;
     }
 }
@@ -1189,6 +1202,9 @@ function setupEventListeners() {
         const hours = parseInt(document.querySelector('input[name="net-range"]:checked')?.value || '1');
         loadNetTrafficGraph(e.target.value, hours);
     });
+
+    // Network traffic legend: click a series to hide or show it
+    bindChartLegend(document.getElementById('net-traffic-legend'), () => netTrafficChart);
 
     // Network traffic range
     document.querySelectorAll('input[name="net-range"]').forEach(radio => {

@@ -24,6 +24,10 @@ TABLER_ICONS_VERSION="3.48.0"
 # check the license before moving past 4.x.
 APEXCHARTS_VERSION="4.7.0"
 SORTABLEJS_VERSION="1.15.7"
+# Calendar engine behind tabler.Datepicker (it reads window.VanillaCalendarPro).
+# Keep it on the version the Tabler release ships in dist/libs; its styles are
+# already part of tabler.min.css.
+VANILLA_CALENDAR_VERSION="3.3.2"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="$REPO_DIR/frontend/assets/vendor"
@@ -73,6 +77,11 @@ pkg="$(fetch sortablejs "$SORTABLEJS_VERSION")"
 dest="$VENDOR_DIR/sortablejs-$SORTABLEJS_VERSION"
 mkdir -p "$dest"
 cp "$pkg/Sortable.min.js" "$pkg/LICENSE" "$dest/"
+
+pkg="$(fetch vanilla-calendar-pro "$VANILLA_CALENDAR_VERSION")"
+dest="$VENDOR_DIR/vanilla-calendar-pro-$VANILLA_CALENDAR_VERSION"
+mkdir -p "$dest"
+cp "$pkg/index.js" "$pkg/LICENSE" "$dest/"
 
 # Source map comments point at files we do not ship: drop them so devtools
 # does not log a 404 for each library.

@@ -45,7 +45,8 @@
         "of": "di",
         "total": "totali",
         "results": "risultati",
-        "configure": "Configura"
+        "configure": "Configura",
+        "copyError": "Copia non riuscita"
     },
     "auth": {
         "login": "Accedi",
@@ -647,7 +648,9 @@
         "hideAudit": "Nascondi AUDIT",
         "load": "Carica",
         "noLogFound": "Nessun log trovato",
-        "linesLabel": "{count} righe"
+        "linesLabel": "{count} righe",
+        "dateRange": "Intervallo date",
+        "clearDates": "Azzera date"
     },
     "settings": {
         "personalization": "Personalizzazione",
@@ -852,5 +855,12 @@
         "minutesAgo": "{n} min fa",
         "hoursAgo": "{n} ore fa",
         "daysAgo": "{n} giorni fa"
+    },
+    "password": {
+        "weak": "Debole",
+        "fair": "Sufficiente",
+        "good": "Buona",
+        "strong": "Robusta",
+        "strengthLabel": "Robustezza password"
     }
 }

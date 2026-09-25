@@ -10,6 +10,10 @@ import {
     statusBadge, loadingSpinner, parseProposal
 } from '/static/modules/strongswan/views/utils.js';
 import { showTunnelForm } from '/static/modules/strongswan/views/tunnelForm.js';
+import { chartLegend, bindChartLegend, resetChartLegend } from '/static/js/utils.js';
+
+// Series colors of the traffic chart, shared with its legend
+const TRAFFIC_COLORS = { in: '#206bc4', out: '#2fb344' };
 import { renderChildSaForm, setupChildSaFormEvents } from '/static/modules/strongswan/views/childSaForm.js';
 import { renderFirewallManagement } from '/static/modules/strongswan/views/firewallManagement.js';
 import { t } from '/static/js/i18n.js';
@@ -343,15 +347,12 @@ function renderDetail(container, tunnelId) {
                     </div>
                     <div class="card-body">
                         <div id="traffic-chart" style="height: 180px;"></div>
-                        <div class="row mt-3 text-center">
-                            <div class="col-6">
-                                <div class="text-muted small">Download</div>
-                                <div class="h4 mb-0" id="traffic-in">--</div>
-                            </div>
-                            <div class="col-6">
-                                <div class="text-muted small">Upload</div>
-                                <div class="h4 mb-0" id="traffic-out">--</div>
-                            </div>
+                        <!-- Totals of the period; click one to hide or show its series -->
+                        <div class="mt-3" id="traffic-legend">
+                            ${chartLegend([
+                                { label: 'Download', color: TRAFFIC_COLORS.in, value: '--', valueId: 'traffic-in' },
+                                { label: 'Upload', color: TRAFFIC_COLORS.out, value: '--', valueId: 'traffic-out' },
+                            ], { large: true })}
                         </div>
                     </div>
                 </div>
@@ -530,6 +531,9 @@ function setupDetailEvents(tunnelId) {
     document.getElementById('traffic-period')?.addEventListener('change', () => {
         loadTrafficStats(tunnelId);
     });
+
+    // Traffic legend: click Download/Upload to hide or show that series
+    bindChartLegend(document.getElementById('traffic-legend'), () => trafficChart);
 }
 
 // Bind start/stop/edit/delete handlers for Child SA rows.
@@ -737,11 +741,11 @@ function renderTrafficChart(period = '24h') {
         series: [{
             name: 'Download',
             data: trafficHistory.in,
-            color: '#206bc4'
+            color: TRAFFIC_COLORS.in
         }, {
             name: 'Upload',
             data: trafficHistory.out,
-            color: '#2fb344'
+            color: TRAFFIC_COLORS.out
         }],
         chart: {
             type: 'area',
@@ -810,6 +814,9 @@ function renderTrafficChart(period = '24h') {
 
     if (trafficChart) {
         trafficChart.updateOptions(options);
+        // A new period starts with every series visible, legend included
+        options.series.forEach(s => trafficChart.showSeries(s.name));
+        resetChartLegend(document.getElementById('traffic-legend'));
     } else if (typeof ApexCharts !== 'undefined') {
         trafficChart = new ApexCharts(chartEl, options);
         trafficChart.render();

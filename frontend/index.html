@@ -200,22 +200,37 @@
                             </div>
                             <div class="col-md-6">
                                 <h5 class="mb-3" data-i18n="users.orManually">2. Or enter manually</h5>
-                                <div class="mb-3">
+                                <div class="input-group mb-3">
                                     <input type="text" class="form-control font-monospace text-center"
                                         id="global-secret-key" readonly>
+                                    <button type="button" class="btn btn-icon" data-bs-toggle="clipboard"
+                                        data-bs-target="#global-secret-key" data-i18n-title="common.copy" title="Copy">
+                                        <span class="clipboard-label"><i class="ti ti-copy"></i></span>
+                                        <span class="clipboard-feedback"><i class="ti ti-check text-success"></i></span>
+                                    </button>
                                 </div>
                                 <hr>
                                 <h5 class="mb-3" data-i18n="users.verifyCode">3. Verify code</h5>
-                                <input type="text" class="form-control form-control-lg text-center font-monospace mb-3"
-                                    id="global-verify-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000"
-                                    inputmode="numeric">
+                                <div class="text-center mb-3">
+                                    <div class="otp" data-bs-toggle="otp">
+                                        <input type="text" id="global-verify-code" maxlength="6"
+                                            autocomplete="one-time-code">
+                                    </div>
+                                </div>
                                 <button class="btn btn-primary w-100" id="btn-global-verify-2fa">
                                     <i class="ti ti-check me-1"></i><span data-i18n="users.activate2fa">Activate 2FA</span>
                                 </button>
                             </div>
                         </div>
                         <hr>
-                        <h5><i class="ti ti-key me-2"></i><span data-i18n="users.backupCodes">Backup Codes (save in a safe place!)</span></h5>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="ti ti-key me-2"></i><span data-i18n="users.backupCodes">Backup Codes (save in a safe place!)</span></h5>
+                            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="clipboard"
+                                data-bs-target="#global-backup-codes">
+                                <span class="clipboard-label"><i class="ti ti-copy me-1"></i><span data-i18n="common.copy">Copy</span></span>
+                                <span class="clipboard-feedback"><i class="ti ti-check me-1"></i><span data-i18n="common.copied">Copied!</span></span>
+                            </button>
+                        </div>
                         <div id="global-backup-codes" class="row g-2 mt-2"></div>
                     </div>
                 </div>
@@ -229,6 +244,8 @@
     <!-- Tabler JS. It bundles Bootstrap: loading bootstrap.bundle next to it would
          register every data-bs-* handler twice. Views use the global bootstrap.* API,
          so expose the bundled copy under that name. -->
+    <!-- Calendar engine of tabler.Datepicker (read as window.VanillaCalendarPro) -->
+    <script src="/static/vendor/vanilla-calendar-pro-3.3.2/index.js"></script>
     <script src="/static/vendor/tabler-1.6.0/tabler.min.js"></script>
     <script>window.bootstrap = window.tabler.bootstrap;</script>
 

@@ -148,6 +148,12 @@
                     <div class="mb-3">
                         <input type="password" class="form-control" id="new-password"
                             data-i18n-placeholder="auth.newPassword" placeholder="New password" autocomplete="new-password">
+                        <!-- Tabler Strength, created once the translations are loaded (see initStrengthMeter) -->
+                        <div class="strength" id="new-password-strength">
+                            <div class="strength-segment"></div><div class="strength-segment"></div>
+                            <div class="strength-segment"></div><div class="strength-segment"></div>
+                        </div>
+                        <div class="strength-text"></div>
                     </div>
                     <div class="mb-2">
                         <input type="password" class="form-control" id="new-password-confirm"
@@ -179,16 +185,30 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label small" data-i18n="auth.setup2faSecret">Or enter this key manually</label>
-                        <input type="text" class="form-control form-control-sm font-monospace" id="setup-secret" readonly>
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control font-monospace" id="setup-secret" readonly>
+                            <button type="button" class="btn btn-icon" data-bs-toggle="clipboard" data-bs-target="#setup-secret"
+                                data-i18n-title="common.copy" title="Copy">
+                                <span class="clipboard-label"><i class="ti ti-copy"></i></span>
+                                <span class="clipboard-feedback"><i class="ti ti-check text-success"></i></span>
+                            </button>
+                        </div>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label small" data-i18n="auth.setup2faBackupCodes">Backup codes — save them now, they are shown only once</label>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <label class="form-label small mb-0" data-i18n="auth.setup2faBackupCodes">Backup codes — save them now, they are shown only once</label>
+                            <button type="button" class="btn btn-sm btn-icon btn-ghost-secondary" data-bs-toggle="clipboard"
+                                data-bs-target="#setup-backup-codes" data-i18n-title="common.copy" title="Copy">
+                                <span class="clipboard-label"><i class="ti ti-copy"></i></span>
+                                <span class="clipboard-feedback"><i class="ti ti-check text-success"></i></span>
+                            </button>
+                        </div>
                         <div class="row g-1 border rounded p-2" id="setup-backup-codes"></div>
                     </div>
-                    <div class="mb-3">
-                        <input type="text" class="form-control form-control-lg text-center" id="setup-otp-code"
-                            placeholder="000000" maxlength="6" autocomplete="one-time-code" pattern="[0-9]{6}"
-                            inputmode="numeric">
+                    <div class="text-center mb-3">
+                        <div class="otp" data-bs-toggle="otp">
+                            <input type="text" id="setup-otp-code" maxlength="6" autocomplete="one-time-code">
+                        </div>
                     </div>
                     <button type="button" class="btn btn-primary w-100 mb-2" id="complete-2fa-setup-btn">
                         <span class="btn-text" data-i18n="auth.activate2fa">Activate 2FA</span>
@@ -256,12 +276,40 @@
                     const translated = t(key);
                     if (translated !== key) el.placeholder = translated;
                 });
+                document.querySelectorAll('[data-i18n-title]').forEach(el => {
+                    const key = el.getAttribute('data-i18n-title');
+                    const translated = t(key);
+                    if (translated !== key) {
+                        el.title = translated;
+                        el.setAttribute('aria-label', translated);
+                    }
+                });
             }
 
             // Expose helpers for use in the login script below
             window._loginI18n = { t, lang: _lang };
 
-            loadLocale().then(translateDOM);
+            loadLocale().then(() => {
+                translateDOM();
+                initStrengthMeter();
+            });
+
+            // Created here rather than through data-bs-strength: tabler.js would
+            // build it on load, before the labels are translated.
+            function initStrengthMeter() {
+                const el = document.getElementById('new-password-strength');
+                if (!el || !window.tabler) return;
+                new window.tabler.Strength(el, {
+                    input: '#new-password',
+                    messages: {
+                        weak: t('password.weak'),
+                        fair: t('password.fair'),
+                        good: t('password.good'),
+                        strong: t('password.strong'),
+                    },
+                });
+                el.setAttribute('aria-label', t('password.strengthLabel'));
+            }
         })();
     </script>
     <script>
@@ -294,6 +342,12 @@
 
         function _t(key) {
             return (window._loginI18n && window._loginI18n.t(key)) || key;
+        }
+
+        // Tabler OtpInput redraws its slots on `input` events only
+        function clearSetupOtp() {
+            setupOtpInput.value = '';
+            setupOtpInput.dispatchEvent(new Event('input'));
         }
 
         function showError(message) {
@@ -355,7 +409,7 @@
             twoFaSection.classList.add('d-none');
             pwdChangeSection.classList.add('d-none');
             twoFaSetupSection.classList.remove('d-none');
-            setupOtpInput.value = '';
+            clearSetupOtp();
             setupOtpInput.focus();
             hideError();
         }
@@ -536,7 +590,8 @@
                 document.getElementById('setup-qr-code').src = `data:image/png;base64,${data.qr_code}`;
                 document.getElementById('setup-secret').value = data.secret;
                 document.getElementById('setup-backup-codes').innerHTML = data.backup_codes
-                    .map(c => `<div class="col-6"><code>${c}</code></div>`).join('');
+                    // One code per line in textContent: the copy button copies it as is
+                    .map(c => `<div class="col-6"><code>${c}</code></div>`).join('\n');
 
                 show2faSetupForm();
             } catch (error) {
@@ -573,7 +628,7 @@
                 } else {
                     const error = await response.json();
                     showError(error.detail || _t('auth.invalidCode'));
-                    setupOtpInput.value = '';
+                    clearSetupOtp();
                     setupOtpInput.focus();
                 }
             } catch (error) {

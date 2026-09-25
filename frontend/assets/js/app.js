@@ -6,7 +6,7 @@
  */
 
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
-import { showToast, loadingSpinner, copyToClipboard } from './utils.js';
+import { showToast, loadingSpinner, watchTablerComponents } from './utils.js';
 import { init as i18nInit, t, getLang, detectLang, translateDOM, loadModuleTranslations } from './i18n.js';
 import { openProfileModal } from './profile.js';
 
@@ -37,6 +37,10 @@ async function init() {
         redirectToLogin();
         return;
     }
+
+    // Views render their markup after tabler.js has loaded: create the Tabler
+    // components (OTP, clipboard, strength meter) they declare
+    watchTablerComponents();
 
     // Load user info
     try {
@@ -170,7 +174,7 @@ async function startGlobal2FASetup() {
         const codesContainer = document.getElementById('global-backup-codes');
         codesContainer.innerHTML = data.backup_codes.map(c =>
             `<div class="col-6 col-md-4"><code class="fs-5">${c}</code></div>`
-        ).join('');
+        ).join('\n');  // newline-separated: the copy button copies this text
 
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');

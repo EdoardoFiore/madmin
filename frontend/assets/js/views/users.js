@@ -3,7 +3,10 @@
  */
 
 import { apiGet, apiPost, apiPatch, apiDelete, apiDeleteWithBody, apiPut } from '../api.js';
-import { showToast, confirmDialog, formatDate, emptyState, escapeHtml, escapeAttr, statusBadge, copyToClipboard } from '../utils.js';
+import {
+    showToast, confirmDialog, formatDate, emptyState, escapeHtml, escapeAttr, statusBadge,
+    copyButton, strengthMeter, clearOtpInput, refreshStrengthMeters
+} from '../utils.js';
 import { setPageActions, checkPermission, getUser } from '../app.js';
 import { t } from '../i18n.js';
 
@@ -61,7 +64,9 @@ export async function render(container) {
                                 </div>
                                 <div class="col-md-6">
                                     <input type="password" class="form-control" id="new-password"
-                                           placeholder="${t('users.newPassword')}" required minlength="8">
+                                           placeholder="${t('users.newPassword')}" required minlength="8"
+                                           autocomplete="new-password">
+                                    ${strengthMeter('#new-password')}
                                 </div>
                                 <div class="col-md-6">
                                     <input type="password" class="form-control" id="confirm-password"
@@ -137,14 +142,18 @@ export async function render(container) {
                             </div>
                             <div class="col-md-6">
                                 <h5 class="mb-3">${t('users.orManually')}</h5>
-                                <div class="mb-3">
+                                <div class="input-group mb-3">
                                     <input type="text" class="form-control font-monospace text-center" id="secret-key" readonly>
+                                    ${copyButton('#secret-key', 'btn btn-icon')}
                                 </div>
                                 <hr>
                                 <h5 class="mb-3">${t('users.verifyCode')}</h5>
-                                <input type="text" class="form-control form-control-lg text-center font-monospace mb-3"
-                                       id="verify-setup-code" maxlength="6" pattern="[0-9]{6}"
-                                       placeholder="000000" inputmode="numeric">
+                                <div class="text-center mb-3">
+                                    <div class="otp" data-bs-toggle="otp">
+                                        <input type="text" id="verify-setup-code" maxlength="6"
+                                               autocomplete="one-time-code" aria-label="${t('users.verifyCode')}">
+                                    </div>
+                                </div>
                                 <button class="btn btn-primary w-100" id="btn-verify-2fa">
                                     <i class="ti ti-check me-1"></i>${t('users.activate2fa')}
                                 </button>
@@ -153,9 +162,12 @@ export async function render(container) {
                         <hr>
                         <div class="d-flex justify-content-between align-items-center">
                             <h5 class="mb-0"><i class="ti ti-key me-2"></i>${t('users.backupCodes')}</h5>
-                            <button type="button" class="btn btn-sm btn-outline-primary" id="btn-download-setup-codes">
-                                <i class="ti ti-download me-1"></i>${t('common.download')}
-                            </button>
+                            <div class="btn-list">
+                                ${copyButton('#backup-codes-list', 'btn btn-sm btn-icon btn-outline-primary')}
+                                <button type="button" class="btn btn-sm btn-outline-primary" id="btn-download-setup-codes">
+                                    <i class="ti ti-download me-1"></i>${t('common.download')}
+                                </button>
+                            </div>
                         </div>
                         <div id="backup-codes-list" class="row g-2 mt-2"></div>
                     </div>
@@ -186,7 +198,9 @@ export async function render(container) {
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label" id="password-label">Password</label>
-                                    <input type="password" class="form-control" id="user-password" minlength="8">
+                                    <input type="password" class="form-control" id="user-password" minlength="8"
+                                           autocomplete="new-password">
+                                    ${strengthMeter('#user-password')}
                                     <small class="form-hint" id="password-hint">${t('users.passwordHintNew')}</small>
                                 </div>
                                 <div class="col-md-6">
@@ -341,6 +355,7 @@ export async function render(container) {
                         <div id="backup-codes-display" class="row g-2"></div>
                     </div>
                     <div class="modal-footer">
+                        ${copyButton('#backup-codes-display', 'btn btn-icon btn-outline-primary')}
                         <button type="button" class="btn btn-outline-primary" id="download-displayed-codes">
                             <i class="ti ti-download me-1"></i>${t('common.download')}
                         </button>
@@ -916,6 +931,7 @@ function openUserModal(user = null) {
     document.getElementById('user-email').value = user?.email || '';
     document.getElementById('user-password').value = '';
     document.getElementById('user-password-confirm').value = '';
+    refreshStrengthMeters(document.getElementById('user-form'));
     document.getElementById('user-password').required = !user;
     document.getElementById('user-password-confirm').required = !user;
     document.getElementById('password-label').classList.toggle('required', !user);
@@ -1198,15 +1214,13 @@ function setupEnable2FA() {
             // Populate modal
             document.getElementById('qr-code-img').src = `data:image/png;base64,${twoFaSetupData.qr_code}`;
             document.getElementById('secret-key').value = twoFaSetupData.secret;
-            document.getElementById('verify-setup-code').value = '';
+            clearOtpInput(document.getElementById('verify-setup-code'));
 
-            // Show backup codes
+            // Show backup codes, one per line in textContent: the copy button copies it as is
             const codesList = document.getElementById('backup-codes-list');
-            codesList.innerHTML = twoFaSetupData.backup_codes.map(c => `
-                <div class="col-6 col-md-4">
-                    <span class="badge bg-secondary-lt font-monospace w-100 py-2">${c}</span>
-                </div>
-            `).join('');
+            codesList.innerHTML = twoFaSetupData.backup_codes.map(c =>
+                `<div class="col-6 col-md-4"><span class="badge bg-secondary-lt font-monospace w-100 py-2">${c}</span></div>`
+            ).join('\n');
 
             // Download button for setup backup codes
             document.getElementById('btn-download-setup-codes').onclick = () => {
@@ -1378,7 +1392,7 @@ function setupRegenerateCodes() {
                 const codesContainer = document.getElementById('backup-codes-display');
                 codesContainer.innerHTML = result.backup_codes.map(c =>
                     `<div class="col-6"><code class="fs-4">${c}</code></div>`
-                ).join('');
+                ).join('\n');
 
                 // Download button
                 document.getElementById('download-displayed-codes').onclick = () => {
