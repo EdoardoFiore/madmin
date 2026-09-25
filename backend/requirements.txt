@@ -3,7 +3,10 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 
 # Database
-sqlmodel>=0.0.14
+# <0.0.45: 0.0.45 maps every datetime field to a timezone-aware type that rejects
+# naive values, and MADMIN stores naive UTC (datetime.utcnow()) everywhere. Lifting
+# the cap needs aware datetimes in the code plus a timestamptz column migration.
+sqlmodel>=0.0.14,<0.0.45
 asyncpg>=0.29.0
 sqlalchemy[asyncio]>=2.0.25
 
