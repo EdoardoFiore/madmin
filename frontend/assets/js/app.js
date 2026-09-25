@@ -86,7 +86,6 @@ async function init() {
     setupNavigation();
     setupMobileMenu();
     setupThemeToggle();
-    setupDropdowns();
     setupProfileLink();
 
     // Load menu
@@ -336,7 +335,9 @@ function setupProfileLink() {
     if (link) {
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            closeAllDropdowns();
+            // The user menu uses data-bs-auto-close="outside": close it by hand
+            const trigger = document.querySelector('#user-dropdown [data-bs-toggle="dropdown"]');
+            if (trigger) bootstrap.Dropdown.getOrCreateInstance(trigger).hide();
             openProfileModal();
         });
     }
@@ -463,66 +464,6 @@ function setupMobileMenu() {
 function closeMobileMenu() {
     document.getElementById('sidebar')?.classList.remove('mobile-open');
     document.getElementById('mobile-overlay')?.classList.remove('show');
-}
-
-/**
- * Global Dropdown Manager
- */
-function setupDropdowns() {
-    // Toggle on trigger click
-    document.addEventListener('click', (e) => {
-        const trigger = e.target.closest('[data-bs-toggle="dropdown"]');
-
-        if (trigger) {
-            e.preventDefault();
-            e.stopPropagation();
-
-            const parent = trigger.closest('.dropdown, .dropup, .dropend, .dropstart, [id$="-dropdown"]');
-            const menu = parent ? parent.querySelector('.dropdown-menu') : null;
-
-            if (!menu) return;
-
-            const isOpen = menu.classList.contains('show');
-
-            // Close all other open dropdowns first
-            closeAllDropdowns();
-
-            if (!isOpen) {
-                trigger.classList.add('show');
-                trigger.setAttribute('aria-expanded', 'true');
-                menu.classList.add('show');
-            }
-        } else {
-            // Clicked outside - close all dropdowns
-            closeAllDropdowns();
-        }
-    }, true);
-
-    document.addEventListener('click', (e) => {
-        const menuEl = e.target.closest('.dropdown-menu.show');
-        if (menuEl) {
-            const parent = menuEl.closest('.dropdown, .dropup, .dropend, .dropstart, [id$="-dropdown"]');
-            const trigger = parent?.querySelector('[data-bs-toggle="dropdown"]');
-            const autoClose = trigger?.getAttribute('data-bs-auto-close');
-
-            if (autoClose !== 'outside') {
-                closeAllDropdowns();
-            }
-        }
-    });
-}
-
-/**
- * Close all currently open dropdowns
- */
-function closeAllDropdowns() {
-    document.querySelectorAll('.dropdown-menu.show').forEach(menu => {
-        menu.classList.remove('show');
-    });
-    document.querySelectorAll('[data-bs-toggle="dropdown"].show').forEach(trigger => {
-        trigger.classList.remove('show');
-        trigger.setAttribute('aria-expanded', 'false');
-    });
 }
 
 /**
