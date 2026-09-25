@@ -47,11 +47,13 @@ rm -rf "$VENDOR_DIR"
 mkdir -p "$VENDOR_DIR"
 
 # Tabler: CSS + JS. tabler.min.js bundles Bootstrap, so Bootstrap is not vendored separately.
-# The package ships no LICENSE file: the MIT notice is in the banner of both files.
+# tabler-themes.min.css holds the gray scales: the pages set data-bs-theme-base="gray"
+# to keep the blue-tinted grays the UI was designed on (1.6 defaults to neutral).
+# The package ships no LICENSE file: the MIT notice is in the banner of the files.
 pkg="$(fetch @tabler/core "$TABLER_VERSION")"
 dest="$VENDOR_DIR/tabler-$TABLER_VERSION"
 mkdir -p "$dest"
-cp "$pkg/dist/css/tabler.min.css" "$pkg/dist/js/tabler.min.js" "$dest/"
+cp "$pkg/dist/css/tabler.min.css" "$pkg/dist/css/tabler-themes.min.css" "$pkg/dist/js/tabler.min.js" "$dest/"
 
 # Tabler Icons webfont: outline set, woff2 only (every supported browser reads it).
 # The filled set is not an add-on: its CSS redefines .ti to the filled font, so
