@@ -106,6 +106,15 @@ html {
     height: 100%;
 }
 
+/* == Input icons ==
+ * Tabler 1.6 gives .input-icon-addon the fixed height of a default-size
+ * control, so next to a .form-control-sm / -lg the icon is centred on the
+ * wrong box and sits low (sm) or high (lg). Stretch it to the wrapper instead:
+ * top/bottom are already 0. */
+.input-icon:has(> .form-control-sm, > .form-select-sm, > .form-control-lg, > .form-select-lg) > .input-icon-addon {
+    height: auto;
+}
+
 /* == Cards == */
 .card {
     border: none;
