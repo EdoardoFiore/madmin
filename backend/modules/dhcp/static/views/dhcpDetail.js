@@ -253,7 +253,7 @@ function renderLeasesTable(leases, hosts = [], canReservations) {
                                         data-hostname="${l.hostname || ''}" title="${t('dhcp.reserve')}">
                                     <i class="ti ti-pin me-1"></i>${t('dhcp.reserve')}
                                 </button>` : `
-                                <span class="badge bg-blue-lt"><i class="ti ti-pin-filled me-1"></i>${t('dhcp.reserved')}</span>
+                                <span class="badge bg-blue-lt"><i class="ti ti-pin me-1"></i>${t('dhcp.reserved')}</span>
                                 `}
                             </td>` : ''}
                         </tr>`;

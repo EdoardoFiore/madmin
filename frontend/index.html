@@ -7,9 +7,9 @@
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
     <title>MADMIN - Dashboard</title>
 
-    <!-- Tabler CSS from CDN -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.3.0/dist/tabler-icons.min.css">
+    <!-- Tabler CSS (vendored: scripts/update-frontend-vendor.sh) -->
+    <link rel="stylesheet" href="/static/vendor/tabler-1.6.0/tabler.min.css">
+    <link rel="stylesheet" href="/static/vendor/tabler-icons-3.48.0/tabler-icons.min.css">
 
     <!-- Custom styles -->
     <link rel="stylesheet" href="/static/css/app.css">
@@ -226,16 +226,17 @@
     <!-- Toast container for notifications -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"></div>
 
-    <!-- Bootstrap JS (exposes window.bootstrap for modals/tooltips) -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <!-- Tabler JS from CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/js/tabler.min.js"></script>
+    <!-- Tabler JS. It bundles Bootstrap: loading bootstrap.bundle next to it would
+         register every data-bs-* handler twice. Views use the global bootstrap.* API,
+         so expose the bundled copy under that name. -->
+    <script src="/static/vendor/tabler-1.6.0/tabler.min.js"></script>
+    <script>window.bootstrap = window.tabler.bootstrap;</script>
 
     <!-- SortableJS for drag-drop sorting -->
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <script src="/static/vendor/sortablejs-1.15.7/Sortable.min.js"></script>
 
     <!-- ApexCharts for dashboard graphs -->
-    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <script src="/static/vendor/apexcharts-4.7.0/apexcharts.min.js"></script>
 
     <!-- Application scripts -->
     <script type="module" src="/static/js/app.js"></script>

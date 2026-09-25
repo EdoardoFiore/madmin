@@ -88,9 +88,9 @@
 | Component | Technology |
 |-----------|-----------|
 | Language | Vanilla JavaScript (ES Modules) |
-| UI Kit | Tabler UI 1.4.0 (Bootstrap 5) via CDN |
-| Charts | ApexCharts via CDN |
-| Drag-drop | SortableJS via CDN |
+| UI Kit | Tabler UI 1.6.0 (Bootstrap 5), vendored |
+| Charts | ApexCharts 4.7.0, vendored |
+| Drag-drop | SortableJS 1.15.7, vendored |
 | Icons | Tabler Icons (webfont) |
 | Build step | None |
 

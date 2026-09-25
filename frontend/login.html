@@ -7,9 +7,9 @@
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
     <title>MADMIN - Login</title>
 
-    <!-- Tabler CSS from CDN -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.3.0/dist/tabler-icons.min.css">
+    <!-- Tabler CSS (vendored: scripts/update-frontend-vendor.sh) -->
+    <link rel="stylesheet" href="/static/vendor/tabler-1.6.0/tabler.min.css">
+    <link rel="stylesheet" href="/static/vendor/tabler-icons-3.48.0/tabler-icons.min.css">
 
     <style>
         :root {
@@ -207,7 +207,8 @@
         </p>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Tabler JS (bundles Bootstrap) -->
+    <script src="/static/vendor/tabler-1.6.0/tabler.min.js"></script>
     <script>
         // Minimal i18n for login page (pre-authentication, no ES module imports)
         (function () {
