@@ -46,7 +46,7 @@
     "menu": [
         {
             "label": "Reverse Proxy",
-            "icon": "https://www.svgrepo.com/show/340712/network-3.svg",
+            "icon": "img/icon.svg",
             "route": "#reverseproxy"
         }
     ],

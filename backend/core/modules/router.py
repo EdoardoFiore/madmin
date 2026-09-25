@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -18,7 +18,7 @@ from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 from config import get_settings
 from .models import InstalledModule
-from .loader import module_loader, MODULE_ID_RE
+from .loader import module_loader, MODULE_ID_RE, ICON_MEDIA_TYPES
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -103,6 +103,30 @@ async def get_module_widgets(
         })
 
     return result
+
+
+@router.get("/{module_id}/icon", include_in_schema=False)
+async def get_module_icon(module_id: str):
+    """
+    Serve a module's bundled icon.
+
+    Unauthenticated on purpose: it is loaded by <img> tags, which cannot carry
+    the bearer token. Only the file the manifest names is reachable.
+    """
+    icon_path = module_loader.get_icon_path(module_id)
+    if icon_path is None:
+        raise HTTPException(status_code=404, detail="Icona non trovata")
+
+    return FileResponse(
+        icon_path,
+        media_type=ICON_MEDIA_TYPES[icon_path.suffix.lower()],
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            # An SVG opened directly is a document: keep it from running scripts
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/{module_id}/activate")

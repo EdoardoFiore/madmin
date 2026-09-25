@@ -25,7 +25,7 @@ export const widgets = {
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
-                            <img src="https://www.svgrepo.com/show/504696/openvpn.svg"
+                            <img src="/api/modules/openvpn/icon"
                                  alt="" style="width: 20px; height: 20px; margin-right: 8px;">
                             OpenVPN
                         </h3>

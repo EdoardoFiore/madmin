@@ -17,7 +17,7 @@ export const widgets = {
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
-                            <img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/isc-bind9-light.png"
+                            <img src="/api/modules/dns/icon"
                                  alt="" style="width: 20px; height: 20px; margin-right: 8px;">
                             DNS Server
                         </h3>

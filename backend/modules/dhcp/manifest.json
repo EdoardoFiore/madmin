@@ -41,7 +41,7 @@
     "menu": [
         {
             "label": "DHCP Server",
-            "icon": "https://www.svgrepo.com/show/472739/network.svg",
+            "icon": "img/icon.svg",
             "route": "#dhcp"
         }
     ],

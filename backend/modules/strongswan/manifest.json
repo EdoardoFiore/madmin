@@ -42,7 +42,7 @@
     "menu": [
         {
             "label": "IPsec VPN",
-            "icon": "https://www.svgrepo.com/show/306809/strongswan.svg",
+            "icon": "img/icon.svg",
             "route": "#strongswan"
         }
     ],

@@ -29,6 +29,29 @@ settings = get_settings()
 
 MODULE_ID_RE = re.compile(r'^[a-z0-9_-]+$')
 
+# Image types a manifest icon may point to, relative to the module's static dir
+ICON_MEDIA_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp"}
+
+
+def is_icon_file(icon: Optional[str]) -> bool:
+    """True when a manifest icon names a bundled image rather than a Tabler icon or a URL."""
+    if not icon or icon.startswith(("http://", "https://", "/")):
+        return False
+    return Path(icon).suffix.lower() in ICON_MEDIA_TYPES
+
+
+def resolve_icon(module_id: str, icon: Optional[str]) -> Optional[str]:
+    """
+    Map a manifest icon to what the frontend renders.
+
+    A bundled image becomes the public icon endpoint: the module's own
+    /static/modules/<id> mount exists only while the module is active, but the
+    Modules page shows inactive modules too.
+    """
+    if is_icon_file(icon):
+        return f"/api/modules/{module_id}/icon"
+    return icon
+
 
 class ModuleLoader:
     """
@@ -538,6 +561,30 @@ class ModuleLoader:
                 logger.error(f"service_ports hook for {module_id} failed: {e}", exc_info=True)
         return collected
 
+    def get_icon_path(self, module_id: str) -> Optional[Path]:
+        """
+        Resolve the bundled icon file of a module, active or not.
+
+        Returns None unless the manifest's first menu icon is an image inside
+        the module's static dir.
+        """
+        if not MODULE_ID_RE.match(module_id):
+            return None
+        module_path = self.modules_dir / module_id
+        manifest_path = module_path / "manifest.json"
+        # Unauthenticated callers reach this: an unknown id must not log an error
+        if not manifest_path.is_file():
+            return None
+        manifest = self._parse_manifest(manifest_path)
+        if not manifest or not manifest.menu or not is_icon_file(manifest.menu[0].icon):
+            return None
+
+        static_root = (module_path / manifest.static_dir).resolve()
+        icon_path = (static_root / manifest.menu[0].icon).resolve()
+        if not icon_path.is_relative_to(static_root) or not icon_path.is_file():
+            return None
+        return icon_path
+
     def get_menu_items(self) -> List[Dict]:
         """
         Get all menu items from loaded modules.
@@ -558,7 +605,7 @@ class ModuleLoader:
                 items.append({
                     "module_id": module_id,
                     "label": menu_item.label,
-                    "icon": menu_item.icon,
+                    "icon": resolve_icon(module_id, menu_item.icon),
                     "route": menu_item.route,
                     "permission": view_perm,
                 })
@@ -878,7 +925,7 @@ class ModuleLoader:
                 "version": manifest.version,
                 "description": manifest.description or "",
                 "author": manifest.author or "",
-                "icon": manifest.menu[0].icon if manifest.menu else "puzzle",
+                "icon": resolve_icon(manifest.id, manifest.menu[0].icon) if manifest.menu else "puzzle",
                 "enabled": db_module.enabled if db_module else False,
                 "has_readme": has_readme,
                 "permissions": perm_details,

@@ -47,7 +47,7 @@
     "menu": [
         {
             "label": "DNS Server",
-            "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/isc-bind9-light.png",
+            "icon": "img/icon.png",
             "route": "#dns"
         }
     ],

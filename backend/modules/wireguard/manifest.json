@@ -49,7 +49,7 @@
     "menu": [
         {
             "label": "WireGuard",
-            "icon": "https://www.svgrepo.com/show/520310/wireguard.svg",
+            "icon": "img/icon.svg",
             "route": "#wireguard"
         }
     ],

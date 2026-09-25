@@ -15,7 +15,7 @@ import { t } from '../i18n.js';
  */
 function renderIcon(icon, size = 24) {
     if (!icon) return `<i class="ti ti-puzzle" style="font-size: ${size}px;"></i>`;
-    if (icon.startsWith('http://') || icon.startsWith('https://')) {
+    if (/^(https?:\/\/|\/)/.test(icon)) {
         return `<img src="${icon}" alt="icon" style="width: ${size}px; height: ${size}px;">`;
     }
     return `<i class="ti ti-${icon}" style="font-size: ${size}px;"></i>`;

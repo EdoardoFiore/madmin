@@ -26,7 +26,7 @@ export const widgets = {
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
-                            <img src="https://www.svgrepo.com/show/520310/wireguard.svg"
+                            <img src="/api/modules/wireguard/icon"
                                  alt="" style="width: 20px; height: 20px; margin-right: 8px;">
                             WireGuard VPN
                         </h3>

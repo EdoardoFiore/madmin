@@ -47,7 +47,7 @@
     "menu": [
         {
             "label": "OpenVPN",
-            "icon": "https://www.svgrepo.com/show/504696/openvpn.svg",
+            "icon": "img/icon.svg",
             "route": "#openvpn"
         }
     ],

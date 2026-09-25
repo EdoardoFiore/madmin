@@ -584,7 +584,7 @@ async function loadMenu() {
  */
 function createMenuItem(item) {
     let iconHtml;
-    if (item.icon && (item.icon.startsWith('http://') || item.icon.startsWith('https://'))) {
+    if (item.icon && /^(https?:\/\/|\/)/.test(item.icon)) {
         iconHtml = `<img src="${item.icon}" alt="" class="module-icon-menu" style="width: 20px; height: 20px;">`;
     } else {
         const iconClass = item.icon ? `ti-${item.icon}` : 'ti-circle';
