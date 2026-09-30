@@ -196,14 +196,14 @@ export async function render(container) {
                                     <label class="form-label">Email</label>
                                     <input type="email" class="form-control" id="user-email">
                                 </div>
-                                <div class="col-md-6">
+                                <div class="col-md-6" id="user-password-col">
                                     <label class="form-label" id="password-label">Password</label>
                                     <input type="password" class="form-control" id="user-password" minlength="8"
                                            autocomplete="new-password">
                                     ${strengthMeter('#user-password')}
                                     <small class="form-hint" id="password-hint">${t('users.passwordHintNew')}</small>
                                 </div>
-                                <div class="col-md-6">
+                                <div class="col-md-6" id="user-password-confirm-col">
                                     <label class="form-label" id="password-confirm-label">${t('users.confirmPassword')}</label>
                                     <input type="password" class="form-control" id="user-password-confirm" minlength="8">
                                     <small class="form-hint text-danger d-none" id="password-mismatch">${t('users.passwordsDoNotMatch')}</small>
@@ -938,6 +938,11 @@ function openUserModal(user = null) {
     document.getElementById('password-confirm-label').classList.toggle('required', !user);
     document.getElementById('password-hint').textContent = user ? t('users.passwordHintEdit') : t('users.passwordHintNew');
     document.getElementById('password-mismatch').classList.add('d-none');
+    // Your own password changes from the profile, which asks for the current
+    // one: the backend refuses it here, where a stolen session could set it.
+    const isSelf = !!user && user.username === currentUser?.username;
+    document.getElementById('user-password-col').classList.toggle('d-none', isSelf);
+    document.getElementById('user-password-confirm-col').classList.toggle('d-none', isSelf);
     document.getElementById('user-superuser').checked = user?.is_superuser || false;
     document.getElementById('user-active').checked = user?.is_active ?? true;
     document.getElementById('user-totp-enforced').checked = user?.totp_enforced || false;

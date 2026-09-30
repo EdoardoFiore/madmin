@@ -5,7 +5,7 @@
  * Uses ES modules for dynamic view loading.
  */
 
-import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
+import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch, apiPost } from './api.js';
 import { showToast, loadingSpinner, watchTablerComponents, escapeHtml, actionAttrs, registerActions } from './utils.js';
 import { init as i18nInit, t, getLang, detectLang, translateDOM, loadModuleTranslations } from './i18n.js';
 import { openProfileModal } from './profile.js';
@@ -351,8 +351,15 @@ function setupProfileLink() {
 function setupLogout() {
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn) {
-        logoutBtn.addEventListener('click', (e) => {
+        logoutBtn.addEventListener('click', async (e) => {
             e.preventDefault();
+            // End the session server-side too: removing the token from this
+            // browser alone left it valid until expiry for whoever copied it
+            try {
+                await apiPost('/auth/logout');
+            } catch (err) {
+                console.warn('Server-side logout failed:', err);
+            }
             clearToken();
             redirectToLogin();
         });

@@ -9,9 +9,10 @@ Business logic for authentication operations including:
 - TOTP secret encryption/decryption
 """
 import re
+import time
 import hashlib
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 from passlib.context import CryptContext
 from cryptography.fernet import Fernet
@@ -143,9 +144,26 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     else:
         expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
 
-    to_encode.update({"exp": expire})
+    # iat to sub-second precision: a login right after a revocation must not
+    # land in the same whole second and be refused (see token_is_current)
+    to_encode.update({"exp": expire, "iat": time.time()})
     encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+def revoke_sessions(user: User) -> None:
+    """Invalidate every token issued to the user until now. Caller commits."""
+    user.tokens_valid_after = datetime.utcnow()
+
+
+def token_is_current(payload: dict, user: User) -> bool:
+    """False if the token was issued before the user's sessions were revoked."""
+    if user.tokens_valid_after is None:
+        return True
+    iat = payload.get("iat")
+    if not isinstance(iat, (int, float)):
+        return False  # issued before iat existed, and a revocation happened since
+    return iat >= user.tokens_valid_after.replace(tzinfo=timezone.utc).timestamp()
 
 
 def decode_access_token(token: str) -> Optional[dict]:

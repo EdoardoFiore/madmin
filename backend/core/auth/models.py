@@ -74,6 +74,12 @@ class User(SQLModel, table=True):
     password_changed_at: Optional[datetime] = Field(default=None)
     password_expires_at: Optional[datetime] = Field(default=None)  # None = no expiry
 
+    # Sessions: a token whose iat is earlier than this is rejected. Set on
+    # logout, password change or reset, 2FA reset or lockout, deactivation.
+    # One timestamp per user rather than a list of revoked tokens: nothing to
+    # clean up, nothing to "unrevoke", and a new login is never affected.
+    tokens_valid_after: Optional[datetime] = Field(default=None)
+
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: Optional[datetime] = Field(default=None)
@@ -131,19 +137,6 @@ class User(SQLModel, table=True):
             for slug in granted if slug.endswith('.manage')
         }
         return granted | implied
-
-
-class RevokedToken(SQLModel, table=True):
-    """
-    Persistent store for revoked user tokens.
-    Survives application restarts, ensuring disabled users cannot re-authenticate.
-    No FK to User — records persist even after user deletion.
-    """
-    __tablename__ = "revoked_token"
-
-    user_id: uuid.UUID = Field(primary_key=True)
-    revoked_at: datetime = Field(default_factory=datetime.utcnow)
-    expires_at: datetime
 
 
 class LoginAttempt(SQLModel, table=True):

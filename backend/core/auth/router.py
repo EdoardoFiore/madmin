@@ -40,7 +40,6 @@ from .dependencies import (
     oauth2_scheme
 )
 from .rate_limiter import login_rate_limiter
-from .token_blacklist import token_blacklist
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 settings = get_settings()
@@ -163,6 +162,40 @@ def _assert_can_manage_target(actor: User, target: User) -> None:
         )
 
 
+def _assert_self_edit_allowed(user: User, data: UserUpdate) -> None:
+    """
+    What PATCH /users/{self} may not change. Your password and your 2FA
+    enforcement have their own endpoints, which ask for the current password:
+    here a stolen session alone could set a new password and keep the account.
+    """
+    if data.password is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Use /api/auth/me/password to change your own password"
+        )
+    if data.totp_enforced is not None and data.totp_enforced != user.totp_enforced:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot change 2FA enforcement on your own account"
+        )
+    if data.is_active is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot deactivate your own account"
+        )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """End every session of the current user (all browsers and devices)."""
+    service.revoke_sessions(current_user)
+    session.add(current_user)
+    await session.commit()
+
+
 @router.post("/init", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def init_first_user(
     data: InitAdminRequest,
@@ -227,9 +260,9 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Authentication successful — reset rate limit and clear any token revocation
+    # Authentication successful — reset rate limit. A revocation is never undone
+    # here: tokens issued from now on have a later iat and are valid anyway.
     await login_rate_limiter.record_success(session, client_ip)
-    await token_blacklist.unrevoke_user(session, user.id)
 
     # If 2FA is enabled, require OTP verification
     if user.totp_enabled:
@@ -295,10 +328,10 @@ async def verify_2fa_login(
         )
 
     user = await service.get_user_by_username(session, payload.get("sub"))
-    if not user:
+    if not user or not service.token_is_current(payload, user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
+            detail="Invalid or expired 2FA token"
         )
 
     # Refuse locked accounts immediately
@@ -325,8 +358,8 @@ async def verify_2fa_login(
                 # Lock the user's 2FA — superuser must reset it
                 user.totp_locked = True
                 session.add(user)
-                # Also revoke the temporary token by revoking the user
-                await token_blacklist.revoke_user(session, user.id)
+                # Also revoke the temporary token and every session
+                service.revoke_sessions(user)
                 await session.commit()
                 _2fa_attempts.pop(user_id_str, None)
                 raise HTTPException(
@@ -389,7 +422,7 @@ async def complete_password_change(
         )
 
     user = await service.get_user_by_username(session, payload.get("sub"))
-    if not user or not user.is_active:
+    if not user or not user.is_active or not service.token_is_current(payload, user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive"
@@ -406,8 +439,10 @@ async def complete_password_change(
             detail="La nuova password deve essere diversa dalla precedente"
         )
 
-    # Updates password, clears must_change_password, recomputes expiry from policy
+    # Updates password, clears must_change_password, recomputes expiry from policy.
+    # New password: sessions opened with the old one end (the token below is newer).
     await service.update_user(session, user.id, UserUpdate(password=data.new_password))
+    service.revoke_sessions(user)
     await service.update_last_login(session, user)
     await session.commit()
 
@@ -440,7 +475,7 @@ async def complete_2fa_setup(
         )
 
     user = await service.get_user_by_username(session, payload.get("sub"))
-    if not user or not user.is_active:
+    if not user or not user.is_active or not service.token_is_current(payload, user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive"
@@ -608,19 +643,20 @@ async def update_user(
 
     _assert_can_set_module_defaults(current_user, user_data)
 
-    # Never let a non-superuser act on a more privileged account (editing yourself is fine)
+    # Never let a non-superuser act on a more privileged account
     if user.id != current_user.id:
         _assert_can_manage_target(current_user, user)
+    else:
+        _assert_self_edit_allowed(user, user_data)
 
     try:
         updated_user = await service.update_user(session, user.id, user_data)
-        await session.commit()
 
-        # Revoke tokens if user was disabled, unrevoke if re-enabled
-        if user_data.is_active is False:
-            await token_blacklist.revoke_user(session, user.id)
-        elif user_data.is_active is True:
-            await token_blacklist.unrevoke_user(session, user.id)
+        # Disabled, or given a new password: sessions opened before end now.
+        # Re-enabling revokes nothing and restores nothing: old tokens stay dead.
+        if user_data.is_active is False or user_data.password is not None:
+            service.revoke_sessions(updated_user)
+        await session.commit()
 
         # Re-fetch to get eagerly-loaded permissions (commit expires all relationships)
         updated_user = await service.get_user_by_username(session, username)
@@ -656,9 +692,6 @@ async def delete_user(
 
     # Never let a non-superuser delete a more privileged account
     _assert_can_manage_target(current_user, user)
-
-    # Revoke any active tokens for this user
-    await token_blacklist.revoke_user(session, user.id)
 
     await service.delete_user(session, user.id)
     await session.commit()
@@ -707,8 +740,14 @@ async def disable_user_2fa(
             detail="The system first user can only manage their own 2FA"
         )
 
-    if user.id != current_user.id:
-        _assert_can_manage_target(current_user, user)
+    # Your own 2FA goes through /me/2fa/disable, which asks for the password:
+    # otherwise a stolen session of a users.manage holder could drop it.
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Use /api/auth/me/2fa/disable to turn off your own 2FA"
+        )
+    _assert_can_manage_target(current_user, user)
 
     # Disable 2FA and clear lock
     user.totp_enabled = False
@@ -719,7 +758,7 @@ async def disable_user_2fa(
     session.add(user)
 
     # Revoke active tokens so user must re-login
-    await token_blacklist.revoke_user(session, user.id)
+    service.revoke_sessions(user)
 
     await session.commit()
 
@@ -804,7 +843,7 @@ async def change_own_password(
     await service.update_user(session, current_user.id, UserUpdate(password=data.new_password))
 
     # Revoke existing tokens — forces re-login with new password
-    await token_blacklist.revoke_user(session, current_user.id)
+    service.revoke_sessions(current_user)
 
     await session.commit()
 

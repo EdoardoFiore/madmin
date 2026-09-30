@@ -43,7 +43,6 @@ async def lifespan(app: FastAPI):
     # Import here to avoid circular imports
     from core.database import init_db, async_session_maker
     from core.auth.service import init_core_permissions
-    from core.auth.token_blacklist import token_blacklist
     from core.auth.rate_limiter import login_rate_limiter
     from core.firewall.orchestrator import firewall_orchestrator
     from core.modules.loader import module_loader
@@ -56,10 +55,10 @@ async def lifespan(app: FastAPI):
     async with async_session_maker() as session:
         await init_core_permissions(session)
 
-    # Restore security state from DB (survives restarts)
-    logger.info("Restoring token blacklist and rate limiter state from DB...")
+    # Restore rate limiter state from DB (survives restarts). Session revocation
+    # needs no warm-up: it is a column on the user, read on every request.
+    logger.info("Restoring rate limiter state from DB...")
     async with async_session_maker() as session:
-        await token_blacklist.load_from_db(session)
         await login_rate_limiter.load_from_db(session)
     
     # Initialize firewall chains

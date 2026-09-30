@@ -13,7 +13,6 @@ import uuid
 from core.database import get_session
 from .models import User, TokenData
 from . import service
-from .token_blacklist import token_blacklist
 
 # OAuth2 scheme for Bearer token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
@@ -33,7 +32,8 @@ async def _resolve_user_from_payload(
     """Resolve and validate the User referenced by a decoded JWT payload.
 
     Shared by get_current_user and get_setup_user: checks sub/user_id presence,
-    token-revocation blacklist, and active status. Does NOT inspect pending flags.
+    active status, and that the token was issued after the user's last session
+    revocation. Does NOT inspect pending flags.
     """
     username: str = payload.get("sub")
     user_id_str: str = payload.get("user_id")
@@ -46,13 +46,11 @@ async def _resolve_user_from_payload(
     except ValueError:
         raise credentials_exception
 
-    # Fast-path: check if user's tokens have been revoked (disable/delete)
-    if token_blacklist.is_revoked(user_id):
-        raise credentials_exception
-
     user = await service.get_user_by_id(session, user_id)
 
     if user is None:
+        raise credentials_exception
+    if not service.token_is_current(payload, user):
         raise credentials_exception
     if not user.is_active:
         raise HTTPException(
