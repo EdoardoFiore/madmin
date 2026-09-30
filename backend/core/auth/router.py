@@ -4,6 +4,7 @@ MADMIN Authentication Router
 API endpoints for authentication and user management.
 """
 import json
+import asyncio
 from typing import List, Optional, Dict
 from datetime import timedelta
 import uuid
@@ -29,7 +30,7 @@ from . import service
 from .totp import (
     generate_totp_secret, generate_backup_codes, hash_backup_codes,
     get_provisioning_uri, generate_qr_base64,
-    verify_totp, verify_backup_code
+    verify_totp, verify_backup_code, check_totp
 )
 from .dependencies import (
     get_current_user,
@@ -39,7 +40,7 @@ from .dependencies import (
     require_superuser,
     oauth2_scheme
 )
-from .rate_limiter import login_rate_limiter
+from .rate_limiter import login_rate_limiter, user_key
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 settings = get_settings()
@@ -251,21 +252,19 @@ async def login(
     # Nginx the socket peer is always 127.0.0.1, which would collapse every
     # user into one bucket and let anyone lock out the whole instance.
     client_ip = get_client_ip(request)
-    login_rate_limiter.check_rate_limit(client_ip)
+    # Per IP and per target account: per IP alone, a login with one's own
+    # account reset the counter between guesses at someone else's
+    limit_keys = (client_ip, user_key(form_data.username))
+    login_rate_limiter.begin_attempt(*limit_keys)
 
     user = await service.authenticate_user(session, form_data.username, form_data.password)
 
-    if not user:
-        await login_rate_limiter.record_failure(session, client_ip)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Check if user is active (return same error to not reveal account status)
-    if not user.is_active:
-        await login_rate_limiter.record_failure(session, client_ip)
+    # Inactive: same error, so the account status is not revealed
+    if not user or not user.is_active:
+        await login_rate_limiter.record_failure(session, *limit_keys)
+        # Committed here: the exception below makes get_session roll back,
+        # which used to discard every recorded failure
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -274,7 +273,7 @@ async def login(
 
     # Authentication successful — reset rate limit. A revocation is never undone
     # here: tokens issued from now on have a later iat and are valid anyway.
-    await login_rate_limiter.record_success(session, client_ip)
+    await login_rate_limiter.record_success(session, *limit_keys)
 
     # If 2FA is enabled, require OTP verification
     if user.totp_enabled:
@@ -330,7 +329,7 @@ async def verify_2fa_login(
     code = data.code
     # Rate limiting by IP
     client_ip = get_client_ip(request)
-    login_rate_limiter.check_rate_limit(client_ip)
+    login_rate_limiter.begin_attempt(client_ip)
 
     payload = service.decode_access_token(token)
     if not payload or not payload.get("2fa_pending"):
@@ -355,11 +354,11 @@ async def verify_2fa_login(
 
     user_id_str = str(user.id)
 
-    # Verify TOTP code first
+    # Verify TOTP code first (a code already used is refused: see check_totp)
     plain_secret = service.decrypt_totp_secret(user.totp_secret)
-    if not verify_totp(plain_secret, code):
-        # Try backup code
-        valid, new_codes = verify_backup_code(user.backup_codes or "[]", code)
+    if not check_totp(user, plain_secret, code):
+        # Try backup code (up to 8 bcrypt checks: off the event loop)
+        valid, new_codes = await asyncio.to_thread(verify_backup_code, user.backup_codes or "[]", code)
         if not valid:
             # Record failures
             await login_rate_limiter.record_failure(session, client_ip)
@@ -382,6 +381,7 @@ async def verify_2fa_login(
                     )
                 )
 
+            await session.commit()  # keep the recorded failure (see /token)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid 2FA code ({attempts}/{_2FA_MAX_ATTEMPTS} attempts)"
@@ -392,6 +392,7 @@ async def verify_2fa_login(
 
     # Success — clear per-user attempt counter
     _2fa_attempts.pop(user_id_str, None)
+    await login_rate_limiter.record_success(session, client_ip)
 
     # 2FA satisfied — now gate on password change if required
     if service.password_change_required(user):
@@ -506,7 +507,7 @@ async def complete_2fa_setup(
         )
 
     plain_secret = service.decrypt_totp_secret(user.totp_secret)
-    if not verify_totp(plain_secret, data.code):
+    if not check_totp(user, plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid code. Make sure your device time is correct."
@@ -908,6 +909,7 @@ async def setup_2fa(
 
     # Store encrypted secret and hashed backup codes
     current_user.totp_secret = service.encrypt_totp_secret(secret)
+    current_user.totp_last_step = None  # a new secret: the replay guard starts over
     current_user.backup_codes = json.dumps(hash_backup_codes(backup_codes_plain))
     session.add(current_user)
     await session.commit()
@@ -942,7 +944,7 @@ async def enable_2fa(
         )
 
     plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
-    if not verify_totp(plain_secret, data.code):
+    if not check_totp(current_user, plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid code. Make sure your device time is correct."
@@ -1012,7 +1014,7 @@ async def regenerate_backup_codes(
         )
 
     plain_secret = service.decrypt_totp_secret(current_user.totp_secret)
-    if not verify_totp(plain_secret, data.code):
+    if not check_totp(current_user, plain_secret, data.code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid code"

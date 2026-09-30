@@ -11,6 +11,7 @@ import io
 import base64
 import secrets
 import json
+from datetime import datetime, timezone
 from typing import Tuple, List
 
 
@@ -86,6 +87,25 @@ def verify_totp(secret: str, code: str) -> bool:
     """
     totp = pyotp.TOTP(secret)
     return totp.verify(code, valid_window=0)
+
+
+def check_totp(user, secret: str, code: str) -> bool:
+    """
+    Verify a TOTP code for `user` and consume it.
+
+    A code is valid for its whole 30-second step: without remembering the
+    last step used, a code seen over someone's shoulder or in a log could be
+    replayed within that window. The step is stored on the user (the caller's
+    commit persists it); a code of the same step, or an older one, is refused.
+    """
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(code, valid_window=0):
+        return False
+    step = totp.timecode(datetime.now(timezone.utc))
+    if user.totp_last_step is not None and step <= user.totp_last_step:
+        return False
+    user.totp_last_step = step
+    return True
 
 
 def verify_backup_code(codes_json: str, code: str) -> Tuple[bool, str]:

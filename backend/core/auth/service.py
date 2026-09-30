@@ -10,6 +10,8 @@ Business logic for authentication operations including:
 """
 import re
 import time
+import asyncio
+import secrets
 import hashlib
 import base64
 from datetime import datetime, timedelta, timezone
@@ -44,6 +46,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def get_password_hash(password: str) -> str:
     """Hash a password for storage."""
     return pwd_context.hash(password)
+
+
+_DUMMY_HASH: Optional[str] = None
+
+
+def _dummy_hash() -> str:
+    """A bcrypt hash nobody knows the password of, for unknown usernames."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = get_password_hash(secrets.token_urlsafe(16))
+    return _DUMMY_HASH
 
 
 def is_password_expired(user: User) -> bool:
@@ -195,9 +208,11 @@ async def authenticate_user(session: AsyncSession, username: str, password: str)
     )
     user = result.scalar_one_or_none()
 
-    if not user:
-        return None
-    if not verify_password(password, user.hashed_password):
+    # bcrypt takes ~0.25 s of CPU: in a thread, so logins do not stall every
+    # other request. An unknown username is checked against a dummy hash, or
+    # the response time would tell which usernames exist.
+    hashed = user.hashed_password if user else _dummy_hash()
+    if not await asyncio.to_thread(verify_password, password, hashed) or not user:
         return None
     if not user.is_active:
         return None

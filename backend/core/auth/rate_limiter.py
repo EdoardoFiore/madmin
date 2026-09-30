@@ -4,6 +4,10 @@ MADMIN Login Rate Limiter
 Hybrid in-memory + PostgreSQL rate limiter with incremental backoff for login attempts.
 The in-memory cache ensures zero-latency checks; the DB layer survives restarts.
 
+Attempts are counted per key: the client IP and, for password logins, the
+target username ("u:<name>"). Per IP alone, one valid account let an attacker
+reset the counter with their own login and keep guessing other accounts.
+
 Backoff schedule:
 - 5 failures  → 30 second block
 - 3 more      → 2 minute block
@@ -14,8 +18,8 @@ Counters reset on successful login.
 import time
 import threading
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Optional
+from datetime import datetime
+from typing import Dict
 from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
@@ -28,8 +32,13 @@ CLEANUP_INTERVAL = 600      # Clean stale entries every 10 minutes
 STALE_AFTER = 3600           # Remove entries inactive for 1 hour
 
 
-class _IPRecord:
-    """Track login attempts for a single IP."""
+def user_key(username: str) -> str:
+    """Rate-limit key of a login target (fits LoginAttempt.ip, 64 chars)."""
+    return f"u:{(username or '').lower()[:60]}"
+
+
+class _Record:
+    """Track login attempts for one key."""
     __slots__ = ("attempts", "blocked_until", "block_count", "last_attempt")
 
     def __init__(self):
@@ -41,20 +50,21 @@ class _IPRecord:
 
 class LoginRateLimiter:
     """
-    Hybrid in-memory + PostgreSQL rate limiter for login endpoint.
+    Hybrid in-memory + PostgreSQL rate limiter for login endpoints.
 
-    Thread-safe via a simple lock. DB writes happen on record_failure/record_success.
-    Call load_from_db(session) at startup to restore blocked IPs after a restart.
+    Usage per request: begin_attempt(keys) before checking the credentials,
+    then record_failure(session, keys) or record_success(session, keys).
+    Call load_from_db(session) at startup to restore blocked keys after a restart.
     """
 
     def __init__(self):
-        self._records: Dict[str, _IPRecord] = {}
+        self._records: Dict[str, _Record] = {}
         self._lock = threading.Lock()
         self._last_cleanup = time.time()
 
     async def load_from_db(self, session) -> None:
         """
-        Load currently-blocked IPs from the database.
+        Load currently-blocked keys from the database.
         Call once at application startup to restore state after a restart.
         """
         from sqlalchemy import select
@@ -68,14 +78,14 @@ class LoginRateLimiter:
 
         with self._lock:
             for record in records:
-                rec = _IPRecord()
+                rec = _Record()
                 rec.attempts = record.attempts
                 rec.block_count = record.block_count
                 rec.blocked_until = record.blocked_until.timestamp() if record.blocked_until else 0.0
                 rec.last_attempt = record.last_attempt.timestamp()
                 self._records[record.ip] = rec
 
-        logger.info(f"Rate limiter: loaded {len(records)} blocked IPs from DB")
+        logger.info(f"Rate limiter: loaded {len(records)} blocked keys from DB")
 
     def _cleanup_stale(self):
         """Remove entries that haven't been active for a while."""
@@ -83,114 +93,106 @@ class LoginRateLimiter:
         if now - self._last_cleanup < CLEANUP_INTERVAL:
             return
         self._last_cleanup = now
-        stale_ips = [
-            ip for ip, rec in self._records.items()
+        stale = [
+            key for key, rec in self._records.items()
             if now - rec.last_attempt > STALE_AFTER and now > rec.blocked_until
         ]
-        for ip in stale_ips:
-            del self._records[ip]
-        if stale_ips:
-            logger.debug(f"Rate limiter cleanup: removed {len(stale_ips)} stale entries")
+        for key in stale:
+            del self._records[key]
+        if stale:
+            logger.debug(f"Rate limiter cleanup: removed {len(stale)} stale entries")
 
-    def check_rate_limit(self, client_ip: str) -> None:
+    def begin_attempt(self, *keys: str) -> None:
         """
-        Check if the client IP is currently blocked (in-memory, zero-latency).
+        Refuse the attempt if any key is blocked, otherwise count it.
+
+        Counted before the credentials are checked, under one lock: checking
+        and counting apart let a burst of concurrent requests all pass the
+        check before the first failure was recorded. A success resets it.
 
         Raises HTTPException(429) with Retry-After header if blocked.
         """
         with self._lock:
             self._cleanup_stale()
-            rec = self._records.get(client_ip)
-            if not rec:
-                return
-
             now = time.time()
-            if now < rec.blocked_until:
-                remaining = int(rec.blocked_until - now) + 1
-                logger.warning(
-                    f"Rate limit: IP {client_ip} blocked for {remaining}s "
-                    f"(block #{rec.block_count}, {rec.attempts} attempts)"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail=f"Troppi tentativi. Riprova tra {remaining} secondi.",
-                    headers={"Retry-After": str(remaining)},
-                )
+            for key in keys:
+                rec = self._records.get(key)
+                if rec and now < rec.blocked_until:
+                    remaining = int(rec.blocked_until - now) + 1
+                    logger.warning(
+                        f"Rate limit: {key} blocked for {remaining}s "
+                        f"(block #{rec.block_count}, {rec.attempts} attempts)"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail=f"Troppi tentativi. Riprova tra {remaining} secondi.",
+                        headers={"Retry-After": str(remaining)},
+                    )
+            for key in keys:
+                rec = self._records.setdefault(key, _Record())
+                rec.attempts += 1
+                rec.last_attempt = now
+                if self._should_block(rec):
+                    duration = BLOCK_DURATIONS[min(rec.block_count, len(BLOCK_DURATIONS) - 1)]
+                    rec.blocked_until = now + duration
+                    rec.block_count += 1
+                    logger.warning(
+                        f"Rate limit: {key} blocked for {duration}s "
+                        f"(block #{rec.block_count}, {rec.attempts} total attempts)"
+                    )
 
-    async def record_failure(self, session, client_ip: str) -> None:
+    @staticmethod
+    def _should_block(rec: _Record) -> bool:
+        if rec.block_count == 0:
+            return rec.attempts >= INITIAL_THRESHOLD
+        if rec.block_count == 1:
+            return rec.attempts >= INITIAL_THRESHOLD + SECOND_THRESHOLD
+        return rec.attempts > INITIAL_THRESHOLD + SECOND_THRESHOLD + (rec.block_count - 2)
+
+    async def record_failure(self, session, *keys: str) -> None:
         """
-        Record a failed login attempt (cache + DB).
-
-        Applies incremental blocking based on consecutive failures.
+        Persist the state of `keys` after a failed attempt (already counted by
+        begin_attempt), so blocks survive a restart. Caller commits.
         """
-        with self._lock:
-            if client_ip not in self._records:
-                self._records[client_ip] = _IPRecord()
-
-            rec = self._records[client_ip]
-            rec.attempts += 1
-            rec.last_attempt = time.time()
-
-            should_block = False
-
-            if rec.block_count == 0 and rec.attempts >= INITIAL_THRESHOLD:
-                should_block = True
-            elif rec.block_count == 1 and rec.attempts >= INITIAL_THRESHOLD + SECOND_THRESHOLD:
-                should_block = True
-            elif rec.block_count >= 2 and rec.attempts > INITIAL_THRESHOLD + SECOND_THRESHOLD + (rec.block_count - 2):
-                should_block = True
-
-            if should_block:
-                duration_idx = min(rec.block_count, len(BLOCK_DURATIONS) - 1)
-                duration = BLOCK_DURATIONS[duration_idx]
-                rec.blocked_until = time.time() + duration
-                rec.block_count += 1
-                logger.warning(
-                    f"Rate limit: IP {client_ip} blocked for {duration}s "
-                    f"(block #{rec.block_count}, {rec.attempts} total attempts)"
-                )
-
-            # Capture for DB write
-            attempts = rec.attempts
-            block_count = rec.block_count
-            blocked_until_dt = (
-                datetime.utcfromtimestamp(rec.blocked_until)
-                if rec.blocked_until > time.time() else None
-            )
-
-        # Persist to DB
+        from sqlalchemy.dialects.postgresql import insert
         from .models import LoginAttempt
 
-        existing = await session.get(LoginAttempt, client_ip)
-        if existing:
-            existing.attempts = attempts
-            existing.block_count = block_count
-            existing.blocked_until = blocked_until_dt
-            existing.last_attempt = datetime.utcnow()
-            session.add(existing)
-        else:
-            session.add(LoginAttempt(
-                ip=client_ip,
-                attempts=attempts,
-                block_count=block_count,
-                blocked_until=blocked_until_dt,
-                last_attempt=datetime.utcnow()
+        for key in keys:
+            with self._lock:
+                rec = self._records.get(key)
+                if not rec:
+                    continue
+                values = dict(
+                    ip=key,
+                    attempts=rec.attempts,
+                    block_count=rec.block_count,
+                    blocked_until=(
+                        datetime.utcfromtimestamp(rec.blocked_until)
+                        if rec.blocked_until > time.time() else None
+                    ),
+                    last_attempt=datetime.utcnow(),
+                )
+            # Upsert: concurrent failures for the same key would otherwise
+            # both insert and one would fail on the primary key
+            stmt = insert(LoginAttempt).values(**values)
+            await session.execute(stmt.on_conflict_do_update(
+                index_elements=[LoginAttempt.ip],
+                set_={k: stmt.excluded[k] for k in ("attempts", "block_count", "blocked_until", "last_attempt")},
             ))
-        # Caller is responsible for committing the session
 
-    async def record_success(self, session, client_ip: str) -> None:
+    async def record_success(self, session, *keys: str) -> None:
         """
-        Record a successful login. Resets all counters for this IP (cache + DB).
+        Record a successful login. Resets all counters for `keys` (cache + DB).
+        Caller commits.
         """
         with self._lock:
-            if client_ip in self._records:
-                del self._records[client_ip]
+            for key in keys:
+                self._records.pop(key, None)
 
         from sqlalchemy import delete
         from .models import LoginAttempt
 
-        await session.execute(delete(LoginAttempt).where(LoginAttempt.ip == client_ip))
-        # Caller is responsible for committing the session
+        await session.execute(delete(LoginAttempt).where(LoginAttempt.ip.in_(keys)))
 
 
 # Singleton

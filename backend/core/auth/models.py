@@ -67,6 +67,7 @@ class User(SQLModel, table=True):
     totp_enabled: bool = Field(default=False)
     totp_enforced: bool = Field(default=False)  # 2FA required by admin
     totp_locked: bool = Field(default=False)    # Locked after too many failed 2FA attempts
+    totp_last_step: Optional[int] = Field(default=None)  # TOTP time step last accepted (replay guard)
     backup_codes: Optional[str] = Field(default=None)  # JSON array of hashed backup codes
 
     # Password lifecycle
@@ -141,12 +142,12 @@ class User(SQLModel, table=True):
 
 class LoginAttempt(SQLModel, table=True):
     """
-    Persistent rate limiting state per client IP.
+    Persistent rate limiting state per key (client IP, or "u:<username>").
     Survives application restarts, preventing brute-force reset via restart.
     """
     __tablename__ = "login_attempt"
 
-    ip: str = Field(primary_key=True, max_length=45)  # max IPv6 length
+    ip: str = Field(primary_key=True, max_length=64)  # IP or "u:<username>" (rate_limiter.user_key)
     attempts: int = Field(default=0)
     block_count: int = Field(default=0)
     blocked_until: Optional[datetime] = Field(default=None)
