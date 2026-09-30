@@ -29,8 +29,9 @@ from .models import (
     OvpnGroupRule, OvpnGroupRuleCreate, OvpnGroupRuleRead, OvpnGroupRuleUpdate,
     RuleOrderUpdate, FirewallPolicyUpdate, OvpnRoutingUpdate,
     OvpnSiteToSiteUpdate,
-    OvpnMagicToken, SendConfigRequest, PKIStatusRead, CertRenewRequest
+    OvpnMagicToken, SendConfigRequest, PKIStatusRead, CertRenewRequest,
 )
+from core.validation import VpnInstanceValidators
 import ipaddress
 import json
 from fastapi import UploadFile, File, Form, Query
@@ -206,7 +207,7 @@ async def get_instance(
     )
 
 
-class OvpnInstanceUpdate(SQLModel):
+class OvpnInstanceUpdate(VpnInstanceValidators):
     """Schema for updating instance settings."""
     name: Optional[str] = None
     endpoint: Optional[str] = None
@@ -771,9 +772,8 @@ async def create_client(
     if not instance:
         raise HTTPException(404, "Instance not found")
     
-    # Validate name (allow letters, numbers, dots, underscores, hyphens)
-    if not re.match(r'^[a-zA-Z0-9._-]+$', data.name):
-        raise HTTPException(400, "Invalid client name")
+    # Client name: validated by OvpnClientCreate (fullmatch; '$' alone let a
+    # trailing newline into the PKI file names and the profile)
     
     # Check if exists
     existing = await db.execute(

@@ -167,3 +167,106 @@ class ModuleRuleValidators(SQLModel):
     @classmethod
     def _description(cls, v):
         return v if v is None else no_control_chars(v, "descrizione")
+
+
+# --- VPN instances and clients ---
+#
+# Shared by the VPN modules (OpenVPN, WireGuard). These values are written into
+# the server config read by a root daemon and into every client profile handed
+# out by the panel and its share links. A newline in any of them adds a
+# directive: `script-security 2` + `up <cmd>` in an .ovpn, `PostUp = <cmd>` in a
+# WireGuard .conf, run a command on the machine that imports the profile.
+
+CLIENT_NAME_RE = re.compile(r'[a-zA-Z0-9._-]{1,64}')
+_PROTOCOLS = ("udp", "tcp", "udp4", "udp6", "tcp4", "tcp6")
+_CIPHER_RE = re.compile(r'[A-Za-z0-9-]{1,40}')
+
+
+def check_client_name(v: str) -> str:
+    """Client names become certificate, key and CCD file names."""
+    if not CLIENT_NAME_RE.fullmatch(v or ""):
+        raise ValueError("Nome client non valido: lettere, cifre, '.', '_' o '-' (max 64)")
+    return v
+
+
+def check_endpoint(v):
+    """The server address in a client profile (the port is added apart): host name or IP."""
+    if v in (None, ""):
+        return v
+    return host(v, "endpoint")
+
+
+def ip_csv(v, field: str = "dns") -> str:
+    """A comma-separated list of IP addresses ("1.1.1.1, 8.8.8.8"), normalised."""
+    items = [i for i in re.split(r'[,\s]+', _clean(v, field)) if i]
+    if not items:
+        raise ValueError(f"{field}: almeno un indirizzo")
+    return ", ".join(ip_address(i, field) for i in items)
+
+
+def _check_routes(routes):
+    for r in routes or []:
+        net = r.get("network") if isinstance(r, dict) else r
+        ip_network(net, "route", version=4)
+    return routes
+
+
+class VpnInstanceValidators(SQLModel):
+    @field_validator('name', mode='before', check_fields=False)
+    @classmethod
+    def v_name(cls, v):
+        return v if v is None else no_control_chars(v, "nome", 100)
+
+    @field_validator('port', mode='before', check_fields=False)
+    @classmethod
+    def v_port(cls, v):
+        return v if v is None else int(port(v))
+
+    @field_validator('protocol', mode='before', check_fields=False)
+    @classmethod
+    def v_protocol(cls, v):
+        return v if v is None else one_of(str(v).lower(), _PROTOCOLS, "protocol")
+
+    @field_validator('subnet', mode='before', check_fields=False)
+    @classmethod
+    def v_subnet(cls, v):
+        return v if v is None else ip_network(v, "subnet", version=4)
+
+    @field_validator('tunnel_mode', mode='before', check_fields=False)
+    @classmethod
+    def v_tunnel_mode(cls, v):
+        return v if v is None else one_of(v, ("full", "split"), "tunnel_mode")
+
+    @field_validator('routes', mode='before', check_fields=False)
+    @classmethod
+    def v_routes(cls, v):
+        return _check_routes(v)
+
+    @field_validator('dns_servers', mode='before', check_fields=False)
+    @classmethod
+    def v_dns(cls, v):
+        return v if v is None else [ip_address(d, "dns_servers") for d in v]
+
+    @field_validator('cipher', mode='before', check_fields=False)
+    @classmethod
+    def v_cipher(cls, v):
+        if v is not None and not _CIPHER_RE.fullmatch(str(v)):
+            raise ValueError(f"Cipher non valido: {v}")
+        return v
+
+    @field_validator('cert_duration_days', mode='before', check_fields=False)
+    @classmethod
+    def v_days(cls, v):
+        if v is not None and not 1 <= int(v) <= 36500:
+            raise ValueError("cert_duration_days: 1-36500")
+        return v
+
+    @field_validator('remote_lans', 'site_to_site_lans', mode='before', check_fields=False)
+    @classmethod
+    def v_lans(cls, v):
+        return v if v is None else [ip_network(c, "lan", version=4) for c in v]
+
+    @field_validator('endpoint', mode='before', check_fields=False)
+    @classmethod
+    def v_endpoint(cls, v):
+        return check_endpoint(v)

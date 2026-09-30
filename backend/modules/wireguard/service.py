@@ -14,10 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from .models import WgInstance, WgClient
+from core.validation import check_client_name, check_endpoint
 from core.network.utils import get_public_ip, get_default_interface
 from core.firewall import iptables as core_iptables
 
 logger = logging.getLogger(__name__)
+
+
+def _check_wg_values(*values) -> None:
+    """Refuse values that would start a new line in a WireGuard config."""
+    for v in values:
+        if v is not None and any(ord(c) < 32 or ord(c) == 127 for c in str(v)):
+            raise ValueError(f"Invalid character in WireGuard setting {v!r}")
 WIREGUARD_CONFIG_DIR = Path("/etc/wireguard")
 
 
@@ -65,6 +73,9 @@ SaveConfig = false
     def add_peer_to_config(config_path: Path, public_key: str, psk: str, 
                            allowed_ips: str, comment: str = "") -> None:
         """Append peer to config file."""
+        # wg-quick runs this file as root: a newline in a value adds
+        # directives, PostUp included
+        _check_wg_values(comment, public_key, psk, allowed_ips)
         peer_block = f"""
 [Peer]
 # {comment}
@@ -445,6 +456,13 @@ AllowedIPs = {allowed_ips}
             dns = client.dns
         else:
             dns = ", ".join(instance.dns_servers) if instance.dns_servers else "8.8.8.8, 1.1.1.1"
+
+        # The profile is run by wg-quick on whoever imports it: a value with a
+        # newline would add PostUp = <command>. The API validates these; rows
+        # that did not come through it are refused here.
+        check_client_name(client.name)
+        check_endpoint(endpoint)
+        _check_wg_values(dns, allowed_ips, client.allocated_ip)
         
         return f"""[Interface]
 PrivateKey = {client.private_key}

@@ -30,6 +30,7 @@ from .models import (
     WgMagicToken, SendConfigRequest,
     WgInstanceDefaultsUpdate, WgClientUpdate
 )
+from core.validation import VpnInstanceValidators
 import ipaddress
 from .service import wireguard_service, WIREGUARD_CONFIG_DIR, WireGuardService, get_public_ip
 from core.network.service import NetworkService
@@ -188,7 +189,7 @@ async def get_instance(
     )
 
 
-class WgInstanceUpdate(SQLModel):
+class WgInstanceUpdate(VpnInstanceValidators):
     """Schema for updating instance settings."""
     endpoint: Optional[str] = None
 

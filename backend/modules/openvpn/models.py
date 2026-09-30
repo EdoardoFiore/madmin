@@ -4,10 +4,12 @@ OpenVPN Module - Database Models
 SQLModel tables for OpenVPN instances, clients, groups, and rules.
 Includes PKI certificate tracking and CCD for static IP assignment.
 """
+import re
 from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
-from core.validation import ModuleRuleValidators
+from core import validation
+from core.validation import ModuleRuleValidators, VpnInstanceValidators, check_client_name
 from sqlalchemy import Text
 from pydantic import field_validator
 import uuid
@@ -186,7 +188,7 @@ class OvpnMagicToken(SQLModel, table=True):
 
 # --- Pydantic Schemas ---
 
-class OvpnInstanceCreate(SQLModel):
+class OvpnInstanceCreate(VpnInstanceValidators):
     name: str
     port: int
     protocol: str = "udp"
@@ -254,6 +256,16 @@ class OvpnClientCreate(SQLModel):
     group_id: Optional[str] = None
     remote_lans: List[str] = []
 
+    @field_validator('name', mode='before')
+    @classmethod
+    def v_name(cls, v):
+        return check_client_name(v)
+
+    @field_validator('remote_lans', mode='before')
+    @classmethod
+    def v_remote_lans(cls, v):
+        return [validation.ip_network(c, "remote_lans", version=4) for c in (v or [])]
+
 
 class OvpnClientRead(SQLModel):
     id: uuid.UUID
@@ -281,7 +293,6 @@ class SendConfigRequest(SQLModel):
     @field_validator("email")
     @classmethod
     def _validate_email(cls, v: str) -> str:
-        import re
         if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', v) or '\n' in v or '\r' in v:
             raise ValueError("Invalid email address")
         return v
@@ -345,7 +356,7 @@ class FirewallPolicyUpdate(SQLModel):
     policy: str  # ACCEPT or DROP
 
 
-class OvpnRoutingUpdate(SQLModel):
+class OvpnRoutingUpdate(VpnInstanceValidators):
     """Schema for updating instance routing mode."""
     tunnel_mode: str  # "full" or "split"
     routes: List[Dict] = []  # Required when tunnel_mode is "split"

@@ -17,10 +17,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from .models import OvpnInstance, OvpnClient
+from core.validation import check_client_name, check_endpoint
 from core.network.utils import get_public_ip, get_default_interface
 from core.firewall import iptables as core_iptables
 
 logger = logging.getLogger(__name__)
+
+
+def _check_directive_values(instance) -> None:
+    """
+    Values of the instance written as OpenVPN directives. The API validates
+    them; rows restored from an archive or older data did not go through it.
+    """
+    values = [instance.name, instance.protocol, instance.cipher,
+              getattr(instance, "auth", ""), getattr(instance, "tls_version_min", ""),
+              *(instance.dns_servers or [])]
+    for v in values:
+        if v is not None and any(ord(c) < 32 or ord(c) == 127 or c == '"' for c in str(v)):
+            raise ValueError(f"Invalid character in OpenVPN setting {v!r}")
 
 # Paths
 OPENVPN_BASE_DIR = Path("/etc/openvpn/server")
@@ -492,6 +506,7 @@ class OpenVPNService:
         """
         instance_dir = OpenVPNService.get_instance_dir(instance.id)
         
+        _check_directive_values(instance)
         # Parse subnet
         network = IPv4Network(instance.subnet, strict=False)
         
@@ -590,6 +605,11 @@ class OpenVPNService:
     @staticmethod
     def generate_client_config(instance: OvpnInstance, client: OvpnClient, endpoint: str) -> str:
         """Generate unified client .ovpn configuration."""
+        # The profile runs on whoever imports it: a directive smuggled in here
+        # (script-security + up) executes on their machine
+        _check_directive_values(instance)
+        check_client_name(client.name)
+        check_endpoint(endpoint)
         instance_dir = OpenVPNService.get_instance_dir(instance.id)
         easyrsa_dir = OpenVPNService.get_easyrsa_dir(instance.id)
         

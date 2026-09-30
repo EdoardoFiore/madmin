@@ -8,7 +8,7 @@ import ipaddress
 from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
-from core.validation import ModuleRuleValidators
+from core.validation import ModuleRuleValidators, VpnInstanceValidators, check_client_name, ip_csv, ip_network
 from sqlalchemy import Text
 from pydantic import field_validator
 import uuid
@@ -205,7 +205,7 @@ class WgMagicToken(SQLModel, table=True):
 
 # --- Pydantic Schemas ---
 
-class WgInstanceCreate(SQLModel):
+class WgInstanceCreate(VpnInstanceValidators):
     name: str
     port: int
     subnet: str
@@ -276,11 +276,19 @@ class WgClientCreate(SQLModel):
     @field_validator('name')
     @classmethod
     def validate_name(cls, v: str) -> str:
-        if not re.match(r'^[a-zA-Z0-9._-]+$', v):
-            raise ValueError('Il nome può contenere solo lettere, numeri, punto, trattino e underscore')
-        if len(v) > 64:
-            raise ValueError('Il nome non può superare 64 caratteri')
-        return v
+        # fullmatch: '$' alone let a trailing newline into the configs
+        return check_client_name(v)
+
+    @field_validator('dns', mode='before')
+    @classmethod
+    def _validate_dns(cls, v):
+        # Written as the client's DNS = line: a newline there adds PostUp
+        return v if v in (None, "") else ip_csv(v, "dns")
+
+    @field_validator('remote_lans', mode='before')
+    @classmethod
+    def _validate_remote_lans(cls, v):
+        return [ip_network(c, "remote_lans", version=4) for c in (v or [])]
 
     @field_validator('allowed_ips')
     @classmethod
@@ -320,7 +328,6 @@ class SendConfigRequest(SQLModel):
     @field_validator("email")
     @classmethod
     def _validate_email(cls, v: str) -> str:
-        import re
         if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', v) or '\n' in v or '\r' in v:
             raise ValueError("Invalid email address")
         return v
@@ -384,14 +391,14 @@ class FirewallPolicyUpdate(SQLModel):
     policy: str  # ACCEPT or DROP
 
 
-class WgRoutingUpdate(SQLModel):
+class WgRoutingUpdate(VpnInstanceValidators):
     """Schema for updating instance routing mode."""
     tunnel_mode: str  # "full" or "split"
     routes: List[Dict] = []  # Required when tunnel_mode is "split"
     dns_servers: Optional[List[str]] = None  # Optional DNS update
 
 
-class WgInstanceDefaultsUpdate(SQLModel):
+class WgInstanceDefaultsUpdate(VpnInstanceValidators):
     """Schema for updating instance default client settings."""
     default_allowed_ips: Optional[str] = None  # Default routes for clients
     dns_servers: Optional[List[str]] = None  # Default DNS for clients
@@ -406,6 +413,11 @@ class WgClientUpdate(SQLModel):
     """Schema for updating per-client overrides."""
     allowed_ips: Optional[str] = None  # Override routes (NULL = use instance default)
     dns: Optional[str] = None  # Override DNS (NULL = use instance default)
+
+    @field_validator('dns', mode='before')
+    @classmethod
+    def _validate_dns(cls, v):
+        return v if v in (None, "") else ip_csv(v, "dns")
 
     @field_validator('allowed_ips')
     @classmethod
