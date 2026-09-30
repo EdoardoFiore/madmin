@@ -198,13 +198,25 @@ async def logout(
 
 @router.post("/init", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def init_first_user(
+    request: Request,
     data: InitAdminRequest,
     session: AsyncSession = Depends(get_session)
 ):
     """
     Crea il primo utente superuser. Funziona solo se non esistono ancora utenti.
     Chiamato dallo script di installazione — non richiede autenticazione.
+
+    Accepted only from a direct loopback call: the installer talks to
+    127.0.0.1:8000, while anything through nginx carries X-Real-IP (and, with
+    uvicorn's --proxy-headers, the real client address). Without this, anyone
+    on the network could claim an instance in the window between nginx
+    starting and the installer creating the account.
     """
+    peer = request.client.host if request.client else ""
+    via_proxy = "x-real-ip" in request.headers or "x-forwarded-for" in request.headers
+    if peer not in ("127.0.0.1", "::1") or via_proxy:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+
     ok, msg = service.validate_username(data.username)
     if not ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)

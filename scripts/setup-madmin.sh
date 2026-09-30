@@ -84,7 +84,9 @@ EOF
 
 # --- Arguments ---
 ADMIN_USERNAME="admin"
-ADMIN_PASSWORD="admin"
+# The password can come from the environment instead of -p, which leaves it
+# visible to every local user in the process list while the installer runs.
+ADMIN_PASSWORD="${MADMIN_ADMIN_PASSWORD:-}"
 FORCE_PW_CHANGE="false"   # opt-in: used by install automations (e.g. madmin-hub)
 PROVISION_LAN="false"     # opt-in: auto-provisions a managed LAN (interface + DHCP + NAT)
 PROVISION_LAN_IFACES=""   # optional: comma-separated interfaces to lock (first = managed LAN)
@@ -149,6 +151,7 @@ validate_admin_credentials() {
     if [ $errors -ne 0 ]; then
         log_error 'Nothing has been installed. Fix the credentials and run again:'
         log_error '  sudo bash setup-madmin.sh -u <username> -p <password>'
+        log_error '  (or: sudo MADMIN_ADMIN_PASSWORD=<password> bash setup-madmin.sh -u <username>)'
         exit 1
     fi
 }
@@ -395,6 +398,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
     }
 
+    # First-user bootstrap is for the installer only, which calls the backend
+    # directly on 127.0.0.1:8000 (the backend refuses proxied calls as well)
+    location = /api/auth/init {
+        return 404;
+    }
+
     # API reverse proxy
     location /api {
         proxy_pass http://127.0.0.1:8000;
@@ -528,31 +537,44 @@ fi
 log_info "Starting MADMIN service..."
 systemctl restart madmin.service 2>/dev/null || systemctl start madmin.service
 
-# Wait for the backend to be ready
+# Wait for the backend to answer (startup creates the schema and loads the
+# modules: a fixed sleep was sometimes too short, and every step below then failed)
 log_info "Waiting for backend to start..."
-sleep 5
-
-# Check status
-if systemctl is-active --quiet madmin.service; then
-    log_success "MADMIN service is active."
+BACKEND_READY="false"
+for _ in $(seq 1 90); do
+    if curl -sf -o /dev/null http://localhost:8000/api/health; then
+        BACKEND_READY="true"
+        break
+    fi
+    sleep 2
+done
+if [ "$BACKEND_READY" = "true" ]; then
+    log_success "MADMIN service is up."
 else
-    log_error "MADMIN service is not active. Check: journalctl -u madmin -f"
+    log_error "MADMIN did not become ready in 180s. Check: journalctl -u madmin -e"
+    exit 1
 fi
 
-# Create the initial administrator user
+INIT_OUT=$(mktemp)
+PROV_OUT=$(mktemp)
+trap 'rm -f "$INIT_OUT" "$PROV_OUT"; reenable_unattended_upgrades' EXIT
+
+# Create the initial administrator user. /init answers only to direct
+# loopback calls (not through nginx), and only while no user exists.
 log_info "Creating administrator user..."
 INIT_BODY=$(python3 -c "import json,sys; print(json.dumps({'username':sys.argv[1],'password':sys.argv[2]}))" "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
-INIT_HTTP=$(curl -s -o /tmp/madmin_init.json -w "%{http_code}" -X POST http://localhost:8000/api/auth/init \
+INIT_HTTP=$(curl -s -o "$INIT_OUT" -w "%{http_code}" -X POST http://localhost:8000/api/auth/init \
     -H "Content-Type: application/json" \
     -d "$INIT_BODY")
 if [ "$INIT_HTTP" = "201" ]; then
     log_success "Administrator user created: $ADMIN_USERNAME"
-elif [ "$INIT_HTTP" = "409" ]; then
-    log_info "Administrator user '$ADMIN_USERNAME' already exists, skipping."
 else
-    log_error "Failed to create administrator user (HTTP $INIT_HTTP): $(cat /tmp/madmin_init.json)"
+    # The install must end with the account it was asked to create. A 409 means
+    # a user already exists: someone created one before the installer did.
+    log_error "Failed to create administrator user (HTTP $INIT_HTTP): $(cat "$INIT_OUT")"
+    log_error "Do not use this instance: check the users in the database before exposing it."
+    exit 1
 fi
-rm -f /tmp/madmin_init.json
 
 # Apply default firewall rules (generated dynamically from live interfaces:
 # WAN = default route, LAN = other physical NICs). Names are NOT hardcoded.
@@ -587,22 +609,22 @@ if [ "$PROVISION_LAN" = "true" ]; then
         # is the managed LAN (DHCP/NAT), all are locked read-only.
         if [ -n "$PROVISION_LAN_IFACES" ]; then
             PROV_BODY=$(python3 -c "import json,sys; print(json.dumps({'interfaces':[s for s in sys.argv[1].split(',') if s.strip()]}))" "$PROVISION_LAN_IFACES")
-            PROV_HTTP=$(curl -s -o /tmp/madmin_prov.json -w "%{http_code}" -X POST \
+            PROV_HTTP=$(curl -s -o "$PROV_OUT" -w "%{http_code}" -X POST \
                 "http://localhost:8000/api/provisioning/managed-lan/enable" \
                 -H "Authorization: Bearer $JWT_TOKEN" \
                 -H "Content-Type: application/json" \
                 -d "$PROV_BODY")
         else
-            PROV_HTTP=$(curl -s -o /tmp/madmin_prov.json -w "%{http_code}" -X POST \
+            PROV_HTTP=$(curl -s -o "$PROV_OUT" -w "%{http_code}" -X POST \
                 "http://localhost:8000/api/provisioning/managed-lan/enable" \
                 -H "Authorization: Bearer $JWT_TOKEN")
         fi
         if [ "$PROV_HTTP" = "200" ]; then
             # enabled=false means the required interface(s) were not found:
             # provisioning was skipped, as if --provision-lan had not been passed.
-            PROV_ENABLED=$(python3 -c "import json,sys; print(str(json.load(open('/tmp/madmin_prov.json')).get('enabled', False)).lower())" 2>/dev/null)
-            PROV_IFACE=$(python3 -c "import json,sys; print(json.load(open('/tmp/madmin_prov.json')).get('interface') or '')" 2>/dev/null)
-            PROV_LOCKED=$(python3 -c "import json,sys; print(', '.join(json.load(open('/tmp/madmin_prov.json')).get('locked_interfaces') or []))" 2>/dev/null)
+            PROV_ENABLED=$(python3 -c "import json,sys; print(str(json.load(open(sys.argv[1])).get('enabled', False)).lower())" "$PROV_OUT" 2>/dev/null)
+            PROV_IFACE=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('interface') or '')" "$PROV_OUT" 2>/dev/null)
+            PROV_LOCKED=$(python3 -c "import json,sys; print(', '.join(json.load(open(sys.argv[1])).get('locked_interfaces') or []))" "$PROV_OUT" 2>/dev/null)
             if [ "$PROV_ENABLED" = "true" ]; then
                 log_success "Managed LAN configured: DHCP/NAT on '$PROV_IFACE', locked interfaces: $PROV_LOCKED."
             elif [ -n "$PROVISION_LAN_IFACES" ]; then
@@ -611,9 +633,8 @@ if [ "$PROVISION_LAN" = "true" ]; then
                 log_warning "Managed LAN NOT configured: no known LAN interface (eth1/ens19) found. DHCP/NAT not set up."
             fi
         else
-            log_warning "Managed LAN provisioning failed (HTTP $PROV_HTTP): $(cat /tmp/madmin_prov.json)"
+            log_warning "Managed LAN provisioning failed (HTTP $PROV_HTTP): $(cat "$PROV_OUT")"
         fi
-        rm -f /tmp/madmin_prov.json
     else
         log_warning "JWT unavailable: managed LAN provisioning not enabled."
     fi
@@ -681,7 +702,7 @@ echo ""
 echo "Database:"
 echo "  Name:     $DB_NAME"
 echo "  User:     $DB_USER"
-echo "  Password: $DB_PASSWORD"
+echo "  Password: in $INSTALL_DIR/backend/.env (root only)"
 echo ""
 
 # Auto-provisioning options actually enabled by flags

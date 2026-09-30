@@ -18,7 +18,7 @@ from passlib.context import CryptContext
 from cryptography.fernet import Fernet
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from sqlalchemy.orm import selectinload
 import uuid
 import logging
@@ -482,6 +482,9 @@ async def create_first_user(
     if not ok:
         raise ValueError(msg)
 
+    # Serialise concurrent calls: check-then-insert alone let two requests both
+    # see an empty table and create two superusers. Released at commit.
+    await session.execute(text("SELECT pg_advisory_xact_lock(7443002)"))
     result = await session.execute(select(User).limit(1))
     if result.scalar_one_or_none() is not None:
         raise ValueError("Setup already completed: users already exist")
