@@ -34,7 +34,7 @@ async def traffic_collector_loop():
         try:
             async with async_session_maker() as db:
                 # Collect traffic stats
-                collected = await strongswan_service.collect_traffic_stats(db)
+                await strongswan_service.collect_traffic_stats(db)
 
                 # Watchdog: force reconnect any desired-UP tunnel charon dropped
                 await strongswan_service.reconcile_tunnel_states(db)

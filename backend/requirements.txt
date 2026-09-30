@@ -43,7 +43,3 @@ paramiko>=3.4.0
 asyncssh>=2.14.0
 aioftp>=0.21.4
 
-# Development
-pytest>=7.4.4
-pytest-asyncio>=0.23.3
-httpx>=0.26.0

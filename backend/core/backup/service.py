@@ -1667,7 +1667,6 @@ def _default_for_type(data_type: str):
 
 
 # Regex for datetime strings: "2026-03-01 14:52:36.077484" or "2026-03-01T14:52:36.077484"
-import re
 _DATETIME_RE = re.compile(r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}')
 _SAFE_IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 

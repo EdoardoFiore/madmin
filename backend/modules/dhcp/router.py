@@ -223,9 +223,6 @@ async def list_subnets(
     result = await session.execute(select(DhcpSubnet))
     subnets = result.scalars().all()
 
-    # Get active leases for enrichment
-    all_leases = dhcp_service.parse_leases()
-
     response = []
     for subnet in subnets:
         # Count hosts

@@ -615,9 +615,6 @@ async def update_child_sa(
     if not child:
         raise HTTPException(status_code=404, detail="Child SA not found")
     
-    old_local_ts = child.local_ts
-    old_remote_ts = child.remote_ts
-    
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
     for key, value in update_data.items():

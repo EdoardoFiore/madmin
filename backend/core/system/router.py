@@ -103,7 +103,7 @@ async def get_system_stats(
                 disk_used=stats["disk"]["used"],
                 disk_total=stats["disk"]["total"]
             )
-        except Exception as e:
+        except Exception:
             # Don't fail the request if history save fails
             pass
     

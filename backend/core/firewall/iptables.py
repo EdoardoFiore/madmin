@@ -971,7 +971,7 @@ def _run_ipset(args: List[str], suppress_errors: bool = False) -> bool:
         logger.debug(f"[MOCK ipset] Would execute: ipset {' '.join(args)}")
         return True
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["ipset"] + args,
             capture_output=True,
             text=True,
