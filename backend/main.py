@@ -395,6 +395,10 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
+    # Write the audit entries still queued
+    from core.audit.writer import audit_writer
+    await audit_writer.stop()
+
 
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):

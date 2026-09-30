@@ -12,6 +12,7 @@ Starlette middleware that intercepts API requests and logs:
 Non-excluded paths are persisted to the audit_log database table.
 Journal logging is kept to DEBUG level to avoid polluting journalctl.
 """
+import re
 import time
 import json
 import logging
@@ -44,7 +45,24 @@ SENSITIVE_KEY_PATTERNS = [
     "cert_data",
 ]
 
+# Matched on the whole key: as substrings they would mask unrelated fields
+# (country_code, status_code). TOTP and backup codes travel under these.
+SENSITIVE_EXACT_KEYS = {"code", "otp", "totp", "backup_code", "backup_codes"}
+
 MASK_VALUE = "***"
+
+# The token in a public config-download link is the credential itself
+# (it hands out a VPN profile with its private key): never store it.
+_DOWNLOAD_TOKEN_RE = re.compile(r'^(/api/modules/[^/]+/download/)[^/]+')
+
+# Unauthenticated requests are recorded without their payload (only the
+# login form, masked, is kept: failed logins are worth auditing)
+_ANONYMOUS_BODY_PATHS = ("/api/auth/token",)
+
+
+def redact_path(path: str) -> str:
+    """The request path as stored in the audit log."""
+    return _DOWNLOAD_TOKEN_RE.sub(r'\1***', path)
 
 
 def _sanitize_value(key: str, value) -> object:
@@ -58,6 +76,8 @@ def _sanitize_value(key: str, value) -> object:
         return [_sanitize_value(key, item) for item in value]
     if isinstance(key, str):
         key_lower = key.lower()
+        if key_lower in SENSITIVE_EXACT_KEYS:
+            return MASK_VALUE
         for pattern in SENSITIVE_KEY_PATTERNS:
             if pattern in key_lower:
                 return MASK_VALUE
@@ -212,9 +232,10 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                                             for item in data
                                         ])
                                     else:
-                                        body_text = text
+                                        body_text = json.dumps(data)
                                 except json.JSONDecodeError:
-                                    body_text = text
+                                    # Unparsed text cannot be masked: its size only
+                                    body_text = f"<JSON non valido, {len(body_bytes)} byte>"
                             elif "application/x-www-form-urlencoded" in content_type:
                                 # Parse form data (e.g. OAuth2 login: username=x&password=y)
                                 from urllib.parse import parse_qs
@@ -227,7 +248,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                                 except Exception:
                                     body_text = "<Form data non parsabile>"
                             else:
-                                body_text = text
+                                body_text = f"<payload {content_type or 'senza content-type'}, {len(body_bytes)} byte>"
                 except Exception as e:
                     logger.warning(f"Failed to read/sanitize request body: {e}")
                     body_text = "<Errore lettura payload>"
@@ -244,6 +265,11 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         if method == "GET":
             body_text = _extract_query_params(request)
 
+        # Anyone can send requests: an anonymous payload is not stored (it
+        # filled the table with up to 50 KB per request, unauthenticated)
+        if username == "anonymous" and not path.startswith(_ANONYMOUS_BODY_PATHS):
+            body_text = None
+
         # Time the request
         start_time = time.time()
         response = await call_next(request)
@@ -253,7 +279,8 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
         from .service import is_excluded
 
-        excluded = is_excluded(path, method)
+        # Anonymous requests to routes that do not exist are scanner noise
+        excluded = is_excluded(path, method) or (username == "anonymous" and status_code in (404, 405))
 
         # Only persist to DB if not excluded
         if not excluded:
@@ -294,17 +321,17 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
             # DEBUG log only — no more AUDIT noise in journal
             logger.debug(
-                f"AUDIT | user={username} | {method} {path} | {status_code} | {duration_ms}ms | ip={client_ip}"
+                f"AUDIT | user={username} | {method} {redact_path(path)} | {status_code} | {duration_ms}ms | ip={client_ip}"
             )
 
             try:
-                from core.database import async_session_maker
                 from .models import AuditLog
+                from .writer import audit_writer
 
                 category = "read" if method == "GET" else "write"
 
-                # Strip query params from stored path
-                clean_path = path.split("?")[0]
+                # Strip query params and download tokens from the stored path
+                clean_path = redact_path(path.split("?")[0])
 
                 audit_entry = AuditLog(
                     username=username,
@@ -318,12 +345,11 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     response_summary=response_summary,
                 )
 
-                async with async_session_maker() as session:
-                    session.add(audit_entry)
-                    await session.commit()
+                # Written in batches by a background task (see writer.py)
+                audit_writer.submit(audit_entry)
 
             except Exception as e:
                 # Never let audit logging break the actual request
-                logger.error(f"Failed to persist audit log: {e}")
+                logger.error(f"Failed to queue audit log: {e}")
 
         return response

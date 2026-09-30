@@ -55,6 +55,16 @@ class SystemLogResponse(BaseModel):
     count: int
 
 
+def _csv_cell(value) -> str:
+    """
+    A text cell for the CSV export. Spreadsheets run a cell starting with
+    = + - @ (or tab/CR) as a formula, and the logged username and payload
+    come from unauthenticated requests too.
+    """
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@", chr(9), chr(13)) else text
+
+
 @router.get("/audit", response_model=AuditLogListResponse)
 async def list_audit_logs(
     page: int = Query(default=1, ge=1),
@@ -197,15 +207,15 @@ async def export_audit_csv(
     for log in logs:
         writer.writerow([
             log.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-            log.username,
-            log.method,
-            log.path,
+            _csv_cell(log.username),
+            _csv_cell(log.method),
+            _csv_cell(log.path),
             log.status_code,
             log.duration_ms,
-            log.client_ip,
-            log.category,
-            log.request_body or "",
-            log.response_summary or "",
+            _csv_cell(log.client_ip),
+            _csv_cell(log.category),
+            _csv_cell(log.request_body or ""),
+            _csv_cell(log.response_summary or ""),
         ])
     
     output.seek(0)
