@@ -8,6 +8,7 @@ import re
 from typing import Optional, List
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship
+from core.validation import ModuleRuleValidators
 from sqlalchemy import Column, BigInteger
 from pydantic import computed_field, field_validator
 import uuid
@@ -345,7 +346,7 @@ class IpsecTunnelStatus(SQLModel):
     child_sas: List[dict] = []  # Child SA status
 
 
-class IpsecFirewallRuleCreate(SQLModel):
+class IpsecFirewallRuleCreate(ModuleRuleValidators):
     """Schema for creating a firewall rule."""
     child_sa_id: uuid.UUID
     direction: str = "out"  # "in", "out", "both"
@@ -373,7 +374,7 @@ class IpsecFirewallRuleRead(SQLModel):
     created_at: datetime
 
 
-class IpsecFirewallRuleUpdate(SQLModel):
+class IpsecFirewallRuleUpdate(ModuleRuleValidators):
     """Schema for updating a firewall rule."""
     direction: Optional[str] = None
     action: Optional[str] = None

@@ -94,24 +94,42 @@ class ModuleChain(SQLModel, table=True):
 
 # --- Pydantic Schemas ---
 
+_STATES = {"NEW", "ESTABLISHED", "RELATED", "INVALID", "UNTRACKED"}
+_LOG_LEVELS = {"emerg", "alert", "crit", "error", "warning", "notice", "info", "debug",
+               "0", "1", "2", "3", "4", "5", "6", "7"}
+_REJECT_WITH = {
+    "icmp-net-unreachable", "icmp-host-unreachable", "icmp-port-unreachable",
+    "icmp-proto-unreachable", "icmp-net-prohibited", "icmp-host-prohibited",
+    "icmp-admin-prohibited", "tcp-reset",
+}
+
+
 class _FirewallRuleValidators(SQLModel):
-    """Mixin with shared validators for firewall rule create/update schemas."""
+    """
+    Mixin with shared validators for firewall rule create/update schemas.
+
+    Every field ends up as an iptables argument and, through
+    rule_to_restore_line, in the text fed to iptables-restore: a newline or a
+    space there adds lines or arguments of the caller's choosing. So each
+    field is checked against its own grammar with fullmatch ('$' alone lets a
+    trailing newline through).
+    """
 
     @field_validator('to_destination', 'to_source', mode='before', check_fields=False)
     @classmethod
     def validate_ip_port(cls, v):
-        if v is None:
-            return v
-        if not re.match(r'^[\d.:/-]+$', str(v)):
+        if v is None or v == "":
+            return None
+        if not re.fullmatch(r'[\d.:/-]+', str(v)):
             raise ValueError(f"Formato IP/porta non valido: {v}")
         return v
 
     @field_validator('to_ports', mode='before', check_fields=False)
     @classmethod
     def validate_to_ports(cls, v):
-        if v is None:
-            return v
-        if not re.match(r'^\d+(-\d+)?$', str(v)):
+        if v is None or v == "":
+            return None
+        if not re.fullmatch(r'\d+(-\d+)?', str(v)):
             raise ValueError(f"Formato porta non valido: {v}")
         return v
 
@@ -125,20 +143,114 @@ class _FirewallRuleValidators(SQLModel):
         # Object/group references live in firewall_rule_address, not here. Legacy
         # "geo:<cc>" tokens are migrated to geo address objects at startup
         # (see backend/main.py), so they are no longer accepted on this field.
-        if not re.match(r'^[\w.:/\-]+$', s):
+        if not re.fullmatch(r'[\w.:/\-]+', s, re.ASCII):
             raise ValueError(f"Sorgente/destinazione non valida: {v}")
         return s
 
     @field_validator('port', mode='before', check_fields=False)
     @classmethod
     def validate_port(cls, v):
-        if v is None:
-            return v
+        if v is None or v == "":
+            return None
         # Accept single port, range "80:443", multiport "80,443,8080"
         parts = re.split(r'[:,]', str(v))
         for p in parts:
-            if not p.isdigit() or not (1 <= int(p) <= 65535):
+            if not re.fullmatch(r'\d{1,5}', p) or not (1 <= int(p) <= 65535):
                 raise ValueError(f"Porta non valida: {p} (range 1-65535)")
+        return v
+
+    @field_validator('protocol', mode='before', check_fields=False)
+    @classmethod
+    def validate_protocol(cls, v):
+        if v is None or v == "":
+            return None
+        # A protocol name or number as iptables -p takes it (tcp, udp, icmp, gre, 47…)
+        if not re.fullmatch(r'[a-z0-9]{1,16}', str(v).lower()):
+            raise ValueError(f"Protocollo non valido: {v}")
+        return str(v).lower()
+
+    @field_validator('in_interface', 'out_interface', mode='before', check_fields=False)
+    @classmethod
+    def validate_interface(cls, v):
+        if v is None or v == "":
+            return None
+        # Linux interface name (IFNAMSIZ 15), optionally iptables' "+" wildcard
+        if not re.fullmatch(r'[A-Za-z0-9._@-]{1,15}\+?', str(v)):
+            raise ValueError(f"Interfaccia non valida: {v}")
+        return v
+
+    @field_validator('state', mode='before', check_fields=False)
+    @classmethod
+    def validate_state(cls, v):
+        if v is None or v == "":
+            return None
+        states = str(v).upper().split(",")
+        if not all(s in _STATES for s in states):
+            raise ValueError(f"Stato non valido: {v} (ammessi: {', '.join(sorted(_STATES))})")
+        return ",".join(states)
+
+    @field_validator('limit_rate', mode='before', check_fields=False)
+    @classmethod
+    def validate_limit_rate(cls, v):
+        if v is None or v == "":
+            return None
+        if not re.fullmatch(r'\d{1,6}/(second|sec|s|minute|min|m|hour|h|day|d)', str(v)):
+            raise ValueError(f"Limite non valido: {v} (es. 10/second, 100/minute)")
+        return v
+
+    @field_validator('limit_burst', mode='before', check_fields=False)
+    @classmethod
+    def validate_limit_burst(cls, v):
+        if v is None or v == "":
+            return None
+        if not 1 <= int(v) <= 100000:
+            raise ValueError(f"Burst non valido: {v}")
+        return int(v)
+
+    @field_validator('log_level', mode='before', check_fields=False)
+    @classmethod
+    def validate_log_level(cls, v):
+        if v is None or v == "":
+            return None
+        if str(v).lower() not in _LOG_LEVELS:
+            raise ValueError(f"Livello di log non valido: {v}")
+        return str(v).lower()
+
+    @field_validator('reject_with', mode='before', check_fields=False)
+    @classmethod
+    def validate_reject_with(cls, v):
+        if v is None or v == "":
+            return None
+        if v not in _REJECT_WITH:
+            raise ValueError(f"reject-with non valido: {v}")
+        return v
+
+    @field_validator('log_prefix', mode='before', check_fields=False)
+    @classmethod
+    def validate_log_prefix(cls, v):
+        if v is None or v == "":
+            return None
+        if not re.fullmatch(r'[A-Za-z0-9_\-. \[\]:]{1,29}', str(v)):
+            raise ValueError("Prefisso di log non valido: max 29 caratteri tra lettere, cifre, spazio e _-.[]:")
+        return v
+
+    @field_validator('comment', mode='before', check_fields=False)
+    @classmethod
+    def validate_comment(cls, v):
+        if v is None:
+            return v
+        if len(str(v)) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in str(v)):
+            raise ValueError("Commento non valido: max 255 caratteri, niente caratteri di controllo")
+        return v
+
+    @field_validator('chain', 'action', 'table_name', mode='before', check_fields=False)
+    @classmethod
+    def validate_token(cls, v):
+        # Checked against per-table allowlists by the router; here just the shape
+        if v is None:
+            return v
+        if not re.fullmatch(r'[A-Za-z_]{1,30}', str(v)):
+            raise ValueError(f"Valore non valido: {v}")
         return v
 
 

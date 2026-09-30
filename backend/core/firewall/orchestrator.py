@@ -693,15 +693,21 @@ class FirewallOrchestrator:
                 logger.warning(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id}")
                 continue
             eff = eff_map.get(rule.id)
-            if eff:
-                eff_src, eff_dst = eff
-                line = iptables.rule_to_restore_line(
-                    madmin_chain, rule,
-                    source=eff_src if eff_src is not None else rule.source,
-                    destination=eff_dst if eff_dst is not None else rule.destination,
-                )
-            else:
-                line = iptables.rule_to_restore_line(madmin_chain, rule)
+            try:
+                if eff:
+                    eff_src, eff_dst = eff
+                    line = iptables.rule_to_restore_line(
+                        madmin_chain, rule,
+                        source=eff_src if eff_src is not None else rule.source,
+                        destination=eff_dst if eff_dst is not None else rule.destination,
+                    )
+                else:
+                    line = iptables.rule_to_restore_line(madmin_chain, rule)
+            except ValueError as e:
+                # One unusable row must not take the whole ruleset down with it
+                # (at boot that leaves the fail-closed guard blocking everything)
+                logger.error(f"Firewall rule {rule.id} skipped: {e}")
+                continue
             chain_rules[rule.table_name][madmin_chain].append(line)
 
         # --- Auto-generate FORWARD ACCEPT for DNAT rules ---
@@ -718,15 +724,18 @@ class FirewallOrchestrator:
             eff = eff_map.get(rule.id)
             if eff and eff[0] is not None:
                 fields["source"] = eff[0]   # honor object/group source refs
-            auto_forward_lines.append(
-                " ".join(iptables.build_rule_args(
-                    chain=iptables.MADMIN_FORWARD_CHAIN,
-                    action="ACCEPT",
-                    comment=f"MADMIN_AUTO_DNAT_{rule.id}",
-                    operation="-A",
-                    **fields,
-                ))
-            )
+            try:
+                auto_forward_lines.append(
+                    iptables.restore_line(iptables.build_rule_args(
+                        chain=iptables.MADMIN_FORWARD_CHAIN,
+                        action="ACCEPT",
+                        comment=f"MADMIN_AUTO_DNAT_{rule.id}",
+                        operation="-A",
+                        **fields,
+                    ))
+                )
+            except ValueError as e:
+                logger.error(f"Auto FORWARD for DNAT rule {rule.id} skipped: {e}")
         if auto_forward_lines:
             fwd = chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN]
             # Index 1 = after the built-in ESTABLISHED/RELATED line, before DB rules (incl. DROP)

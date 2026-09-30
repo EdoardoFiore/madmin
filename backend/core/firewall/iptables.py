@@ -312,7 +312,27 @@ def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UN
         reject_with=rule.reject_with,
         operation="-A"
     )
-    return " ".join(args)
+    return restore_line(args)
+
+
+def restore_line(args: List[str]) -> str:
+    """Join rule arguments into one iptables-restore line (see _restore_arg)."""
+    return " ".join(_restore_arg(a) for a in args)
+
+
+def _restore_arg(arg: str) -> str:
+    """
+    One argument of an iptables-restore line.
+
+    The line is split on whitespace and read line by line, so an argument with
+    a newline adds rules of its own and one with a space adds arguments. The
+    API validates every field; this refuses what slips through anyway (a
+    restored archive, an old row) and quotes the spaces that are legitimate
+    (a log prefix such as "[FW] DROP ").
+    """
+    if any(ord(c) < 32 or ord(c) == 127 for c in arg) or '"' in arg:
+        raise ValueError(f"Invalid character in iptables argument: {arg!r}")
+    return f'"{arg}"' if " " in arg or arg == "" else arg
 
 
 def restore_chains(table: str, chain_rules: Dict[str, List[str]]) -> bool:

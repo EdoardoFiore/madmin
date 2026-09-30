@@ -12,6 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import SQLModel
 import uuid
+from pydantic import ValidationError
 
 from core.database import get_session
 from core.auth.dependencies import require_permission, get_current_user
@@ -61,6 +62,66 @@ _NAT_TARGET_HOOK = {
     "SNAT": {"POSTROUTING"},
     "MASQUERADE": {"POSTROUTING"},
 }
+
+# Valid chains and actions per table
+_TABLE_CHAINS = {
+    "filter": ("INPUT", "OUTPUT", "FORWARD", "GW_EXCEPTIONS"),
+    "nat": ("PREROUTING", "POSTROUTING", "OUTPUT"),
+    "mangle": ("PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"),
+    "raw": ("PREROUTING", "OUTPUT")
+}
+_TABLE_ACTIONS = {
+    "filter": ("ACCEPT", "DROP", "REJECT", "LOG", "RETURN"),
+    "nat": ("SNAT", "DNAT", "MASQUERADE", "REDIRECT", "ACCEPT", "RETURN"),
+    "mangle": ("MARK", "TOS", "TTL", "ACCEPT", "RETURN"),
+    "raw": ("NOTRACK", "ACCEPT", "RETURN")
+}
+
+
+async def _validate_rule_payload(session: AsyncSession, rule: dict) -> None:
+    """
+    Everything a rule must satisfy beyond its field grammar, for the state the
+    rule ends up in: create passes the new rule, PATCH the existing one merged
+    with the update, import each imported rule. One function so that no path
+    skips a check (import used to skip them all, protected ports included).
+    Raises HTTPException(400).
+    """
+    from core.provisioning.service import MANAGED_NAT_SENTINEL
+
+    table = rule.get("table_name") or "filter"
+    if table not in _TABLE_CHAINS:
+        raise HTTPException(status_code=400, detail=f"Table must be one of: {', '.join(_TABLE_CHAINS.keys())}")
+    if rule.get("chain") not in _TABLE_CHAINS[table]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Chain for table {table} must be one of: {', '.join(_TABLE_CHAINS[table])}"
+        )
+    if rule.get("action") not in _TABLE_ACTIONS[table]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action for table {table} must be one of: {', '.join(_TABLE_ACTIONS[table])}"
+        )
+    # The managed-LAN NAT rule is recognised by this comment: a copy would be
+    # locked against editing and deletion like the real one
+    if rule.get("comment") == MANAGED_NAT_SENTINEL:
+        raise HTTPException(status_code=400, detail="Commento riservato alla regola NAT della LAN gestita")
+
+    _validate_rule_constraints(
+        rule["chain"], rule["action"], rule.get("in_interface"), rule.get("out_interface")
+    )
+    try:
+        await validate_protected_port_collision(
+            session,
+            table_name=table,
+            action=rule["action"],
+            chain=rule["chain"],
+            protocol=rule.get("protocol"),
+            port=rule.get("port"),
+            to_destination=rule.get("to_destination"),
+            to_ports=rule.get("to_ports"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _uuid(value) -> uuid.UUID:
@@ -280,57 +341,8 @@ async def create_rule(
     session: AsyncSession = Depends(get_session)
 ):
     """Create a new firewall rule."""
-    # Valid chains per table
-    table_chains = {
-        "filter": ("INPUT", "OUTPUT", "FORWARD", "GW_EXCEPTIONS"),
-        "nat": ("PREROUTING", "POSTROUTING", "OUTPUT"),
-        "mangle": ("PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"),
-        "raw": ("PREROUTING", "OUTPUT")
-    }
-    
-    table = rule_data.table_name or "filter"
-    if table not in table_chains:
-        raise HTTPException(status_code=400, detail=f"Table must be one of: {', '.join(table_chains.keys())}")
-    
-    if rule_data.chain not in table_chains[table]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Chain for table {table} must be one of: {', '.join(table_chains[table])}"
-        )
-    
-    # Valid actions per table
-    table_actions = {
-        "filter": ("ACCEPT", "DROP", "REJECT", "LOG", "RETURN"),
-        "nat": ("SNAT", "DNAT", "MASQUERADE", "REDIRECT", "ACCEPT", "RETURN"),
-        "mangle": ("MARK", "TOS", "TTL", "ACCEPT", "RETURN"),
-        "raw": ("NOTRACK", "ACCEPT", "RETURN")
-    }
-    
-    if rule_data.action not in table_actions[table]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Action for table {table} must be one of: {', '.join(table_actions[table])}"
-        )
-
-    _validate_rule_constraints(
-        rule_data.chain, rule_data.action,
-        rule_data.in_interface, rule_data.out_interface
-    )
+    await _validate_rule_payload(session, rule_data.model_dump())
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
-
-    try:
-        await validate_protected_port_collision(
-            session,
-            table_name=table,
-            action=rule_data.action,
-            chain=rule_data.chain,
-            protocol=rule_data.protocol,
-            port=rule_data.port,
-            to_destination=rule_data.to_destination,
-            to_ports=rule_data.to_ports,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         rule = await firewall_orchestrator.create_rule(session, rule_data.model_dump())
@@ -377,27 +389,16 @@ async def update_rule(
             detail="Regola NAT della LAN gestita: non modificabile (necessaria alla navigazione delle VM)."
         )
 
-    _validate_rule_constraints(
-        update_data.get("chain", existing.chain),
-        update_data.get("action", existing.action),
-        update_data.get("in_interface", existing.in_interface),
-        update_data.get("out_interface", existing.out_interface),
-    )
+    # Validate the rule as it will be after the update: table/chain/action
+    # were only checked on create, so a PATCH could move a rule anywhere
+    merged = {
+        field: getattr(existing, field)
+        for field in MachineFirewallRuleUpdate.model_fields
+        if hasattr(existing, field)
+    }
+    merged.update(update_data)
+    await _validate_rule_payload(session, merged)
     await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
-
-    try:
-        await validate_protected_port_collision(
-            session,
-            table_name=update_data.get("table_name", existing.table_name),
-            action=update_data.get("action", existing.action),
-            chain=update_data.get("chain", existing.chain),
-            protocol=update_data.get("protocol", existing.protocol),
-            port=update_data.get("port", existing.port),
-            to_destination=update_data.get("to_destination", existing.to_destination),
-            to_ports=update_data.get("to_ports", existing.to_ports),
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         rule = await firewall_orchestrator.update_rule(session, rule_uuid, update_data)
@@ -1119,11 +1120,20 @@ async def import_rules(
                 clean_data["destination_refs"] = await _resolve_imported_refs(
                     session, rule_dict.get("destination_refs"), errors, f"Rule #{i+1} (destination)")
 
-                # Create rule (validates data implicitly via Pydantic model in orchestrator or here)
-                # Orchestrator create_rule accepts dict and creates model
-                await firewall_orchestrator.create_rule(session, clean_data)
+                # Same checks as POST /rules: the file is as untrusted as a request
+                try:
+                    rule_data = MachineFirewallRuleCreate.model_validate(clean_data)
+                except ValidationError as e:
+                    errors.append(f"Rule #{i+1}: " + "; ".join(err["msg"] for err in e.errors()))
+                    continue
+                await _validate_rule_payload(session, rule_data.model_dump())
+                await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
+
+                await firewall_orchestrator.create_rule(session, rule_data.model_dump())
                 applied_count += 1
-                
+
+            except HTTPException as e:
+                errors.append(f"Rule #{i+1}: {e.detail}")
             except Exception as e:
                 errors.append(f"Rule #{i+1}: {str(e)}")
         

@@ -8,6 +8,7 @@ import ipaddress
 from typing import Optional, List, Dict
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
+from core.validation import ModuleRuleValidators
 from sqlalchemy import Text
 from pydantic import field_validator
 import uuid
@@ -348,7 +349,7 @@ class WgGroupMemberRead(SQLModel):
 
 # --- Rule Schemas ---
 
-class WgGroupRuleCreate(SQLModel):
+class WgGroupRuleCreate(ModuleRuleValidators):
     action: str  # ACCEPT, DROP
     protocol: str  # tcp, udp, icmp, all
     port: Optional[str] = None
@@ -366,7 +367,7 @@ class WgGroupRuleRead(SQLModel):
     order: int
 
 
-class WgGroupRuleUpdate(SQLModel):
+class WgGroupRuleUpdate(ModuleRuleValidators):
     action: Optional[str] = None
     protocol: Optional[str] = None
     port: Optional[str] = None
