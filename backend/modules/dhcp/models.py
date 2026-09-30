@@ -4,10 +4,14 @@ DHCP Module - Database Models
 SQLModel tables for DHCP subnets, hosts (reservations), and options.
 Pydantic schemas for API request/response validation.
 """
+import re
 from typing import Optional, List
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, Column, JSON
+from pydantic import field_validator, model_validator
 import uuid
+
+from core import validation
 
 
 # --- Database Tables ---
@@ -85,7 +89,111 @@ class DhcpSettings(SQLModel, table=True):
 
 # --- Pydantic Schemas ---
 
-class DhcpSubnetCreate(SQLModel):
+# --- Validation ---
+#
+# Every value below is templated into dhcpd.conf, read by the root-started
+# dhcpd: a ';', brace or newline in any of them adds statements of the
+# caller's choosing, and `dhcpd -t` accepts them as long as they are well
+# formed. These helpers are also used by DhcpService when writing the file, for
+# rows that did not come through the API.
+
+MAC_RE = re.compile(r'([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}')
+HOST_DECL_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,62}')
+IFACE_RE = re.compile(r'[A-Za-z0-9._@-]{1,15}')
+OPTION_NAME_RE = re.compile(r'[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?')
+# An option value is a quoted string, or a list of IPs/numbers/names/hex bytes
+OPTION_VALUE_RE = re.compile(r'"[^"\\;{}]*"|[A-Za-z0-9 .,:_/-]+')
+
+
+def check_ipv4_list(v, field):
+    """dhcpd 'a, b' lists of IPv4 addresses, normalised."""
+    items = [i for i in re.split(r'[,\s]+', str(v)) if i]
+    if not items:
+        raise ValueError(f"{field}: almeno un indirizzo")
+    return ", ".join(validation.ip_address(i, field, version=4) for i in items)
+
+
+def check_option(name, value):
+    if not OPTION_NAME_RE.fullmatch(str(name)):
+        raise ValueError(f"Nome opzione non valido: {name}")
+    validation.no_control_chars(value, "valore opzione", 500)
+    if not OPTION_VALUE_RE.fullmatch(str(value)):
+        raise ValueError("Valore opzione non valido: una stringa tra virgolette o una lista di IP/numeri/nomi")
+    return value
+
+
+class _SubnetValidators(SQLModel):
+    @field_validator('name', mode='before', check_fields=False)
+    @classmethod
+    def v_name(cls, v):
+        return v if v is None else validation.no_control_chars(v, "nome", 100)
+
+    @field_validator('network', mode='before', check_fields=False)
+    @classmethod
+    def v_network(cls, v):
+        if v is None:
+            return v
+        validation.ip_network(v, "rete", version=4)
+        return str(v).strip()
+
+    @field_validator('range_start', 'range_end', 'gateway', mode='before', check_fields=False)
+    @classmethod
+    def v_ip(cls, v, info):
+        return v if v is None else validation.ip_address(v, info.field_name, version=4)
+
+    @field_validator('dns_servers', mode='before', check_fields=False)
+    @classmethod
+    def v_dns(cls, v):
+        return v if v is None else check_ipv4_list(v, "dns_servers")
+
+    @field_validator('domain_name', mode='before', check_fields=False)
+    @classmethod
+    def v_domain(cls, v):
+        return v if v in (None, "") else validation.hostname(v, "domain_name")
+
+    @field_validator('interface', mode='before', check_fields=False)
+    @classmethod
+    def v_iface(cls, v):
+        if v is not None and not IFACE_RE.fullmatch(str(v)):
+            raise ValueError(f"Interfaccia non valida: {v}")
+        return v
+
+    @field_validator('lease_time', 'max_lease_time', mode='before', check_fields=False)
+    @classmethod
+    def v_lease(cls, v, info):
+        if v is not None and not 60 <= int(v) <= 2_147_483_647:
+            raise ValueError(f"{info.field_name}: secondi non validi (min 60)")
+        return v
+
+
+class _HostValidators(SQLModel):
+    @field_validator('hostname', mode='before', check_fields=False)
+    @classmethod
+    def v_hostname(cls, v):
+        # Used as the name of the host { } declaration
+        if v is not None and not HOST_DECL_RE.fullmatch(str(v)):
+            raise ValueError("Hostname non valido: lettere, cifre, '.', '_' o '-' (max 63)")
+        return v
+
+    @field_validator('mac_address', mode='before', check_fields=False)
+    @classmethod
+    def v_mac(cls, v):
+        if v is not None and not MAC_RE.fullmatch(str(v)):
+            raise ValueError("MAC address non valido (AA:BB:CC:DD:EE:FF)")
+        return v
+
+    @field_validator('ip_address', mode='before', check_fields=False)
+    @classmethod
+    def v_ip(cls, v):
+        return v if v is None else validation.ip_address(v, "ip_address", version=4)
+
+    @field_validator('description', mode='before', check_fields=False)
+    @classmethod
+    def v_description(cls, v):
+        return v if v is None else validation.no_control_chars(v, "descrizione", 255)
+
+
+class DhcpSubnetCreate(_SubnetValidators):
     name: str
     network: str
     range_start: str
@@ -118,7 +226,7 @@ class DhcpSubnetRead(SQLModel):
     active_leases: int = 0
 
 
-class DhcpSubnetUpdate(SQLModel):
+class DhcpSubnetUpdate(_SubnetValidators):
     name: Optional[str] = None
     range_start: Optional[str] = None
     range_end: Optional[str] = None
@@ -131,7 +239,7 @@ class DhcpSubnetUpdate(SQLModel):
     enabled: Optional[bool] = None
 
 
-class DhcpHostCreate(SQLModel):
+class DhcpHostCreate(_HostValidators):
     hostname: str
     mac_address: str
     ip_address: str
@@ -148,7 +256,7 @@ class DhcpHostRead(SQLModel):
     created_at: datetime
 
 
-class DhcpHostUpdate(SQLModel):
+class DhcpHostUpdate(_HostValidators):
     hostname: Optional[str] = None
     mac_address: Optional[str] = None
     ip_address: Optional[str] = None
@@ -159,6 +267,11 @@ class DhcpOptionCreate(SQLModel):
     subnet_id: Optional[uuid.UUID] = None
     option_name: str
     option_value: str
+
+    @model_validator(mode='after')
+    def _check(self):
+        check_option(self.option_name, self.option_value)
+        return self
 
 
 class DhcpOptionRead(SQLModel):

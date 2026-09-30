@@ -16,11 +16,41 @@ from jinja2 import Template
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from .models import DhcpSubnet, DhcpHost, DhcpOption, DhcpLeaseInfo, DhcpSettings
+from pydantic import ValidationError
+
+from .models import (
+    DhcpSubnet, DhcpHost, DhcpOption, DhcpLeaseInfo, DhcpSettings,
+    DhcpSubnetCreate, DhcpHostCreate, MAC_RE, check_option,
+)
 from core.network.service import NetworkService
 from core.services.service import SystemdService
 
 logger = logging.getLogger(__name__)
+
+
+def _usable(schema, row, what: str) -> bool:
+    """
+    Whether a stored row passes the API schema again before it is written to
+    dhcpd.conf. Rows restored from an archive or written before the schemas
+    validated did not go through it; an invalid one is skipped and logged.
+    """
+    try:
+        schema.model_validate({f: getattr(row, f) for f in schema.model_fields if hasattr(row, f)})
+        return True
+    except (ValidationError, ValueError) as e:
+        logger.error(f"DHCP {what} skipped: {e}")
+        return False
+
+
+def _usable_options(options, where: str) -> list:
+    usable = []
+    for opt in options:
+        try:
+            check_option(opt.option_name, opt.option_value)
+            usable.append(opt)
+        except ValueError as e:
+            logger.error(f"DHCP option {opt.option_name!r} ({where}) skipped: {e}")
+    return usable
 
 # System paths
 DHCPD_CONF_PATH = Path("/etc/dhcp/dhcpd.conf")
@@ -113,22 +143,27 @@ class DhcpService:
         result = await session.execute(
             select(DhcpOption).where(DhcpOption.subnet_id == None)
         )
-        global_options = result.scalars().all()
+        global_options = _usable_options(result.scalars().all(), "global")
 
         # Prepare subnet data for template
         subnet_data = []
         for subnet in subnets:
+            if not _usable(DhcpSubnetCreate, subnet, f"subnet {subnet.name!r}"):
+                continue
             # Load hosts for this subnet
             result = await session.execute(
                 select(DhcpHost).where(DhcpHost.subnet_id == subnet.id)
             )
-            hosts = result.scalars().all()
+            hosts = [
+                h for h in result.scalars().all()
+                if _usable(DhcpHostCreate, h, f"reservation {h.hostname!r}")
+            ]
 
             # Load options for this subnet
             result = await session.execute(
                 select(DhcpOption).where(DhcpOption.subnet_id == subnet.id)
             )
-            options = result.scalars().all()
+            options = _usable_options(result.scalars().all(), f"subnet {subnet.name!r}")
 
             # Parse CIDR to get network address and netmask
             try:
@@ -549,11 +584,8 @@ class DhcpService:
             return False
 
     def validate_mac_address(self, mac: str) -> bool:
-        """Validate MAC address format."""
-        pattern = re.compile(
-            r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
-        )
-        return bool(pattern.match(mac))
+        """Validate MAC address format (fullmatch: '$' let a trailing newline through)."""
+        return bool(MAC_RE.fullmatch(mac or ""))
 
     def validate_ip_range(
         self, start: str, end: str, network_cidr: str
