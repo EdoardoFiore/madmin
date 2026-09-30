@@ -134,23 +134,23 @@ function renderRow(h) {
                 <i class="ti ti-dots-vertical"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-                ${canManage ? `<li><a href="#" class="dropdown-item" data-action="edit" data-id="${h.id}">
+                ${canManage ? `<li><a href="#" class="dropdown-item" data-action="edit" data-id="${escapeHtml(h.id)}">
                     <i class="ti ti-edit me-2"></i>${t('reverseproxy.edit')}</a></li>` : ''}
                 ${canCerts ? (h.certificate
-                    ? `<li><a href="#" class="dropdown-item" data-action="cert-revoke" data-id="${h.id}">
+                    ? `<li><a href="#" class="dropdown-item" data-action="cert-revoke" data-id="${escapeHtml(h.id)}">
                         <i class="ti ti-shield-off me-2"></i>${t('reverseproxy.certRevoke')}</a></li>`
-                    : `<li><a href="#" class="dropdown-item" data-action="cert-issue" data-id="${h.id}">
+                    : `<li><a href="#" class="dropdown-item" data-action="cert-issue" data-id="${escapeHtml(h.id)}">
                         <i class="ti ti-shield-check me-2"></i>${t('reverseproxy.certIssue')}</a></li>`) : ''}
-                ${canManage ? `<li><a href="#" class="dropdown-item" data-action="${h.enabled ? 'disable' : 'enable'}" data-id="${h.id}">
+                ${canManage ? `<li><a href="#" class="dropdown-item" data-action="${h.enabled ? 'disable' : 'enable'}" data-id="${escapeHtml(h.id)}">
                     <i class="ti ti-${h.enabled ? 'player-pause' : 'player-play'} me-2"></i>${h.enabled ? t('reverseproxy.disable') : t('reverseproxy.enable')}</a></li>` : ''}
                 ${canManage ? `<li><hr class="dropdown-divider"></li>
-                    <li><a href="#" class="dropdown-item text-danger" data-action="delete" data-id="${h.id}">
+                    <li><a href="#" class="dropdown-item text-danger" data-action="delete" data-id="${escapeHtml(h.id)}">
                     <i class="ti ti-trash me-2"></i>${t('reverseproxy.delete')}</a></li>` : ''}
             </ul>
         </div>`;
 
     return `
-        <tr data-host-id="${h.id}">
+        <tr data-host-id="${escapeHtml(h.id)}">
             <td>
                 <div class="d-flex align-items-center">
                     <span class="avatar avatar-rounded bg-green-lt me-2">${escapeHtml(initial)}</span>
@@ -197,7 +197,7 @@ async function toggleHost(host, enable) {
 
 async function issueCert(host) {
     const root = document.getElementById('revproxy-hosts-table');
-    const row = root?.querySelector(`tr[data-host-id="${host.id}"]`);
+    const row = root?.querySelector(`tr[data-host-id="${escapeHtml(host.id)}"]`);
     if (row) {
         row.cells[2].innerHTML =
             `<span class="badge bg-secondary-lt">` +

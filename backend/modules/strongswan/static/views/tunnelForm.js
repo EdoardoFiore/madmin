@@ -23,9 +23,9 @@ function renderDhCheckboxes(version, selectedGroups = []) {
     return groups.map(g => `
         <div class="form-check form-check-inline">
             <input class="form-check-input dh-checkbox" type="checkbox" 
-                   value="${g.value}" id="dh-${g.value}" 
+                   value="${escapeHtml(g.value)}" id="dh-${escapeHtml(g.value)}" 
                    ${selectedGroups.includes(g.value) ? 'checked' : ''}>
-            <label class="form-check-label small" for="dh-${g.value}">${g.label}</label>
+            <label class="form-check-label small" for="dh-${escapeHtml(g.value)}">${escapeHtml(g.label)}</label>
         </div>
     `).join('');
 }

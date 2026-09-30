@@ -4,7 +4,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPut } from '/static/js/api.js';
-import { showToast, loadingSpinner } from '/static/js/utils.js';
+import { showToast, loadingSpinner, escapeHtml } from '/static/js/utils.js';
 
 // ============================================================
 //  SETTINGS TAB
@@ -73,10 +73,10 @@ export async function renderDnsSettingsTab(settings, perms) {
                             const isChecked = listenIfaces.length === 0 || listenIfaces.includes(i.name);
                             return `
                             <div class="form-check mb-1">
-                                <input class="form-check-input listen-iface-cb" type="checkbox" value="${i.name}" id="iface-${i.name}"
+                                <input class="form-check-input listen-iface-cb" type="checkbox" value="${escapeHtml(i.name)}" id="iface-${escapeHtml(i.name)}"
                                        ${isChecked ? 'checked' : ''} ${!perms.manage ? 'disabled' : ''}>
-                                <label class="form-check-label" for="iface-${i.name}">
-                                    ${i.name} <span class="text-muted">(${i.ip || 'no IP'})</span>
+                                <label class="form-check-label" for="iface-${escapeHtml(i.name)}">
+                                    ${escapeHtml(i.name)} <span class="text-muted">(${escapeHtml(i.ip || 'no IP')})</span>
                                 </label>
                             </div>`;
                         }).join('')}
@@ -211,6 +211,6 @@ async function testDnsQuery() {
             </div>
         `;
     } catch (err) {
-        resultDiv.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+        resultDiv.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
     }
 }

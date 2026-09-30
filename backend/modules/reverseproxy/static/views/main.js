@@ -5,7 +5,7 @@
  * shows a banner if the module is blocked by a port conflict.
  */
 import { apiGet } from '/static/js/api.js';
-import { showToast, loadingSpinner } from '/static/js/utils.js';
+import { showToast, loadingSpinner, escapeHtml } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
 
@@ -104,7 +104,7 @@ async function refreshServiceStatus() {
             banner.innerHTML = `
                 <div class="alert alert-danger mb-0">
                     <h4 class="mb-1"><i class="ti ti-alert-triangle me-2"></i>${t('reverseproxy.blockedTitle')}</h4>
-                    <div class="small">${escapeText(s.block_reason || '')}</div>
+                    <div class="small">${escapeHtml(s.block_reason || '')}</div>
                     <div class="small text-muted mt-1">${t('reverseproxy.blockedHint')}</div>
                 </div>`;
         } else if (s.active) {
@@ -120,10 +120,4 @@ async function refreshServiceStatus() {
         badge.className = 'badge bg-secondary-lt';
         badge.textContent = '–';
     }
-}
-
-function escapeText(s) {
-    const div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
 }

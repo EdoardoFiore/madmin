@@ -6,7 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
+import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
 import { renderDnsZonesTab } from '/static/modules/dns/views/dnsZones.js';
 import { renderDnsSettingsTab, renderDnsTestTab } from '/static/modules/dns/views/dnsSettings.js';
 
@@ -58,7 +58,7 @@ export async function renderDnsStatus(container, perms) {
                     <div class="card">
                         <div class="card-body">
                             <div class="subheader">${t('dns.dnsZones')}</div>
-                            <div class="h1 mb-0 mt-1">${status.total_zones}</div>
+                            <div class="h1 mb-0 mt-1">${escapeHtml(status.total_zones)}</div>
                         </div>
                     </div>
                 </div>
@@ -66,7 +66,7 @@ export async function renderDnsStatus(container, perms) {
                     <div class="card">
                         <div class="card-body">
                             <div class="subheader">${t('dns.totalRecords')}</div>
-                            <div class="h1 mb-0 mt-1">${status.total_records}</div>
+                            <div class="h1 mb-0 mt-1">${escapeHtml(status.total_records)}</div>
                         </div>
                     </div>
                 </div>
@@ -102,7 +102,7 @@ export async function renderDnsStatus(container, perms) {
         renderDnsZonesTab(zones, container, perms);
 
     } catch (err) {
-        container.innerHTML = `<div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${err.message}</div>`;
+        container.innerHTML = `<div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${escapeHtml(err.message)}</div>`;
     }
 }
 

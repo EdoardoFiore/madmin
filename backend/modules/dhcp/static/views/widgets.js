@@ -6,6 +6,7 @@
 
 import { apiGet } from '/static/js/api.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
+import { escapeHtml } from '/static/js/utils.js';
 
 // Load translations at module import time so render() can use t()
 await loadModuleTranslations('dhcp');
@@ -54,19 +55,19 @@ export const widgets = {
                         <div class="row g-2">
                             <div class="col-4">
                                 <div class="text-center">
-                                    <div class="fw-bold fs-3">${status.total_subnets}</div>
+                                    <div class="fw-bold fs-3">${escapeHtml(status.total_subnets)}</div>
                                     <div class="text-muted small">${t('dhcp.subnet')}</div>
                                 </div>
                             </div>
                             <div class="col-4">
                                 <div class="text-center">
-                                    <div class="fw-bold fs-3">${status.total_hosts}</div>
+                                    <div class="fw-bold fs-3">${escapeHtml(status.total_hosts)}</div>
                                     <div class="text-muted small">${t('dhcp.wReserved')}</div>
                                 </div>
                             </div>
                             <div class="col-4">
                                 <div class="text-center">
-                                    <div class="fw-bold fs-3">${activeLeases.length}</div>
+                                    <div class="fw-bold fs-3">${escapeHtml(activeLeases.length)}</div>
                                     <div class="text-muted small">${t('dhcp.wActiveLeases')}</div>
                                 </div>
                             </div>
@@ -98,18 +99,18 @@ export const widgets = {
                                 </div>
                             ` : activeLeases.map(l => `
                                 <div class="list-group-item px-3 py-2 dhcp-lease-item"
-                                     data-search="${(l.ip_address + ' ' + (l.mac_address || '') + ' ' + (l.hostname || '')).toLowerCase()}">
+                                     data-search="${escapeHtml((l.ip_address + ' ' + (l.mac_address || '') + ' ' + (l.hostname || '')).toLowerCase())}">
                                     <div class="d-flex align-items-center justify-content-between">
                                         <div>
-                                            <div class="fw-bold small">${l.ip_address}</div>
+                                            <div class="fw-bold small">${escapeHtml(l.ip_address)}</div>
                                             <div class="text-muted" style="font-size: 0.7rem;">
-                                                ${l.hostname || l.mac_address || '—'}
-                                                ${l.subnet_name ? ` · ${l.subnet_name}` : ''}
+                                                ${escapeHtml(l.hostname || l.mac_address || '—')}
+                                                ${l.subnet_name ? ` · ${escapeHtml(l.subnet_name)}` : ''}
                                             </div>
                                         </div>
                                         <div class="text-end">
                                             <div class="text-muted" style="font-size: 0.7rem;">
-                                                ${l.mac_address && l.hostname ? l.mac_address : ''}
+                                                ${l.mac_address && l.hostname ? escapeHtml(l.mac_address) : ''}
                                             </div>
                                         </div>
                                     </div>

@@ -6,6 +6,7 @@
 
 import { apiGet } from '/static/js/api.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
+import { escapeHtml } from '/static/js/utils.js';
 
 // Load translations at module import time so render() can use t()
 await loadModuleTranslations('strongswan');
@@ -105,9 +106,9 @@ export const widgets = {
                                     <div class="d-flex align-items-center justify-content-between mb-1">
                                         <div class="d-flex align-items-center">
                                             <span class="status-dot ${row.childrenUp > 0 ? 'status-dot-active' : 'status-dot-inactive'} me-2"></span>
-                                            <span class="fw-bold small">${row.name}</span>
+                                            <span class="fw-bold small">${escapeHtml(row.name)}</span>
                                         </div>
-                                        <span class="text-muted" style="font-size: 0.7rem;">${row.remote || '—'}</span>
+                                        <span class="text-muted" style="font-size: 0.7rem;">${escapeHtml(row.remote || '—')}</span>
                                     </div>
                                     ${row.children.length > 0 ? `
                                         <div class="ms-3">
@@ -115,9 +116,9 @@ export const widgets = {
                                                 <div class="d-flex align-items-center py-1" style="font-size: 0.7rem;">
                                                     <span class="badge ${c.is_up ? 'bg-green-lt' : 'bg-secondary-lt'} me-2"
                                                           style="width: 8px; height: 8px; padding: 0; border-radius: 50%;"></span>
-                                                    <span class="text-muted">${c.name}</span>
+                                                    <span class="text-muted">${escapeHtml(c.name)}</span>
                                                     <span class="ms-auto text-muted">
-                                                        ${c.local_ts || '?'} ↔ ${c.remote_ts || '?'}
+                                                        ${escapeHtml(c.local_ts || '?')} ↔ ${escapeHtml(c.remote_ts || '?')}
                                                     </span>
                                                 </div>
                                             `).join('')}

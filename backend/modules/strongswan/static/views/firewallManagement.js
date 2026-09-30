@@ -40,9 +40,9 @@ export async function renderFirewallManagement(container, tunnelId) {
             ${currentChildren.map((child, idx) => `
                 <li class="nav-item" role="presentation">
                     <button class="nav-link ${idx === 0 ? 'active' : ''}" 
-                            id="tab-${child.id}" 
+                            id="tab-${escapeHtml(child.id)}" 
                             data-bs-toggle="tab" 
-                            data-bs-target="#content-${child.id}" 
+                            data-bs-target="#content-${escapeHtml(child.id)}" 
                             type="button" 
                             role="tab">
                         <i class="ti ti-network me-2"></i>
@@ -55,9 +55,9 @@ export async function renderFirewallManagement(container, tunnelId) {
         <div class="tab-content" id="firewall-tab-content">
             ${currentChildren.map((child, idx) => `
                 <div class="tab-pane fade ${idx === 0 ? 'show active' : ''}" 
-                     id="content-${child.id}" 
+                     id="content-${escapeHtml(child.id)}" 
                      role="tabpanel">
-                    <div id="child-firewall-${child.id}">
+                    <div id="child-firewall-${escapeHtml(child.id)}">
                         <div class="text-center py-3">
                             <span class="spinner-border spinner-border-sm"></span> ${t('strongswan.loading')}
                         </div>
@@ -187,16 +187,16 @@ async function loadChildFirewall(tunnelId, child) {
                         <div class="d-flex align-items-center gap-2">
                             <span class="text-muted">${t('strongswan.fwDefaultPolicy')}</span>
                             <div class="btn-group" role="group">
-                                <input type="radio" class="btn-check" name="policy-out-${child.id}" 
-                                       id="policy-out-accept-${child.id}" value="ACCEPT"
+                                <input type="radio" class="btn-check" name="policy-out-${escapeHtml(child.id)}" 
+                                       id="policy-out-accept-${escapeHtml(child.id)}" value="ACCEPT"
                                        ${child.firewall_policy_out === 'ACCEPT' ? 'checked' : ''}
                                        onchange="togglePolicy('${tunnelId}', '${child.id}', true, 'out')">
-                                <label class="btn btn-outline-success btn-sm" for="policy-out-accept-${child.id}">ACCEPT</label>
-                                <input type="radio" class="btn-check" name="policy-out-${child.id}" 
-                                       id="policy-out-drop-${child.id}" value="DROP"
+                                <label class="btn btn-outline-success btn-sm" for="policy-out-accept-${escapeHtml(child.id)}">ACCEPT</label>
+                                <input type="radio" class="btn-check" name="policy-out-${escapeHtml(child.id)}" 
+                                       id="policy-out-drop-${escapeHtml(child.id)}" value="DROP"
                                        ${child.firewall_policy_out === 'DROP' ? 'checked' : ''}
                                        onchange="togglePolicy('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', false, 'out')">
-                                <label class="btn btn-outline-danger btn-sm" for="policy-out-drop-${child.id}">DROP</label>
+                                <label class="btn btn-outline-danger btn-sm" for="policy-out-drop-${escapeHtml(child.id)}">DROP</label>
                             </div>
                         </div>
                         <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'out')">
@@ -220,16 +220,16 @@ async function loadChildFirewall(tunnelId, child) {
                         <div class="d-flex align-items-center gap-2">
                             <span class="text-muted">${t('strongswan.fwDefaultPolicy')}</span>
                             <div class="btn-group" role="group">
-                                <input type="radio" class="btn-check" name="policy-in-${child.id}" 
-                                       id="policy-in-accept-${child.id}" value="ACCEPT"
+                                <input type="radio" class="btn-check" name="policy-in-${escapeHtml(child.id)}" 
+                                       id="policy-in-accept-${escapeHtml(child.id)}" value="ACCEPT"
                                        ${child.firewall_policy_in === 'ACCEPT' ? 'checked' : ''}
                                        onchange="togglePolicy('${tunnelId}', '${child.id}', true, 'in')">
-                                <label class="btn btn-outline-success btn-sm" for="policy-in-accept-${child.id}">ACCEPT</label>
-                                <input type="radio" class="btn-check" name="policy-in-${child.id}" 
-                                       id="policy-in-drop-${child.id}" value="DROP"
+                                <label class="btn btn-outline-success btn-sm" for="policy-in-accept-${escapeHtml(child.id)}">ACCEPT</label>
+                                <input type="radio" class="btn-check" name="policy-in-${escapeHtml(child.id)}" 
+                                       id="policy-in-drop-${escapeHtml(child.id)}" value="DROP"
                                        ${child.firewall_policy_in === 'DROP' ? 'checked' : ''}
                                        onchange="togglePolicy('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', false, 'in')">
-                                <label class="btn btn-outline-danger btn-sm" for="policy-in-drop-${child.id}">DROP</label>
+                                <label class="btn btn-outline-danger btn-sm" for="policy-in-drop-${escapeHtml(child.id)}">DROP</label>
                             </div>
                         </div>
                         <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'in')">
@@ -333,13 +333,13 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
             </thead>
             <tbody>
                 ${rules.map(rule => `
-                    <tr data-rule-id="${rule.id}">
+                    <tr data-rule-id="${escapeHtml(rule.id)}">
                         <td class="drag-handle" style="cursor: grab;">
                             <i class="ti ti-grip-vertical text-muted"></i>
                         </td>
                         <td>
                             <span class="badge ${rule.action === 'ACCEPT' ? 'bg-success-lt' : 'bg-danger-lt'}">
-                                ${rule.action}
+                                ${escapeHtml(rule.action)}
                             </span>
                         </td>
                         <td>${rule.protocol ? `<code>${escapeHtml(rule.protocol)}</code>` : `<span class="text-muted">${t('strongswan.fwProtocolAll')}</span>`}</td>

@@ -671,24 +671,24 @@ function renderGroupedPermissions(userPerms) {
 
         const levelHtml = levels.map(l => `
             <label class="form-selectgroup-item flex-fill">
-                <input type="radio" name="lvl-${area.key}" value="${l.value}"
-                       class="form-selectgroup-input perm-level" data-area="${area.key}"
+                <input type="radio" name="lvl-${escapeHtml(area.key)}" value="${escapeHtml(l.value)}"
+                       class="form-selectgroup-input perm-level" data-area="${escapeHtml(area.key)}"
                        ${level === l.value ? 'checked' : ''}>
                 <span class="form-selectgroup-label d-block text-center py-1 px-2">
-                    <i class="ti ${l.icon} me-1"></i>${l.label}
+                    <i class="ti ${escapeHtml(l.icon)} me-1"></i>${escapeHtml(l.label)}
                 </span>
             </label>
         `).join('');
 
         const capsHtml = area.caps.length === 0 ? '' : `
-            <div class="mt-3 pt-2 border-top perm-caps" data-area="${area.key}">
+            <div class="mt-3 pt-2 border-top perm-caps" data-area="${escapeHtml(area.key)}">
                 <div class="text-muted small mb-2">${t('users.permCapabilities')}</div>
                 ${area.caps.map(cap => {
             const danger = DANGEROUS_CAPS.has(cap.slug);
             return `
                     <label class="form-check form-switch mb-1 d-flex align-items-center">
                         <input class="form-check-input perm-cap" type="checkbox" value="${escapeAttr(cap.slug)}"
-                               data-area="${area.key}" ${held.has(cap.slug) ? 'checked' : ''}
+                               data-area="${escapeHtml(area.key)}" ${held.has(cap.slug) ? 'checked' : ''}
                                ${level === 'none' ? 'disabled' : ''}>
                         <span class="form-check-label flex-fill">
                             ${escapeHtml(capLabel(cap.slug))}
@@ -870,11 +870,11 @@ function renderModuleDefaults(user) {
                 <div class="form-selectgroup d-flex gap-1" style="max-width: 24rem;">
                     ${levels.map(l => `
                     <label class="form-selectgroup-item flex-fill">
-                        <input type="radio" name="module-default-level" value="${l.value}"
+                        <input type="radio" name="module-default-level" value="${escapeHtml(l.value)}"
                                class="form-selectgroup-input" id="mdl-${l.value}"
                                ${level === l.value ? 'checked' : ''}>
                         <span class="form-selectgroup-label d-block text-center py-1 px-2">
-                            <i class="ti ${l.icon} me-1"></i>${l.label}
+                            <i class="ti ${escapeHtml(l.icon)} me-1"></i>${escapeHtml(l.label)}
                         </span>
                     </label>
                     `).join('')}
@@ -1219,7 +1219,7 @@ function setupEnable2FA() {
             // Show backup codes, one per line in textContent: the copy button copies it as is
             const codesList = document.getElementById('backup-codes-list');
             codesList.innerHTML = twoFaSetupData.backup_codes.map(c =>
-                `<div class="col-6 col-md-4"><span class="badge bg-secondary-lt font-monospace w-100 py-2">${c}</span></div>`
+                `<div class="col-6 col-md-4"><span class="badge bg-secondary-lt font-monospace w-100 py-2">${escapeHtml(c)}</span></div>`
             ).join('\n');
 
             // Download button for setup backup codes
@@ -1391,7 +1391,7 @@ function setupRegenerateCodes() {
                 // Show backup codes in Tabler modal
                 const codesContainer = document.getElementById('backup-codes-display');
                 codesContainer.innerHTML = result.backup_codes.map(c =>
-                    `<div class="col-6"><code class="fs-4">${c}</code></div>`
+                    `<div class="col-6"><code class="fs-4">${escapeHtml(c)}</code></div>`
                 ).join('\n');
 
                 // Download button

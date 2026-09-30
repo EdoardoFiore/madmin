@@ -69,7 +69,7 @@ export async function openHostForm({ host = null, onSaved, perms = {} }) {
                                 <label class="form-label">${t('reverseproxy.accessList')}</label>
                                 <select class="form-select" id="rphf-acl">
                                     <option value="">${t('reverseproxy.publiclyAccessible')}</option>
-                                    ${acls.map(a => `<option value="${a.id}" ${host?.access_list_id === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}
+                                    ${acls.map(a => `<option value="${escapeHtml(a.id)}" ${host?.access_list_id === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}
                                 </select>
                             </div>
                             <div class="row">

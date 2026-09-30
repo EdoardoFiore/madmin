@@ -50,7 +50,7 @@ export async function init(container, instanceId) {
             loadGroupDetails();
         }
     } catch (err) {
-        container.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+        container.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -70,7 +70,7 @@ function render(container) {
                     <label class="btn btn-outline-danger btn-sm" for="policy-drop">DROP</label>
                 </div>` : `
                 <span class="badge ${instance?.firewall_default_policy === 'DROP' ? 'bg-danger-lt' : 'bg-success-lt'} fs-6">
-                    ${instance?.firewall_default_policy || 'ACCEPT'}
+                    ${escapeHtml(instance?.firewall_default_policy || 'ACCEPT')}
                 </span>`}
             </div>
         </div>
@@ -141,7 +141,7 @@ function render(container) {
                     <div class="modal-body">
                         <select class="form-select" id="member-client-select">
                             <option value="">${t('openvpn.selectClient')}</option>
-                            ${clients.filter(c => !c.revoked).map(c => `<option value="${c.id}">${c.name} (${c.allocated_ip})</option>`).join('')}
+                            ${clients.filter(c => !c.revoked).map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)} (${escapeHtml(c.allocated_ip)})</option>`).join('')}
                         </select>
                     </div>
                     <div class="modal-footer">
@@ -212,17 +212,17 @@ function renderGroupsList() {
     }
 
     return groups.map(g => `
-        <div class="list-group-item list-group-item-action ${g.id === currentGroupId ? 'active' : ''} d-flex align-items-center p-0" data-group-id="${g.id}">
+        <div class="list-group-item list-group-item-action ${g.id === currentGroupId ? 'active' : ''} d-flex align-items-center p-0" data-group-id="${escapeHtml(g.id)}">
             ${canManageGroups ? `<div class="px-2 py-3 cursor-move group-drag-handle ${g.id === currentGroupId ? 'text-reset' : 'text-muted'}"><i class="ti ti-grip-vertical"></i></div>` : ''}
             <a href="#" class="flex-grow-1 p-3 text-decoration-none text-reset" onclick="event.preventDefault(); selectGroup('${escapeHtml(g.id)}')">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
-                        <strong>${g.name}</strong>
+                        <strong>${escapeHtml(g.name)}</strong>
                         <small class="d-block ${g.id === currentGroupId ? 'text-reset opacity-75' : 'text-muted'}">${g.description || t('openvpn.noDescription')}</small>
                     </div>
                     <div class="d-flex gap-1">
-                        <span class="badge ${g.id === currentGroupId ? 'bg-white text-primary' : 'bg-blue-lt text-blue'}">${g.member_count} <i class="ti ti-users"></i></span>
-                        <span class="badge ${g.id === currentGroupId ? 'bg-white text-primary' : 'bg-green-lt text-green'}">${g.rule_count} <i class="ti ti-shield"></i></span>
+                        <span class="badge ${g.id === currentGroupId ? 'bg-white text-primary' : 'bg-blue-lt text-blue'}">${escapeHtml(g.member_count)} <i class="ti ti-users"></i></span>
+                        <span class="badge ${g.id === currentGroupId ? 'bg-white text-primary' : 'bg-green-lt text-green'}">${escapeHtml(g.rule_count)} <i class="ti ti-shield"></i></span>
                     </div>
                 </div>
             </a>
@@ -249,8 +249,8 @@ function renderGroupDetails() {
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <div>
-                    <h4 class="card-title mb-0">${group.name}</h4>
-                    <small class="text-muted">${group.description || ''}</small>
+                    <h4 class="card-title mb-0">${escapeHtml(group.name)}</h4>
+                    <small class="text-muted">${escapeHtml(group.description || '')}</small>
                 </div>
                 ${canManageGroups ? `
                 <button class="btn btn-sm btn-outline-danger" id="btn-delete-group">
@@ -314,7 +314,7 @@ function renderMembers(members) {
         <div class="d-flex flex-wrap gap-2">
             ${members.map(m => `
                 <span class="badge bg-primary-lt d-inline-flex align-items-center gap-2">
-                    ${m.client_name} <small class="opacity-75">(${m.client_ip})</small>
+                    ${escapeHtml(m.client_name)} <small class="opacity-75">(${escapeHtml(m.client_ip)})</small>
                     ${canManageGroups ? `
                     <button class="btn btn-ghost-danger btn-sm p-0" onclick="removeMember('${escapeHtml(m.client_id)}')">
                         <i class="ti ti-x"></i>
@@ -350,14 +350,14 @@ function renderRules(rules) {
             </thead>
             <tbody id="rules-tbody">
                 ${rules.map((r, i) => `
-                    <tr data-rule-id="${r.id}" data-order="${r.order}">
+                    <tr data-rule-id="${escapeHtml(r.id)}" data-order="${escapeHtml(r.order)}">
                         ${canManageGroups ? '<td class="cursor-move text-muted" style="cursor: grab;"><i class="ti ti-grip-vertical"></i></td>' : ''}
                         <td class="text-muted">${i + 1}</td>
-                        <td><span class="badge ${r.action === 'ACCEPT' ? 'bg-success-lt' : 'bg-danger-lt'}">${r.action}</span></td>
-                        <td><code>${r.protocol}</code></td>
-                        <td><code>${r.destination}</code></td>
-                        <td>${r.port || '*'}</td>
-                        <td class="text-muted">${r.description || ''}</td>
+                        <td><span class="badge ${r.action === 'ACCEPT' ? 'bg-success-lt' : 'bg-danger-lt'}">${escapeHtml(r.action)}</span></td>
+                        <td><code>${escapeHtml(r.protocol)}</code></td>
+                        <td><code>${escapeHtml(r.destination)}</code></td>
+                        <td>${escapeHtml(r.port || '*')}</td>
+                        <td class="text-muted">${escapeHtml(r.description || '')}</td>
                         ${canManageGroups ? `
                         <td>
                             <div class="btn-group btn-group-sm">

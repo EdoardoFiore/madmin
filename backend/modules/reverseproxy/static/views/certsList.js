@@ -91,9 +91,9 @@ function renderCertRow(h) {
                 <i class="ti ti-dots-vertical"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end">
-                <li><a href="#" class="dropdown-item" data-cert-action="renew" data-id="${h.id}">
+                <li><a href="#" class="dropdown-item" data-cert-action="renew" data-id="${escapeHtml(h.id)}">
                     <i class="ti ti-refresh me-2"></i>${t('reverseproxy.certRenew')}</a></li>
-                <li><a href="#" class="dropdown-item text-danger" data-cert-action="revoke" data-id="${h.id}">
+                <li><a href="#" class="dropdown-item text-danger" data-cert-action="revoke" data-id="${escapeHtml(h.id)}">
                     <i class="ti ti-shield-off me-2"></i>${t('reverseproxy.certRevoke')}</a></li>
             </ul>
         </div>` : '';

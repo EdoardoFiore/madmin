@@ -55,23 +55,15 @@ export function showToast(message, type = 'info', duration = 3000) {
 }
 
 /**
- * Escape HTML to prevent XSS
- * @param {string} text 
+ * Escape a value for interpolation into HTML, in text content or inside a
+ * quoted attribute. Quotes are escaped too: views put server data in
+ * title="…" / value="…", where escaping only <>& let a '"' close the
+ * attribute and add event handlers.
+ * null/undefined render as ''.
+ * @param {*} text
  * @returns {string}
  */
 export function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-/**
- * Escape a string for safe interpolation inside a double-quoted HTML attribute.
- * Unlike escapeHtml, this also escapes quotes to prevent attribute breakout.
- * @param {string} text
- * @returns {string}
- */
-export function escapeAttr(text) {
     return String(text ?? '')
         .replace(/&/g, '&amp;')
         .replace(/"/g, '&quot;')
@@ -79,6 +71,9 @@ export function escapeAttr(text) {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
 }
+
+/** Same as escapeHtml; kept for the views that import it by this name. */
+export const escapeAttr = escapeHtml;
 
 /**
  * Format a date for display

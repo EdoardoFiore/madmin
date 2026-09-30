@@ -82,7 +82,7 @@ function renderClientRows(clients, canClients) {
                     </span>
                 ` : ''}
             </td>
-            <td><code>${c.allocated_ip}</code></td>
+            <td><code>${escapeHtml(c.allocated_ip)}</code></td>
             <td>
                 ${c.is_connected === true ? `
                 <small class="text-muted">
@@ -185,7 +185,7 @@ async function renderInstanceDetail(container, canManage, canClients) {
                     <div class="d-flex justify-content-between align-items-center w-100">
                         <div>
                             <h3 class="card-title mb-0">${escapeHtml(instance.name)}</h3>
-                            <small class="text-muted">${t('wireguard.interface')}: ${instance.interface}</small>
+                            <small class="text-muted">${t('wireguard.interface')}: ${escapeHtml(instance.interface)}</small>
                         </div>
                         <div class="btn-group">
                             ${canManage ? `
@@ -210,15 +210,15 @@ async function renderInstanceDetail(container, canManage, canClients) {
                         </div>
                         <div class="col-md-3">
                             <span class="text-muted">${t('wireguard.port')}</span><br>
-                            <strong>${instance.port}/UDP</strong>
+                            <strong>${escapeHtml(instance.port)}/UDP</strong>
                         </div>
                         <div class="col-md-3">
                             <span class="text-muted">${t('wireguard.vpnSubnet')}</span><br>
-                            <code>${instance.subnet}</code>
+                            <code>${escapeHtml(instance.subnet)}</code>
                         </div>
                         <div class="col-md-3">
                             <span class="text-muted">${t('wireguard.activeClients')}</span><br>
-                            <strong>${instance.client_count}</strong>
+                            <strong>${escapeHtml(instance.client_count)}</strong>
                         </div>
                     </div>
 
@@ -439,7 +439,7 @@ async function renderInstanceDetail(container, canManage, canClients) {
                                                 <input type="text" class="form-control defaults-route-input" value="${r.network || r}" placeholder="es. 192.168.1.0/24" style="flex: 2">
                                                 <select class="form-select defaults-route-interface" style="flex: 1">
                                                     <option value="">Auto</option>
-                                                    ${networkInterfaces.map(iface => `<option value="${iface.name}" ${r.interface === iface.name ? 'selected' : ''}>${iface.name}</option>`).join('')}
+                                                    ${networkInterfaces.map(iface => `<option value="${escapeHtml(iface.name)}" ${r.interface === iface.name ? 'selected' : ''}>${escapeHtml(iface.name)}</option>`).join('')}
                                                 </select>
                                                 <button class="btn btn-outline-danger defaults-remove-route" type="button"><i class="ti ti-minus"></i></button>
                                             </div>
@@ -449,7 +449,7 @@ async function renderInstanceDetail(container, canManage, canClients) {
                                         <input type="text" class="form-control defaults-route-input" placeholder="es. 192.168.1.0/24" style="flex: 2">
                                         <select class="form-select defaults-route-interface" style="flex: 1">
                                             <option value="">Auto</option>
-                                            ${networkInterfaces.map(iface => `<option value="${iface.name}">${iface.name}</option>`).join('')}
+                                            ${networkInterfaces.map(iface => `<option value="${escapeHtml(iface.name)}">${escapeHtml(iface.name)}</option>`).join('')}
                                         </select>
                                         <button class="btn btn-outline-success btn-add-defaults-route" type="button"><i class="ti ti-plus"></i></button>
                                     </div>
@@ -471,7 +471,7 @@ async function renderInstanceDetail(container, canManage, canClients) {
                         <div class="mb-3">
                             <label class="form-label">${t('wireguard.publicEndpoint')}</label>
                             <input type="text" class="form-control" id="edit-default-endpoint"
-                                   value="${instance.endpoint || ''}"
+                                   value="${escapeHtml(instance.endpoint || '')}"
                                    placeholder="${t('wireguard.autoEndpoint')}">
                             <small class="form-hint">${t('wireguard.endpointHint')}</small>
                         </div>
@@ -571,7 +571,7 @@ async function renderInstanceDetail(container, canManage, canClients) {
                 const groupContainer = document.getElementById('new-client-group-container');
                 groupSelect.innerHTML = `<option value="">${t('wireguard.noGroup')}</option>`;
                 if (groups && groups.length > 0) {
-                    groups.forEach(g => { groupSelect.innerHTML += `<option value="${g.id}">${escapeHtml(g.name)}</option>`; });
+                    groups.forEach(g => { groupSelect.innerHTML += `<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`; });
                     groupContainer.style.display = 'block';
                 } else {
                     groupContainer.style.display = 'none';
@@ -639,7 +639,7 @@ async function renderInstanceDetail(container, canManage, canClients) {
                     <input type="text" class="form-control defaults-route-input" placeholder="es. 192.168.1.0/24" style="flex: 2">
                     <select class="form-select defaults-route-interface" style="flex: 1">
                         <option value="">Auto</option>
-                        ${networkInterfaces.map(iface => `<option value="${iface.name}">${iface.name}</option>`).join('')}
+                        ${networkInterfaces.map(iface => `<option value="${escapeHtml(iface.name)}">${escapeHtml(iface.name)}</option>`).join('')}
                     </select>
                     <button class="btn btn-outline-danger defaults-remove-route" type="button"><i class="ti ti-minus"></i></button>
                 `;
@@ -697,13 +697,13 @@ async function renderInstanceDetail(container, canManage, canClients) {
                 const firewallModule = await import('./firewall.js');
                 await firewallModule.init(document.getElementById('firewall-content'), currentInstanceId);
             } catch (err) {
-                document.getElementById('firewall-content').innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+                document.getElementById('firewall-content').innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
             }
         });
 
         registerGlobalFunctions(container, canManage, canClients);
     } catch (err) {
-        container.innerHTML = `<div class="alert alert-danger"><i class="ti ti-alert-circle me-2"></i>${err.message}</div>`;
+        container.innerHTML = `<div class="alert alert-danger"><i class="ti ti-alert-circle me-2"></i>${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -751,7 +751,7 @@ function registerGlobalFunctions(container, canManage, canClients) {
     };
 
     window.resetClientDefaults = async (name) => {
-        if (await confirmDialog(t('wireguard.confirmResetTitle'), t('wireguard.confirmResetMsg').replace('{name}', name), t('wireguard.confirmResetBtn'), 'btn-warning', true)) {
+        if (await confirmDialog(t('wireguard.confirmResetTitle'), t('wireguard.confirmResetMsg').replace('{name}', () => escapeHtml(name)), t('wireguard.confirmResetBtn'), 'btn-warning', true)) {
             try {
                 await apiPatch(`${MODULE_API}/instances/${currentInstanceId}/clients/${name}`, { allowed_ips: '', dns: '' });
                 showToast(t('wireguard.clientResetDone'), 'success');
@@ -854,7 +854,7 @@ async function renderClientModeDetail(container, instance, canManage) {
                         <h3 class="card-title mb-0">
                             <span class="badge bg-orange-lt me-2">Client</span>${escapeHtml(instance.name)}
                         </h3>
-                        <small class="text-muted">${t('wireguard.interface')}: ${instance.interface}</small>
+                        <small class="text-muted">${t('wireguard.interface')}: ${escapeHtml(instance.interface)}</small>
                     </div>
                     <div class="btn-group">
                         ${canManage ? `
@@ -979,7 +979,7 @@ async function renderClientModeDetail(container, instance, canManage) {
                 </div>
             `;
         } catch (err) {
-            liveContent.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+            liveContent.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
         }
     });
 

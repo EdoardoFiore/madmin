@@ -215,7 +215,7 @@ export async function render(container) {
     for (const { widget, enabled } of ordered) {
         if (!enabled) continue;
         widgetsHtml += `
-            <div class="col-lg-${widget.col}" data-widget-id="${widget.id}">
+            <div class="col-lg-${escapeHtml(widget.col)}" data-widget-id="${escapeHtml(widget.id)}">
                 ${widget.render()}
             </div>
         `;
@@ -278,12 +278,12 @@ function openWidgetConfigModal() {
                             ${nonFixed.map(p => {
         const w = WIDGET_MAP[p.id];
         return `
-                                    <div class="list-group-item d-flex align-items-center" data-widget-id="${p.id}">
+                                    <div class="list-group-item d-flex align-items-center" data-widget-id="${escapeHtml(p.id)}">
                                         <i class="ti ti-grip-vertical text-muted me-2 drag-handle" style="cursor: grab;"></i>
                                         <label class="form-check form-switch mb-0 flex-fill">
                                             <input type="checkbox" class="form-check-input widget-modal-toggle" 
-                                                   data-widget-id="${p.id}" ${p.enabled ? 'checked' : ''}>
-                                            <span class="form-check-label">${w.title}</span>
+                                                   data-widget-id="${escapeHtml(p.id)}" ${p.enabled ? 'checked' : ''}>
+                                            <span class="form-check-label">${escapeHtml(w.title)}</span>
                                         </label>
                                     </div>
                                 `;
@@ -622,14 +622,14 @@ function renderStatCards() {
                             <div class="card card-sm">
                                 <div class="card-body">
                                     <div class="d-flex align-items-center">
-                                        <div class="subheader">${c.title}</div>
+                                        <div class="subheader">${escapeHtml(c.title)}</div>
                                     </div>
-                                    <div class="h1 mb-3" id="${c.id}">
+                                    <div class="h1 mb-3" id="${escapeHtml(c.id)}">
                                         <span class="spinner-border spinner-border-sm"></span>
                                     </div>
                                     <div class="d-flex mb-2">
-                                        <div class="text-muted">${c.sub}</div>
-                                        ${c.subId ? `<div class="ms-auto" id="${c.subId}"><span class="spinner-border spinner-border-sm"></span></div>` : ''}
+                                        <div class="text-muted">${escapeHtml(c.sub)}</div>
+                                        ${c.subId ? `<div class="ms-auto" id="${escapeHtml(c.subId)}"><span class="spinner-border spinner-border-sm"></span></div>` : ''}
                                     </div>
                                 </div>
                             </div>
@@ -670,8 +670,8 @@ function renderQuickActions() {
                 <div class="row g-3">
                     ${actions.map(a => `
                     <div class="col-6">
-                        <a href="${a.href}" class="btn btn-outline-primary w-100">
-                            <i class="ti ${a.icon} me-2"></i>${t(a.labelKey)}
+                        <a href="${escapeHtml(a.href)}" class="btn btn-outline-primary w-100">
+                            <i class="ti ${escapeHtml(a.icon)} me-2"></i>${t(a.labelKey)}
                         </a>
                     </div>
                     `).join('')}
@@ -692,7 +692,7 @@ async function loadWelcome() {
         if (el && uptime.available) {
             el.innerHTML = `
                 <div class="text-white opacity-75" style="font-size: 0.85rem;">
-                    <i class="ti ti-clock me-1"></i>${t('dashboard.onlineSince')} <strong>${uptime.uptime_formatted}</strong>
+                    <i class="ti ti-clock me-1"></i>${t('dashboard.onlineSince')} <strong>${escapeHtml(uptime.uptime_formatted)}</strong>
                 </div>
             `;
         }
@@ -709,7 +709,7 @@ async function loadSystemStats() {
             document.getElementById('system-stats-container').innerHTML = `
                 <div class="col-12 text-center text-muted">
                     <i class="ti ti-alert-circle me-2"></i>
-                    ${t('dashboard.statsNotAvailable', { error: stats.error || 'psutil' })}
+                    ${t('dashboard.statsNotAvailable', { error: escapeHtml(stats.error || 'psutil') })}
                 </div>
             `;
             return;
@@ -833,11 +833,11 @@ async function loadResourceGraphs(hours) {
         document.getElementById('disk-minmax')?.remove();
 
         document.getElementById('chart-cpu')?.insertAdjacentHTML('afterend',
-            `<div id="cpu-minmax" class="text-muted small mt-1">Min: ${cpuMinMax.min}% | Max: ${cpuMinMax.max}%</div>`);
+            `<div id="cpu-minmax" class="text-muted small mt-1">Min: ${escapeHtml(cpuMinMax.min)}% | Max: ${escapeHtml(cpuMinMax.max)}%</div>`);
         document.getElementById('chart-ram')?.insertAdjacentHTML('afterend',
-            `<div id="ram-minmax" class="text-muted small mt-1">Min: ${ramMinMax.min} GB | Max: ${ramMinMax.max} GB (${ramTotalGB.toFixed(0)} GB tot)</div>`);
+            `<div id="ram-minmax" class="text-muted small mt-1">Min: ${escapeHtml(ramMinMax.min)} GB | Max: ${escapeHtml(ramMinMax.max)} GB (${ramTotalGB.toFixed(0)} GB tot)</div>`);
         document.getElementById('chart-disk')?.insertAdjacentHTML('afterend',
-            `<div id="disk-minmax" class="text-muted small mt-1">Min: ${diskMinMax.min} GB | Max: ${diskMinMax.max} GB (${diskTotalGB.toFixed(0)} GB tot)</div>`);
+            `<div id="disk-minmax" class="text-muted small mt-1">Min: ${escapeHtml(diskMinMax.min)} GB | Max: ${escapeHtml(diskMinMax.max)} GB (${diskTotalGB.toFixed(0)} GB tot)</div>`);
 
     } catch (error) {
         console.error('Error loading resource graphs:', error);
@@ -862,7 +862,7 @@ async function loadNetTraffic() {
 
         const interfaces = Object.keys(netData.interfaces);
         select.innerHTML = interfaces.map((iface, i) =>
-            `<option value="${iface}" ${i === 0 ? 'selected' : ''}>${iface}</option>`
+            `<option value="${escapeHtml(iface)}" ${i === 0 ? 'selected' : ''}>${escapeHtml(iface)}</option>`
         ).join('');
 
         // Load graph for first interface
@@ -970,7 +970,7 @@ async function loadAlerts() {
         container.innerHTML = alerts.map(alert => `
             <div class="d-flex align-items-center py-2 ${alerts.indexOf(alert) > 0 ? 'border-top' : ''}">
                 <span class="avatar avatar-sm bg-${alert.severity === 'danger' ? 'danger' : 'warning'}-lt me-3">
-                    <i class="ti ${alert.icon}"></i>
+                    <i class="ti ${escapeHtml(alert.icon)}"></i>
                 </span>
                 <div>
                     <div class="fw-bold text-${alert.severity === 'danger' ? 'danger' : 'warning'}">${escapeHtml(alert.message)}</div>

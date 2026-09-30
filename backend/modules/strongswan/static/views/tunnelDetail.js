@@ -249,7 +249,7 @@ function renderDetail(container, tunnelId) {
                             <tr><td class="text-muted" width="40%">NAT-T</td>
                                 <td>${tunnel.nat_traversal ? '<span class="badge bg-green-lt">Enabled</span>' : '<span class="badge bg-secondary-lt">Disabled</span>'}</td></tr>
                             <tr><td class="text-muted">DPD</td>
-                                <td>${tunnel.dpd_action} (${tunnel.dpd_delay}s)</td></tr>
+                                <td>${escapeHtml(tunnel.dpd_action)} (${escapeHtml(tunnel.dpd_delay)}s)</td></tr>
                         </table>
                     </div>
                 </div>
@@ -266,7 +266,7 @@ function renderDetail(container, tunnelId) {
                             <tr><td class="text-muted" width="40%">${t('strongswan.authMethod')}</td>
                                 <td>${tunnel.auth_method === 'psk' ? 'Pre-Shared Key' : 'Certificate'}</td></tr>
                             <tr><td class="text-muted">IKE</td>
-                                <td><span class="badge bg-azure-lt">Version ${tunnel.ike_version}</span></td></tr>
+                                <td><span class="badge bg-azure-lt">Version ${escapeHtml(tunnel.ike_version)}</span></td></tr>
                             ${tunnel.local_id ? `<tr><td class="text-muted">Local ID</td><td><code>${escapeHtml(tunnel.local_id)}</code></td></tr>` : ''}
                             ${tunnel.remote_id ? `<tr><td class="text-muted">Remote ID</td><td><code>${escapeHtml(tunnel.remote_id)}</code></td></tr>` : ''}
                         </table>
@@ -283,12 +283,12 @@ function renderDetail(container, tunnelId) {
                     <div class="card-body py-2">
                         <table class="table table-sm table-borderless mb-0">
                             <tr><td class="text-muted" width="40%">Encryption</td>
-                                <td><code>${proposal.enc}</code></td></tr>
-                            ${proposal.integ ? `<tr><td class="text-muted">Integrity</td><td><code>${proposal.integ}</code></td></tr>` : ''}
+                                <td><code>${escapeHtml(proposal.enc)}</code></td></tr>
+                            ${proposal.integ ? `<tr><td class="text-muted">Integrity</td><td><code>${escapeHtml(proposal.integ)}</code></td></tr>` : ''}
                             <tr><td class="text-muted">DH Group</td>
-                                <td><code>${proposal.dh}</code></td></tr>
+                                <td><code>${escapeHtml(proposal.dh)}</code></td></tr>
                             <tr><td class="text-muted">Lifetime</td>
-                                <td>${tunnel.ike_lifetime}s</td></tr>
+                                <td>${escapeHtml(tunnel.ike_lifetime)}s</td></tr>
                         </table>
                     </div>
                 </div>
@@ -413,31 +413,31 @@ function renderPhase2Table() {
                     ${children.map(c => `
                         <tr>
                             <td>
-                                <span id="status-dot-${c.name}" class="status-dot ${c.enabled ? 'bg-secondary' : 'bg-danger'}" 
+                                <span id="status-dot-${escapeHtml(c.name)}" class="status-dot ${c.enabled ? 'bg-secondary' : 'bg-danger'}" 
                                       title="${c.enabled ? t('strongswan.phase2StatusChecking') : t('strongswan.phase2StatusDisabled')}"></span>
                             </td>
                             <td><strong>${escapeHtml(c.name)}</strong></td>
                             <td><code class="small">${escapeHtml(c.local_ts)}</code></td>
                             <td><code class="small">${escapeHtml(c.remote_ts)}</code></td>
                             <td><code class="small text-muted">${escapeHtml(c.esp_proposal || 'default')}</code></td>
-                            <td><span class="badge bg-secondary-lt">${c.start_action}</span></td>
+                            <td><span class="badge bg-secondary-lt">${escapeHtml(c.start_action)}</span></td>
                             ${canManage ? `
                             <td>
                                 <div class="btn-list flex-nowrap">
                                     <button class="btn btn-sm btn-ghost-success btn-start-child"
-                                            data-id="${c.id}" title="${t('strongswan.childSaStart')}">
+                                            data-id="${escapeHtml(c.id)}" title="${t('strongswan.childSaStart')}">
                                         <i class="ti ti-player-play"></i>
                                     </button>
                                     <button class="btn btn-sm btn-ghost-warning btn-stop-child"
-                                            data-id="${c.id}" title="${t('strongswan.childSaStop')}">
+                                            data-id="${escapeHtml(c.id)}" title="${t('strongswan.childSaStop')}">
                                         <i class="ti ti-player-stop"></i>
                                     </button>
                                     <button class="btn btn-sm btn-ghost-primary btn-edit-child"
-                                            data-id="${c.id}" title="${t('strongswan.childSaEdit')}">
+                                            data-id="${escapeHtml(c.id)}" title="${t('strongswan.childSaEdit')}">
                                         <i class="ti ti-edit"></i>
                                     </button>
                                     <button class="btn btn-sm btn-ghost-danger btn-delete-child"
-                                            data-id="${c.id}" data-name="${escapeHtml(c.name)}" title="${t('strongswan.childSaDelete')}">
+                                            data-id="${escapeHtml(c.id)}" data-name="${escapeHtml(c.name)}" title="${t('strongswan.childSaDelete')}">
                                         <i class="ti ti-trash"></i>
                                     </button>
                                 </div>

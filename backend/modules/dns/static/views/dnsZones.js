@@ -62,26 +62,26 @@ export function renderDnsZonesTab(zones, container, perms) {
                         </thead>
                         <tbody>
                             ${zones.map(z => `
-                                <tr class="zone-row ${!z.enabled ? 'text-muted' : ''}" data-id="${z.id}" style="cursor: pointer;">
+                                <tr class="zone-row ${!z.enabled ? 'text-muted' : ''}" data-id="${escapeHtml(z.id)}" style="cursor: pointer;">
                                     <td onclick="event.stopPropagation();">
                                         ${perms.zones ? `
                                         <label class="form-check form-switch mb-0">
                                             <input class="form-check-input zone-toggle" type="checkbox"
-                                                   data-id="${z.id}" ${z.enabled ? 'checked' : ''}>
+                                                   data-id="${escapeHtml(z.id)}" ${z.enabled ? 'checked' : ''}>
                                         </label>` : `
                                         <span class="status-dot ${z.enabled ? 'bg-success' : 'bg-secondary'}"></span>`}
                                     </td>
                                     <td>
-                                        <a href="#dns/${z.id}" class="text-reset">
+                                        <a href="#dns/${escapeHtml(z.id)}" class="text-reset">
                                             <strong>${escapeHtml(z.name)}</strong>
                                         </a>
                                     </td>
                                     <td>
                                         <span class="badge ${z.zone_type === 'master' ? 'bg-blue' : z.zone_type === 'forward' ? 'bg-green' : 'bg-yellow'}-lt">
-                                            ${z.zone_type}
+                                            ${escapeHtml(z.zone_type)}
                                         </span>
                                     </td>
-                                    <td><span class="badge bg-blue-lt">${z.record_count}</span></td>
+                                    <td><span class="badge bg-blue-lt">${escapeHtml(z.record_count)}</span></td>
                                     <td><small class="text-muted">${escapeHtml(z.description || '—')}</small></td>
                                     <td>
                                         ${perms.zones ? `
@@ -250,8 +250,8 @@ export async function renderDnsZoneDetail(container, zoneId, perms) {
                                 ${escapeHtml(zone.name)}
                             </h3>
                             <small class="text-muted">
-                                ${t('dns.typeLabel')}: <span class="badge bg-blue-lt">${zone.zone_type}</span>
-                                — ${t('dns.ttlDefault')}: ${zone.ttl_default}s
+                                ${t('dns.typeLabel')}: <span class="badge bg-blue-lt">${escapeHtml(zone.zone_type)}</span>
+                                — ${t('dns.ttlDefault')}: ${escapeHtml(zone.ttl_default)}s
                                 ${zone.description ? ` — ${escapeHtml(zone.description)}` : ''}
                             </small>
                         </div>
@@ -300,7 +300,7 @@ export async function renderDnsZoneDetail(container, zoneId, perms) {
             <div class="card">
                 <div class="card-body text-center text-muted py-4">
                     <i class="ti ti-arrows-right" style="font-size: 2rem;"></i>
-                    <p class="mt-2">${t('dns.forwardZoneMsg', { type: zone.zone_type })}</p>
+                    <p class="mt-2">${t('dns.forwardZoneMsg', { type: escapeHtml(zone.zone_type) })}</p>
                     ${zone.forward_servers ? `<p>${t('dns.server')}: <code>${escapeHtml(zone.forward_servers)}</code></p>` : ''}
                 </div>
             </div>
@@ -324,7 +324,7 @@ export async function renderDnsZoneDetail(container, zoneId, perms) {
     } catch (err) {
         container.innerHTML = `
             <div class="mb-3"><a href="#dns" class="text-muted"><i class="ti ti-arrow-left me-1"></i>${t('dns.backToZones')}</a></div>
-            <div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${err.message}</div>`;
+            <div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -377,7 +377,7 @@ function renderRecordsTable(records, perms) {
                             extraBadges = `<div class="mt-1">
                                 <span class="badge bg-purple-lt">Pri: ${r.priority ?? 10}</span>
                                 <span class="badge bg-azure-lt">Wt: ${r.weight ?? 0}</span>
-                                <span class="badge bg-teal-lt">Port: ${r.port || '-'}</span>
+                                <span class="badge bg-teal-lt">Port: ${escapeHtml(r.port || '-')}</span>
                             </div>`;
                         }
                         return `
@@ -388,7 +388,7 @@ function renderRecordsTable(records, perms) {
                                 <code>${escapeHtml(r.value)}</code>
                                 ${extraBadges}
                             </td>
-                            <td><small>${r.ttl || 'default'}</small></td>
+                            <td><small>${escapeHtml(r.ttl || 'default')}</small></td>
                             <td>
                                 ${perms.records ? `
                                 <div class="btn-group btn-group-sm">
@@ -396,7 +396,7 @@ function renderRecordsTable(records, perms) {
                                             data-record='${JSON.stringify(r).replace(/'/g, "&#39;")}' title="${t('dns.edit')}">
                                         <i class="ti ti-edit"></i>
                                     </button>
-                                    <button class="btn btn-ghost-danger btn-delete-record" data-id="${r.id}" title="${t('dns.delete')}">
+                                    <button class="btn btn-ghost-danger btn-delete-record" data-id="${escapeHtml(r.id)}" title="${t('dns.delete')}">
                                         <i class="ti ti-trash"></i>
                                     </button>
                                 </div>` : ''}
@@ -734,7 +734,7 @@ function renderNewRecordModal(zone) {
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dns.ttlOptional')}</label>
                                 <div class="input-group">
-                                    <input type="number" class="form-control" id="new-record-ttl" placeholder="${zone.ttl_default}">
+                                    <input type="number" class="form-control" id="new-record-ttl" placeholder="${escapeHtml(zone.ttl_default)}">
                                     <span class="input-group-text">sec</span>
                                 </div>
                             </div>
@@ -861,7 +861,7 @@ function renderEditZoneModal(zone) {
                         </div>
                         <div class="mb-3">
                             <label class="form-label">${t('dns.ttlDefaultSec')}</label>
-                            <input type="number" class="form-control" id="edit-zone-ttl" value="${zone.ttl_default}">
+                            <input type="number" class="form-control" id="edit-zone-ttl" value="${escapeHtml(zone.ttl_default)}">
                         </div>
                         <div class="mb-3">
                             <label class="form-label">${t('dns.status')}</label>

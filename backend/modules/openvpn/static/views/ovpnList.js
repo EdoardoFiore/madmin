@@ -279,7 +279,7 @@ async function loadInstances() {
                 const isClient = i.direction === 'client';
                 const portCell = isClient
                     ? `<span class="text-muted">–</span>`
-                    : (i.port ? `${i.port}/${(i.protocol || 'udp').toUpperCase()}` : `<span class="text-muted">–</span>`);
+                    : (i.port ? `${escapeHtml(i.port)}/${(i.protocol || 'udp').toUpperCase()}` : `<span class="text-muted">–</span>`);
                 const subnetCell = isClient
                     ? `<span class="text-muted small" title="${escapeHtml(i.upstream_endpoint || '')}">${escapeHtml((i.upstream_endpoint || '–').substring(0, 22))}</span>`
                     : (i.subnet ? `<code>${escapeHtml(i.subnet)}</code>` : `<span class="text-muted">–</span>`);
@@ -293,13 +293,13 @@ async function loadInstances() {
                         ? `<span class="badge bg-success-lt">${t('openvpn.connected')}</span>`
                         : `<span class="badge bg-secondary-lt">${escapeHtml(i.upstream_status || t('openvpn.statusUnknown'))}</span>`)
                     : i.client_count;
-                return `<tr class="instance-row" data-id="${i.id}" style="cursor: pointer;">
+                return `<tr class="instance-row" data-id="${escapeHtml(i.id)}" style="cursor: pointer;">
                     <td>
                         <span class="status-dot ${i.status === 'running' ? 'status-dot-animated bg-success' : 'bg-secondary'}"
                               title="${i.status === 'running' ? t('openvpn.statusRunning') : t('openvpn.statusStopped')}"></span>
                     </td>
                     <td>
-                        <a href="#openvpn/${i.id}" class="text-reset">
+                        <a href="#openvpn/${escapeHtml(i.id)}" class="text-reset">
                             <strong>${escapeHtml(i.name)}</strong>
                         </a>
                         <div class="small text-muted">
@@ -317,9 +317,9 @@ async function loadInstances() {
                     <td>
                         <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
                             ${_canManage ? (i.status === 'running'
-                                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${i.id}" title="${t('openvpn.stop')}"><i class="ti ti-player-stop"></i></button>`
-                                : `<button class="btn btn-ghost-success btn-start" data-id="${i.id}" title="${t('openvpn.start')}"><i class="ti ti-player-play"></i></button>`) : ''}
-                            ${_canManage ? `<button class="btn btn-ghost-danger btn-delete" data-id="${i.id}" title="${t('openvpn.delete')}"><i class="ti ti-trash"></i></button>` : ''}
+                                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${escapeHtml(i.id)}" title="${t('openvpn.stop')}"><i class="ti ti-player-stop"></i></button>`
+                                : `<button class="btn btn-ghost-success btn-start" data-id="${escapeHtml(i.id)}" title="${t('openvpn.start')}"><i class="ti ti-player-play"></i></button>`) : ''}
+                            ${_canManage ? `<button class="btn btn-ghost-danger btn-delete" data-id="${escapeHtml(i.id)}" title="${t('openvpn.delete')}"><i class="ti ti-trash"></i></button>` : ''}
                         </div>
                     </td>
                 </tr>`;
@@ -328,7 +328,7 @@ async function loadInstances() {
 
         setupInstanceRowActions();
     } catch (err) {
-        listEl.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+        listEl.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -507,8 +507,8 @@ async function loadImportInterfaces() {
     container.innerHTML = phys
         .map(iface => `
             <div class="form-check form-check-inline">
-                <input class="form-check-input import-lan-iface" type="checkbox" id="iface-${iface.name}" value="${iface.name}">
-                <label class="form-check-label" for="iface-${iface.name}">
+                <input class="form-check-input import-lan-iface" type="checkbox" id="iface-${escapeHtml(iface.name)}" value="${escapeHtml(iface.name)}">
+                <label class="form-check-label" for="iface-${escapeHtml(iface.name)}">
                     ${escapeHtml(iface.name)}
                     ${iface.state === 'up' ? '<span class="badge bg-success-lt ms-1">up</span>' : ''}
                 </label>

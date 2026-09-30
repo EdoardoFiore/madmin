@@ -214,7 +214,7 @@ export function parseProposal(proposal) {
 // Create select options HTML
 export function selectOptions(options, selectedValue) {
     return options.map(o =>
-        `<option value="${o.value}" ${o.value === selectedValue ? 'selected' : ''}>${o.label}</option>`
+        `<option value="${escapeHtml(o.value)}" ${o.value === selectedValue ? 'selected' : ''}>${escapeHtml(o.label)}</option>`
     ).join('');
 }
 
@@ -223,9 +223,9 @@ export function renderCheckboxGroup(cls, options, selectedValues = [], inline = 
     return options.map(o => `
         <div class="form-check ${inline ? 'form-check-inline' : 'mb-1'}">
             <input class="form-check-input ${cls}" type="checkbox" 
-                   id="${cls}-${o.value}" value="${o.value}"
+                   id="${cls}-${escapeHtml(o.value)}" value="${escapeHtml(o.value)}"
                    ${selectedValues.includes(o.value) ? 'checked' : ''}>
-            <label class="form-check-label small" for="${cls}-${o.value}">${o.label}</label>
+            <label class="form-check-label small" for="${cls}-${escapeHtml(o.value)}">${escapeHtml(o.label)}</label>
         </div>
     `).join('');
 }
@@ -251,9 +251,9 @@ export function dhCheckboxes(version, selectedValues = ['modp2048']) {
     return groups.map(g => `
         <div class="form-check form-check-inline">
             <input class="form-check-input dh-checkbox" type="checkbox" 
-                   id="dh-${g.value}" value="${g.value}"
+                   id="dh-${escapeHtml(g.value)}" value="${escapeHtml(g.value)}"
                    ${selectedValues.includes(g.value) ? 'checked' : ''}>
-            <label class="form-check-label small" for="dh-${g.value}">${g.label}</label>
+            <label class="form-check-label small" for="dh-${escapeHtml(g.value)}">${escapeHtml(g.label)}</label>
         </div>
     `).join('');
 }
@@ -274,7 +274,7 @@ export function loadingSpinner() {
 export function emptyState(icon, title, description = '') {
     return `<div class="text-center py-5 text-muted">
         <i class="ti ti-${icon}" style="font-size: 3rem;"></i>
-        <p class="mt-2 mb-0">${title}</p>
-        ${description ? `<small>${description}</small>` : ''}
+        <p class="mt-2 mb-0">${escapeHtml(title)}</p>
+        ${description ? `<small>${escapeHtml(description)}</small>` : ''}
     </div>`;
 }

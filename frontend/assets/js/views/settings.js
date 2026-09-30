@@ -1084,7 +1084,7 @@ function setupEventListeners() {
             <div class="alert alert-danger mb-0">
                 <i class="ti ti-plug-connected-x me-1"></i>
                 ${t('settings.portDisconnectWarning')}<br>
-                <strong>https://${location.hostname}:${port}</strong>
+                <strong>https://${escapeHtml(location.hostname)}:${port}</strong>
             </div>`,
             t('settings.portChangeAndRestart'),
             'btn-warning',
@@ -1211,7 +1211,7 @@ async function loadBackupHistory() {
 
         tbody.innerHTML = history.map(backup => `
             <tr>
-                <td><i class="ti ti-file-zip me-2"></i>${backup.filename}</td>
+                <td><i class="ti ti-file-zip me-2"></i>${escapeHtml(backup.filename)}</td>
                 <td>${formatFileSize(backup.size_bytes)}</td>
                 <td>${new Date(backup.created_at).toLocaleString(undefined)}</td>
                 <td class="text-end">
@@ -1305,7 +1305,7 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
     const versionWarning = preview.source_version !== preview.current_version
         ? `<div class="alert alert-warning mb-3">
             <i class="ti ti-alert-triangle me-2"></i>
-            <strong>${t('settings.versionMismatch', { source: preview.source_version, current: preview.current_version })}</strong>
+            <strong>${t('settings.versionMismatch', { source: escapeHtml(preview.source_version), current: escapeHtml(preview.current_version) })}</strong>
            </div>`
         : '';
 
@@ -1351,7 +1351,7 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
                         ${versionWarning}
 
                         <div class="d-flex gap-3 mb-3">
-                            <span class="badge bg-blue-lt">v${preview.source_version}</span>
+                            <span class="badge bg-blue-lt">v${escapeHtml(preview.source_version)}</span>
                             <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString(undefined)}</span>
                         </div>
 
@@ -1497,7 +1497,7 @@ async function loadScpFiles() {
             <div class="d-flex align-items-center justify-content-between mb-2 p-2 bg-surface-secondary rounded">
                 <div>
                     <i class="ti ti-file-zip me-1"></i>
-                    <span class="small">${f.filename}</span>
+                    <span class="small">${escapeHtml(f.filename)}</span>
                     <span class="badge bg-secondary-lt ms-1">${formatFileSize(f.size_bytes)}</span>
                 </div>
                 <button class="btn btn-sm btn-outline-primary" onclick="importScpFile('${f.filename}')">
@@ -1553,7 +1553,7 @@ function showRestorePreviewModal(preview, filename) {
     const versionWarning = preview.source_version !== preview.current_version
         ? `<div class="alert alert-warning mb-3">
             <i class="ti ti-alert-triangle me-2"></i>
-            ${t('settings.versionMismatch', {source: preview.source_version, current: preview.current_version})}
+            ${t('settings.versionMismatch', { source: escapeHtml(preview.source_version), current: escapeHtml(preview.current_version) })}
            </div>`
         : '';
 
@@ -1598,9 +1598,9 @@ function showRestorePreviewModal(preview, filename) {
                         ${versionWarning}
 
                         <div class="d-flex gap-2 mb-3">
-                            <span class="badge bg-blue-lt">v${preview.source_version}</span>
+                            <span class="badge bg-blue-lt">v${escapeHtml(preview.source_version)}</span>
                             <span class="badge bg-secondary-lt">${new Date(preview.timestamp).toLocaleString(undefined)}</span>
-                            <span class="badge bg-secondary-lt">${filename}</span>
+                            <span class="badge bg-secondary-lt">${escapeHtml(filename)}</span>
                         </div>
 
                         <div class="row g-2 mb-3">
@@ -1759,7 +1759,7 @@ async function loadRemoteBackupHistory() {
 
         tbody.innerHTML = history.map(backup => `
             <tr>
-                <td><i class="ti ti-cloud me-2"></i>${backup.filename}</td>
+                <td><i class="ti ti-cloud me-2"></i>${escapeHtml(backup.filename)}</td>
                 <td>${formatFileSize(backup.size_bytes)}</td>
                 <td>${backup.mtime ? new Date(backup.mtime).toLocaleString(undefined) : '-'}</td>
                 <td class="text-end">

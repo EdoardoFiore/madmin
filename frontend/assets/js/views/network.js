@@ -256,10 +256,10 @@ async function loadInterfaces() {
                 bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).toggle();
             });
             collapseEl.addEventListener('show.bs.collapse', () => {
-                container.querySelector(`.iface-chevron[data-iface-chevron="${collapseEl.id}"]`)?.classList.add('rotated');
+                container.querySelector(`.iface-chevron[data-iface-chevron="${escapeHtml(collapseEl.id)}"]`)?.classList.add('rotated');
             });
             collapseEl.addEventListener('hide.bs.collapse', () => {
-                container.querySelector(`.iface-chevron[data-iface-chevron="${collapseEl.id}"]`)?.classList.remove('rotated');
+                container.querySelector(`.iface-chevron[data-iface-chevron="${escapeHtml(collapseEl.id)}"]`)?.classList.remove('rotated');
             });
         });
 
@@ -320,7 +320,7 @@ function renderInterfaceRow(iface) {
     // Uniform "read-only" badge for every locked interface (managed or not, WAN).
     // The managed vs locked distinction is kept only in the expanded detail note.
     const managedBadge = '';
-    const speedBadge = iface.speed > 0 ? `<span class="badge bg-azure-lt">${iface.speed} Mbps</span>` : '';
+    const speedBadge = iface.speed > 0 ? `<span class="badge bg-azure-lt">${escapeHtml(iface.speed)} Mbps</span>` : '';
     const lockBadge = (isProtected || isLockedLan) ? `<span class="badge bg-secondary-lt" title="${isManaged ? t('network.managedHint') : ''}"><i class="ti ti-lock me-1"></i>${t('common.readOnly')}</span>` : '';
 
     const secondaryBadge = secondaryCount > 0
@@ -328,13 +328,13 @@ function renderInterfaceRow(iface) {
         : '';
 
     const ipDisplay = iface.ipv4
-        ? `<code>${iface.ipv4}</code>${secondaryBadge}`
+        ? `<code>${escapeHtml(iface.ipv4)}</code>${secondaryBadge}`
         : `<span class="text-muted">—</span>`;
 
     // Managed/locked LAN interfaces are read-only too: their IP is assigned externally.
     const canConfigure = canManage && !iface.name.startsWith('docker') && !iface.name.startsWith('veth') && !isProtected && !isLockedLan;
     const configureBtn = canConfigure
-        ? `<button class="btn btn-sm btn-ghost-primary" data-configure-iface="${iface.name}" title="${t('network.configureInterface')}">
+        ? `<button class="btn btn-sm btn-ghost-primary" data-configure-iface="${escapeHtml(iface.name)}" title="${t('network.configureInterface')}">
                <i class="ti ti-settings"></i>
            </button>`
         : '';
@@ -349,20 +349,20 @@ function renderInterfaceRow(iface) {
 
     const ipRows = allIps.map(ip => `
         <tr>
-            <td class="text-muted small" style="width:160px">${ip.label}</td>
-            <td><code class="small">${ip.value}</code></td>
+            <td class="text-muted small" style="width:160px">${escapeHtml(ip.label)}</td>
+            <td><code class="small">${escapeHtml(ip.value)}</code></td>
         </tr>`).join('');
 
     const macRow = (iface.mac && iface.mac !== '00:00:00:00:00:00') ? `
         <tr>
             <td class="text-muted small">MAC</td>
-            <td><code class="small">${iface.mac}</code></td>
+            <td><code class="small">${escapeHtml(iface.mac)}</code></td>
         </tr>` : '';
 
     const mtuRow = iface.mtu > 0 ? `
         <tr>
             <td class="text-muted small">MTU</td>
-            <td class="small">${iface.mtu}</td>
+            <td class="small">${escapeHtml(iface.mtu)}</td>
         </tr>` : '';
 
     const errorsRow = (iface.errors_in > 0 || iface.errors_out > 0) ? `
@@ -370,7 +370,7 @@ function renderInterfaceRow(iface) {
             <td class="text-muted small">${t('network.errors')}</td>
             <td>
                 <span class="badge bg-danger-lt">
-                    <i class="ti ti-alert-triangle me-1"></i>${iface.errors_in} in / ${iface.errors_out} out
+                    <i class="ti ti-alert-triangle me-1"></i>${escapeHtml(iface.errors_in)} in / ${escapeHtml(iface.errors_out)} out
                 </span>
             </td>
         </tr>` : '';
@@ -395,7 +395,7 @@ function renderInterfaceRow(iface) {
                 </div>
 
                 <div class="d-flex flex-wrap align-items-center gap-1">
-                    <span class="fw-semibold me-1">${iface.name}</span>
+                    <span class="fw-semibold me-1">${escapeHtml(iface.name)}</span>
                     ${statusBadge}
                     ${netplanBadge}
                     ${speedBadge}

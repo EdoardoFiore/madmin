@@ -44,10 +44,12 @@ export function t(key, params = {}) {
     let value = _resolve(key);
     if (value === undefined) return key;
 
-    // Interpolate {placeholder} tokens
+    // Interpolate {placeholder} tokens. Values go in as-is: a caller that
+    // renders the result as HTML escapes server data in `params` first.
+    // The replacer is a function so '$&' / '$1' in a value stay literal.
     if (params && typeof params === 'object') {
         for (const [k, v] of Object.entries(params)) {
-            value = value.replace(new RegExp(`\\{${k}\\}`, 'g'), v);
+            value = value.replace(new RegExp(`\\{${k}\\}`, 'g'), () => String(v));
         }
     }
     return value;

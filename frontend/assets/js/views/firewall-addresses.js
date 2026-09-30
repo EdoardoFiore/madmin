@@ -6,7 +6,7 @@
  */
 
 import { apiGet, apiPost, apiPatch, apiDelete } from '../api.js';
-import { showToast, confirmDialog, emptyState, escapeHtml } from '../utils.js';
+import { showToast, confirmDialog, emptyState, escapeHtml, escapeAttr } from '../utils.js';
 import { setPageActions, checkPermission } from '../app.js';
 import { t } from '../i18n.js';
 
@@ -289,15 +289,15 @@ function objectRow(o, canManage) {
     const actions = canManage ? `
         <div class="btn-group btn-group-sm">
             ${isDynamic ? `
-            <button class="btn btn-ghost-secondary ao-refresh" data-id="${o.id}"
+            <button class="btn btn-ghost-secondary ao-refresh" data-id="${escapeHtml(o.id)}"
                     title="${t('firewall.addr.refresh')}">
                 <i class="ti ti-refresh"></i>
             </button>` : ''}
-            <button class="btn btn-ghost-primary ao-edit" data-id="${o.id}"
+            <button class="btn btn-ghost-primary ao-edit" data-id="${escapeHtml(o.id)}"
                     title="${t('common.edit')}">
                 <i class="ti ti-edit"></i>
             </button>
-            <button class="btn btn-ghost-danger ao-del" data-id="${o.id}"
+            <button class="btn btn-ghost-danger ao-del" data-id="${escapeHtml(o.id)}"
                     title="${t('common.delete')}">
                 <i class="ti ti-trash"></i>
             </button>
@@ -388,11 +388,11 @@ function groupRow(g, canManage) {
         .join(' ') || '<span class="text-muted">—</span>';
     const actions = canManage ? `
         <div class="btn-group btn-group-sm">
-            <button class="btn btn-ghost-primary ag-edit" data-id="${g.id}"
+            <button class="btn btn-ghost-primary ag-edit" data-id="${escapeHtml(g.id)}"
                     title="${t('common.edit')}">
                 <i class="ti ti-edit"></i>
             </button>
-            <button class="btn btn-ghost-danger ag-del" data-id="${g.id}"
+            <button class="btn btn-ghost-danger ag-del" data-id="${escapeHtml(g.id)}"
                     title="${t('common.delete')}">
                 <i class="ti ti-trash"></i>
             </button>
@@ -456,7 +456,7 @@ function populateGeoSelect() {
     const sel = document.getElementById('ao-value-geo');
     if (!sel || !geoCountries) return;
     sel.innerHTML = geoCountries
-        .map(c => `<option value="${c.code}">${escapeHtml(c.name)} (${c.code.toUpperCase()})</option>`)
+        .map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${c.code.toUpperCase()})</option>`)
         .join('');
 }
 
@@ -691,7 +691,7 @@ export function buildAddressPicker(container, items, selectedIds = new Set(), on
                    data-bs-trigger="hover" data-bs-placement="right"
                    data-bs-content="${pop}">
                 <input type="checkbox" class="form-check-input m-0 flex-shrink-0"
-                       value="${item.id}" ${checked ? 'checked' : ''}>
+                       value="${escapeHtml(item.id)}" ${checked ? 'checked' : ''}>
                 <span class="flex-grow-1 text-truncate">${_pickerItemIcon(item)}${escapeHtml(item.label)}</span>
                 <small class="text-muted flex-shrink-0">${escapeHtml(item.subtitle || '')}</small>
             </label>`;
@@ -812,13 +812,4 @@ function relativeTime(isoString) {
     const hrs = Math.floor(mins / 60);
     if (hrs < 24)   return t('firewall.addr.timeHoursAgo', { n: hrs });
     return t('firewall.addr.timeDaysAgo', { n: Math.floor(hrs / 24) });
-}
-
-function escapeAttr(str) {
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
 }

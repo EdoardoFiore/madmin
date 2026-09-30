@@ -7,6 +7,7 @@
 
 import { apiGet } from '/static/js/api.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
+import { escapeHtml } from '/static/js/utils.js';
 
 // Load translations at module import time so render() can use t()
 await loadModuleTranslations('wireguard');
@@ -103,7 +104,7 @@ export const widgets = {
                     <div class="border-top">
                         <div class="px-3 pt-2 pb-1 d-flex align-items-center justify-content-between">
                             <span class="text-muted small fw-bold">
-                                <i class="ti ti-wifi me-1"></i>${connectedClients.length} ${t('wireguard.wConnected')}
+                                <i class="ti ti-wifi me-1"></i>${escapeHtml(connectedClients.length)} ${t('wireguard.wConnected')}
                             </span>
                             ${connectedClients.length > 3 ? `
                                 <input type="text" class="form-control form-control-sm"
@@ -124,9 +125,9 @@ export const widgets = {
                                         <div class="d-flex align-items-center">
                                             <span class="status-dot status-dot-active me-2"></span>
                                             <div>
-                                                <div class="fw-bold small">${c.name}</div>
+                                                <div class="fw-bold small">${escapeHtml(c.name)}</div>
                                                 <div class="text-muted" style="font-size: 0.7rem;">
-                                                    ${c.instance_name} · ${c.allocated_ip}
+                                                    ${escapeHtml(c.instance_name)} · ${escapeHtml(c.allocated_ip)}
                                                 </div>
                                             </div>
                                         </div>

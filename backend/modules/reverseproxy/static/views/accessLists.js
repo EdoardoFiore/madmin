@@ -56,17 +56,17 @@ function renderTable() {
         <tbody>${_acls.map(a => `
             <tr>
                 <td><strong>${escapeHtml(a.name)}</strong></td>
-                <td>${a.auths.length}</td>
-                <td>${a.rules.length}</td>
+                <td>${escapeHtml(a.auths.length)}</td>
+                <td>${escapeHtml(a.rules.length)}</td>
                 <td>${a.hosts_count || 0}</td>
                 <td>
                     <div class="dropdown">
                         <button class="btn btn-ghost-secondary btn-icon" data-bs-toggle="dropdown" data-bs-strategy="fixed"><i class="ti ti-dots-vertical"></i></button>
                         <ul class="dropdown-menu dropdown-menu-end">
                             ${_perms.accessLists ? `
-                            <li><a class="dropdown-item" href="#" data-action="edit" data-id="${a.id}">
+                            <li><a class="dropdown-item" href="#" data-action="edit" data-id="${escapeHtml(a.id)}">
                                 <i class="ti ti-edit me-2"></i>${t('reverseproxy.edit')}</a></li>
-                            <li><a class="dropdown-item text-danger" href="#" data-action="delete" data-id="${a.id}">
+                            <li><a class="dropdown-item text-danger" href="#" data-action="delete" data-id="${escapeHtml(a.id)}">
                                 <i class="ti ti-trash me-2"></i>${t('reverseproxy.delete')}</a></li>` : ''}
                         </ul>
                     </div>

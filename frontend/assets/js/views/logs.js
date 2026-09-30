@@ -348,13 +348,13 @@ function renderAuditRow(log) {
             <td class="text-nowrap text-muted" style="font-size: .8125rem;">${timeStr}</td>
             <td><span class="badge bg-cyan-lt">${escapeHtml(log.username)}</span></td>
             <td>
-                <span class="badge bg-${methodColor}-lt me-1">${log.method}</span>
+                <span class="badge bg-${methodColor}-lt me-1">${escapeHtml(log.method)}</span>
                 <code title="${escapeHtml(log.path)}">${escapeHtml(truncatePath(log.path))}</code>
                 ${payloadHtml}
                 ${errorHtml}
             </td>
-            <td><span class="badge bg-${statusColor}-lt">${log.status_code}</span></td>
-            <td class="text-muted" style="font-size: .8125rem;">${log.duration_ms}ms</td>
+            <td><span class="badge bg-${statusColor}-lt">${escapeHtml(log.status_code)}</span></td>
+            <td class="text-muted" style="font-size: .8125rem;">${escapeHtml(log.duration_ms)}ms</td>
             <td class="text-muted" style="font-size: .8125rem;">${escapeHtml(log.client_ip)}</td>
         </tr>
     `;

@@ -6,7 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
+import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
 
 let networkInterfaces = [];
 
@@ -49,7 +49,7 @@ export async function renderDhcpDashboard(container, canManage) {
                     <div class="card">
                         <div class="card-body">
                             <div class="subheader">${t('dhcp.subnet')}</div>
-                            <div class="h1 mb-0 mt-1">${status.total_subnets}</div>
+                            <div class="h1 mb-0 mt-1">${escapeHtml(status.total_subnets)}</div>
                         </div>
                     </div>
                 </div>
@@ -57,7 +57,7 @@ export async function renderDhcpDashboard(container, canManage) {
                     <div class="card">
                         <div class="card-body">
                             <div class="subheader">${t('dhcp.reservations')}</div>
-                            <div class="h1 mb-0 mt-1">${status.total_hosts}</div>
+                            <div class="h1 mb-0 mt-1">${escapeHtml(status.total_hosts)}</div>
                         </div>
                     </div>
                 </div>
@@ -65,7 +65,7 @@ export async function renderDhcpDashboard(container, canManage) {
                     <div class="card">
                         <div class="card-body">
                             <div class="subheader">${t('dhcp.activeLeases')}</div>
-                            <div class="h1 mb-0 mt-1">${status.total_leases}</div>
+                            <div class="h1 mb-0 mt-1">${escapeHtml(status.total_leases)}</div>
                             ${status.config_valid !== null ? `
                             <div class="mt-1">
                                 <span class="badge ${status.config_valid ? 'bg-success' : 'bg-danger'}-lt">
@@ -118,7 +118,7 @@ export async function renderDhcpDashboard(container, canManage) {
 
         setupDashboardActions(status, container, canManage);
     } catch (err) {
-        container.innerHTML = `<div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${err.message}</div>`;
+        container.innerHTML = `<div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -154,39 +154,39 @@ function renderSubnetsTable(subnets, canManage) {
                 </thead>
                 <tbody>
                     ${subnets.map(s => `
-                        <tr class="subnet-row ${!s.enabled ? 'text-muted' : ''}" data-id="${s.id}" style="cursor: pointer;">
+                        <tr class="subnet-row ${!s.enabled ? 'text-muted' : ''}" data-id="${escapeHtml(s.id)}" style="cursor: pointer;">
                             <td onclick="event.stopPropagation();">
                                 ${s.managed ? `
                                 <span class="status-dot bg-success" title="${t('dhcp.managedLan')}"></span>`
                                 : canManage ? `
                                 <label class="form-check form-switch mb-0">
                                     <input class="form-check-input subnet-toggle" type="checkbox"
-                                           data-id="${s.id}" ${s.enabled ? 'checked' : ''}>
+                                           data-id="${escapeHtml(s.id)}" ${s.enabled ? 'checked' : ''}>
                                 </label>` : `
                                 <span class="status-dot ${s.enabled ? 'bg-success' : 'bg-secondary'}"></span>
                                 `}
                             </td>
                             <td>
-                                <a href="#dhcp/${s.id}" class="text-reset">
-                                    <strong>${s.name}</strong>
+                                <a href="#dhcp/${encodeURIComponent(s.id)}" class="text-reset">
+                                    <strong>${escapeHtml(s.name)}</strong>
                                 </a>
                                 ${s.managed ? `<span class="badge bg-azure-lt ms-1" title="${t('dhcp.managedLanHint')}"><i class="ti ti-lock"></i> ${t('dhcp.managedLan')}</span>` : ''}
-                                <div class="small text-muted">${s.domain_name || ''}</div>
+                                <div class="small text-muted">${escapeHtml(s.domain_name)}</div>
                             </td>
-                            <td><code>${s.network}</code></td>
-                            <td><code>${s.interface}</code></td>
-                            <td><small>${s.range_start} — ${s.range_end}</small></td>
-                            <td><code>${s.gateway}</code></td>
+                            <td><code>${escapeHtml(s.network)}</code></td>
+                            <td><code>${escapeHtml(s.interface)}</code></td>
+                            <td><small>${escapeHtml(s.range_start)} — ${escapeHtml(s.range_end)}</small></td>
+                            <td><code>${escapeHtml(s.gateway)}</code></td>
                             <td>
-                                <span class="badge bg-blue-lt">${s.host_count}</span>
+                                <span class="badge bg-blue-lt">${escapeHtml(s.host_count)}</span>
                             </td>
                             <td>
-                                <span class="badge bg-green-lt">${s.active_leases}</span>
+                                <span class="badge bg-green-lt">${escapeHtml(s.active_leases)}</span>
                             </td>
                             <td>
                                 <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
                                     ${canManage && !s.managed ? `
-                                    <button class="btn btn-ghost-danger btn-delete-subnet" data-id="${s.id}" title="${t('dhcp.delete')}">
+                                    <button class="btn btn-ghost-danger btn-delete-subnet" data-id="${escapeHtml(s.id)}" title="${t('dhcp.delete')}">
                                         <i class="ti ti-trash"></i>
                                     </button>` : s.managed ? `<i class="ti ti-lock text-muted" title="${t('dhcp.managedLanHint')}"></i>` : ''}
                                 </div>
@@ -388,8 +388,8 @@ function populateInterfaceSelect(selectId) {
     const lanIfaces = networkInterfaces.filter(iface => iface.name !== 'eth0');
     select.innerHTML = `<option value="">${t('dhcp.selectInterface')}</option>` +
         lanIfaces.map(iface =>
-            `<option value="${iface.name}" ${iface.state === 'up' ? 'class="fw-bold"' : ''}>
-                ${iface.name} ${iface.state === 'up' ? '●' : '○'} ${iface.addresses?.join(', ') || ''}
+            `<option value="${escapeHtml(iface.name)}" ${iface.state === 'up' ? 'class="fw-bold"' : ''}>
+                ${escapeHtml(iface.name)} ${iface.state === 'up' ? '●' : '○'} ${escapeHtml(iface.addresses?.join(', '))}
             </option>`
         ).join('');
 }

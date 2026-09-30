@@ -223,7 +223,7 @@ async function loadInstances(canManage) {
                 const isClient = i.direction === 'client';
                 const portCell = isClient
                     ? `<span class="text-muted">–</span>`
-                    : (i.port ? `${i.port}/UDP` : `<span class="text-muted">–</span>`);
+                    : (i.port ? `${escapeHtml(i.port)}/UDP` : `<span class="text-muted">–</span>`);
                 const subnetCell = isClient
                     ? `<span class="text-muted small" title="${escapeHtml(i.upstream_endpoint || '')}">${escapeHtml((i.upstream_endpoint || '–').substring(0, 22))}</span>`
                     : (i.subnet ? `<code>${escapeHtml(i.subnet)}</code>` : `<span class="text-muted">–</span>`);
@@ -237,13 +237,13 @@ async function loadInstances(canManage) {
                         ? `<span class="badge bg-success-lt">${t('wireguard.connected')}</span>`
                         : `<span class="badge bg-secondary-lt">${escapeHtml(i.upstream_status || t('wireguard.statusUnknown'))}</span>`)
                     : i.client_count;
-                return `<tr class="instance-row" data-id="${i.id}" style="cursor: pointer;">
+                return `<tr class="instance-row" data-id="${escapeHtml(i.id)}" style="cursor: pointer;">
                     <td>
                         <span class="status-dot ${i.status === 'running' ? 'status-dot-animated bg-success' : 'bg-secondary'}"
                               title="${i.status === 'running' ? t('wireguard.statusRunning') : t('wireguard.statusStopped')}"></span>
                     </td>
                     <td>
-                        <a href="#wireguard/${i.id}" class="text-reset">
+                        <a href="#wireguard/${escapeHtml(i.id)}" class="text-reset">
                             <strong>${escapeHtml(i.name)}</strong>
                         </a>
                         <div class="small text-muted">
@@ -261,9 +261,9 @@ async function loadInstances(canManage) {
                     <td>
                         <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
                             ${canManage ? (i.status === 'running'
-                                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${i.id}" title="${t('wireguard.stop')}"><i class="ti ti-player-stop"></i></button>`
-                                : `<button class="btn btn-ghost-success btn-start" data-id="${i.id}" title="${t('wireguard.start')}"><i class="ti ti-player-play"></i></button>`) : ''}
-                            ${canManage ? `<button class="btn btn-ghost-danger btn-delete" data-id="${i.id}" title="${t('wireguard.delete')}"><i class="ti ti-trash"></i></button>` : ''}
+                                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${escapeHtml(i.id)}" title="${t('wireguard.stop')}"><i class="ti ti-player-stop"></i></button>`
+                                : `<button class="btn btn-ghost-success btn-start" data-id="${escapeHtml(i.id)}" title="${t('wireguard.start')}"><i class="ti ti-player-play"></i></button>`) : ''}
+                            ${canManage ? `<button class="btn btn-ghost-danger btn-delete" data-id="${escapeHtml(i.id)}" title="${t('wireguard.delete')}"><i class="ti ti-trash"></i></button>` : ''}
                         </div>
                     </td>
                 </tr>`;
@@ -272,7 +272,7 @@ async function loadInstances(canManage) {
 
         setupInstanceRowActions(canManage);
     } catch (err) {
-        listEl.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+        listEl.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -373,7 +373,7 @@ function populateInterfaceSelects() {
         const currentVal = select.value;
         select.innerHTML = `<option value="">${t('wireguard.autoInterface')}</option>` +
             _networkInterfaces.map(iface =>
-                `<option value="${iface.name}" ${iface.state === 'up' ? 'class="fw-bold"' : ''}>${iface.name} ${iface.state === 'up' ? '●' : ''}</option>`
+                `<option value="${escapeHtml(iface.name)}" ${iface.state === 'up' ? 'class="fw-bold"' : ''}>${escapeHtml(iface.name)} ${iface.state === 'up' ? '●' : ''}</option>`
             ).join('');
         if (currentVal) select.value = currentVal;
     });
@@ -484,8 +484,8 @@ async function loadImportInterfaces() {
     }
     container.innerHTML = phys.map(iface => `
         <div class="form-check form-check-inline">
-            <input class="form-check-input import-lan-iface" type="checkbox" id="iface-${iface.name}" value="${iface.name}">
-            <label class="form-check-label" for="iface-${iface.name}">
+            <input class="form-check-input import-lan-iface" type="checkbox" id="iface-${escapeHtml(iface.name)}" value="${escapeHtml(iface.name)}">
+            <label class="form-check-label" for="iface-${escapeHtml(iface.name)}">
                 ${escapeHtml(iface.name)}
                 ${iface.state === 'up' ? '<span class="badge bg-success-lt ms-1">up</span>' : ''}
             </label>

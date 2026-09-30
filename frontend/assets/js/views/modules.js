@@ -103,7 +103,7 @@ function renderModuleCards() {
                         <div class="flex-fill min-width-0">
                             <div class="d-flex align-items-center justify-content-between">
                                 <h3 class="card-title mb-0 text-truncate">${escapeHtml(m.name)}</h3>
-                                <span class="badge ${statusInfo.class} ms-2">${statusInfo.label}</span>
+                                <span class="badge ${escapeHtml(statusInfo.class)} ms-2">${escapeHtml(statusInfo.label)}</span>
                             </div>
                             <div class="text-muted small mt-1">v${escapeHtml(m.version)} ${m.author ? '· ' + escapeHtml(m.author) : ''}</div>
                         </div>
@@ -160,7 +160,7 @@ function getActionButton(mod) {
 // === Confirmation Dialogs ===
 
 window._confirmActivate = async (moduleId, moduleName) => {
-    const message = t('modules.activateConfirmMsg', { name: `<strong>${moduleName}</strong>` });
+    const message = t('modules.activateConfirmMsg', { name: `<strong>${escapeHtml(moduleName)}</strong>` });
 
     const confirmed = await confirmDialog(
         t('modules.activateConfirmTitle', { name: moduleName }),
@@ -201,7 +201,7 @@ window._confirmDeactivate = async (moduleId, moduleName) => {
                 <div>
                     <h4 class="alert-title">${t('modules.deactivateWarning')}</h4>
                     <div class="text-secondary">
-                        ${t('modules.deactivateDetails', { name: `<strong>${moduleName}</strong>` })}
+                        ${t('modules.deactivateDetails', { name: `<strong>${escapeHtml(moduleName)}</strong>` })}
                         <ul class="mt-2 mb-0">
                             <li>${t('modules.deactivateList1')}</li>
                             <li>${t('modules.deactivateList2')}</li>
@@ -272,7 +272,7 @@ window._openModuleDetail = async (moduleId) => {
                 </div>
             </div>
             <div class="d-flex align-items-center gap-2">
-                <span class="badge ${statusInfo.class}">${statusInfo.label}</span>
+                <span class="badge ${escapeHtml(statusInfo.class)}">${escapeHtml(statusInfo.label)}</span>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
         </div>
@@ -381,7 +381,7 @@ function renderDetailInfoTab(mod) {
                                     <td><code>${escapeHtml(c.name)}</code></td>
                                     <td>${escapeHtml(c.parent)}</td>
                                     <td><span class="badge bg-azure-lt">${escapeHtml(c.table)}</span></td>
-                                    <td>${c.priority}</td>
+                                    <td>${escapeHtml(c.priority)}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -488,11 +488,11 @@ function renderFirewallPriority() {
                                         <ul class="list-group" id="priority-list-${table}-${parent}">
                                             ${chains.map((c, idx) => `
                                                 <li class="list-group-item d-flex align-items-center py-2"
-                                                    data-chain-name="${c.chain_name}" data-priority="${c.priority}">
+                                                    data-chain-name="${escapeHtml(c.chain_name)}" data-priority="${escapeHtml(c.priority)}">
                                                     <i class="ti ti-grip-vertical cursor-move text-muted me-2"></i>
                                                     <span class="badge bg-azure-lt me-2">${idx + 1}</span>
                                                     <span class="small">${escapeHtml(c.chain_name.replace('MOD_', '').replace(/_/g, ' '))}</span>
-                                                    <small class="ms-auto text-muted font-monospace" style="font-size: 0.65rem;">${c.priority}</small>
+                                                    <small class="ms-auto text-muted font-monospace" style="font-size: 0.65rem;">${escapeHtml(c.priority)}</small>
                                                 </li>
                                             `).join('')}
                                         </ul>

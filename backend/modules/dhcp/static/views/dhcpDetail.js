@@ -6,7 +6,7 @@
 
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiDelete, apiPatch } from '/static/js/api.js';
-import { showToast, confirmDialog, loadingSpinner } from '/static/js/utils.js';
+import { showToast, confirmDialog, loadingSpinner, escapeHtml } from '/static/js/utils.js';
 
 let networkInterfaces = [];
 
@@ -39,9 +39,9 @@ export async function renderDhcpDetail(container, subnetId, canManage, canReserv
                         <div>
                             <h3 class="card-title mb-0">
                                 <span class="status-dot ${subnet.enabled ? 'bg-success' : 'bg-secondary'} me-2"></span>
-                                ${subnet.name}
+                                ${escapeHtml(subnet.name)}
                             </h3>
-                            <small class="text-muted">${subnet.network} ${t('dhcp.on')} ${subnet.interface}</small>
+                            <small class="text-muted">${escapeHtml(subnet.network)} ${t('dhcp.on')} ${escapeHtml(subnet.interface)}</small>
                             ${subnet.managed ? `<span class="badge bg-azure-lt ms-2" title="${t('dhcp.managedLanHint')}"><i class="ti ti-lock me-1"></i>${t('dhcp.managedLan')}</span>` : ''}
                         </div>
                         ${canManage ? `
@@ -60,19 +60,19 @@ export async function renderDhcpDetail(container, subnetId, canManage, canReserv
                     <div class="row">
                         <div class="col-md-2">
                             <span class="text-muted">Network</span><br>
-                            <code>${subnet.network}</code>
+                            <code>${escapeHtml(subnet.network)}</code>
                         </div>
                         <div class="col-md-2">
                             <span class="text-muted">Range</span><br>
-                            <small>${subnet.range_start}<br>${subnet.range_end}</small>
+                            <small>${escapeHtml(subnet.range_start)}<br>${escapeHtml(subnet.range_end)}</small>
                         </div>
                         <div class="col-md-2">
                             <span class="text-muted">Gateway</span><br>
-                            <code>${subnet.gateway}</code>
+                            <code>${escapeHtml(subnet.gateway)}</code>
                         </div>
                         <div class="col-md-2">
                             <span class="text-muted">DNS</span><br>
-                            <small>${subnet.dns_servers}</small>
+                            <small>${escapeHtml(subnet.dns_servers)}</small>
                         </div>
                         <div class="col-md-2">
                             <span class="text-muted">${t('dhcp.leaseTime')}</span><br>
@@ -80,7 +80,7 @@ export async function renderDhcpDetail(container, subnetId, canManage, canReserv
                         </div>
                         <div class="col-md-2">
                             <span class="text-muted">${t('dhcp.interface')}</span><br>
-                            <code>${subnet.interface}</code>
+                            <code>${escapeHtml(subnet.interface)}</code>
                         </div>
                     </div>
                 </div>
@@ -142,7 +142,7 @@ export async function renderDhcpDetail(container, subnetId, canManage, canReserv
     } catch (err) {
         container.innerHTML = `
             <div class="mb-3"><a href="#dhcp" class="text-muted"><i class="ti ti-arrow-left me-1"></i>${t('dhcp.backToSubnets')}</a></div>
-            <div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${err.message}</div>`;
+            <div class="alert alert-danger"><i class="ti ti-alert-triangle me-2"></i>${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -175,21 +175,21 @@ function renderHostsTable(hosts, subnetId, canReservations) {
                 <tbody>
                     ${hosts.map(h => `
                         <tr>
-                            <td><strong>${h.hostname}</strong></td>
-                            <td><code>${h.mac_address}</code></td>
-                            <td><code>${h.ip_address}</code></td>
-                            <td><small class="text-muted">${h.description || '—'}</small></td>
+                            <td><strong>${escapeHtml(h.hostname)}</strong></td>
+                            <td><code>${escapeHtml(h.mac_address)}</code></td>
+                            <td><code>${escapeHtml(h.ip_address)}</code></td>
+                            <td><small class="text-muted">${escapeHtml(h.description || '—')}</small></td>
                             <td>
                                 ${canReservations ? `
                                 <div class="btn-group btn-group-sm">
                                     <button class="btn btn-ghost-primary btn-edit-host"
-                                            data-id="${h.id}" data-hostname="${h.hostname}"
-                                            data-mac="${h.mac_address}" data-ip="${h.ip_address}"
-                                            data-desc="${h.description || ''}" title="${t('dhcp.edit')}">
+                                            data-id="${escapeHtml(h.id)}" data-hostname="${escapeHtml(h.hostname)}"
+                                            data-mac="${escapeHtml(h.mac_address)}" data-ip="${escapeHtml(h.ip_address)}"
+                                            data-desc="${escapeHtml(h.description || '')}" title="${t('dhcp.edit')}">
                                         <i class="ti ti-edit"></i>
                                     </button>
                                     <button class="btn btn-ghost-danger btn-delete-host"
-                                            data-id="${h.id}" data-subnet="${subnetId}" title="${t('dhcp.delete')}">
+                                            data-id="${escapeHtml(h.id)}" data-subnet="${escapeHtml(subnetId)}" title="${t('dhcp.delete')}">
                                         <i class="ti ti-trash"></i>
                                     </button>
                                 </div>` : ''}
@@ -235,22 +235,22 @@ function renderLeasesTable(leases, hosts = [], canReservations) {
                         const isReserved = l.mac_address && reservedMacs.has(l.mac_address.toLowerCase());
                         return `
                         <tr class="${isReserved ? 'fw-bold' : ''}">
-                            <td><code>${l.ip_address}</code></td>
-                            <td><code>${l.mac_address || '—'}</code></td>
-                            <td>${l.hostname || '<span class="text-muted">—</span>'}</td>
-                            <td><small>${l.starts || '—'}</small></td>
-                            <td><small>${l.ends || '—'}</small></td>
+                            <td><code>${escapeHtml(l.ip_address)}</code></td>
+                            <td><code>${escapeHtml(l.mac_address || '—')}</code></td>
+                            <td>${l.hostname ? escapeHtml(l.hostname) : '<span class="text-muted">—</span>'}</td>
+                            <td><small>${escapeHtml(l.starts || '—')}</small></td>
+                            <td><small>${escapeHtml(l.ends || '—')}</small></td>
                             <td>
                                 <span class="badge ${l.state === 'active' ? 'bg-success' : 'bg-secondary'}-lt">
-                                    ${l.state}
+                                    ${escapeHtml(l.state)}
                                 </span>
                             </td>
                             ${canReservations ? `
                             <td>
                                 ${!isReserved && l.mac_address ? `
                                 <button class="btn btn-sm btn-ghost-primary btn-reserve-lease"
-                                        data-mac="${l.mac_address}" data-ip="${l.ip_address}"
-                                        data-hostname="${l.hostname || ''}" title="${t('dhcp.reserve')}">
+                                        data-mac="${escapeHtml(l.mac_address)}" data-ip="${escapeHtml(l.ip_address)}"
+                                        data-hostname="${escapeHtml(l.hostname || '')}" title="${t('dhcp.reserve')}">
                                     <i class="ti ti-pin me-1"></i>${t('dhcp.reserve')}
                                 </button>` : `
                                 <span class="badge bg-blue-lt"><i class="ti ti-pin me-1"></i>${t('dhcp.reserved')}</span>
@@ -288,8 +288,8 @@ function renderHostModal(subnet) {
                         </div>
                         <div class="mb-3">
                             <label class="form-label">${t('dhcp.ipAddress')}</label>
-                            <input type="text" class="form-control" id="new-host-ip" placeholder="es. ${subnet.range_start}">
-                            <small class="form-hint">${t('dhcp.ipHint', { subnet: subnet.network })}</small>
+                            <input type="text" class="form-control" id="new-host-ip" placeholder="es. ${escapeHtml(subnet.range_start)}">
+                            <small class="form-hint">${t('dhcp.ipHint', { subnet: escapeHtml(subnet.network) })}</small>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">${t('dhcp.descOptional')}</label>
@@ -328,48 +328,48 @@ function renderEditSubnetModal(subnet) {
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">${t('dhcp.name')}</label>
-                                <input type="text" class="form-control" id="edit-subnet-name" value="${subnet.name}">
+                                <input type="text" class="form-control" id="edit-subnet-name" value="${escapeHtml(subnet.name)}">
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">${t('dhcp.interface')}</label>
                                 <select class="form-select" id="edit-subnet-interface" ${subnet.managed ? 'disabled' : ''}>
-                                    <option value="${subnet.interface}" selected>${subnet.interface}</option>
+                                    <option value="${escapeHtml(subnet.interface)}" selected>${escapeHtml(subnet.interface)}</option>
                                 </select>
                             </div>
                         </div>
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">${t('dhcp.rangeStart')}</label>
-                                <input type="text" class="form-control" id="edit-subnet-range-start" value="${subnet.range_start}">
+                                <input type="text" class="form-control" id="edit-subnet-range-start" value="${escapeHtml(subnet.range_start)}">
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">${t('dhcp.rangeEnd')}</label>
-                                <input type="text" class="form-control" id="edit-subnet-range-end" value="${subnet.range_end}">
+                                <input type="text" class="form-control" id="edit-subnet-range-end" value="${escapeHtml(subnet.range_end)}">
                             </div>
                         </div>
                         <div class="row">
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">Gateway</label>
-                                <input type="text" class="form-control" id="edit-subnet-gateway" value="${subnet.gateway}" ${subnet.managed ? 'disabled' : ''}>
+                                <input type="text" class="form-control" id="edit-subnet-gateway" value="${escapeHtml(subnet.gateway)}" ${subnet.managed ? 'disabled' : ''}>
                                 ${subnet.managed ? `<small class="form-hint">${t('dhcp.managedGatewayHint')}</small>` : ''}
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dhcp.dnsServers')}</label>
-                                <input type="text" class="form-control" id="edit-subnet-dns" value="${subnet.dns_servers}">
+                                <input type="text" class="form-control" id="edit-subnet-dns" value="${escapeHtml(subnet.dns_servers)}">
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dhcp.domainName')}</label>
-                                <input type="text" class="form-control" id="edit-subnet-domain" value="${subnet.domain_name || ''}">
+                                <input type="text" class="form-control" id="edit-subnet-domain" value="${escapeHtml(subnet.domain_name || '')}">
                             </div>
                         </div>
                         <div class="row">
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dhcp.leaseTimeSec')}</label>
-                                <input type="number" class="form-control" id="edit-subnet-lease-time" value="${subnet.lease_time}">
+                                <input type="number" class="form-control" id="edit-subnet-lease-time" value="${escapeHtml(subnet.lease_time)}">
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dhcp.maxLeaseTimeSec')}</label>
-                                <input type="number" class="form-control" id="edit-subnet-max-lease" value="${subnet.max_lease_time}">
+                                <input type="number" class="form-control" id="edit-subnet-max-lease" value="${escapeHtml(subnet.max_lease_time)}">
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">${t('dhcp.status')}</label>
@@ -403,8 +403,8 @@ function setupDetailActions(subnet, subnetId, container, canManage, canReservati
         select.innerHTML = networkInterfaces
             .filter(iface => iface.name !== 'eth0')
             .map(iface =>
-                `<option value="${iface.name}" ${iface.name === subnet.interface ? 'selected' : ''}>
-                    ${iface.name} ${iface.state === 'up' ? '●' : '○'}
+                `<option value="${escapeHtml(iface.name)}" ${iface.name === subnet.interface ? 'selected' : ''}>
+                    ${escapeHtml(iface.name)} ${iface.state === 'up' ? '●' : '○'}
                 </option>`
             ).join('');
         new bootstrap.Modal(document.getElementById('modal-edit-subnet')).show();

@@ -6,7 +6,7 @@
  */
 
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
-import { showToast, loadingSpinner, watchTablerComponents } from './utils.js';
+import { showToast, loadingSpinner, watchTablerComponents, escapeHtml } from './utils.js';
 import { init as i18nInit, t, getLang, detectLang, translateDOM, loadModuleTranslations } from './i18n.js';
 import { openProfileModal } from './profile.js';
 
@@ -172,7 +172,7 @@ async function startGlobal2FASetup() {
         // Show backup codes
         const codesContainer = document.getElementById('global-backup-codes');
         codesContainer.innerHTML = data.backup_codes.map(c =>
-            `<div class="col-6 col-md-4"><code class="fs-5">${c}</code></div>`
+            `<div class="col-6 col-md-4"><code class="fs-5">${escapeHtml(c)}</code></div>`
         ).join('\n');  // newline-separated: the copy button copies this text
 
     } catch (error) {
@@ -530,7 +530,7 @@ async function loadMenu() {
 function createMenuItem(item) {
     let iconHtml;
     if (item.icon && /^(https?:\/\/|\/)/.test(item.icon)) {
-        iconHtml = `<img src="${item.icon}" alt="" class="module-icon-menu" style="width: 20px; height: 20px;">`;
+        iconHtml = `<img src="${escapeHtml(item.icon)}" alt="" class="module-icon-menu" style="width: 20px; height: 20px;">`;
     } else {
         const iconClass = item.icon ? `ti-${item.icon}` : 'ti-circle';
         iconHtml = `<i class="ti ${iconClass}"></i>`;
@@ -539,11 +539,11 @@ function createMenuItem(item) {
     const label = item.label.includes('.') ? t(item.label) : item.label;
     return `
         <li class="nav-item">
-            <a class="nav-link" href="${item.route}">
+            <a class="nav-link" href="${escapeHtml(item.route)}">
                 <span class="nav-link-icon d-md-none d-lg-inline-block">
                     ${iconHtml}
                 </span>
-                <span class="nav-link-title">${label}</span>
+                <span class="nav-link-title">${escapeHtml(label)}</span>
             </a>
         </li>
     `;
@@ -684,7 +684,7 @@ async function handleRoute() {
                 <div class="card-body text-center py-5">
                     <i class="ti ti-alert-circle text-danger" style="font-size: 4rem;"></i>
                     <h3 class="mt-3">${t('app.loadingError')}</h3>
-                    <p class="text-muted">${error.message}</p>
+                    <p class="text-muted">${escapeHtml(error.message)}</p>
                     <button class="btn btn-primary" onclick="location.reload()">${t('app.reload')}</button>
                 </div>
             </div>

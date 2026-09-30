@@ -6,6 +6,7 @@
 
 import { apiGet } from '/static/js/api.js';
 import { t, loadModuleTranslations } from '/static/js/i18n.js';
+import { escapeHtml } from '/static/js/utils.js';
 
 // Load translations at module import time so render() can use t()
 await loadModuleTranslations('dns');
@@ -48,13 +49,13 @@ export const widgets = {
                         <div class="row g-2">
                             <div class="col-6">
                                 <div class="text-center">
-                                    <div class="fw-bold fs-3">${status.total_zones}</div>
+                                    <div class="fw-bold fs-3">${escapeHtml(status.total_zones)}</div>
                                     <div class="text-muted small">${t('dns.zones')}</div>
                                 </div>
                             </div>
                             <div class="col-6">
                                 <div class="text-center">
-                                    <div class="fw-bold fs-3">${status.total_records}</div>
+                                    <div class="fw-bold fs-3">${escapeHtml(status.total_records)}</div>
                                     <div class="text-muted small">${t('dns.records')}</div>
                                 </div>
                             </div>
@@ -63,7 +64,7 @@ export const widgets = {
                             <span class="badge ${status.running ? 'bg-green-lt' : 'bg-red-lt'}">
                                 ${status.running ? t('dns.wServiceActive') : t('dns.wServiceStopped')}
                             </span>
-                            <span class="badge bg-azure-lt ms-1">${status.mode || 'recursive'}</span>
+                            <span class="badge bg-azure-lt ms-1">${escapeHtml(status.mode || 'recursive')}</span>
                         </div>
                     </div>
                 `;

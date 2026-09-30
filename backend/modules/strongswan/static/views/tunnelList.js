@@ -83,13 +83,13 @@ function renderTable() {
                 </thead>
                 <tbody>
                     ${tunnels.map(tunnel => `
-                        <tr class="tunnel-row" data-id="${tunnel.id}" style="cursor: pointer;">
+                        <tr class="tunnel-row" data-id="${escapeHtml(tunnel.id)}" style="cursor: pointer;">
                             <td>
                                 <span class="status-dot ${tunnel.status === 'established' ? 'status-dot-animated bg-success' : tunnel.status === 'connecting' ? 'status-dot-animated bg-warning' : 'bg-secondary'}"
                                       title="${tunnel.status === 'established' ? 'UP' : tunnel.status === 'connecting' ? 'Connecting' : 'DOWN'}"></span>
                             </td>
                             <td>
-                                <a href="#strongswan/${tunnel.id}" class="text-reset">
+                                <a href="#strongswan/${escapeHtml(tunnel.id)}" class="text-reset">
                                     <strong>${escapeHtml(tunnel.name)}</strong>
                                 </a>
                                 <div class="small text-muted">
@@ -101,7 +101,7 @@ function renderTable() {
                                 </div>
                             </td>
                             <td><code>${escapeHtml(tunnel.remote_address)}</code></td>
-                            <td><span class="badge bg-azure-lt">v${tunnel.ike_version}</span></td>
+                            <td><span class="badge bg-azure-lt">v${escapeHtml(tunnel.ike_version)}</span></td>
                             <td>
                                 <div class="d-flex flex-wrap gap-1">
                                 ${tunnel.child_sa_count > 0 ? (() => {
@@ -112,7 +112,7 @@ function renderTable() {
 
             if (upSas.length > 0) {
                 const popoverUp = upSas.map(c =>
-                    `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
+                    `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${escapeHtml(c.local_ts)} &leftrightarrow; ${escapeHtml(c.remote_ts)}</small></div>`
                 ).join('');
                 content += `<span class="badge bg-success-lt text-success cursor-help"
                                                       data-bs-toggle="popover"
@@ -126,7 +126,7 @@ function renderTable() {
 
             if (downSas.length > 0) {
                 const popoverDown = downSas.map(c =>
-                    `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
+                    `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${escapeHtml(c.local_ts)} &leftrightarrow; ${escapeHtml(c.remote_ts)}</small></div>`
                 ).join('');
                 content += `<span class="badge bg-secondary-lt cursor-help"
                                                       data-bs-toggle="popover"
@@ -145,17 +145,17 @@ function renderTable() {
                                 <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
                                     ${canManage ? `
                                     ${tunnel.status === 'established' || tunnel.status === 'connecting'
-                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${tunnel.id}" title="Stop">
+                ? `<button class="btn btn-ghost-warning btn-stop" data-id="${escapeHtml(tunnel.id)}" title="Stop">
                                             <i class="ti ti-player-stop"></i>
                                            </button>`
-                : `<button class="btn btn-ghost-success btn-start" data-id="${tunnel.id}" title="Start">
+                : `<button class="btn btn-ghost-success btn-start" data-id="${escapeHtml(tunnel.id)}" title="Start">
                                             <i class="ti ti-player-play"></i>
                                            </button>`
             }
-                                    <button class="btn btn-ghost-primary btn-edit" data-id="${tunnel.id}" title="${t('strongswan.edit')}">
+                                    <button class="btn btn-ghost-primary btn-edit" data-id="${escapeHtml(tunnel.id)}" title="${t('strongswan.edit')}">
                                         <i class="ti ti-edit"></i>
                                     </button>
-                                    <button class="btn btn-ghost-danger btn-delete" data-id="${tunnel.id}" title="${t('strongswan.delete')}">
+                                    <button class="btn btn-ghost-danger btn-delete" data-id="${escapeHtml(tunnel.id)}" title="${t('strongswan.delete')}">
                                         <i class="ti ti-trash"></i>
                                     </button>
                                     ` : ''}

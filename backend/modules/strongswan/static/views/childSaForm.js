@@ -121,9 +121,9 @@ function renderPfsCheckboxes(selectedGroups = []) {
     html += groups.map(g => `
         <div class="form-check form-check-inline">
             <input class="form-check-input pfs-checkbox" type="checkbox" 
-                   value="${g.value}" id="pfs-${g.value}" 
+                   value="${escapeHtml(g.value)}" id="pfs-${escapeHtml(g.value)}" 
                    ${selectedGroups.includes(g.value) ? 'checked' : ''}>
-            <label class="form-check-label small" for="pfs-${g.value}">${g.label}</label>
+            <label class="form-check-label small" for="pfs-${escapeHtml(g.value)}">${escapeHtml(g.label)}</label>
         </div>
     `).join('');
     return html;
@@ -157,7 +157,7 @@ export function renderChildSaForm(tunnelId, onSave, initialData = null) {
                 </h6>
                 <div class="btn-group btn-group-sm">
                     <button type="button" class="btn btn-success btn-save-phase2" 
-                            data-tunnel="${tunnelId}" data-id="${data.id || ''}">
+                            data-tunnel="${tunnelId}" data-id="${escapeHtml(data.id || '')}">
                         <i class="ti ti-check"></i>
                     </button>
                     <button type="button" class="btn btn-secondary btn-cancel-phase2">

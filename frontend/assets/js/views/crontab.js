@@ -289,7 +289,7 @@ async function loadCrontab() {
         container.innerHTML = `
             <div class="text-center py-4 text-danger">
                 <i class="ti ti-alert-circle" style="font-size: 2rem;"></i>
-                <p class="mt-2">${t('crontab.errorLoadingCrontab', { error: error.message })}</p>
+                <p class="mt-2">${t('crontab.errorLoadingCrontab', { error: escapeHtml(error.message) })}</p>
             </div>
         `;
     }

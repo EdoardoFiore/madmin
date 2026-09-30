@@ -102,7 +102,7 @@ export async function render(container) {
                                     <input type="radio" class="btn-check" name="fw-table" id="table-${key}" 
                                            value="${key}" ${key === 'filter' ? 'checked' : ''}>
                                     <label class="btn btn-outline-primary" for="table-${key}">
-                                        <i class="ti ti-${t.icon} me-1"></i>${t.label}
+                                        <i class="ti ti-${escapeHtml(t.icon)} me-1"></i>${escapeHtml(t.label)}
                                     </label>
                                 `).join('')}
                             </div>
@@ -148,7 +148,7 @@ export async function render(container) {
                                 <div class="col-md-4">
                                     <label class="form-label required">${t('firewall.table')}</label>
                                     <select class="form-select" id="rule-table" required>
-                                        ${Object.entries(TABLES).map(([k, tbl]) => `<option value="${k}">${tbl.label}</option>`).join('')}
+                                        ${Object.entries(TABLES).map(([k, tbl]) => `<option value="${k}">${escapeHtml(tbl.label)}</option>`).join('')}
                                     </select>
                                 </div>
                                 <div class="col-md-4">
@@ -903,7 +903,7 @@ function renderRuleRow(rule, orderedColumns) {
     // Auto-generated companion rules (e.g. DNAT forward): read-only, no drag/edit/delete
     if (rule.auto_generated) {
         return `
-            <tr class="auto-rule" data-id="${rule.id}">
+            <tr class="auto-rule" data-id="${escapeHtml(rule.id)}">
                 <td class="rule-order">
                     <span class="text-muted"><i class="ti ti-lock"></i></span>
                 </td>
@@ -917,7 +917,7 @@ function renderRuleRow(rule, orderedColumns) {
     // Managed LAN NAT rule: protected (needed for VM navigation), read-only
     if (rule.comment === MANAGED_NAT_SENTINEL) {
         return `
-            <tr class="auto-rule" data-id="${rule.id}">
+            <tr class="auto-rule" data-id="${escapeHtml(rule.id)}">
                 <td class="rule-order">
                     <span class="text-muted"><i class="ti ti-lock"></i></span>
                 </td>
@@ -929,7 +929,7 @@ function renderRuleRow(rule, orderedColumns) {
     }
 
     return `
-        <tr class="${disabledClass} draggable-row" data-id="${rule.id}" draggable="${canManage}">
+        <tr class="${disabledClass} draggable-row" data-id="${escapeHtml(rule.id)}" draggable="${canManage}">
             <td class="rule-order">
                 <div style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
                     ${canManage ? '<i class="ti ti-grip-vertical drag-handle" style="cursor: grab;"></i>' : ''}
@@ -1029,11 +1029,11 @@ function renderAddrCellMulti(literal, refs) {
 function renderCell(rule, column) {
     const esc = escapeHtml;
     switch (column) {
-        case 'protocol': return rule.protocol ? `<code>${rule.protocol}</code>` : `<span class="text-muted">${t('firewall.allProtocols').toLowerCase()}</span>`;
+        case 'protocol': return rule.protocol ? `<code>${escapeHtml(rule.protocol)}</code>` : `<span class="text-muted">${t('firewall.allProtocols').toLowerCase()}</span>`;
         case 'source': return renderAddrCellMulti(rule.source, rule.source_refs);
         case 'destination': return renderAddrCellMulti(rule.destination, rule.destination_refs);
         case 'port': return rule.port ? `<code>${esc(rule.port)}</code>` : '<span class="text-muted">-</span>';
-        case 'state': return rule.state ? `<span class="badge bg-secondary-lt">${rule.state}</span>` : '-';
+        case 'state': return rule.state ? `<span class="badge bg-secondary-lt">${escapeHtml(rule.state)}</span>` : '-';
         case 'comment': return `<span class="text-muted">${rule.comment ? esc(rule.comment) : '-'}</span>`;
         case 'in_interface': return rule.in_interface ? `<code>${esc(rule.in_interface)}</code>` : '-';
         case 'out_interface': return rule.out_interface ? `<code>${esc(rule.out_interface)}</code>` : '-';
