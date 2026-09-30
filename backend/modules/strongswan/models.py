@@ -196,7 +196,116 @@ class IpsecTunnelFirewallRule(SQLModel, table=True):
 
 # --- Pydantic Schemas for API ---
 
-class IpsecTunnelCreate(SQLModel):
+_NAME_RE = re.compile(r'[a-zA-Z0-9._-]{1,64}')
+# One proposal is dash-joined algorithm keywords; several are comma-separated
+_PROPOSALS_RE = re.compile(r'[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*')
+# IKE identities: IP, FQDN, @fqdn, user@fqdn, keyid:…, or a DN ("C=IT, O=Acme")
+_IDENTITY_RE = re.compile(r'[A-Za-z0-9@._:=,+/*%\- ]{1,255}')
+
+
+def _check_name(v):
+    if v is not None and not _NAME_RE.fullmatch(v):
+        raise ValueError('Il nome può contenere solo lettere, numeri, punto, trattino e underscore (max 64)')
+    return v
+
+
+def _check_addresses(v, field):
+    """swanctl local_addrs/remote_addrs: comma-separated IP, CIDR, FQDN or %any."""
+    from core.validation import ip_network, hostname
+    if v in (None, ""):
+        return v
+    for item in str(v).split(","):
+        item = item.strip()
+        if item == "%any":
+            continue
+        try:
+            ip_network(item, field)
+        except ValueError:
+            hostname(item, field)
+    return str(v).strip()
+
+
+class _TunnelValidators(SQLModel):
+    """
+    Every field is written into swanctl.conf or the secrets file, both loaded
+    by the root charon daemon: a newline, quote or brace in any of them would
+    add configuration of the caller's choosing (another connection, an id
+    matching another tunnel's PSK).
+    """
+
+    @field_validator('name', mode='before', check_fields=False)
+    @classmethod
+    def validate_name(cls, v):
+        return _check_name(v)
+
+    @field_validator('ike_version', mode='before', check_fields=False)
+    @classmethod
+    def validate_ike_version(cls, v):
+        if v is not None and str(v) not in ("0", "1", "2"):
+            raise ValueError("ike_version: 0, 1 o 2")
+        return v if v is None else str(v)
+
+    @field_validator('mode', mode='before', check_fields=False)
+    @classmethod
+    def validate_mode(cls, v):
+        if v is not None and v not in ("main", "aggressive"):
+            raise ValueError("mode: main o aggressive")
+        return v
+
+    @field_validator('auth_method', mode='before', check_fields=False)
+    @classmethod
+    def validate_auth_method(cls, v):
+        if v is not None and v not in ("psk", "pubkey"):
+            raise ValueError("auth_method: psk o pubkey")
+        return v
+
+    @field_validator('dpd_action', mode='before', check_fields=False)
+    @classmethod
+    def validate_dpd_action(cls, v):
+        if v is not None and v not in ("restart", "clear", "none", "trap", "hold", "start"):
+            raise ValueError("dpd_action non valida")
+        return v
+
+    @field_validator('local_address', 'remote_address', mode='before', check_fields=False)
+    @classmethod
+    def validate_addresses(cls, v, info):
+        return _check_addresses(v, info.field_name)
+
+    @field_validator('local_id', 'remote_id', mode='before', check_fields=False)
+    @classmethod
+    def validate_identity(cls, v, info):
+        if v in (None, ""):
+            return v
+        if not _IDENTITY_RE.fullmatch(str(v)):
+            raise ValueError(f"{info.field_name}: identità non valida")
+        return str(v).strip()
+
+    @field_validator('ike_proposal', mode='before', check_fields=False)
+    @classmethod
+    def validate_ike_proposal(cls, v):
+        if v is not None and not _PROPOSALS_RE.fullmatch(str(v)):
+            raise ValueError("Proposal IKE non valida (es. aes256-sha256-modp2048)")
+        return v
+
+    @field_validator('psk', mode='before', check_fields=False)
+    @classmethod
+    def validate_psk(cls, v):
+        # Written as secret = "<psk>": a quote or backslash ends the string
+        if v in (None, ""):
+            return v
+        if len(v) > 256 or any(ord(c) < 32 or ord(c) == 127 or c in ('"', '\\') for c in v):
+            raise ValueError('La PSK non può contenere virgolette, backslash o caratteri di controllo (max 256)')
+        return v
+
+    @field_validator('ike_lifetime', 'dpd_delay', mode='before', check_fields=False)
+    @classmethod
+    def validate_seconds(cls, v, info):
+        if v is not None and not 0 <= int(v) <= 31_536_000:
+            raise ValueError(f"{info.field_name}: secondi non validi")
+        return v
+
+
+class IpsecTunnelCreate(_TunnelValidators):
     """Schema for creating a new tunnel."""
     name: str
     ike_version: str = "2"
@@ -213,17 +322,8 @@ class IpsecTunnelCreate(SQLModel):
     dpd_delay: int = 30
     nat_traversal: bool = True
 
-    @field_validator('name')
-    @classmethod
-    def validate_name(cls, v: str) -> str:
-        if not re.match(r'^[a-zA-Z0-9._-]+$', v):
-            raise ValueError('Il nome può contenere solo lettere, numeri, punto, trattino e underscore')
-        if len(v) > 64:
-            raise ValueError('Il nome non può superare 64 caratteri')
-        return v
 
-
-class IpsecTunnelUpdate(SQLModel):
+class IpsecTunnelUpdate(_TunnelValidators):
     """Schema for updating a tunnel."""
     name: Optional[str] = None
     enabled: Optional[bool] = None
@@ -279,7 +379,51 @@ class IpsecTunnelRead(SQLModel):
         return conn_name(self.id)
 
 
-class IpsecChildSaCreate(SQLModel):
+class _ChildSaValidators(SQLModel):
+    """Child SA fields: written into the children { } block of swanctl.conf."""
+
+    @field_validator('name', mode='before', check_fields=False)
+    @classmethod
+    def validate_name(cls, v):
+        return _check_name(v)
+
+    @field_validator('esp_proposal', mode='before', check_fields=False)
+    @classmethod
+    def validate_esp_proposal(cls, v):
+        if v is not None and not _PROPOSALS_RE.fullmatch(str(v)):
+            raise ValueError("Proposal ESP non valida (es. aes256-sha256-modp2048)")
+        return v
+
+    @field_validator('pfs_group', mode='before', check_fields=False)
+    @classmethod
+    def validate_pfs_group(cls, v):
+        if v not in (None, "") and not _PROPOSALS_RE.fullmatch(str(v)):
+            raise ValueError("Gruppo PFS non valido (es. modp2048)")
+        return v
+
+    @field_validator('start_action', mode='before', check_fields=False)
+    @classmethod
+    def validate_start_action(cls, v):
+        if v is not None and v not in ("start", "trap", "none"):
+            raise ValueError("start_action: start, trap o none")
+        return v
+
+    @field_validator('close_action', mode='before', check_fields=False)
+    @classmethod
+    def validate_close_action(cls, v):
+        if v is not None and v not in ("restart", "trap", "start", "none"):
+            raise ValueError("close_action: restart, trap, start o none")
+        return v
+
+    @field_validator('esp_lifetime', mode='before', check_fields=False)
+    @classmethod
+    def validate_esp_lifetime(cls, v):
+        if v is not None and not 0 <= int(v) <= 31_536_000:
+            raise ValueError("esp_lifetime: secondi non validi")
+        return v
+
+
+class IpsecChildSaCreate(_ChildSaValidators):
     """Schema for creating a Child SA."""
     name: str
     local_ts: str
@@ -296,7 +440,7 @@ class IpsecChildSaCreate(SQLModel):
         return validate_cidr(v)
 
 
-class IpsecChildSaUpdate(SQLModel):
+class IpsecChildSaUpdate(_ChildSaValidators):
     """Schema for updating a Child SA."""
     name: Optional[str] = None
     local_ts: Optional[str] = None

@@ -1138,16 +1138,6 @@ async def _update_all_secrets(db: AsyncSession):
         select(IpsecTunnel).where(IpsecTunnel.auth_method == "psk")
     )
     tunnels = result.scalars().all()
-    
-    secrets_entries = []
-    for tunnel in tunnels:
-        if tunnel.psk:
-            entry = strongswan_service.generate_secrets_entry(
-                tunnel_id=tunnel.id,
-                remote_id=tunnel.remote_id,
-                remote_address=tunnel.remote_address,
-                psk=tunnel.psk
-            )
-            secrets_entries.append(entry)
-    
+
+    secrets_entries = strongswan_service.secrets_entries_for(tunnels)
     await run_in_threadpool(strongswan_service.update_secrets_file, secrets_entries)

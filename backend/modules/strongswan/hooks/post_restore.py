@@ -82,16 +82,7 @@ async def run(session: AsyncSession):
 
     # Regenerate the secrets file (PSK) — config files alone are not enough:
     # without it charon has no key and IKE_SA initiation fails after restore.
-    secrets_entries = [
-        service.generate_secrets_entry(
-            tunnel_id=tunnel.id,
-            remote_id=tunnel.remote_id,
-            remote_address=tunnel.remote_address,
-            psk=tunnel.psk,
-        )
-        for tunnel in tunnels
-        if tunnel.auth_method == "psk" and tunnel.psk
-    ]
+    secrets_entries = service.secrets_entries_for(tunnels)
     service.update_secrets_file(secrets_entries)
     logger.info(f"Regenerated secrets file: {len(secrets_entries)} PSK entries")
 

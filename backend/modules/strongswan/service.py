@@ -37,6 +37,26 @@ def key_of(value) -> str:
     return hashlib.sha256(str(value).encode()).hexdigest()[:8]
 
 
+_UNSAFE_CONF_CHARS = set('{}"#\\')
+
+
+def _conf_value(value, field: str) -> str:
+    """
+    A value written into swanctl.conf. A newline, brace, quote or '#' would
+    close the block, start a directive or turn the rest into a comment.
+    """
+    s = "" if value is None else str(value)
+    if any(ord(c) < 32 or ord(c) == 127 or c in _UNSAFE_CONF_CHARS for c in s):
+        raise ValueError(f"{field}: character not allowed in swanctl.conf")
+    return s
+
+
+def _conf_id(value, field: str) -> str:
+    """An IKE identity: quoted when it has spaces or commas (a DN), as swanctl expects."""
+    s = _conf_value(value, field)
+    return f'"{s}"' if (" " in s or "," in s) else s
+
+
 def conn_name(tunnel_id) -> str:
     """charon connection name for a tunnel."""
     return f"{CONN_PREFIX}{key_of(tunnel_id)}"
@@ -225,6 +245,18 @@ class StrongSwanService:
         Returns:
             swanctl.conf file content
         """
+        # The API validates every field; rows restored from an archive or
+        # written before that did not go through it, and charon runs as root
+        for field, value in (
+            ("name", name), ("ike_version", ike_version), ("local_address", local_address),
+            ("remote_address", remote_address), ("auth_method", auth_method),
+            ("ike_proposal", ike_proposal), ("dpd_action", dpd_action),
+        ):
+            _conf_value(value, field)
+        for child in child_sas:
+            for field in ("name", "local_ts", "remote_ts", "esp_proposal", "start_action", "close_action"):
+                _conf_value(child.get(field, ""), f"child.{field}")
+
         # Connection name: derived from the tunnel id, so a rename never
         # invalidates it. The readable name stays in the header comment below.
         conn = conn_name(tunnel_id)
@@ -255,7 +287,7 @@ class StrongSwanService:
             auth = {auth_method}"""
         if local_id:
             local_auth += f"""
-            id = {local_id}"""
+            id = {_conf_id(local_id, "local_id")}"""
         local_auth += """
         }"""
         
@@ -266,7 +298,7 @@ class StrongSwanService:
             auth = {auth_method}"""
         if effective_remote_id:
             remote_auth += f"""
-            id = {effective_remote_id}"""
+            id = {_conf_id(effective_remote_id, "remote_id")}"""
         remote_auth += """
         }"""
 
@@ -319,14 +351,37 @@ connections {{
         """
         label = secret_label(tunnel_id)
         secret_id = self._resolve_remote_id(remote_id, remote_address)
+        if any(ord(c) < 32 or ord(c) == 127 or c in ('"', '\\') for c in (psk or "")):
+            raise ValueError("PSK contains a quote, backslash or control character")
 
         return f"""
     {label} {{
-        id = {secret_id}
+        id = {_conf_id(secret_id, "remote_id")}
         secret = "{psk}"
     }}
 """
     
+    def secrets_entries_for(self, tunnels) -> List[str]:
+        """
+        Secrets entries for the PSK tunnels among `tunnels`. The file holds every
+        tunnel's key: a row that cannot be written safely is skipped and logged,
+        so it does not take the other tunnels' keys down with it.
+        """
+        entries = []
+        for tunnel in tunnels:
+            if tunnel.auth_method != "psk" or not tunnel.psk:
+                continue
+            try:
+                entries.append(self.generate_secrets_entry(
+                    tunnel_id=tunnel.id,
+                    remote_id=tunnel.remote_id,
+                    remote_address=tunnel.remote_address,
+                    psk=tunnel.psk,
+                ))
+            except ValueError as e:
+                logger.error(f"PSK of tunnel {tunnel.name} not written: {e}")
+        return entries
+
     def save_tunnel_config(self, tunnel_id, config: str) -> bool:
         """Save tunnel configuration to file."""
         config_file = config_path(tunnel_id)
