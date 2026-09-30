@@ -315,7 +315,7 @@ async function loadInstances() {
                     <td>${modeCell}</td>
                     <td>${clientsCell}</td>
                     <td>
-                        <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
+                        <div class="btn-group btn-group-sm" data-no-row-click>
                             ${_canManage ? (i.status === 'running'
                                 ? `<button class="btn btn-ghost-warning btn-stop" data-id="${escapeHtml(i.id)}" title="${t('openvpn.stop')}"><i class="ti ti-player-stop"></i></button>`
                                 : `<button class="btn btn-ghost-success btn-start" data-id="${escapeHtml(i.id)}" title="${t('openvpn.start')}"><i class="ti ti-player-play"></i></button>`) : ''}
@@ -335,7 +335,7 @@ async function loadInstances() {
 function setupInstanceRowActions() {
     document.querySelectorAll('.instance-row').forEach(row => {
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-group')) return;
+            if (e.target.closest('.btn-group, [data-no-row-click]')) return;
             window.location.hash = `#openvpn/${row.dataset.id}`;
         });
     });

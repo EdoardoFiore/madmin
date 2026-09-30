@@ -3,6 +3,7 @@ OpenVPN Module - API Router
 
 FastAPI endpoints for OpenVPN server management.
 """
+import html
 import logging
 import io
 import re
@@ -1316,8 +1317,8 @@ async def download_landing_page(
     if error:
         error_template = Path(__file__).parent / "static" / "link_error.html"
         html_content = error_template.read_text(encoding="utf-8")
-        html_content = html_content.replace("{title}", error[0])
-        html_content = html_content.replace("{message}", error[1])
+        html_content = html_content.replace("{title}", html.escape(error[0]))
+        html_content = html_content.replace("{message}", html.escape(error[1]))
         return HTMLResponse(content=html_content, status_code=410)
     
     # Load and render template
@@ -1330,9 +1331,9 @@ async def download_landing_page(
     # Build URLs
     base_path = f"/api/modules/openvpn/download/{token}"
     
-    html_content = html_content.replace("{client_name}", client.name)
-    html_content = html_content.replace("{expires_at}", expires_str)
-    html_content = html_content.replace("{download_url}", f"{base_path}/file")
+    html_content = html_content.replace("{client_name}", html.escape(client.name))
+    html_content = html_content.replace("{expires_at}", html.escape(expires_str))
+    html_content = html_content.replace("{download_url}", html.escape(f"{base_path}/file"))
     
     return HTMLResponse(content=html_content)
 
@@ -1354,8 +1355,8 @@ async def download_config_file(
     if error:
         error_template = Path(__file__).parent / "static" / "link_error.html"
         html_content = error_template.read_text(encoding="utf-8")
-        html_content = html_content.replace("{title}", error[0])
-        html_content = html_content.replace("{message}", error[1])
+        html_content = html_content.replace("{title}", html.escape(error[0]))
+        html_content = html_content.replace("{message}", html.escape(error[1]))
         return HTMLResponse(content=html_content, status_code=410)
     
     # Generate config

@@ -271,15 +271,18 @@ async def login(
 @router.post("/token/2fa", response_model=Token)
 async def verify_2fa_login(
     request: Request,
-    code: str = Query(..., description="6-digit OTP code or backup code"),
+    data: TwoFactorVerifyRequest,
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session)
 ):
     """
     Complete login with 2FA verification.
     Requires the temporary token from /token endpoint.
+    The code (TOTP or backup code) travels in the JSON body: in the query
+    string it ended up in the nginx and uvicorn access logs.
     After 5 failed attempts, the user's 2FA is locked and must be reset by a superuser.
     """
+    code = data.code
     # Rate limiting by IP
     client_ip = get_client_ip(request)
     login_rate_limiter.check_rate_limit(client_ip)

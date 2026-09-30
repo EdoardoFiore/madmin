@@ -6,9 +6,11 @@
  */
 
 import { isAuthenticated, redirectToLogin, getCurrentUser, clearToken, apiGet, apiPatch } from './api.js';
-import { showToast, loadingSpinner, watchTablerComponents, escapeHtml } from './utils.js';
+import { showToast, loadingSpinner, watchTablerComponents, escapeHtml, actionAttrs, registerActions } from './utils.js';
 import { init as i18nInit, t, getLang, detectLang, translateDOM, loadModuleTranslations } from './i18n.js';
 import { openProfileModal } from './profile.js';
+
+registerActions({ reloadPage: () => location.reload() });
 
 // View registry - maps routes to view modules
 const views = {
@@ -685,7 +687,7 @@ async function handleRoute() {
                     <i class="ti ti-alert-circle text-danger" style="font-size: 4rem;"></i>
                     <h3 class="mt-3">${t('app.loadingError')}</h3>
                     <p class="text-muted">${escapeHtml(error.message)}</p>
-                    <button class="btn btn-primary" onclick="location.reload()">${t('app.reload')}</button>
+                    <button class="btn btn-primary" ${actionAttrs('reloadPage')}>${t('app.reload')}</button>
                 </div>
             </div>
         `;

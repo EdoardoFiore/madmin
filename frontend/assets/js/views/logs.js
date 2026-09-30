@@ -9,6 +9,7 @@
 import { apiGet } from '../api.js';
 import { showToast, escapeHtml, escapeAttr } from '../utils.js';
 import { t, getLang } from '../i18n.js';
+import { actionAttrs, registerActions } from '../utils.js';
 
 // State
 let currentTab = 'audit';
@@ -324,7 +325,7 @@ function renderAuditRow(log) {
         window._auditPayloads[log.id] = log.request_body;
 
         payloadHtml = `
-            <button class="btn btn-icon btn-sm btn-ghost-primary ms-1" onclick="showAuditPayload('${log.id}')" title="${t('logs.viewPayload')}">
+            <button class="btn btn-icon btn-sm btn-ghost-primary ms-1" ${actionAttrs('showAuditPayload', log.id)} title="${t('logs.viewPayload')}">
                 <i class="ti ti-eye"></i>
             </button>
         `;
@@ -337,7 +338,7 @@ function renderAuditRow(log) {
         window._auditErrors[log.id] = log.response_summary;
 
         errorHtml = `
-            <button class="btn btn-icon btn-sm btn-ghost-danger ms-1" onclick="showAuditError('${log.id}')" title="${t('logs.errorDetail')}">
+            <button class="btn btn-icon btn-sm btn-ghost-danger ms-1" ${actionAttrs('showAuditError', log.id)} title="${t('logs.errorDetail')}">
                 <i class="ti ti-alert-triangle"></i>
             </button>
         `;
@@ -613,3 +614,9 @@ function formatSystemLogLine(line) {
     // Default → light gray (visible on dark bg)
     return escaped;
 }
+
+// Handlers called from markup (data-action); resolved on window at call time.
+registerActions({
+    showAuditError: (...a) => window.showAuditError(...a),
+    showAuditPayload: (...a) => window.showAuditPayload(...a),
+});

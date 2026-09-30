@@ -142,7 +142,7 @@ function renderTable() {
                                 </div>
                             </td>
                             <td>
-                                <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
+                                <div class="btn-group btn-group-sm" data-no-row-click>
                                     ${canManage ? `
                                     ${tunnel.status === 'established' || tunnel.status === 'connecting'
                 ? `<button class="btn btn-ghost-warning btn-stop" data-id="${escapeHtml(tunnel.id)}" title="Stop">
@@ -181,7 +181,7 @@ function setupRowActions() {
     // Row click navigates to detail
     document.querySelectorAll('.tunnel-row').forEach(row => {
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-group')) return;
+            if (e.target.closest('.btn-group, [data-no-row-click]')) return;
             window.location.hash = `#strongswan/${row.dataset.id}`;
         });
     });

@@ -155,7 +155,7 @@ function renderSubnetsTable(subnets, canManage) {
                 <tbody>
                     ${subnets.map(s => `
                         <tr class="subnet-row ${!s.enabled ? 'text-muted' : ''}" data-id="${escapeHtml(s.id)}" style="cursor: pointer;">
-                            <td onclick="event.stopPropagation();">
+                            <td data-no-row-click>
                                 ${s.managed ? `
                                 <span class="status-dot bg-success" title="${t('dhcp.managedLan')}"></span>`
                                 : canManage ? `
@@ -184,7 +184,7 @@ function renderSubnetsTable(subnets, canManage) {
                                 <span class="badge bg-green-lt">${escapeHtml(s.active_leases)}</span>
                             </td>
                             <td>
-                                <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
+                                <div class="btn-group btn-group-sm" data-no-row-click>
                                     ${canManage && !s.managed ? `
                                     <button class="btn btn-ghost-danger btn-delete-subnet" data-id="${escapeHtml(s.id)}" title="${t('dhcp.delete')}">
                                         <i class="ti ti-trash"></i>
@@ -330,7 +330,7 @@ function setupDashboardActions(status, container, canManage) {
     // Subnet row click
     document.querySelectorAll('.subnet-row').forEach(row => {
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-group')) return;
+            if (e.target.closest('.btn-group, [data-no-row-click]')) return;
             window.location.hash = `#dhcp/${row.dataset.id}`;
         });
     });

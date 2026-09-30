@@ -7,6 +7,7 @@
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPatch, apiDelete } from '/static/js/api.js';
 import { showToast, confirmDialog, escapeHtml, isValidCIDR } from '/static/js/utils.js';
+import { actionAttrs, registerActions } from '/static/js/utils.js';
 
 const MODULE_API = '/modules/openvpn';
 
@@ -111,23 +112,23 @@ function renderClientRows(clients, canClients) {
             <td>
                 <div class="btn-group">
                     ${!c.revoked && canClients ? `
-                    <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="${t('openvpn.downloadConfig')}">
+                    <button class="btn btn-sm btn-outline-primary" ${actionAttrs('downloadConfig', c.name)} title="${t('openvpn.downloadConfig')}">
                         <i class="ti ti-download"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="${t('openvpn.sendEmail')}">
+                    <button class="btn btn-sm btn-outline-success" ${actionAttrs('openSendEmailModal', c.name)} title="${t('openvpn.sendEmail')}">
                         <i class="ti ti-mail"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-warning" onclick="renewClientCert('${escapeHtml(c.name)}')" title="${t('openvpn.renewCert')}">
+                    <button class="btn btn-sm btn-outline-warning" ${actionAttrs('renewClientCert', c.name)} title="${t('openvpn.renewCert')}">
                         <i class="ti ti-refresh"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="${t('openvpn.revoke')}">
+                    <button class="btn btn-sm btn-outline-danger" ${actionAttrs('revokeClient', c.name)} title="${t('openvpn.revoke')}">
                         <i class="ti ti-ban"></i>
                     </button>` : ''}
                     ${c.revoked && canClients ? `
-                    <button class="btn btn-sm btn-outline-success" onclick="restoreClient('${escapeHtml(c.name)}')" title="${t('openvpn.restore')}">
+                    <button class="btn btn-sm btn-outline-success" ${actionAttrs('restoreClient', c.name)} title="${t('openvpn.restore')}">
                         <i class="ti ti-restore"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteClientPermanent('${escapeHtml(c.name)}')" title="${t('openvpn.deletePermanent')}">
+                    <button class="btn btn-sm btn-outline-danger" ${actionAttrs('deleteClientPermanent', c.name)} title="${t('openvpn.deletePermanent')}">
                         <i class="ti ti-trash"></i>
                     </button>` : ''}
                 </div>
@@ -198,11 +199,11 @@ async function renderInstanceDetail(container, canManage, canClients) {
                         <div class="btn-group">
                             ${canManage ? `
                             <button class="btn ${instance.status === 'running' ? 'btn-warning' : 'btn-success'}"
-                                    onclick="${instance.status === 'running' ? 'stopInstance' : 'startInstance'}('${instance.id}')">
+                                    ${actionAttrs(instance.status === 'running' ? 'stopInstance' : 'startInstance', instance.id)}>
                                 <i class="ti ti-player-${instance.status === 'running' ? 'stop' : 'play'} me-1"></i>
                                 ${instance.status === 'running' ? t('openvpn.stop') : t('openvpn.start')}
                             </button>
-                            <button class="btn btn-outline-danger" onclick="deleteInstance('${instance.id}')">
+                            <button class="btn btn-outline-danger" ${actionAttrs('deleteInstance', instance.id)}>
                                 <i class="ti ti-trash"></i>
                             </button>` : ''}
                         </div>
@@ -717,7 +718,7 @@ async function loadPKIStatus(canManage) {
                                 </div>
                             </div>
                             ${canManage ? `
-                            <button class="btn btn-warning mt-3" onclick="renewServerCert()">
+                            <button class="btn btn-warning mt-3" ${actionAttrs('renewServerCert')}>
                                 <i class="ti ti-refresh me-1"></i>${t('openvpn.renewServerCert')}
                             </button>` : ''}
                         </div>
@@ -932,14 +933,14 @@ async function renderClientModeDetail(container, instance, canManage) {
                     <div class="btn-group">
                         ${canManage ? `
                         <button class="btn ${isRunning ? 'btn-warning' : 'btn-success'}"
-                                onclick="${isRunning ? 'stopInstance' : 'startInstance'}('${instance.id}')">
+                                ${actionAttrs(isRunning ? 'stopInstance' : 'startInstance', instance.id)}>
                             <i class="ti ti-player-${isRunning ? 'stop' : 'play'} me-1"></i>
                             ${isRunning ? t('openvpn.stop') : t('openvpn.start')}
                         </button>
                         <button class="btn btn-outline-secondary" id="btn-reconnect" title="${t('openvpn.clientModeReconnect')}">
                             <i class="ti ti-refresh me-1"></i>${t('openvpn.clientModeReconnect')}
                         </button>
-                        <button class="btn btn-outline-danger" onclick="deleteInstance('${instance.id}')">
+                        <button class="btn btn-outline-danger" ${actionAttrs('deleteInstance', instance.id)}>
                             <i class="ti ti-trash"></i>
                         </button>` : ''}
                     </div>
@@ -1150,3 +1151,17 @@ function setupS2SHandlers(instance, canManage, canClients) {
         }
     });
 }
+
+// Handlers called from markup (data-action); resolved on window at call time.
+registerActions({
+    deleteClientPermanent: (...a) => window.deleteClientPermanent(...a),
+    deleteInstance: (...a) => window.deleteInstance(...a),
+    downloadConfig: (...a) => window.downloadConfig(...a),
+    openSendEmailModal: (...a) => window.openSendEmailModal(...a),
+    renewClientCert: (...a) => window.renewClientCert(...a),
+    renewServerCert: (...a) => window.renewServerCert(...a),
+    restoreClient: (...a) => window.restoreClient(...a),
+    revokeClient: (...a) => window.revokeClient(...a),
+    startInstance: (...a) => window.startInstance(...a),
+    stopInstance: (...a) => window.stopInstance(...a),
+});

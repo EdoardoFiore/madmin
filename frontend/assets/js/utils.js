@@ -75,6 +75,75 @@ export function escapeHtml(text) {
 /** Same as escapeHtml; kept for the views that import it by this name. */
 export const escapeAttr = escapeHtml;
 
+// --- Delegated actions ---
+// The CSP forbids inline handlers (onclick="…"), so markup names a registered
+// handler instead: actionAttrs('deleteRule', rule.id) renders
+// data-action="deleteRule" data-args="[…]", and one document-level listener
+// calls it. Arguments are JSON in an escaped attribute, so any value is safe;
+// only registered names run, never an arbitrary global.
+
+const _actions = new Map();
+
+/**
+ * Register handlers callable from markup built with actionAttrs().
+ * Registering a name again replaces it (views re-register on each render).
+ * @param {Object<string, Function>} handlers
+ */
+export function registerActions(handlers) {
+    for (const [name, fn] of Object.entries(handlers)) _actions.set(name, fn);
+}
+
+/**
+ * Attributes that make an element run a registered action on click.
+ * The innermost element with an action wins, so a button inside a clickable
+ * card or row runs only its own action.
+ * @param {string} name
+ * @param {...*} args - JSON-serialisable arguments
+ * @returns {string}
+ */
+export function actionAttrs(name, ...args) {
+    return `data-action="${escapeHtml(name)}" data-args="${escapeHtml(JSON.stringify(args))}"`;
+}
+
+/** Like actionAttrs, but runs on the element's `change` event (inputs). */
+export function changeActionAttrs(name, ...args) {
+    return `data-action-event="change" ${actionAttrs(name, ...args)}`;
+}
+
+function _dispatchAction(e) {
+    const el = e.target.closest?.('[data-action]');
+    if (!el || (el.dataset.actionEvent || 'click') !== e.type) return;
+    const fn = _actions.get(el.dataset.action);
+    if (!fn) {
+        console.warn(`No handler registered for action "${el.dataset.action}"`);
+        return;
+    }
+    if (el.tagName === 'A') e.preventDefault();
+    let args;
+    try {
+        args = JSON.parse(el.dataset.args || '[]');
+    } catch {
+        return;
+    }
+    fn(...args);
+}
+
+if (typeof document !== 'undefined') {
+    document.addEventListener('click', _dispatchAction);
+    document.addEventListener('change', _dispatchAction);
+}
+
+/**
+ * True when a click on a clickable row/card started on something that has its
+ * own behaviour (a button, a link, an input, an action, or an element marked
+ * data-no-row-click), so the row must not react as well.
+ * @param {Event} e
+ * @returns {boolean}
+ */
+export function isInnerControlClick(e) {
+    return !!e.target.closest?.('[data-action], [data-no-row-click], button, a, input, select, label, .form-check');
+}
+
 /**
  * Format a date for display
  * @param {string|Date} date 

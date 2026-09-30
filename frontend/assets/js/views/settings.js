@@ -6,6 +6,7 @@ import { apiGet, apiPatch, apiPost, apiDelete } from '../api.js';
 import { showToast, escapeHtml, inputDialog, confirmDialog } from '../utils.js';
 import { checkPermission, applyTheme, getCurrentTheme } from '../app.js';
 import { t, init as i18nInit, getLang } from '../i18n.js';
+import { actionAttrs, registerActions } from '../utils.js';
 
 /**
  * Render the settings view
@@ -394,7 +395,7 @@ export async function render(container) {
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h4 class="card-title m-0"><i class="ti ti-cloud me-2"></i>${t('settings.remoteBackups')}</h4>
                         ${canManageBackup ? `
-                        <button class="btn btn-sm btn-outline-warning" onclick="cleanupRemoteBackups()" title="${t('settings.cleanupBtn')}">
+                        <button class="btn btn-sm btn-outline-warning" ${actionAttrs('cleanupRemoteBackups')} title="${t('settings.cleanupBtn')}">
                             <i class="ti ti-trash me-1"></i>${t('settings.cleanupBtn')}
                         </button>` : ''}
                     </div>
@@ -1215,13 +1216,13 @@ async function loadBackupHistory() {
                 <td>${formatFileSize(backup.size_bytes)}</td>
                 <td>${new Date(backup.created_at).toLocaleString(undefined)}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-ghost-warning" onclick="restoreFromLocalBackup('${backup.filename}')" title="${t('settings.restore')}">
+                    <button class="btn btn-sm btn-ghost-warning" ${actionAttrs('restoreFromLocalBackup', backup.filename)} title="${t('settings.restore')}">
                         <i class="ti ti-refresh"></i>
                     </button>
-                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadLocalBackup('${backup.filename}')" title="${t('common.download')}">
+                    <button class="btn btn-sm btn-ghost-primary" ${actionAttrs('downloadLocalBackup', backup.filename)} title="${t('common.download')}">
                         <i class="ti ti-download"></i>
                     </button>
-                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteBackup('${backup.filename}')" title="${t('common.delete')}">
+                    <button class="btn btn-sm btn-ghost-danger" ${actionAttrs('deleteBackup', backup.filename)} title="${t('common.delete')}">
                         <i class="ti ti-trash"></i>
                     </button>
                 </td>
@@ -1500,7 +1501,7 @@ async function loadScpFiles() {
                     <span class="small">${escapeHtml(f.filename)}</span>
                     <span class="badge bg-secondary-lt ms-1">${formatFileSize(f.size_bytes)}</span>
                 </div>
-                <button class="btn btn-sm btn-outline-primary" onclick="importScpFile('${f.filename}')">
+                <button class="btn btn-sm btn-outline-primary" ${actionAttrs('importScpFile', f.filename)}>
                     <i class="ti ti-file-import me-1"></i>${t('common.import')}
                 </button>
             </div>
@@ -1763,10 +1764,10 @@ async function loadRemoteBackupHistory() {
                 <td>${formatFileSize(backup.size_bytes)}</td>
                 <td>${backup.mtime ? new Date(backup.mtime).toLocaleString(undefined) : '-'}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-ghost-primary" onclick="downloadRemoteBackup('${backup.filename}')" title="${t('common.download')}">
+                    <button class="btn btn-sm btn-ghost-primary" ${actionAttrs('downloadRemoteBackup', backup.filename)} title="${t('common.download')}">
                         <i class="ti ti-download"></i>
                     </button>
-                    <button class="btn btn-sm btn-ghost-danger" onclick="deleteRemoteBackup('${backup.filename}')" title="${t('common.delete')}">
+                    <button class="btn btn-sm btn-ghost-danger" ${actionAttrs('deleteRemoteBackup', backup.filename)} title="${t('common.delete')}">
                         <i class="ti ti-trash"></i>
                     </button>
                 </td>
@@ -1827,3 +1828,13 @@ window.cleanupRemoteBackups = async function () {
 // Make globally available
 window.downloadLocalBackup = downloadLocalBackup;
 
+// Handlers called from markup (data-action); resolved on window at call time.
+registerActions({
+    cleanupRemoteBackups: (...a) => window.cleanupRemoteBackups(...a),
+    deleteBackup: (...a) => window.deleteBackup(...a),
+    deleteRemoteBackup: (...a) => window.deleteRemoteBackup(...a),
+    downloadLocalBackup: (...a) => window.downloadLocalBackup(...a),
+    downloadRemoteBackup: (...a) => window.downloadRemoteBackup(...a),
+    importScpFile: (...a) => window.importScpFile(...a),
+    restoreFromLocalBackup: (...a) => window.restoreFromLocalBackup(...a),
+});

@@ -9,6 +9,7 @@ import {
     showToast, confirmDialog, escapeHtml
 } from '/static/modules/strongswan/views/utils.js';
 import { t } from '/static/js/i18n.js';
+import { actionAttrs, changeActionAttrs, registerActions } from '/static/js/utils.js';
 
 let currentTunnel = null;
 let currentChildren = [];
@@ -190,16 +191,16 @@ async function loadChildFirewall(tunnelId, child) {
                                 <input type="radio" class="btn-check" name="policy-out-${escapeHtml(child.id)}" 
                                        id="policy-out-accept-${escapeHtml(child.id)}" value="ACCEPT"
                                        ${child.firewall_policy_out === 'ACCEPT' ? 'checked' : ''}
-                                       onchange="togglePolicy('${tunnelId}', '${child.id}', true, 'out')">
+                                       ${changeActionAttrs('togglePolicy', tunnelId, child.id, true, 'out')}>
                                 <label class="btn btn-outline-success btn-sm" for="policy-out-accept-${escapeHtml(child.id)}">ACCEPT</label>
                                 <input type="radio" class="btn-check" name="policy-out-${escapeHtml(child.id)}" 
                                        id="policy-out-drop-${escapeHtml(child.id)}" value="DROP"
                                        ${child.firewall_policy_out === 'DROP' ? 'checked' : ''}
-                                       onchange="togglePolicy('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', false, 'out')">
+                                       ${changeActionAttrs('togglePolicy', tunnelId, child.id, false, 'out')}>
                                 <label class="btn btn-outline-danger btn-sm" for="policy-out-drop-${escapeHtml(child.id)}">DROP</label>
                             </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'out')">
+                        <button class="btn btn-primary btn-sm" ${actionAttrs('showRuleModal', tunnelId, child.id, 'out')}>
                             <i class="ti ti-plus me-1"></i>${t('strongswan.fwAddRule')}
                         </button>
                     </div>
@@ -223,16 +224,16 @@ async function loadChildFirewall(tunnelId, child) {
                                 <input type="radio" class="btn-check" name="policy-in-${escapeHtml(child.id)}" 
                                        id="policy-in-accept-${escapeHtml(child.id)}" value="ACCEPT"
                                        ${child.firewall_policy_in === 'ACCEPT' ? 'checked' : ''}
-                                       onchange="togglePolicy('${tunnelId}', '${child.id}', true, 'in')">
+                                       ${changeActionAttrs('togglePolicy', tunnelId, child.id, true, 'in')}>
                                 <label class="btn btn-outline-success btn-sm" for="policy-in-accept-${escapeHtml(child.id)}">ACCEPT</label>
                                 <input type="radio" class="btn-check" name="policy-in-${escapeHtml(child.id)}" 
                                        id="policy-in-drop-${escapeHtml(child.id)}" value="DROP"
                                        ${child.firewall_policy_in === 'DROP' ? 'checked' : ''}
-                                       onchange="togglePolicy('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', false, 'in')">
+                                       ${changeActionAttrs('togglePolicy', tunnelId, child.id, false, 'in')}>
                                 <label class="btn btn-outline-danger btn-sm" for="policy-in-drop-${escapeHtml(child.id)}">DROP</label>
                             </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="showRuleModal('${escapeHtml(tunnelId)}', '${escapeHtml(child.id)}', 'in')">
+                        <button class="btn btn-primary btn-sm" ${actionAttrs('showRuleModal', tunnelId, child.id, 'in')}>
                             <i class="ti ti-plus me-1"></i>${t('strongswan.fwAddRule')}
                         </button>
                     </div>
@@ -350,12 +351,12 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
                         <td class="rule-actions">
                             <div class="btn-group btn-group-sm">
                                 <button class="btn btn-ghost-primary btn-edit" 
-                                        onclick="editRule('${escapeHtml(tunnelId)}', '${escapeHtml(childId)}', '${escapeHtml(rule.id)}')"
+                                        ${actionAttrs('editRule', tunnelId, childId, rule.id)}
                                         title="${t('strongswan.edit')}">
                                     <i class="ti ti-edit"></i>
                                 </button>
                                 <button class="btn btn-ghost-danger btn-delete"
-                                        onclick="deleteRule('${escapeHtml(tunnelId)}', '${escapeHtml(childId)}', '${escapeHtml(rule.id)}')"
+                                        ${actionAttrs('deleteRule', tunnelId, childId, rule.id)}
                                         title="${t('strongswan.delete')}">
                                     <i class="ti ti-trash"></i>
                                 </button>
@@ -545,3 +546,11 @@ window.togglePolicy = async function (tunnelId, childId, isAccept, type) {
         if (revertEl) revertEl.checked = true;
     }
 };
+
+// Handlers called from markup (data-action); resolved on window at call time.
+registerActions({
+    deleteRule: (...a) => window.deleteRule(...a),
+    editRule: (...a) => window.editRule(...a),
+    showRuleModal: (...a) => window.showRuleModal(...a),
+    togglePolicy: (...a) => window.togglePolicy(...a),
+});

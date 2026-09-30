@@ -22,6 +22,7 @@ settings = get_settings()
 NGINX_CONF_PATH = "/etc/nginx/sites-available/madmin.conf"
 NGINX_PUBLIC_CONF_PATH = "/etc/nginx/sites-available/madmin-public.conf"
 NGINX_PUBLIC_CONF_ENABLED = "/etc/nginx/sites-enabled/madmin-public.conf"
+NGINX_SECURITY_HEADERS = "/etc/nginx/snippets/madmin-security-headers.conf"
 
 # Porte staticamente riservate (non usabili come porta admin o download pubblico)
 # 443 è escluso deliberatamente: è un'alternativa valida per il download pubblico
@@ -145,6 +146,13 @@ class NetworkService:
         ssl_crt = str(SSL_DIR / "server.crt")
         ssl_key = str(SSL_DIR / "server.key")
 
+        # Written by setup-madmin.sh; an install that predates it has no snippet,
+        # and including a missing file would fail `nginx -t`.
+        headers = (
+            f"    include {NGINX_SECURITY_HEADERS};\n"
+            if os.path.exists(NGINX_SECURITY_HEADERS) else ""
+        )
+
         nginx_block = f"""server {{
     listen {port} ssl;
     server_name _;
@@ -153,11 +161,13 @@ class NetworkService:
     ssl_certificate_key {ssl_key};
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
-
+    server_tokens off;
+{headers}
     location / {{ return 403; }}
 
-    # Download configurazioni moduli (magic token, qualsiasi modulo)
-    location ~* ^/api/modules/[^/]+/download {{
+    # Download configurazioni moduli (magic token, qualsiasi modulo): only the
+    # landing page, its file/QR and nothing else under /download
+    location ~* ^/api/modules/[a-z0-9_-]+/download(/|$) {{
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

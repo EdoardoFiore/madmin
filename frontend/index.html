@@ -151,7 +151,7 @@
                             <ul class="list-inline list-inline-dots mb-0">
                                 <li class="list-inline-item">
                                     &copy;
-                                    <script>document.write(new Date().getFullYear())</script> <a href="#"
+                                    <span id="copyright-year"></span> <a href="#"
                                         class="link-secondary" id="footer-brand">MADMIN</a>
                                 </li>
                                 <li class="list-inline-item">
@@ -248,7 +248,7 @@
     <!-- Calendar engine of tabler.Datepicker (read as window.VanillaCalendarPro) -->
     <script src="/static/vendor/vanilla-calendar-pro-3.3.2/index.js"></script>
     <script src="/static/vendor/tabler-1.6.0/tabler.min.js"></script>
-    <script>window.bootstrap = window.tabler.bootstrap;</script>
+    <script src="/static/js/tabler-globals.js"></script>
 
     <!-- SortableJS for drag-drop sorting -->
     <script src="/static/vendor/sortablejs-1.15.7/Sortable.min.js"></script>
@@ -260,51 +260,7 @@
     <script type="module" src="/static/js/app.js"></script>
 
     <!-- Language toggle: cycle between supported languages -->
-    <script type="module">
-        import { getLang, getSupportedLangs } from '/static/js/i18n.js';
-        import { apiPatch } from '/static/js/api.js';
-
-        document.addEventListener('DOMContentLoaded', () => {
-            const btn = document.getElementById('lang-toggle-btn');
-            const label = document.getElementById('lang-toggle-label');
-            if (!btn) return;
-
-            const langNames = { en: 'English', it: 'Italiano' };
-            const updateLabel = () => {
-                const cur = getLang();
-                const langs = getSupportedLangs();
-                const next = langs[(langs.indexOf(cur) + 1) % langs.length];
-                label.textContent = langNames[next] || next.toUpperCase();
-            };
-
-            // Wait for i18n to be initialized before showing label
-            setTimeout(updateLabel, 500);
-
-            btn.addEventListener('click', async (e) => {
-                e.preventDefault();
-                const cur = getLang();
-                const langs = getSupportedLangs();
-                const next = langs[(langs.indexOf(cur) + 1) % langs.length];
-
-                // Save to user preferences
-                try {
-                    const token = localStorage.getItem('madmin_token');
-                    const resp = await fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${token}` } });
-                    if (resp.ok) {
-                        const user = await resp.json();
-                        const prefs = JSON.parse(user.preferences || '{}');
-                        prefs.lang = next;
-                        await apiPatch('/auth/me/preferences', { preferences: JSON.stringify(prefs) });
-                    }
-                } catch (err) {
-                    console.error('Failed to save language preference:', err);
-                }
-
-                localStorage.setItem('madmin_lang', next);
-                window.location.reload();
-            });
-        });
-    </script>
+    <script type="module" src="/static/js/shell.js"></script>
 </body>
 
 </html>

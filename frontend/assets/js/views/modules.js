@@ -6,7 +6,7 @@
  */
 
 import { apiGet, apiPost, apiPut } from '../api.js';
-import { showToast, escapeHtml, emptyState, confirmDialog } from '../utils.js';
+import { showToast, escapeHtml, emptyState, confirmDialog, actionAttrs, registerActions } from '../utils.js';
 import { checkPermission } from '../app.js';
 import { t } from '../i18n.js';
 
@@ -94,7 +94,7 @@ function renderModuleCards() {
         <div class="col-md-6 col-xl-4">
             <div class="card card-sm h-100 module-card ${m.enabled ? 'border-primary border-2' : ''}"
                  id="module-card-${m.id}" style="cursor: pointer;"
-                 onclick="window._openModuleDetail('${m.id}')">
+                 ${actionAttrs('_openModuleDetail', m.id)}>
                 <div class="card-body">
                     <div class="d-flex align-items-start mb-3">
                         <span class="avatar ${m.enabled ? 'bg-primary' : 'bg-secondary-lt'} me-3" style="min-width: 42px;">
@@ -147,17 +147,28 @@ function getStatusInfo(mod) {
 
 function getActionButton(mod) {
     if (mod.enabled) {
-        return `<button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); window._confirmDeactivate('${mod.id}', '${escapeHtml(mod.name)}')">
+        return `<button class="btn btn-sm btn-outline-danger" ${actionAttrs('_confirmDeactivate', mod.id, mod.name)}>
             <i class="ti ti-player-stop me-1"></i>${t('modules.deactivate')}
         </button>`;
     } else {
-        return `<button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); window._confirmActivate('${mod.id}', '${escapeHtml(mod.name)}')">
+        return `<button class="btn btn-sm btn-primary" ${actionAttrs('_confirmActivate', mod.id, mod.name)}>
             <i class="ti ti-player-play me-1"></i>${t('modules.activate')}
         </button>`;
     }
 }
 
 // === Confirmation Dialogs ===
+
+// Handlers called from markup (data-action). Looked up on window at call time,
+// where the functions below are defined.
+const _hideDetailModal = () => bootstrap.Modal.getInstance(document.getElementById('module-detail-modal'))?.hide();
+registerActions({
+    _openModuleDetail: (...a) => window._openModuleDetail(...a),
+    _confirmActivate: (...a) => window._confirmActivate(...a),
+    _confirmDeactivate: (...a) => window._confirmDeactivate(...a),
+    _detailActivate: (...a) => { _hideDetailModal(); window._confirmActivate(...a); },
+    _detailDeactivate: (...a) => { _hideDetailModal(); window._confirmDeactivate(...a); },
+});
 
 window._confirmActivate = async (moduleId, moduleName) => {
     const message = t('modules.activateConfirmMsg', { name: `<strong>${escapeHtml(moduleName)}</strong>` });
@@ -303,10 +314,10 @@ window._openModuleDetail = async (moduleId) => {
         ${canManage ? `
         <div class="modal-footer">
             ${mod.enabled
-                ? `<button class="btn btn-danger" onclick="bootstrap.Modal.getInstance(document.getElementById('module-detail-modal')).hide(); window._confirmDeactivate('${mod.id}', '${escapeHtml(mod.name)}')">
+                ? `<button class="btn btn-danger" ${actionAttrs('_detailDeactivate', mod.id, mod.name)}>
                     <i class="ti ti-player-stop me-1"></i>${t('modules.deactivateModule')}
                 </button>`
-                : `<button class="btn btn-primary" onclick="bootstrap.Modal.getInstance(document.getElementById('module-detail-modal')).hide(); window._confirmActivate('${mod.id}', '${escapeHtml(mod.name)}')">
+                : `<button class="btn btn-primary" ${actionAttrs('_detailActivate', mod.id, mod.name)}>
                     <i class="ti ti-player-play me-1"></i>${t('modules.activateModule')}
                 </button>`
             }

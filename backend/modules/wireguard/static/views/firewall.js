@@ -8,6 +8,7 @@ import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '/static/js/api.js';
 import { showToast, confirmDialog, loadingSpinner, isValidCIDR, escapeHtml } from '/static/js/utils.js';
 import { checkPermission } from '/static/js/app.js';
+import { actionAttrs, registerActions } from '/static/js/utils.js';
 
 let currentInstanceId = null;
 let currentGroupId = null;
@@ -205,7 +206,7 @@ function renderGroupsList() {
     return groups.map(g => `
         <div class="list-group-item list-group-item-action ${g.id === currentGroupId ? 'active' : ''} d-flex align-items-center p-0" data-group-id="${escapeHtml(g.id)}">
             ${canManageGroups ? `<div class="px-2 py-3 cursor-move group-drag-handle ${g.id === currentGroupId ? 'text-reset' : 'text-muted'}"><i class="ti ti-grip-vertical"></i></div>` : ''}
-            <a href="#" class="flex-grow-1 p-3 text-decoration-none text-reset" onclick="event.preventDefault(); selectGroup('${escapeHtml(g.id)}')">
+            <a href="#" class="flex-grow-1 p-3 text-decoration-none text-reset" ${actionAttrs('selectGroup', g.id)}>
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
                         <strong>${escapeHtml(g.name)}</strong>
@@ -307,7 +308,7 @@ function renderMembers(members) {
                 <span class="badge bg-primary-lt d-inline-flex align-items-center gap-2">
                     ${escapeHtml(m.client_name)} <small class="opacity-75">(${escapeHtml(m.client_ip)})</small>
                     ${canManageGroups ? `
-                    <button class="btn btn-ghost-danger btn-sm p-0" onclick="removeMember('${escapeHtml(m.client_id)}')">
+                    <button class="btn btn-ghost-danger btn-sm p-0" ${actionAttrs('removeMember', m.client_id)}>
                         <i class="ti ti-x"></i>
                     </button>` : ''}
                 </span>
@@ -352,10 +353,10 @@ function renderRules(rules) {
                         ${canManageGroups ? `
                         <td>
                             <div class="btn-group btn-group-sm">
-                                <button class="btn btn-ghost-primary" onclick="editRule('${escapeHtml(r.id)}')">
+                                <button class="btn btn-ghost-primary" ${actionAttrs('editRule', r.id)}>
                                     <i class="ti ti-pencil"></i>
                                 </button>
-                                <button class="btn btn-ghost-danger" onclick="deleteRule('${escapeHtml(r.id)}')">
+                                <button class="btn btn-ghost-danger" ${actionAttrs('deleteRule', r.id)}>
                                     <i class="ti ti-trash"></i>
                                 </button>
                             </div>
@@ -656,3 +657,11 @@ document.addEventListener('change', async (e) => {
 const style = document.createElement('style');
 style.textContent = '.cursor-move { cursor: move; }';
 document.head.appendChild(style);
+
+// Handlers called from markup (data-action); resolved on window at call time.
+registerActions({
+    deleteRule: (...a) => window.deleteRule(...a),
+    editRule: (...a) => window.editRule(...a),
+    removeMember: (...a) => window.removeMember(...a),
+    selectGroup: (...a) => window.selectGroup(...a),
+});

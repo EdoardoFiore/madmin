@@ -7,6 +7,7 @@
 import { t } from '/static/js/i18n.js';
 import { apiGet, apiPost, apiPatch, apiDelete } from '/static/js/api.js';
 import { showToast, confirmDialog, escapeHtml, isValidCIDR } from '/static/js/utils.js';
+import { actionAttrs, registerActions } from '/static/js/utils.js';
 
 const MODULE_API = '/modules/wireguard';
 
@@ -99,21 +100,21 @@ function renderClientRows(clients, canClients) {
             <td>
                 <div class="btn-group">
                     ${canClients ? `
-                    <button class="btn btn-sm btn-outline-primary" onclick="downloadConfig('${escapeHtml(c.name)}')" title="${t('wireguard.downloadConfig')}">
+                    <button class="btn btn-sm btn-outline-primary" ${actionAttrs('downloadConfig', c.name)} title="${t('wireguard.downloadConfig')}">
                         <i class="ti ti-download"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="showQR('${escapeHtml(c.name)}')" title="${t('wireguard.qrCode')}">
+                    <button class="btn btn-sm btn-outline-secondary" ${actionAttrs('showQR', c.name)} title="${t('wireguard.qrCode')}">
                         <i class="ti ti-qrcode"></i>
                     </button>
                     ${(c.allowed_ips || c.dns) ? `
-                        <button class="btn btn-sm btn-outline-warning" onclick="resetClientDefaults('${escapeHtml(c.name)}')" title="${t('wireguard.resetDefaults')}" data-bs-toggle="tooltip">
+                        <button class="btn btn-sm btn-outline-warning" ${actionAttrs('resetClientDefaults', c.name)} title="${t('wireguard.resetDefaults')}" data-bs-toggle="tooltip">
                             <i class="ti ti-restore"></i>
                         </button>
                     ` : ''}
-                    <button class="btn btn-sm btn-outline-success" onclick="openSendEmailModal('${escapeHtml(c.name)}')" title="${t('wireguard.sendEmail')}">
+                    <button class="btn btn-sm btn-outline-success" ${actionAttrs('openSendEmailModal', c.name)} title="${t('wireguard.sendEmail')}">
                         <i class="ti ti-mail"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="revokeClient('${escapeHtml(c.name)}')" title="${t('wireguard.revoke')}">
+                    <button class="btn btn-sm btn-outline-danger" ${actionAttrs('revokeClient', c.name)} title="${t('wireguard.revoke')}">
                         <i class="ti ti-trash"></i>
                     </button>` : ''}
                 </div>
@@ -190,11 +191,11 @@ async function renderInstanceDetail(container, canManage, canClients) {
                         <div class="btn-group">
                             ${canManage ? `
                             <button class="btn ${instance.status === 'running' ? 'btn-warning' : 'btn-success'}"
-                                    onclick="${instance.status === 'running' ? 'stopInstance' : 'startInstance'}('${instance.id}')">
+                                    ${actionAttrs(instance.status === 'running' ? 'stopInstance' : 'startInstance', instance.id)}>
                                 <i class="ti ti-player-${instance.status === 'running' ? 'stop' : 'play'} me-1"></i>
                                 ${instance.status === 'running' ? t('wireguard.stop') : t('wireguard.start')}
                             </button>
-                            <button class="btn btn-outline-danger" onclick="deleteInstance('${instance.id}')">
+                            <button class="btn btn-outline-danger" ${actionAttrs('deleteInstance', instance.id)}>
                                 <i class="ti ti-trash"></i>
                             </button>` : ''}
                         </div>
@@ -859,14 +860,14 @@ async function renderClientModeDetail(container, instance, canManage) {
                     <div class="btn-group">
                         ${canManage ? `
                         <button class="btn ${isRunning ? 'btn-warning' : 'btn-success'}"
-                                onclick="${isRunning ? 'stopInstance' : 'startInstance'}('${instance.id}')">
+                                ${actionAttrs(isRunning ? 'stopInstance' : 'startInstance', instance.id)}>
                             <i class="ti ti-player-${isRunning ? 'stop' : 'play'} me-1"></i>
                             ${isRunning ? t('wireguard.stop') : t('wireguard.start')}
                         </button>
                         <button class="btn btn-outline-secondary" id="btn-reconnect" title="${t('wireguard.clientModeReconnect')}">
                             <i class="ti ti-refresh me-1"></i>${t('wireguard.clientModeReconnect')}
                         </button>
-                        <button class="btn btn-outline-danger" onclick="deleteInstance('${instance.id}')">
+                        <button class="btn btn-outline-danger" ${actionAttrs('deleteInstance', instance.id)}>
                             <i class="ti ti-trash"></i>
                         </button>` : ''}
                     </div>
@@ -1073,3 +1074,15 @@ function setupS2SHandlers(instance, canManage, canClients) {
         }
     });
 }
+
+// Handlers called from markup (data-action); resolved on window at call time.
+registerActions({
+    deleteInstance: (...a) => window.deleteInstance(...a),
+    downloadConfig: (...a) => window.downloadConfig(...a),
+    openSendEmailModal: (...a) => window.openSendEmailModal(...a),
+    resetClientDefaults: (...a) => window.resetClientDefaults(...a),
+    revokeClient: (...a) => window.revokeClient(...a),
+    showQR: (...a) => window.showQR(...a),
+    startInstance: (...a) => window.startInstance(...a),
+    stopInstance: (...a) => window.stopInstance(...a),
+});

@@ -259,7 +259,7 @@ async function loadInstances(canManage) {
                     <td>${modeCell}</td>
                     <td>${clientsCell}</td>
                     <td>
-                        <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">
+                        <div class="btn-group btn-group-sm" data-no-row-click>
                             ${canManage ? (i.status === 'running'
                                 ? `<button class="btn btn-ghost-warning btn-stop" data-id="${escapeHtml(i.id)}" title="${t('wireguard.stop')}"><i class="ti ti-player-stop"></i></button>`
                                 : `<button class="btn btn-ghost-success btn-start" data-id="${escapeHtml(i.id)}" title="${t('wireguard.start')}"><i class="ti ti-player-play"></i></button>`) : ''}
@@ -279,7 +279,7 @@ async function loadInstances(canManage) {
 function setupInstanceRowActions(canManage) {
     document.querySelectorAll('.instance-row').forEach(row => {
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-group')) return;
+            if (e.target.closest('.btn-group, [data-no-row-click]')) return;
             window.location.hash = `#wireguard/${row.dataset.id}`;
         });
     });

@@ -331,6 +331,21 @@ if [ ! -f "$INSTALL_DIR/data/ssl/server.crt" ]; then
     chmod 600 $INSTALL_DIR/data/ssl/server.key
 fi
 
+# Security headers, shared by the admin server and the public download server
+# (backend/core/settings/service.py includes it when present). A location with
+# its own add_header does not inherit the server's, so those include it again.
+# No HSTS: with the self-signed certificate it would turn the certificate
+# warning into an error the browser does not let the user click through.
+# script-src 'self': inline scripts and on*="…" handlers do not run, so the
+# frontend binds events from JS (utils.js registerActions).
+mkdir -p /etc/nginx/snippets
+cat > /etc/nginx/snippets/madmin-security-headers.conf << 'EOF'
+add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+add_header X-Frame-Options "DENY" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "no-referrer" always;
+EOF
+
 cat > /etc/nginx/sites-available/madmin.conf << EOF
 server {
     listen 7443 ssl;
@@ -342,6 +357,9 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
+    server_tokens off;
+    include snippets/madmin-security-headers.conf;
+
     root $INSTALL_DIR/frontend;
     index index.html;
 
@@ -351,14 +369,22 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_cache_valid 200 1d;
     }
 
-    # Core static assets (served directly from filesystem)
+    # Third-party libraries: the version is in the path, so they never change
+    location /static/vendor {
+        alias $INSTALL_DIR/frontend/assets/vendor;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        include snippets/madmin-security-headers.conf;
+    }
+
+    # Core static assets: same URL across upgrades, so the browser must
+    # revalidate (ETag, 304) or it keeps running the previous release's JS
     location /static {
         alias $INSTALL_DIR/frontend/assets;
-        expires 7d;
-        add_header Cache-Control "public, immutable";
+        add_header Cache-Control "no-cache";
+        include snippets/madmin-security-headers.conf;
     }
 
     # Uploaded files (logos, favicons, etc.)

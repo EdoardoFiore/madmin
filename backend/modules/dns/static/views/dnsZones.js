@@ -63,7 +63,7 @@ export function renderDnsZonesTab(zones, container, perms) {
                         <tbody>
                             ${zones.map(z => `
                                 <tr class="zone-row ${!z.enabled ? 'text-muted' : ''}" data-id="${escapeHtml(z.id)}" style="cursor: pointer;">
-                                    <td onclick="event.stopPropagation();">
+                                    <td data-no-row-click>
                                         ${perms.zones ? `
                                         <label class="form-check form-switch mb-0">
                                             <input class="form-check-input zone-toggle" type="checkbox"
@@ -86,7 +86,7 @@ export function renderDnsZonesTab(zones, container, perms) {
                                     <td>
                                         ${perms.zones ? `
                                         <button class="btn btn-sm btn-ghost-danger btn-delete-zone"
-                                                data-id="${z.id}" onclick="event.stopPropagation();" title="${t('dns.delete')}">
+                                                data-id="${z.id}" data-no-row-click title="${t('dns.delete')}">
                                             <i class="ti ti-trash"></i>
                                         </button>` : ''}
                                     </td>
@@ -135,7 +135,7 @@ function setupZonesActions(zones, container, perms) {
     // Zone row click
     document.querySelectorAll('.zone-row').forEach(row => {
         row.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-group') || e.target.closest('.btn-delete-zone')) return;
+            if (e.target.closest('.btn-group, .btn-delete-zone, [data-no-row-click]')) return;
             window.location.hash = `#dns/${row.dataset.id}`;
         });
     });
@@ -236,7 +236,7 @@ export async function renderDnsZoneDetail(container, zoneId, perms) {
 
         container.innerHTML = `
             <div class="mb-3">
-                <a href="#dns" class="text-muted" onclick="void 0;">
+                <a href="#dns" class="text-muted">
                     <i class="ti ti-arrow-left me-1"></i>${t('dns.backToZones')}
                 </a>
             </div>
