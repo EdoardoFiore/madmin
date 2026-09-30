@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, func
 from sqlalchemy.orm import selectinload
 
+from core import validation
 from core.firewall import iptables as core_iptables
 from core.services.service import SystemdService
 from core.network.service import network_service
@@ -47,6 +48,33 @@ DNS_FW_CHAIN = "MOD_DNS_INPUT"
 
 # Valid record types
 VALID_RECORD_TYPES = {"A", "AAAA", "CNAME", "MX", "TXT", "SRV", "NS", "PTR"}
+
+# Owner names: labels of letters, digits, '-' and '_' (SRV: _sip._tcp), an
+# optional leading '*' wildcard label, optionally absolute
+_RECORD_NAME_RE = re.compile(r'(\*|[A-Za-z0-9_][A-Za-z0-9_-]{0,62})(\.[A-Za-z0-9_][A-Za-z0-9_-]{0,62})*\.?')
+_HOST_TARGET_TYPES = {"CNAME", "MX", "NS", "PTR", "SRV"}
+
+
+def _valid_ips(items, what: str) -> List[str]:
+    """The entries of a stored forwarder list that are IP addresses; others are logged and dropped."""
+    out = []
+    for item in items or []:
+        try:
+            out.append(validation.ip_address(item, what))
+        except ValueError:
+            logger.error(f"DNS {what} {item!r} skipped: not an IP address")
+    return out
+
+
+def _zone_value(record_type: str, value: str) -> str:
+    """A record value as written in the zone file."""
+    if record_type == "TXT":
+        # Inside "…": a quote or backslash would end or escape the string
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+    if record_type in _HOST_TARGET_TYPES:
+        # The template appends the final dot; a value typed with one had two
+        return value.rstrip(".")
+    return value
 
 
 class DnsService:
@@ -122,13 +150,24 @@ class DnsService:
         settings = await self.get_or_create_settings(session)
         
         listen_interfaces = json.loads(settings.listen_interfaces) if settings.listen_interfaces else []
-        forwarders = json.loads(settings.system_forwarders) if settings.system_forwarders else []
-        
+        forwarders = _valid_ips(
+            json.loads(settings.system_forwarders) if settings.system_forwarders else [],
+            "system forwarder",
+        )
+
+        # The API validates allow_query; a value that did not come through it
+        # (restore, older row) falls back to the safe default rather than being
+        # written into named.conf as is
+        allow_query = settings.allow_query or "localnets"
+        if not re.fullmatch(r'[A-Za-z0-9.:/; ]+', allow_query):
+            logger.error(f"DNS allow_query {allow_query!r} not usable, using localnets")
+            allow_query = "localnets"
+
         template = self._load_template("named.conf.options.j2")
         return template.render(
             mode=settings.mode,
             listen_addresses=self._get_listen_addresses(listen_interfaces),
-            allow_query=settings.allow_query,
+            allow_query=allow_query,
             forwarders=forwarders,
             dnssec_validation=settings.dnssec_validation,
         )
@@ -144,10 +183,16 @@ class DnsService:
         # Prepare zone data
         zone_data = []
         for z in zones:
+            if not self.validate_zone_name(z.name)[0]:
+                logger.error(f"DNS zone {z.name!r} skipped: invalid name")
+                continue
             zd = {
                 "name": z.name,
                 "zone_type": z.zone_type,
-                "forward_servers_list": json.loads(z.forward_servers) if z.forward_servers else [],
+                "forward_servers_list": _valid_ips(
+                    json.loads(z.forward_servers) if z.forward_servers else [],
+                    f"forward server of {z.name}",
+                ),
             }
             zone_data.append(zd)
         
@@ -165,10 +210,16 @@ class DnsService:
         # Prepare record data with TTL string
         rec_data = []
         for r in records:
+            # Rows that did not come through the API (restore, older data) are
+            # checked again: the zone file is what named loads
+            ok, msg = self.validate_record(r.record_type, r.name, r.value)
+            if not ok:
+                logger.error(f"DNS record {r.name!r} {r.record_type} in {zone.name} skipped: {msg}")
+                continue
             rd = {
                 "record_type": r.record_type,
                 "name": r.name,
-                "value": r.value,
+                "value": _zone_value(r.record_type, r.value),
                 "ttl_str": f"{r.ttl} " if r.ttl else "",
                 "priority": r.priority or 10,
                 "weight": r.weight or 0,
@@ -599,44 +650,45 @@ class DnsService:
         if not name or len(name) > 253:
             return False, "Nome zona non valido (1-253 caratteri)"
         
-        # Must be a valid domain name
-        pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$'
-        if not re.match(pattern, name):
+        # Must be a valid domain name (fullmatch: '$' let a trailing newline
+        # through, straight into named.conf.local and the zone file path)
+        pattern = r'[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?'
+        if not re.fullmatch(pattern, name):
             return False, "Nome zona contiene caratteri non validi"
-        
+
         return True, ""
 
     @staticmethod
     def validate_record(record_type: str, name: str, value: str) -> Tuple[bool, str]:
-        """Validate a DNS record."""
+        """
+        Validate a DNS record for the zone file. The value's grammar depends on
+        the type: anything looser let a newline or quote add records (or a
+        $INCLUDE) that named-checkzone then accepted as well-formed.
+        """
         if record_type not in VALID_RECORD_TYPES:
             return False, f"Tipo record non valido. Validi: {', '.join(sorted(VALID_RECORD_TYPES))}"
-        
+
         if not name:
             return False, "Il nome del record è obbligatorio"
-        
+
         if not value:
             return False, "Il valore del record è obbligatorio"
-        
-        # Type-specific validation
-        if record_type == "A":
-            # Must be valid IPv4
-            parts = value.split(".")
-            if len(parts) != 4:
-                return False, "Indirizzo IPv4 non valido"
-            try:
-                for p in parts:
-                    n = int(p)
-                    if n < 0 or n > 255:
-                        return False, "Indirizzo IPv4 non valido"
-            except ValueError:
-                return False, "Indirizzo IPv4 non valido"
-        
-        elif record_type == "AAAA":
-            # Basic IPv6 validation
-            if ":" not in value:
-                return False, "Indirizzo IPv6 non valido"
-        
+
+        if name != "@" and not _RECORD_NAME_RE.fullmatch(name):
+            return False, "Nome record non valido (es. www, @, *.app, _sip._tcp)"
+
+        try:
+            if record_type == "A":
+                validation.ip_address(value, "valore", version=4)
+            elif record_type == "AAAA":
+                validation.ip_address(value, "valore", version=6)
+            elif record_type == "TXT":
+                validation.no_control_chars(value, "valore", 1000)
+            else:  # CNAME, MX, NS, PTR, SRV: a target host name
+                validation.hostname(value, "valore")
+        except ValueError as e:
+            return False, str(e)
+
         return True, ""
 
     # =========================================================
