@@ -19,13 +19,14 @@ import uuid
 import shutil
 import asyncio
 import tarfile
+import fnmatch
 import logging
 import importlib.util
 import subprocess
 import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text, delete
 
@@ -41,16 +42,25 @@ MAX_LOCAL_BACKUPS = int(os.environ.get("MADMIN_MAX_BACKUPS", "5"))
 settings = get_settings()
 
 
+def _private_dir(path: str) -> str:
+    """
+    Create `path` readable by root only. Archives hold password hashes,
+    WireGuard private keys, IPsec PSKs and the OpenVPN PKI: with the default
+    0755/0644 any local user (www-data included) could read them.
+    """
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
 def ensure_backup_dir():
-    """Ensure backup directory exists."""
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    return BACKUP_DIR
+    """Ensure backup directory exists (root only)."""
+    return _private_dir(BACKUP_DIR)
 
 
 def ensure_imports_dir():
-    """Ensure imports directory exists."""
-    os.makedirs(IMPORTS_DIR, exist_ok=True)
-    return IMPORTS_DIR
+    """Ensure imports directory exists (root only)."""
+    return _private_dir(IMPORTS_DIR)
 
 
 # ============== CONFIG EXPORT ==============
@@ -149,7 +159,8 @@ async def export_config(session: AsyncSession) -> str:
         archive_path = os.path.join(BACKUP_DIR, archive_name)
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(export_path, arcname=export_name)
-        
+        os.chmod(archive_path, 0o600)
+
         logger.info(f"Config export created: {archive_path}")
         return archive_path
     
@@ -242,9 +253,20 @@ async def preview_config(archive_path: str) -> dict:
 
 
 def _safe_tar_members(tar: tarfile.TarFile, restore_path: str):
-    """Yield tar members whose resolved path stays within restore_path (prevents path traversal)."""
+    """
+    Yield the members of a config archive that may be extracted: regular files
+    and directories whose path stays within restore_path.
+
+    Links and special files are dropped: the path check alone let a hardlink
+    named inside the tree point at /etc/shadow, and a later regular member with
+    the same name was then written through it. An archive written by MADMIN
+    only ever contains files and directories.
+    """
     abs_restore = os.path.realpath(restore_path)
     for member in tar.getmembers():
+        if not (member.isreg() or member.isdir()):
+            logger.warning(f"Backup import: membro non regolare ignorato: {member.name}")
+            continue
         member_path = os.path.realpath(os.path.join(abs_restore, member.name))
         if not member_path.startswith(abs_restore + os.sep) and member_path != abs_restore:
             logger.warning(f"Backup import: percorso non sicuro ignorato: {member.name}")
@@ -273,8 +295,8 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
         return {"success": False, "errors": ["File non trovato"]}
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    restore_path = os.path.join(BACKUP_DIR, f"import_temp_{timestamp}")
-    os.makedirs(restore_path, exist_ok=True)
+    restore_path = os.path.join(ensure_backup_dir(), f"import_temp_{timestamp}")
+    _private_dir(restore_path)
     
     result = {
         "success": False,
@@ -287,9 +309,11 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
     }
     
     try:
-        # Extract (safe: filter members to prevent path traversal)
+        # Extract: only regular files and directories inside restore_path, and
+        # the "data" filter on top (no absolute paths, no setuid/setgid bits,
+        # no device files, owner not taken from the archive)
         with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(restore_path, members=_safe_tar_members(tar, restore_path))
+            tar.extractall(restore_path, members=_safe_tar_members(tar, restore_path), filter="data")
         
         # Find root dir
         extracted = os.listdir(restore_path)
@@ -396,25 +420,37 @@ async def import_config(session: AsyncSession, archive_path: str) -> dict:
                     )
                     continue
                 
-                # Import DB data
-                data_file = os.path.join(module_dir, "data.json")
-                if os.path.exists(data_file):
-                    rows = await _import_module_tables(session, data_file)
-                    mod_result["tables_imported"] = rows
-                
-                # Load the (trusted, on-disk) module manifest once: it bounds where
-                # this module is allowed to restore files and may declare a post_restore hook.
+                # Load the (trusted, on-disk) module manifest once: it bounds which
+                # tables and files this module may restore and may declare a
+                # post_restore hook.
                 mod_manifest = _load_module_manifest(module_id)
                 config_export = (mod_manifest or {}).get("config_export", {})
 
-                # Restore irrecoverable files — constrained to the destination roots
-                # the module itself declares in its manifest (config_export.irrecoverable_files).
-                # A tampered/cross-instance archive cannot write outside those roots.
+                # Import DB data
+                data_file = os.path.join(module_dir, "data.json")
+                if os.path.exists(data_file):
+                    rows, skipped = await _import_module_tables(
+                        session, data_file, config_export.get("tables", [])
+                    )
+                    mod_result["tables_imported"] = rows
+                    for table_name in skipped:
+                        result["warnings"].append(
+                            f"Modulo '{module_id}': tabella '{table_name}' non prevista dal modulo, ignorata"
+                        )
+
+                # Restore irrecoverable files — constrained to the paths the module
+                # itself declares in its manifest (config_export.irrecoverable_files).
+                # A tampered/cross-instance archive cannot write anywhere else.
                 files_dir = os.path.join(module_dir, "files")
                 if os.path.isdir(files_dir):
-                    allowed_roots = _allowed_restore_roots(config_export.get("irrecoverable_files", []))
-                    _restore_irrecoverable_files(files_dir, allowed_roots)
+                    skipped_files = _restore_irrecoverable_files(
+                        files_dir, config_export.get("irrecoverable_files", [])
+                    )
                     mod_result["files_restored"] = True
+                    for dest in skipped_files:
+                        result["warnings"].append(
+                            f"Modulo '{module_id}': file '{dest}' fuori dai percorsi del modulo, ignorato"
+                        )
 
                 await session.commit()
 
@@ -1507,19 +1543,28 @@ async def _import_settings(session: AsyncSession, settings_file: str) -> Optiona
     return public_download_url
 
 
-async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
+async def _import_module_tables(session: AsyncSession, data_file: str, allowed_tables: List[str]):
     """Import module DB tables from JSON. Uses raw SQL INSERT for schema flexibility.
-    
+
     Handles foreign key ordering: deletes children first, inserts parents first.
+
+    Only the tables the module's manifest exports (config_export.tables) are
+    touched: the archive names the tables, and without this check a crafted
+    data.json could empty any table (audit_log, user…). Others are skipped.
+
+    Returns (rows imported, names of the tables skipped).
     """
     with open(data_file) as f:
         tables_data = json.load(f)
-    
+
     if not tables_data:
-        return 0
-    
+        return 0, []
+
     total_rows = 0
-    table_names = list(tables_data.keys())
+    skipped = [t for t in tables_data if t not in allowed_tables]
+    for table_name in skipped:
+        logger.warning(f"Backup import: tabella non prevista dal modulo ignorata: {table_name}")
+    table_names = [t for t in tables_data if t in allowed_tables]
     
     # Sort tables by FK dependencies using SQLAlchemy metadata reflection
     sorted_tables = await _get_sorted_tables(session, table_names)
@@ -1587,12 +1632,13 @@ async def _import_module_tables(session: AsyncSession, data_file: str) -> int:
                 await session.execute(text(sql), processed_row)
                 total_rows += 1
             except Exception as e:
+                # Not the row itself: it can hold private keys and PSKs, and the
+                # journal is readable from the panel with logs.view
                 logger.error(f"Failed to insert row in {table_name}: {e}")
-                logger.error(f"Row data: {processed_row}")
                 raise
-    
+
     logger.info(f"Module tables imported: {total_rows} rows across {len(sorted_tables)} tables")
-    return total_rows
+    return total_rows, skipped
 
 
 async def _get_table_columns(session: AsyncSession, table_name: str) -> dict:
@@ -1754,45 +1800,43 @@ async def _get_sorted_tables(session: AsyncSession, table_names: list) -> list:
     return sorted_list
 
 
-def _allowed_restore_roots(patterns: List[str]) -> List[str]:
-    """Derive the absolute destination roots a module is allowed to restore into.
-
-    `patterns` are the glob patterns the module declares under
-    config_export.irrecoverable_files (e.g. "/etc/openvpn/server/*/pki"). For each
-    pattern we take its static prefix directory — the leading components before the
-    first glob metacharacter — which bounds where restored files may land.
-
-    Returns a list of realpath'd directories. Empty if no (valid, absolute) pattern,
-    in which case nothing may be restored.
+def _matches_restore_pattern(path: str, pattern: str) -> bool:
     """
-    roots: List[str] = []
-    for pattern in patterns or []:
-        if not pattern or not str(pattern).startswith("/"):
-            # Only absolute, system-path patterns are meaningful here.
-            continue
-        # Split off everything from the first glob metachar onwards.
-        static_prefix = re.split(r"[*?\[]", str(pattern), maxsplit=1)[0]
-        # The containing directory of the static prefix is the allowed root.
-        root = os.path.dirname(static_prefix.rstrip("/"))
-        if root and root != "/":
-            roots.append(os.path.realpath(root))
-    return roots
+    Whether `path` is, or lies under, a path matching `pattern`, compared
+    component by component so that '*' never crosses a '/'.
+
+    "/etc/swanctl/x509" admits /etc/swanctl/x509/peer.pem, not
+    /etc/swanctl/conf.d/x.conf; "/etc/openvpn/server/*/*.crt" admits
+    /etc/openvpn/server/office/ca.crt, not the server .conf next to it.
+    """
+    p_parts = PurePosixPath(pattern).parts
+    d_parts = PurePosixPath(path).parts
+    if len(d_parts) < len(p_parts):
+        return False
+    return all(fnmatch.fnmatchcase(d, p) for d, p in zip(d_parts, p_parts))
 
 
-def _restore_irrecoverable_files(files_dir: str, allowed_roots: List[str]):
+def _restore_irrecoverable_files(files_dir: str, patterns: List[str]) -> List[str]:
     """Restore irrecoverable files from backup to their original absolute paths.
 
-    Each destination is reconstructed from the archive layout and must resolve
-    inside one of `allowed_roots` (derived from the module manifest). Anything that
-    would land outside is dropped — this is the boundary that stops a tampered
-    archive from writing to arbitrary root-owned system paths (RCE).
+    Each destination is reconstructed from the archive layout and must match
+    one of the module's config_export.irrecoverable_files patterns (see
+    _matches_restore_pattern). Anything else is dropped: this is the boundary
+    that stops a tampered archive from writing root-owned system paths (a
+    swanctl.conf with an updown script, an OpenVPN .conf with `up`). The
+    directory above a pattern used to be accepted, which was wide enough for
+    exactly that.
+
+    Returns the destinations that were skipped.
     """
-    if not allowed_roots:
+    patterns = [p for p in (patterns or []) if p and str(p).startswith("/")]
+    skipped: List[str] = []
+    if not patterns:
         logger.warning(
             "Backup: nessuna destinazione consentita per questo modulo; "
             "ripristino file irrecuperabili saltato"
         )
-        return
+        return skipped
 
     for root, dirs, files in os.walk(files_dir):
         for filename in files:
@@ -1801,15 +1845,17 @@ def _restore_irrecoverable_files(files_dir: str, allowed_roots: List[str]):
             rel_path = os.path.relpath(src, files_dir)
             dest = os.path.realpath(os.path.join("/", rel_path))
 
-            # Containment check against the manifest-declared roots (realpath-based,
-            # so it survives '..' and symlink tricks — not a textual filter).
-            if not any(dest == r or dest.startswith(r + os.sep) for r in allowed_roots):
+            # realpath first, so '..' and symlinks already on disk cannot move
+            # the destination after the check
+            if not any(_matches_restore_pattern(dest, p) for p in patterns):
                 logger.warning(f"Backup: destinazione fuori perimetro ignorata: {dest}")
+                skipped.append(dest)
                 continue
 
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copy2(src, dest)
             logger.info(f"Restored irrecoverable file: {dest}")
+    return skipped
 
 
 async def _execute_restore_hook(hook_path: str, module_path: Path, session: AsyncSession):

@@ -21,7 +21,7 @@ from core.settings.models import BackupSettings
 from .service import (
     export_config, import_config, preview_config,
     run_backup, list_local_backups, list_import_files,
-    BACKUP_DIR, IMPORTS_DIR,
+    BACKUP_DIR, IMPORTS_DIR, ensure_backup_dir,
     list_remote_backups, download_remote_backup, delete_remote_backup, cleanup_remote_backups
 )
 
@@ -79,7 +79,7 @@ async def preview_import(
     # Save uploaded file temporarily
     temp_path = os.path.join(BACKUP_DIR, f"_preview_temp_{Path(file.filename).name}")
     try:
-        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ensure_backup_dir()
         with open(temp_path, "wb") as f:
             content = await file.read()
             f.write(content)
@@ -110,7 +110,7 @@ async def import_configuration(
     # Save uploaded file
     temp_path = os.path.join(BACKUP_DIR, f"_import_{Path(file.filename).name}")
     try:
-        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ensure_backup_dir()
         with open(temp_path, "wb") as f:
             content = await file.read()
             f.write(content)
