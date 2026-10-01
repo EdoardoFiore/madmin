@@ -7,7 +7,7 @@ All settings tables are singleton (only id=1 used).
 from sqlmodel import SQLModel, Field
 from core import validation
 from pydantic import BaseModel, field_validator
-from sqlalchemy import Column, BigInteger
+from sqlalchemy import Column, BigInteger, Text
 from typing import Optional
 from datetime import datetime
 import re
@@ -122,7 +122,37 @@ class BackupSettings(SQLModel, table=True):
     
     # Retention policy
     retention_days: int = Field(default=30)  # 0 = keep forever
-    
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SyslogSettings(SQLModel, table=True):
+    """
+    External syslog forwarding for audit log entries (RFC 5424).
+    Singleton table (only id=1 used).
+    """
+    __tablename__ = "syslog_settings"
+
+    id: int = Field(default=1, primary_key=True)
+    enabled: bool = Field(default=False)
+    host: str = Field(default="", max_length=255)
+    port: int = Field(default=514)
+    protocol: str = Field(default="udp", max_length=10)      # udp | tcp | tls
+    facility: int = Field(default=16)                         # 16-23 = local0-local7
+    app_name: str = Field(default="madmin", max_length=48)   # RFC5424 APP-NAME
+
+    # Event filter
+    forward_reads: bool = Field(default=False)               # include GET/read entries
+    min_status: int = Field(default=0)                       # 0 = all; 400 = errors only
+
+    # TLS (transport=tls). CA cert is a PEM blob, not a secret but voluminous.
+    tls_ca_cert: Optional[str] = Field(default=None, sa_column=Column(Text))
+    tls_verify: bool = Field(default=True)
+
+    # Feedback (mirrors BackupSettings.last_run_status)
+    last_error: Optional[str] = Field(default=None, max_length=500)
+    last_sent_at: Optional[datetime] = Field(default=None)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -285,6 +315,98 @@ class BackupSettingsResponse(SQLModel):
     encryption_enabled: bool = False
     last_run_status: Optional[str]
     last_run_time: Optional[datetime]
+    updated_at: datetime
+
+
+class SyslogSettingsUpdate(SQLModel):
+    """Schema for updating syslog settings (partial PATCH)."""
+    enabled: Optional[bool] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    protocol: Optional[str] = None
+    facility: Optional[int] = None
+    app_name: Optional[str] = None
+    forward_reads: Optional[bool] = None
+    min_status: Optional[int] = None
+    tls_ca_cert: Optional[str] = None
+    tls_verify: Optional[bool] = None
+
+    @field_validator('protocol', mode='before')
+    @classmethod
+    def validate_protocol(cls, v):
+        if v is None:
+            return v
+        if str(v).lower() not in ('udp', 'tcp', 'tls'):
+            raise ValueError("protocol must be one of: udp, tcp, tls")
+        return str(v).lower()
+
+    @field_validator('port', mode='before')
+    @classmethod
+    def validate_port(cls, v):
+        if v is None:
+            return v
+        if not (1 <= int(v) <= 65535):
+            raise ValueError("port must be between 1 and 65535")
+        return int(v)
+
+    @field_validator('facility', mode='before')
+    @classmethod
+    def validate_facility(cls, v):
+        if v is None:
+            return v
+        if not (16 <= int(v) <= 23):
+            raise ValueError("facility must be between 16 (local0) and 23 (local7)")
+        return int(v)
+
+    @field_validator('host', mode='before')
+    @classmethod
+    def validate_host(cls, v):
+        return v if v in (None, "") else validation.host(v, "host")
+
+    @field_validator('app_name', mode='before')
+    @classmethod
+    def validate_app_name(cls, v):
+        # RFC 5424 APP-NAME: printable US-ASCII without spaces, max 48
+        if v in (None, ""):
+            return v
+        if not re.fullmatch(r'[!-~]{1,48}', str(v)):
+            raise ValueError("app_name: 1-48 caratteri ASCII stampabili, senza spazi")
+        return v
+
+    @field_validator('tls_ca_cert', mode='before')
+    @classmethod
+    def validate_tls_ca_cert(cls, v):
+        if v in (None, ""):
+            return v
+        v = str(v).strip()
+        if len(v) > 20000 or "-----BEGIN CERTIFICATE-----" not in v:
+            raise ValueError("tls_ca_cert: certificato PEM non valido")
+        return v
+
+    @field_validator('min_status', mode='before')
+    @classmethod
+    def validate_min_status(cls, v):
+        if v is None:
+            return v
+        if int(v) < 0:
+            raise ValueError("min_status must be >= 0")
+        return int(v)
+
+
+class SyslogSettingsResponse(SQLModel):
+    """Response schema for syslog settings (CA cert replaced by a bool flag)."""
+    enabled: bool
+    host: str
+    port: int
+    protocol: str
+    facility: int
+    app_name: str
+    forward_reads: bool
+    min_status: int
+    tls_ca_cert_configured: bool = False
+    tls_verify: bool
+    last_error: Optional[str]
+    last_sent_at: Optional[datetime]
     updated_at: datetime
 
 

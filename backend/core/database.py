@@ -66,7 +66,7 @@ async def init_db() -> None:
         from core.auth.models import User, Permission, UserPermission, LoginAttempt
         from core.firewall.models import MachineFirewallRule, ModuleChain, RuleCounter
         from core.modules.models import InstalledModule
-        from core.settings.models import SystemSettings, SMTPSettings, BackupSettings
+        from core.settings.models import SystemSettings, SMTPSettings, BackupSettings, SyslogSettings
         from core.audit.models import AuditLog
         from core.provisioning.models import ManagedLanSettings
         

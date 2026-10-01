@@ -347,6 +347,13 @@ async def lifespan(app: FastAPI):
     address_task = asyncio.create_task(address_refresh_task())
     logger.info("Address dynamic refresh task started (daily at midnight)")
 
+    # Start external syslog forwarder (audit log -> external collector).
+    from core.audit.syslog import syslog_forwarder
+    await syslog_forwarder.load_config()
+    from core.concurrency import spawn_background
+    syslog_task = spawn_background(syslog_forwarder.run(), "syslog-forwarder")
+    logger.info("Syslog forwarder task started")
+
     logger.info("MADMIN ready!")
     sdnotify.notify("READY=1")
     
@@ -364,6 +371,7 @@ async def lifespan(app: FastAPI):
     backup_task.cancel()
     audit_task.cancel()
     address_task.cancel()
+    syslog_task.cancel()
     restore_task.cancel()
     try:
         await restore_task
@@ -383,6 +391,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await address_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await syslog_task
     except asyncio.CancelledError:
         pass
 
