@@ -848,7 +848,19 @@
         "restoreConfirmBtn": "Ripristina",
         "cleanupError": "Errore pulizia: {error}",
         "myLanguage": "La mia lingua",
-        "myLanguageHint": "Preferenza personale per utente"
+        "myLanguageHint": "Preferenza personale per utente",
+        "backupPassphrase": "Passphrase di cifratura archivi",
+        "backupPassphraseSet": "Cifratura attiva: lascia vuoto per mantenere la passphrase attuale. Conservala fuori da questa VM: senza, gli archivi non si ripristinano.",
+        "backupPassphraseUnset": "Nessuna passphrase: gli archivi (con hash, chiavi VPN e PSK) vengono salvati e caricati in chiaro. Minimo 12 caratteri.",
+        "backupPassphraseRemove": "Rimuovi la passphrase (i nuovi archivi non saranno cifrati)",
+        "backupHostKey": "Chiave del server SFTP",
+        "backupHostKeyNone": "non ancora registrata: verrà fissata alla prima connessione",
+        "backupHostKeyForget": "Dimentica chiave",
+        "backupHostKeyForgetConfirm": "La prossima connessione accetterà e registrerà la chiave presentata dal server. Procedi solo se la chiave è cambiata per un motivo noto.",
+        "backupHostKeyHint": "Se il server presenta una chiave diversa la connessione viene rifiutata.",
+        "passphraseRequired": "Archivio cifrato",
+        "passphraseWrong": "Passphrase errata, riprova",
+        "passphraseCancelled": "Passphrase non inserita"
     },
     "time": {
         "now": "Adesso",

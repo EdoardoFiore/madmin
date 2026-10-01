@@ -20,10 +20,12 @@ import shutil
 import asyncio
 import tarfile
 import fnmatch
+from . import remote
 import logging
 import importlib.util
 import subprocess
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path, PurePosixPath
@@ -31,6 +33,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text, delete
 
 from config import get_settings, MADMIN_VERSION
+from .archive_crypto import (
+    PassphraseRequired, WrongPassphrase, UnknownArchiveFormat,
+    archive_format, encrypt_file, decrypt_file, is_archive_name,
+    PLAIN_SUFFIX, ENCRYPTED_SUFFIX,
+)
 from core import secrets as data_secrets
 
 logger = logging.getLogger(__name__)
@@ -162,6 +169,13 @@ async def export_config(session: AsyncSession) -> str:
             tar.add(export_path, arcname=export_name)
         os.chmod(archive_path, 0o600)
 
+        passphrase = await _archive_passphrase(session)
+        if passphrase:
+            encrypted_path = archive_path[:-len(PLAIN_SUFFIX)] + ENCRYPTED_SUFFIX
+            await asyncio.to_thread(encrypt_file, archive_path, encrypted_path, passphrase)
+            os.remove(archive_path)
+            archive_path = encrypted_path
+
         logger.info(f"Config export created: {archive_path}")
         return archive_path
     
@@ -173,7 +187,56 @@ async def export_config(session: AsyncSession) -> str:
 # ============== CONFIG PREVIEW ==============
 
 
-async def preview_config(archive_path: str) -> dict:
+async def _archive_passphrase(session: AsyncSession) -> Optional[str]:
+    """The configured archive passphrase in clear, or None."""
+    from core.settings.models import BackupSettings
+    row = (await session.execute(select(BackupSettings).where(BackupSettings.id == 1))).scalar_one_or_none()
+    return data_secrets.decrypt_setting(row.encryption_passphrase) if row and row.encryption_passphrase else None
+
+
+@contextmanager
+def _readable_archive(archive_path: str, passphrase: Optional[str]):
+    """
+    Yield a path to the archive as a plain .tar.gz: the archive itself when it
+    is one (any archive from earlier versions), else a decrypted 0600 copy
+    that is removed afterwards. Raises PassphraseRequired, WrongPassphrase or
+    UnknownArchiveFormat.
+    """
+    if archive_format(archive_path) == "plain":
+        yield archive_path
+        return
+    if not passphrase:
+        raise PassphraseRequired("Archivio cifrato: serve la passphrase")
+    plain_path = os.path.join(ensure_backup_dir(), f"_decrypted_{uuid.uuid4().hex}{PLAIN_SUFFIX}")
+    try:
+        decrypt_file(archive_path, plain_path, passphrase)
+        yield plain_path
+    finally:
+        try:
+            os.remove(plain_path)
+        except FileNotFoundError:
+            pass
+
+
+def _archive_error(e: Exception) -> dict:
+    return {"error": str(e), "passphrase_required": isinstance(e, (PassphraseRequired, WrongPassphrase))}
+
+
+async def preview_config(archive_path: str, passphrase: Optional[str] = None) -> dict:
+    """Preview an archive, decrypting it first when it is encrypted."""
+    if not os.path.exists(archive_path):
+        return {"error": "File non trovato"}
+    try:
+        with _readable_archive(archive_path, passphrase) as plain_path:
+            result = await _preview_plain_archive(plain_path)
+    except (PassphraseRequired, WrongPassphrase, UnknownArchiveFormat) as e:
+        return _archive_error(e)
+    if "error" not in result:
+        result["encrypted"] = archive_format(archive_path) == "encrypted"
+    return result
+
+
+async def _preview_plain_archive(archive_path: str) -> dict:
     """
     Preview contents of a config archive without applying.
     
@@ -275,7 +338,19 @@ def _safe_tar_members(tar: tarfile.TarFile, restore_path: str):
         yield member
 
 
-async def import_config(session: AsyncSession, archive_path: str) -> dict:
+async def import_config(session: AsyncSession, archive_path: str, passphrase: Optional[str] = None) -> dict:
+    """Restore an archive, decrypting it first when it is encrypted (see _import_plain_archive)."""
+    if not os.path.exists(archive_path):
+        return {"success": False, "errors": ["File non trovato"]}
+    try:
+        with _readable_archive(archive_path, passphrase) as plain_path:
+            return await _import_plain_archive(session, plain_path)
+    except (PassphraseRequired, WrongPassphrase, UnknownArchiveFormat) as e:
+        err = _archive_error(e)
+        return {"success": False, "errors": [err["error"]], "passphrase_required": err["passphrase_required"]}
+
+
+async def _import_plain_archive(session: AsyncSession, archive_path: str) -> dict:
     """
     Import configuration from a config archive.
     
@@ -505,19 +580,11 @@ def _schedule_restart():
 # ============== SCHEDULED BACKUP (uses export_config) ==============
 
 
-async def run_backup(
-    session: AsyncSession,
-    remote_protocol: Optional[str] = None,
-    remote_host: Optional[str] = None,
-    remote_port: int = 22,
-    remote_user: Optional[str] = None,
-    remote_password: Optional[str] = None,
-    remote_path: str = "/",
-    retention_days: int = 30
-) -> dict:
+async def run_backup(session: AsyncSession, upload: bool = True, retention_days: int = 30) -> dict:
     """
-    Run a full backup operation using config export.
-    
+    Run a full backup: config export (encrypted when a passphrase is set),
+    upload to the configured remote storage, local retention.
+
     Returns dict with status and details.
     """
     result = {
@@ -534,23 +601,15 @@ async def run_backup(
         result["archive"] = archive_path
         
         # Upload to remote if configured
-        if remote_protocol and remote_host and remote_user:
-            if remote_protocol == "sftp":
-                uploaded = await upload_sftp(
-                    archive_path, remote_host, remote_port,
-                    remote_user, remote_password or "", remote_path
-                )
-            elif remote_protocol == "ftp":
-                uploaded = await upload_ftp(
-                    archive_path, remote_host, remote_port or 21,
-                    remote_user, remote_password or "", remote_path
-                )
-            else:
-                uploaded = False
-            
-            result["remote_uploaded"] = uploaded
-            if not uploaded:
-                result["errors"].append("Upload remoto fallito")
+        if upload:
+            try:
+                await upload_archive(session, archive_path)
+                result["remote_uploaded"] = True
+            except RemoteNotConfigured:
+                pass
+            except Exception as e:
+                logger.error(f"Remote upload failed: {e}")
+                result["errors"].append(f"Upload remoto fallito: {e}")
         
         # Cleanup old exports
         cleanup_old_backups(retention_days)
@@ -591,7 +650,7 @@ def cleanup_old_backups(retention_days: int = 30):
     now = datetime.now()
     
     for filename in os.listdir(backup_dir):
-        if not filename.endswith(".tar.gz"):
+        if not is_archive_name(filename):
             continue
         
         filepath = os.path.join(backup_dir, filename)
@@ -609,7 +668,7 @@ def list_local_backups() -> List[dict]:
     backups = []
     
     for filename in sorted(os.listdir(backup_dir), reverse=True):
-        if not filename.endswith(".tar.gz"):
+        if not is_archive_name(filename):
             continue
         
         filepath = os.path.join(backup_dir, filename)
@@ -629,7 +688,7 @@ def list_import_files() -> List[dict]:
     files = []
     
     for filename in sorted(os.listdir(imports_dir), reverse=True):
-        if not filename.endswith(".tar.gz"):
+        if not is_archive_name(filename):
             continue
         
         filepath = os.path.join(imports_dir, filename)
@@ -644,298 +703,84 @@ def list_import_files() -> List[dict]:
     return files
 
 
-# ============== REMOTE STORAGE (SFTP/FTP) ==============
+# ============== REMOTE STORAGE (SFTP/FTPS) ==============
+#
+# The protocol code is in remote.py (synchronous, with timeouts); these
+# wrappers read the target from BackupSettings, pin the SFTP host key on first
+# use and run the transfer in a thread, so a slow or silent server never
+# blocks the event loop.
 
 
-async def upload_sftp(
-    archive_path: str,
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str
-) -> bool:
-    """Upload backup archive via SFTP."""
-    try:
-        import paramiko
-        
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        
-        filename = os.path.basename(archive_path)
-        remote_file = os.path.join(remote_path, filename).replace("\\", "/")
-        
-        sftp.put(archive_path, remote_file)
-        
-        sftp.close()
-        transport.close()
-        
-        logger.info(f"Uploaded to SFTP: {remote_file}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"SFTP upload failed: {e}")
-        return False
+class RemoteNotConfigured(Exception):
+    pass
 
 
-async def upload_ftp(
-    archive_path: str,
-    host: str,
-    port: int,
-    username: str,
-    password: str,
-    remote_path: str
-) -> bool:
-    """Upload backup archive via FTP."""
-    try:
-        from ftplib import FTP
-        
-        ftp = FTP()
-        ftp.connect(host, port)
-        ftp.login(username, password)
-        
-        if remote_path and remote_path != "/":
-            ftp.cwd(remote_path)
-        
-        filename = os.path.basename(archive_path)
-        with open(archive_path, "rb") as f:
-            ftp.storbinary(f"STOR {filename}", f)
-        
-        ftp.quit()
-        
-        logger.info(f"Uploaded to FTP: {filename}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"FTP upload failed: {e}")
-        return False
+async def _remote_target(session: AsyncSession) -> remote.RemoteTarget:
+    from core.settings.models import BackupSettings
+    row = (await session.execute(select(BackupSettings).where(BackupSettings.id == 1))).scalar_one_or_none()
+    if not row or not row.remote_host or not row.remote_user:
+        raise RemoteNotConfigured("Archiviazione remota non configurata")
+    protocol = "ftps" if row.remote_protocol == "ftp" else row.remote_protocol
+    target = remote.RemoteTarget(
+        protocol=protocol,
+        host=row.remote_host,
+        port=row.remote_port or (22 if protocol == "sftp" else 21),
+        username=row.remote_user,
+        password=data_secrets.decrypt_setting(row.remote_password) or "",
+        path=row.remote_path or "/",
+        host_key=row.remote_host_key,
+    )
+    if protocol == "sftp" and not row.remote_host_key:
+        # Trust on first use: pin the key the server presents now; any later
+        # change is refused until an administrator forgets the pinned key
+        target.host_key = await asyncio.to_thread(remote.fetch_host_key, target.host, target.port)
+        row.remote_host_key = target.host_key
+        session.add(row)
+        await session.commit()
+        logger.warning(f"SFTP host key of {target.host}:{target.port} pinned: {target.host_key}")
+    return target
 
 
-# --- Remote listing ---
-
-def list_remote_backups_sftp(
-    host: str, port: int, username: str, password: str, remote_path: str
-) -> List[dict]:
-    """List backup files on remote SFTP server."""
-    try:
-        import paramiko
-        
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        
-        files = []
-        for entry in sftp.listdir_attr(remote_path):
-            if entry.filename.endswith(".tar.gz"):
-                files.append({
-                    "filename": entry.filename,
-                    "size_bytes": entry.st_size,
-                    "mtime": datetime.fromtimestamp(entry.st_mtime).isoformat() if entry.st_mtime else None
-                })
-        
-        sftp.close()
-        transport.close()
-        return files
-    except Exception as e:
-        logger.error(f"SFTP list failed: {e}")
-        return []
+async def upload_archive(session: AsyncSession, archive_path: str) -> None:
+    target = await _remote_target(session)
+    await asyncio.to_thread(remote.upload, target, archive_path)
 
 
-def list_remote_backups_ftp(
-    host: str, port: int, username: str, password: str, remote_path: str
-) -> List[dict]:
-    """List backup files on remote FTP server."""
-    try:
-        from ftplib import FTP
-        
-        ftp = FTP()
-        ftp.connect(host, port)
-        ftp.login(username, password)
-        if remote_path and remote_path != "/":
-            ftp.cwd(remote_path)
-        
-        files = []
-        ftp.retrlines("LIST", lambda line: files.append(line))
-        
-        result = []
-        for line in files:
-            parts = line.split()
-            if parts and parts[-1].endswith(".tar.gz"):
-                size = int(parts[4]) if len(parts) > 4 else 0
-                result.append({
-                    "filename": parts[-1],
-                    "size_bytes": size,
-                    "mtime": None
-                })
-        
-        ftp.quit()
-        return result
-    except Exception as e:
-        logger.error(f"FTP list failed: {e}")
-        return []
+async def list_remote_backups(session: AsyncSession) -> List[dict]:
+    target = await _remote_target(session)
+    return await asyncio.to_thread(remote.list_archives, target)
 
 
-def list_remote_backups(
-    protocol: str, host: str, port: int, username: str, password: str, remote_path: str
-) -> List[dict]:
-    """List backup files on remote server."""
-    if protocol == "sftp":
-        return list_remote_backups_sftp(host, port, username, password, remote_path)
-    elif protocol == "ftp":
-        return list_remote_backups_ftp(host, port, username, password, remote_path)
-    return []
+async def download_remote_backup(session: AsyncSession, filename: str) -> str:
+    target = await _remote_target(session)
+    local_path = os.path.join(ensure_backup_dir(), filename)
+    await asyncio.to_thread(remote.download, target, filename, local_path)
+    os.chmod(local_path, 0o600)
+    logger.info(f"Downloaded remote backup: {filename}")
+    return local_path
 
 
-# --- Remote download ---
-
-def download_remote_backup_sftp(
-    host: str, port: int, username: str, password: str, remote_path: str, filename: str
-) -> Optional[str]:
-    """Download a backup file from remote SFTP server."""
-    try:
-        import paramiko
-        
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        
-        remote_file = os.path.join(remote_path, filename).replace("\\", "/")
-        local_path = os.path.join(ensure_backup_dir(), filename)
-        
-        sftp.get(remote_file, local_path)
-        
-        sftp.close()
-        transport.close()
-        
-        logger.info(f"Downloaded from SFTP: {filename}")
-        return local_path
-    except Exception as e:
-        logger.error(f"SFTP download failed: {e}")
-        return None
+async def delete_remote_backup(session: AsyncSession, filename: str) -> None:
+    target = await _remote_target(session)
+    await asyncio.to_thread(remote.delete, target, filename)
+    logger.info(f"Deleted remote backup: {filename}")
 
 
-def download_remote_backup_ftp(
-    host: str, port: int, username: str, password: str, remote_path: str, filename: str
-) -> Optional[str]:
-    """Download a backup file from remote FTP server."""
-    try:
-        from ftplib import FTP
-        
-        ftp = FTP()
-        ftp.connect(host, port)
-        ftp.login(username, password)
-        if remote_path and remote_path != "/":
-            ftp.cwd(remote_path)
-        
-        local_path = os.path.join(ensure_backup_dir(), filename)
-        with open(local_path, "wb") as f:
-            ftp.retrbinary(f"RETR {filename}", f.write)
-        
-        ftp.quit()
-        logger.info(f"Downloaded from FTP: {filename}")
-        return local_path
-    except Exception as e:
-        logger.error(f"FTP download failed: {e}")
-        return None
-
-
-def download_remote_backup(
-    protocol: str, host: str, port: int, username: str, password: str,
-    remote_path: str, filename: str
-) -> Optional[str]:
-    """Download a backup file from remote server."""
-    if protocol == "sftp":
-        return download_remote_backup_sftp(host, port, username, password, remote_path, filename)
-    elif protocol == "ftp":
-        return download_remote_backup_ftp(host, port, username, password, remote_path, filename)
-    return None
-
-
-# --- Remote delete ---
-
-def delete_remote_backup_sftp(
-    host: str, port: int, username: str, password: str, remote_path: str, filename: str
-) -> bool:
-    """Delete a backup file from remote SFTP server."""
-    try:
-        import paramiko
-        
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        
-        remote_file = os.path.join(remote_path, filename).replace("\\", "/")
-        sftp.remove(remote_file)
-        
-        sftp.close()
-        transport.close()
-        
-        logger.info(f"Deleted from SFTP: {filename}")
-        return True
-    except Exception as e:
-        logger.error(f"SFTP delete failed: {e}")
-        return False
-
-
-def delete_remote_backup_ftp(
-    host: str, port: int, username: str, password: str, remote_path: str, filename: str
-) -> bool:
-    """Delete a backup file from remote FTP server."""
-    try:
-        from ftplib import FTP
-        
-        ftp = FTP()
-        ftp.connect(host, port)
-        ftp.login(username, password)
-        if remote_path and remote_path != "/":
-            ftp.cwd(remote_path)
-        
-        ftp.delete(filename)
-        ftp.quit()
-        
-        logger.info(f"Deleted from FTP: {filename}")
-        return True
-    except Exception as e:
-        logger.error(f"FTP delete failed: {e}")
-        return False
-
-
-def delete_remote_backup(
-    protocol: str, host: str, port: int, username: str, password: str,
-    remote_path: str, filename: str
-) -> bool:
-    """Delete a backup file from remote server."""
-    if protocol == "sftp":
-        return delete_remote_backup_sftp(host, port, username, password, remote_path, filename)
-    elif protocol == "ftp":
-        return delete_remote_backup_ftp(host, port, username, password, remote_path, filename)
-    return False
-
-
-def cleanup_remote_backups(
-    protocol: str, host: str, port: int, username: str, password: str,
-    remote_path: str, retention_days: int
-) -> int:
-    """Remove old backups from remote storage based on retention policy."""
+async def cleanup_remote_backups(session: AsyncSession, retention_days: int) -> int:
+    """Remove remote archives older than the retention policy (0 = keep forever)."""
     if retention_days <= 0:
         return 0
-    
-    files = list_remote_backups(protocol, host, port, username, password, remote_path)
     deleted = 0
     now = datetime.now()
-    
-    for f in files:
-        if f.get("mtime"):
+    for f in await list_remote_backups(session):
+        if not f.get("mtime"):
+            continue
+        if (now - datetime.fromisoformat(f["mtime"])).days > retention_days:
             try:
-                mtime = datetime.fromisoformat(f["mtime"])
-                age = (now - mtime).days
-                if age > retention_days:
-                    if delete_remote_backup(protocol, host, port, username, password, remote_path, f["filename"]):
-                        deleted += 1
-            except Exception:
-                pass
-    
+                await delete_remote_backup(session, f["filename"])
+                deleted += 1
+            except Exception as e:
+                logger.warning(f"Remote cleanup: {f['filename']} not deleted: {e}")
     return deleted
 
 
@@ -1529,6 +1374,10 @@ async def _import_settings(session: AsyncSession, settings_file: str) -> Optiona
             except Exception:
                 logger.warning("Import: remote_password non decifrata (SECRET_KEY diversa), campo azzerato")
         bk_data.pop("remote_password_enc", None)
+        # Plain FTP is no longer supported: the same server over FTPS
+        if bk_data.get("remote_protocol") == "ftp":
+            bk_data["remote_protocol"] = "ftps"
+            logger.warning("Import: remote backup protocol FTP converted to FTPS")
 
         bk_result = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
         bk_row = bk_result.scalar_one_or_none()

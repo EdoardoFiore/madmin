@@ -848,7 +848,19 @@
         "restoreConfirmBtn": "Restore",
         "cleanupError": "Cleanup error: {error}",
         "myLanguage": "My Language",
-        "myLanguageHint": "Personal preference per user"
+        "myLanguageHint": "Personal preference per user",
+        "backupPassphrase": "Archive encryption passphrase",
+        "backupPassphraseSet": "Encryption on: leave empty to keep the current passphrase. Keep it outside this VM: without it the archives cannot be restored.",
+        "backupPassphraseUnset": "No passphrase: archives (with hashes, VPN keys and PSKs) are stored and uploaded in clear. At least 12 characters.",
+        "backupPassphraseRemove": "Remove the passphrase (new archives will not be encrypted)",
+        "backupHostKey": "SFTP server key",
+        "backupHostKeyNone": "not recorded yet: it is pinned at the first connection",
+        "backupHostKeyForget": "Forget key",
+        "backupHostKeyForgetConfirm": "The next connection will accept and record the key the server presents. Only do this if the key changed for a known reason.",
+        "backupHostKeyHint": "If the server presents a different key the connection is refused.",
+        "passphraseRequired": "Encrypted archive",
+        "passphraseWrong": "Wrong passphrase, try again",
+        "passphraseCancelled": "No passphrase entered"
     },
     "time": {
         "now": "Now",

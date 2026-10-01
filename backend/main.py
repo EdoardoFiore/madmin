@@ -21,7 +21,6 @@ from sqlalchemy import select
 import os
 
 from config import get_settings
-from core.secrets import decrypt_setting
 
 # Configure logging
 logging.basicConfig(
@@ -245,12 +244,6 @@ async def lifespan(app: FastAPI):
                             
                             backup_result = await run_backup(
                                 session=session,
-                                remote_protocol=settings.remote_protocol if settings.remote_host else None,
-                                remote_host=settings.remote_host or None,
-                                remote_port=settings.remote_port,
-                                remote_user=settings.remote_user or None,
-                                remote_password=decrypt_setting(settings.remote_password) or None,
-                                remote_path=settings.remote_path,
                                 retention_days=settings.retention_days
                             )
                             

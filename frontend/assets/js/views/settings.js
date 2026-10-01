@@ -343,7 +343,7 @@ export async function render(container) {
                                 <label class="form-label">${t('settings.remoteProtocol')}</label>
                                 <select class="form-select" id="backup-protocol" ${canManageBackup ? '' : 'disabled'}>
                                     <option value="sftp">SFTP</option>
-                                    <option value="ftp">FTP</option>
+                                    <option value="ftps">FTPS</option>
                                 </select>
                             </div>
                             <div class="col-md-2">
@@ -365,6 +365,23 @@ export async function render(container) {
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remotePassword')}</label>
                                 <input type="password" class="form-control" id="backup-password" placeholder="••••••••" ${canManageBackup ? '' : 'disabled'}>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">${t('settings.backupPassphrase')}</label>
+                                <input type="password" class="form-control" id="backup-passphrase" autocomplete="new-password" ${canManageBackup ? '' : 'disabled'}>
+                                <small class="form-hint" id="backup-passphrase-hint"></small>
+                                ${canManageBackup ? `<label class="form-check mt-1 d-none" id="backup-passphrase-remove-wrap">
+                                    <input type="checkbox" class="form-check-input" id="backup-passphrase-remove">
+                                    <span class="form-check-label">${t('settings.backupPassphraseRemove')}</span>
+                                </label>` : ''}
+                            </div>
+                            <div class="col-md-6" id="backup-hostkey-wrap">
+                                <label class="form-label">${t('settings.backupHostKey')}</label>
+                                <div class="d-flex align-items-center gap-2">
+                                    <code class="small text-break" id="backup-hostkey">—</code>
+                                    ${canManageBackup ? `<button type="button" class="btn btn-sm btn-outline-warning d-none" id="backup-hostkey-forget">${t('settings.backupHostKeyForget')}</button>` : ''}
+                                </div>
+                                <small class="form-hint">${t('settings.backupHostKeyHint')}</small>
                             </div>
                             <div class="col-12">
                                 ${canManageBackup ? `<button class="btn btn-primary" id="save-backup">${t('settings.saveConfig')}</button>` : ''}
@@ -434,7 +451,7 @@ export async function render(container) {
                                  style="cursor: pointer; transition: all 0.2s;">
                                 <i class="ti ti-file-upload" style="font-size: 1.5rem; color: var(--tblr-primary);"></i>
                                 <p class="mt-1 mb-0 text-muted small">${t('settings.dropzoneHint')}</p>
-                                <input type="file" id="import-file-input" accept=".tar.gz" class="d-none">
+                                <input type="file" id="import-file-input" accept=".gz,.enc" class="d-none">
                             </div>
 
                             <!-- SCP Files -->
@@ -661,6 +678,7 @@ async function loadBackupSection() {
         document.getElementById('backup-port').value = backup.remote_port || 22;
         document.getElementById('backup-path').value = backup.remote_path || '/';
         document.getElementById('backup-user').value = backup.remote_user || '';
+        renderBackupSecurity(backup);
 
         const statusEl = document.getElementById('backup-last-status');
         const alertEl = document.getElementById('backup-status-alert');
@@ -982,8 +1000,14 @@ function setupEventListeners() {
             };
             const pwd = document.getElementById('backup-password').value;
             if (pwd) data.remote_password = pwd;
+            const passphrase = document.getElementById('backup-passphrase').value;
+            if (passphrase) data.encryption_passphrase = passphrase;
+            else if (document.getElementById('backup-passphrase-remove')?.checked) data.encryption_passphrase = '';
 
-            await apiPatch('/settings/backup', data);
+            const saved = await apiPatch('/settings/backup', data);
+            document.getElementById('backup-password').value = '';
+            document.getElementById('backup-passphrase').value = '';
+            renderBackupSecurity(saved);
             showToast(t('settings.backupSaved'), 'success');
         } catch (e) { showToast(e.message, 'error'); }
     });
@@ -1276,33 +1300,85 @@ function setupExportImportListeners() {
     loadScpFiles();
 }
 
+// ============== ENCRYPTION / HOST KEY ==============
+
+function renderBackupSecurity(backup) {
+    const hint = document.getElementById('backup-passphrase-hint');
+    if (hint) hint.textContent = backup.encryption_enabled ? t('settings.backupPassphraseSet') : t('settings.backupPassphraseUnset');
+    document.getElementById('backup-passphrase-remove-wrap')?.classList.toggle('d-none', !backup.encryption_enabled);
+    const remove = document.getElementById('backup-passphrase-remove');
+    if (remove) remove.checked = false;
+
+    const isSftp = backup.remote_protocol === 'sftp';
+    document.getElementById('backup-hostkey-wrap')?.classList.toggle('d-none', !isSftp);
+    const key = document.getElementById('backup-hostkey');
+    if (key) key.textContent = backup.remote_host_key || t('settings.backupHostKeyNone');
+    const forget = document.getElementById('backup-hostkey-forget');
+    if (forget) {
+        forget.classList.toggle('d-none', !backup.remote_host_key);
+        forget.onclick = async () => {
+            const ok = await confirmDialog(t('settings.backupHostKeyForget'), t('settings.backupHostKeyForgetConfirm'),
+                t('settings.backupHostKeyForget'), 'btn-warning');
+            if (!ok) return;
+            try {
+                renderBackupSecurity(await apiPost('/backup/remote/host-key/forget', {}));
+            } catch (e) { showToast(e.message, 'error'); }
+        };
+    }
+}
+
+/**
+ * POST to a preview/restore endpoint. When the archive turns out to be
+ * encrypted the server answers passphrase_required: ask for it and repeat the
+ * call. The passphrase goes in the body (multipart with the file, or JSON),
+ * never in the URL. Returns { response, data, passphrase }.
+ */
+async function archiveRequest(url, { file = null, passphrase = null } = {}) {
+    for (;;) {
+        const headers = { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` };
+        let body;
+        if (file) {
+            body = new FormData();
+            body.append('file', file);
+            if (passphrase) body.append('passphrase', passphrase);
+        } else {
+            headers['Content-Type'] = 'application/json';
+            body = JSON.stringify({ passphrase });
+        }
+        const response = await fetch(url, { method: 'POST', headers, body });
+        const data = await response.json().catch(() => ({}));
+        const needsPassphrase = data?.detail?.passphrase_required || data?.passphrase_required;
+        if (!response.ok && needsPassphrase || (response.ok && data?.passphrase_required)) {
+            passphrase = await inputDialog(
+                passphrase ? t('settings.passphraseWrong') : t('settings.passphraseRequired'),
+                t('settings.backupPassphrase'), '', 'password'
+            );
+            if (!passphrase) throw new Error(t('settings.passphraseCancelled'));
+            continue;
+        }
+        return { response, data, passphrase };
+    }
+}
+
+function errorDetail(data, fallback) {
+    const d = data?.detail;
+    return (typeof d === 'string' ? d : d?.message) || fallback;
+}
+
 // ============== IMPORT ==============
 
 async function handleImportFile(file) {
     // First, preview
-    const formData = new FormData();
-    formData.append('file', file);
-
     try {
-        const response = await fetch('/api/backup/import/preview', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` },
-            body: formData
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.detail || 'Preview failed');
-        }
-
-        const preview = await response.json();
-        showImportPreviewModal(preview, file);
+        const { response, data, passphrase } = await archiveRequest('/api/backup/import/preview', { file });
+        if (!response.ok) throw new Error(errorDetail(data, 'Preview failed'));
+        showImportPreviewModal(data, file, null, passphrase);
     } catch (e) {
         showToast(t('settings.previewError', { error: e.message }), 'error');
     }
 }
 
-function showImportPreviewModal(preview, file, scpFilename = null) {
+function showImportPreviewModal(preview, file, scpFilename = null, passphrase = null) {
     const versionWarning = preview.source_version !== preview.current_version
         ? `<div class="alert alert-warning mb-3">
             <i class="ti ti-alert-triangle me-2"></i>
@@ -1438,25 +1514,15 @@ function showImportPreviewModal(preview, file, scpFilename = null) {
         try {
             let response;
 
+            let result;
             if (scpFilename) {
                 // Import from SCP file
-                response = await fetch(`/api/backup/import/from-file?filename=${encodeURIComponent(scpFilename)}`, {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
-                });
+                ({ response, data: result } = await archiveRequest(
+                    `/api/backup/import/from-file?filename=${encodeURIComponent(scpFilename)}`, { passphrase }));
             } else {
                 // Import from uploaded file
-                const formData = new FormData();
-                formData.append('file', file);
-
-                response = await fetch('/api/backup/import', {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` },
-                    body: formData
-                });
+                ({ response, data: result } = await archiveRequest('/api/backup/import', { file, passphrase }));
             }
-
-            const result = await response.json();
 
             if (progressEl) progressEl.classList.add('d-none');
 
@@ -1513,18 +1579,10 @@ async function loadScpFiles() {
 
 window.importScpFile = async function (filename) {
     try {
-        const response = await fetch(`/api/backup/import/preview/from-file?filename=${encodeURIComponent(filename)}`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.detail || 'Preview failed');
-        }
-
-        const preview = await response.json();
-        showImportPreviewModal(preview, null, filename);
+        const { response, data, passphrase } = await archiveRequest(
+            `/api/backup/import/preview/from-file?filename=${encodeURIComponent(filename)}`);
+        if (!response.ok) throw new Error(errorDetail(data, 'Preview failed'));
+        showImportPreviewModal(data, null, filename, passphrase);
     } catch (e) {
         showToast(t('settings.previewError', { error: e.message }), 'error');
     }
@@ -1533,24 +1591,16 @@ window.importScpFile = async function (filename) {
 
 window.restoreFromLocalBackup = async function (filename) {
     try {
-        const response = await fetch(`/api/backup/restore/preview/${encodeURIComponent(filename)}`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('madmin_token')}` }
-        });
-
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.detail || 'Preview failed');
-        }
-
-        const preview = await response.json();
-        showRestorePreviewModal(preview, filename);
+        const { response, data, passphrase } = await archiveRequest(
+            `/api/backup/restore/preview/${encodeURIComponent(filename)}`);
+        if (!response.ok) throw new Error(errorDetail(data, 'Preview failed'));
+        showRestorePreviewModal(data, filename, passphrase);
     } catch (e) {
         showToast(t('settings.previewError', { error: e.message }), 'error');
     }
 };
 
-function showRestorePreviewModal(preview, filename) {
+function showRestorePreviewModal(preview, filename, passphrase = null) {
     const versionWarning = preview.source_version !== preview.current_version
         ? `<div class="alert alert-warning mb-3">
             <i class="ti ti-alert-triangle me-2"></i>
@@ -1668,7 +1718,7 @@ function showRestorePreviewModal(preview, filename) {
         showToast(t('settings.restoreInProgress'), 'info');
 
         try {
-            const result = await apiPost(`/backup/restore/${encodeURIComponent(filename)}`, {});
+            const result = await apiPost(`/backup/restore/${encodeURIComponent(filename)}`, { passphrase });
 
             if (result.success !== false) {
                 // Surfaces e.g. "users skipped: not a superuser", which otherwise
@@ -1774,7 +1824,8 @@ async function loadRemoteBackupHistory() {
             </tr>
         `).join('');
     } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">${t('settings.remoteNotConfigured')}</td></tr>`;
+        // The server says why: not configured, unreachable, or a changed SFTP key
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">${escapeHtml(e.message || t('settings.remoteNotConfigured'))}</td></tr>`;
     }
 }
 
