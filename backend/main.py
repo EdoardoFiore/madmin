@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI):
     # First, so systemd sees pings while the rest of startup runs
     import asyncio
     from core import sdnotify
+    sdnotify.init()
     watchdog_task = asyncio.create_task(sdnotify.watchdog_loop(), name="systemd-watchdog")
     
     # Import here to avoid circular imports

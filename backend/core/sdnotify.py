@@ -6,6 +6,10 @@ Pings come from a task on the event loop, so they stop exactly when the loop
 is blocked (a hung subprocess, a sync call that never returns) — the failure
 mode in which the process is alive but no request is ever answered.
 Outside systemd (no NOTIFY_SOCKET) everything here is a no-op.
+
+init() takes the variables out of the environment: every subprocess would
+otherwise inherit NOTIFY_SOCKET, and systemd logs a rejected message for
+each child that uses it (systemctl does).
 """
 import asyncio
 import logging
@@ -14,9 +18,20 @@ import socket
 
 logger = logging.getLogger(__name__)
 
+_socket_address = None
+_watchdog_usec = None
+_watchdog_pid = None
+
+
+def init() -> None:
+    global _socket_address, _watchdog_usec, _watchdog_pid
+    _socket_address = os.environ.pop("NOTIFY_SOCKET", None)
+    _watchdog_usec = os.environ.pop("WATCHDOG_USEC", None)
+    _watchdog_pid = os.environ.pop("WATCHDOG_PID", None)
+
 
 def notify(message: str) -> bool:
-    address = os.environ.get("NOTIFY_SOCKET")
+    address = _socket_address
     if not address or not hasattr(socket, "AF_UNIX"):
         return False
     if address.startswith("@"):
@@ -33,12 +48,10 @@ def notify(message: str) -> bool:
 
 def watchdog_interval() -> float:
     """Half of WatchdogSec (systemd's recommendation), or 0 when not enabled."""
-    usec = os.environ.get("WATCHDOG_USEC")
-    pid = os.environ.get("WATCHDOG_PID")
-    if not usec or (pid and pid != str(os.getpid())):
+    if not _watchdog_usec or (_watchdog_pid and _watchdog_pid != str(os.getpid())):
         return 0.0
     try:
-        return int(usec) / 1_000_000 / 2
+        return int(_watchdog_usec) / 1_000_000 / 2
     except ValueError:
         return 0.0
 
