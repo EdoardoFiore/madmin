@@ -188,7 +188,7 @@ export async function render(container) {
                                 <div class="card card-sm mb-0">
                                     <div class="card-body">
                                         <div class="d-flex align-items-center mb-2">
-                                            <span class="badge bg-green-lt me-2" id="ssl-status-badge">Attivo</span>
+                                            <span class="badge bg-green-lt me-2 flex-shrink-0" id="ssl-status-badge">Attivo</span>
                                             <div class="text-muted small" id="ssl-issuer">Issuer: -</div>
                                         </div>
                                         <div class="text-muted small mb-2" id="ssl-validity">Scadenza: -</div>
@@ -615,14 +615,14 @@ async function loadNetworkSection() {
 
             const badge = document.getElementById('ssl-status-badge');
             if (network.certificate.is_self_signed) {
-                badge.className = 'badge bg-yellow-lt me-2';
+                badge.className = 'badge bg-yellow-lt me-2 flex-shrink-0';
                 badge.textContent = 'Self-Signed';
             } else {
-                badge.className = 'badge bg-green-lt me-2';
+                badge.className = 'badge bg-green-lt me-2 flex-shrink-0';
                 badge.textContent = 'Valid';
             }
         } else {
-            document.getElementById('ssl-status-badge').className = 'badge bg-secondary-lt me-2';
+            document.getElementById('ssl-status-badge').className = 'badge bg-secondary-lt me-2 flex-shrink-0';
             document.getElementById('ssl-status-badge').textContent = t('common.none');
         }
     } catch (error) {

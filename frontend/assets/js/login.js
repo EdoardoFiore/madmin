@@ -117,6 +117,17 @@ const backToLoginSetupBtn = document.getElementById('back-to-login-setup');
 // State for 2FA / password-change flows
 let tempToken = null;
 
+// Error body of a failed call. nginx answers its own 429 (login rate limit)
+// with an HTML page: without this, parsing it threw and the page reported a
+// connection error instead of "too many attempts".
+async function errorBody(response) {
+    try {
+        return await response.json();
+    } catch (e) {
+        return { detail: response.status === 429 ? _t('auth.tooManyAttempts') : null };
+    }
+}
+
 function _t(key) {
     return _loginI18n.t(key) || key;
 }
@@ -238,7 +249,7 @@ form.addEventListener('submit', async (e) => {
         if (response.ok) {
             await handleTokenResponse(await response.json());
         } else {
-            const error = await response.json();
+            const error = await errorBody(response);
             showError(error.detail || _t('auth.invalidCredentials'));
         }
     } catch (error) {
@@ -276,7 +287,7 @@ verify2faBtn.addEventListener('click', async () => {
             // May return a password_change_required step after 2FA succeeds
             await handleTokenResponse(await response.json());
         } else {
-            const error = await response.json();
+            const error = await errorBody(response);
             showError(error.detail || _t('auth.invalidCode'));
             otpInput.value = '';
             otpInput.focus();
@@ -321,7 +332,7 @@ async function submitPasswordChange() {
             localStorage.setItem('madmin_token', data.access_token);
             window.location.href = '/';
         } else {
-            const error = await response.json();
+            const error = await errorBody(response);
             showError(error.detail || _t('auth.passwordChangeFailed'));
         }
     } catch (error) {
@@ -353,7 +364,7 @@ async function start2faSetup() {
         });
 
         if (!response.ok) {
-            const error = await response.json();
+            const error = await errorBody(response);
             showError(error.detail || _t('auth.setup2faFailed'));
             return;
         }
@@ -404,7 +415,7 @@ async function submit2faSetup() {
             // May return a password_change_required step after 2FA is activated
             await handleTokenResponse(await response.json());
         } else {
-            const error = await response.json();
+            const error = await errorBody(response);
             showError(error.detail || _t('auth.invalidCode'));
             clearSetupOtp();
             setupOtpInput.focus();

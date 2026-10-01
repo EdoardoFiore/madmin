@@ -63,6 +63,7 @@
         "loggingIn": "Signing in...",
         "invalidCredentials": "Invalid credentials",
         "connectionError": "Server connection error",
+        "tooManyAttempts": "Too many attempts, try again in a minute",
         "profile": "Profile",
         "darkTheme": "Dark theme",
         "lightTheme": "Light theme",

@@ -63,6 +63,7 @@
         "loggingIn": "Accesso in corso...",
         "invalidCredentials": "Credenziali non valide",
         "connectionError": "Errore di connessione al server",
+        "tooManyAttempts": "Troppi tentativi, riprova tra un minuto",
         "profile": "Profilo",
         "darkTheme": "Tema scuro",
         "lightTheme": "Tema chiaro",
