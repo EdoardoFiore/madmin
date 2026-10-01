@@ -91,6 +91,7 @@ async def query_audit_logs(
     search: Optional[str] = None,
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
+    search_body: bool = False,
 ) -> Tuple[List[AuditLog], int]:
     """
     Query audit logs with filters and pagination.
@@ -108,10 +109,16 @@ async def query_audit_logs(
     if category:
         conditions.append(AuditLog.category == category)
     if search:
-        conditions.append(or_(
-            AuditLog.path.ilike(f"%{search}%"),
-            AuditLog.request_body.ilike(f"%{search}%")
-        ))
+        # The text is literal: % and _ typed by the user are not wildcards
+        pattern = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        if search_body:
+            # Full scan of every stored payload: only when asked for
+            conditions.append(or_(
+                AuditLog.path.ilike(pattern, escape="\\"),
+                AuditLog.request_body.ilike(pattern, escape="\\"),
+            ))
+        else:
+            conditions.append(AuditLog.path.ilike(pattern, escape="\\"))
     if from_date:
         conditions.append(AuditLog.timestamp >= from_date)
     if to_date:

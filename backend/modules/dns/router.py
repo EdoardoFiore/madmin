@@ -8,7 +8,7 @@ import json
 import logging
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -413,12 +413,16 @@ async def delete_zone(
 @router.get("/zones/{zone_id}/records")
 async def list_records(
     zone_id: UUID,
+    limit: Optional[int] = Query(None, ge=1, le=1000, description="Page size (default: all)"),
+    offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("dns.view")),
 ):
-    """List all records in a zone."""
+    """List the records of a zone (all of them unless limit is given)."""
     result = await session.execute(
-        select(DnsRecord).where(DnsRecord.zone_id == zone_id).order_by(DnsRecord.name)
+        select(DnsRecord).where(DnsRecord.zone_id == zone_id)
+        .order_by(DnsRecord.name, DnsRecord.id)
+        .offset(offset).limit(limit)
     )
     records = result.scalars().all()
 

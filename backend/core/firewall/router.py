@@ -679,13 +679,20 @@ def _object_to_response(o: AddressObject) -> AddressObjectResponse:
     )
 
 
-async def _group_to_response(session: AsyncSession, g: AddressGroup) -> AddressGroupResponse:
+async def _groups_to_response(session: AsyncSession, groups) -> List[AddressGroupResponse]:
+    """Members, objects and nested groups loaded in one query each for the whole list."""
+    groups = list(groups)
+    if not groups:
+        return []
     mres = await session.execute(
-        select(AddressGroupMember).where(AddressGroupMember.group_id == g.id)
+        select(AddressGroupMember).where(AddressGroupMember.group_id.in_([g.id for g in groups]))
     )
-    members = mres.scalars().all()
-    obj_ids = {m.member_object_id for m in members if m.member_object_id}
-    grp_ids = {m.member_group_id for m in members if m.member_group_id}
+    members_by_group = {}
+    for m in mres.scalars().all():
+        members_by_group.setdefault(m.group_id, []).append(m)
+    all_members = [m for ms in members_by_group.values() for m in ms]
+    obj_ids = {m.member_object_id for m in all_members if m.member_object_id}
+    grp_ids = {m.member_group_id for m in all_members if m.member_group_id}
     objs, grps = {}, {}
     if obj_ids:
         ores = await session.execute(select(AddressObject).where(AddressObject.id.in_(obj_ids)))
@@ -693,21 +700,29 @@ async def _group_to_response(session: AsyncSession, g: AddressGroup) -> AddressG
     if grp_ids:
         gres = await session.execute(select(AddressGroup).where(AddressGroup.id.in_(grp_ids)))
         grps = {gg.id: gg for gg in gres.scalars().all()}
-    member_resp = []
-    for m in members:
-        if m.member_object_id and m.member_object_id in objs:
-            o = objs[m.member_object_id]
-            member_resp.append(AddressGroupMemberResponse(
-                object_id=str(o.id), name=o.name, kind="object", type=o.type))
-        elif m.member_group_id and m.member_group_id in grps:
-            gg = grps[m.member_group_id]
-            member_resp.append(AddressGroupMemberResponse(
-                group_id=str(gg.id), name=gg.name, kind="group"))
-    return AddressGroupResponse(
-        id=str(g.id), ref_key=g.ref_key, name=g.name, description=g.description,
-        enabled=g.enabled, set_name=addresses.group_set_name(g.ref_key),
-        members=member_resp, created_at=g.created_at, updated_at=g.updated_at,
-    )
+
+    out = []
+    for g in groups:
+        member_resp = []
+        for m in members_by_group.get(g.id, []):
+            if m.member_object_id and m.member_object_id in objs:
+                o = objs[m.member_object_id]
+                member_resp.append(AddressGroupMemberResponse(
+                    object_id=str(o.id), name=o.name, kind="object", type=o.type))
+            elif m.member_group_id and m.member_group_id in grps:
+                gg = grps[m.member_group_id]
+                member_resp.append(AddressGroupMemberResponse(
+                    group_id=str(gg.id), name=gg.name, kind="group"))
+        out.append(AddressGroupResponse(
+            id=str(g.id), ref_key=g.ref_key, name=g.name, description=g.description,
+            enabled=g.enabled, set_name=addresses.group_set_name(g.ref_key),
+            members=member_resp, created_at=g.created_at, updated_at=g.updated_at,
+        ))
+    return out
+
+
+async def _group_to_response(session: AsyncSession, g: AddressGroup) -> AddressGroupResponse:
+    return (await _groups_to_response(session, [g]))[0]
 
 
 async def _set_group_members(session: AsyncSession, group_id, members) -> None:
@@ -915,7 +930,7 @@ async def list_address_groups(
     session: AsyncSession = Depends(get_session),
 ):
     res = await session.execute(select(AddressGroup).order_by(AddressGroup.name))
-    return [await _group_to_response(session, g) for g in res.scalars().all()]
+    return await _groups_to_response(session, res.scalars().all())
 
 
 @router.post("/address-groups", response_model=AddressGroupResponse, status_code=status.HTTP_201_CREATED)

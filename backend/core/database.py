@@ -22,7 +22,12 @@ engine = create_async_engine(
     echo=settings.debug,
     pool_pre_ping=True,
     pool_size=5,
-    max_overflow=10
+    max_overflow=10,
+    # Connections are not kept forever (server restarts, idle timeouts)
+    pool_recycle=1800,
+    # A statement stuck on a lock fails instead of holding the request (and
+    # its pooled connection) indefinitely
+    connect_args={"command_timeout": 120},
 )
 
 # Async session factory

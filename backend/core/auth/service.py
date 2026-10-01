@@ -179,7 +179,8 @@ def decode_access_token(token: str) -> Optional[dict]:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         return payload
     except jwt.PyJWTError as e:
-        logger.warning(f"JWT decode error: {e}")
+        # Expired tokens are routine (every idle browser tab): not a warning
+        logger.debug(f"JWT decode error: {e}")
         return None
 
 

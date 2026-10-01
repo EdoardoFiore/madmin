@@ -718,12 +718,16 @@ async def renew_server_cert(
 @router.get("/instances/{instance_id}/clients", response_model=List[OvpnClientRead])
 async def list_clients(
     instance_id: str,
+    limit: Optional[int] = Query(None, ge=1, le=1000, description="Page size (default: all)"),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("openvpn.view"))
 ):
     """List clients for an instance with connection status."""
     result = await db.execute(
         select(OvpnClient).where(OvpnClient.instance_id == instance_id)
+        .order_by(OvpnClient.created_at, OvpnClient.id)
+        .offset(offset).limit(limit)
     )
     clients = result.scalars().all()
     

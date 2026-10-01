@@ -73,6 +73,7 @@ async def list_audit_logs(
     method: Optional[str] = Query(default=None, description="Filter by HTTP method"),
     category: Optional[str] = Query(default="write", description="'write', 'read', or None for all"),
     search: Optional[str] = Query(default=None, description="Search in path"),
+    search_body: bool = Query(default=False, description="Also search request bodies (slow)"),
     from_date: Optional[str] = Query(default=None, description="From date (ISO format)"),
     to_date: Optional[str] = Query(default=None, description="To date (ISO format)"),
     current_user: User = Depends(require_permission("logs.view")),
@@ -110,6 +111,7 @@ async def list_audit_logs(
         method=method,
         category=category,
         search=search,
+        search_body=search_body,
         from_date=parsed_from,
         to_date=parsed_to,
     )
@@ -154,6 +156,7 @@ async def export_audit_csv(
     method: Optional[str] = Query(default=None),
     category: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
+    search_body: bool = Query(default=False),
     from_date: Optional[str] = Query(default=None),
     to_date: Optional[str] = Query(default=None),
     current_user: User = Depends(require_permission("logs.view")),
@@ -189,6 +192,7 @@ async def export_audit_csv(
         method=method,
         category=category,
         search=search,
+        search_body=search_body,
         from_date=parsed_from,
         to_date=parsed_to,
     )

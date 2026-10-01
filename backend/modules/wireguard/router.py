@@ -681,6 +681,8 @@ async def reconnect_instance(
 @router.get("/instances/{instance_id}/clients", response_model=List[WgClientRead])
 async def list_clients(
     instance_id: str,
+    limit: Optional[int] = Query(None, ge=1, le=1000, description="Page size (default: all)"),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_session),
     _user: User = Depends(require_permission("wireguard.view"))
 ):
@@ -697,6 +699,8 @@ async def list_clients(
     # Get clients from database
     result = await db.execute(
         select(WgClient).where(WgClient.instance_id == instance_id)
+        .order_by(WgClient.created_at, WgClient.id)
+        .offset(offset).limit(limit)
     )
     clients = result.scalars().all()
     

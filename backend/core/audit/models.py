@@ -3,6 +3,7 @@ MADMIN Audit Log Models
 
 Defines the AuditLog table for tracking API calls with user identity.
 """
+from sqlalchemy import Index
 from sqlmodel import SQLModel, Field
 from typing import Optional
 from datetime import datetime
@@ -17,6 +18,8 @@ class AuditLog(SQLModel, table=True):
     Category 'write' = POST/PUT/PATCH/DELETE, 'read' = GET.
     """
     __tablename__ = "audit_log"
+    # The Logs page filters by category and pages by timestamp (newest first)
+    __table_args__ = (Index("ix_audit_log_category_timestamp", "category", "timestamp"),)
     
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
