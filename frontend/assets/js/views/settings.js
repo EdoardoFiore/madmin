@@ -1097,16 +1097,60 @@ function setupEventListeners() {
             return;
         }
 
+        let preview;
+        try {
+            preview = await apiGet(`/settings/network/port-change-preview?port=${port}`);
+        } catch (e) {
+            showToast(t('settings.portChangeError', { error: e.message }), 'error');
+            return;
+        }
+
+        // INPUT ends with a DROP: the rules opening the current port must be
+        // copied for the new one, or the admin is locked out after the move.
+        const ruleLabel = (r) => `#${r.order + 1} · TCP/${escapeHtml(r.port)}`
+            + (r.in_interface ? ` · ${escapeHtml(r.in_interface)}` : '')
+            + (r.source ? ` · ${escapeHtml(r.source)}` : '')
+            + (r.comment ? ` · <span class="text-muted">${escapeHtml(r.comment)}</span>` : '');
+        let firewallHtml;
+        if (!preview.can_manage_firewall) {
+            firewallHtml = `<div class="alert alert-danger">${t('settings.portFwNoPermission')}
+                ${preview.rules.length ? `<ul class="mb-0 mt-2">${preview.rules.map(r => `<li>${ruleLabel(r)}</li>`).join('')}</ul>` : ''}</div>`;
+        } else if (preview.rules.length) {
+            firewallHtml = `
+                <div class="mb-2 fw-bold"><i class="ti ti-shield-lock me-1"></i>${t('settings.portFwCloneTitle', { old: preview.current_port, port })}</div>
+                <div class="text-muted small mb-2">${t('settings.portFwCloneHint')}</div>
+                <div class="list-group mb-3">
+                    ${preview.rules.map(r => `
+                        <label class="list-group-item d-flex align-items-center gap-2">
+                            <input class="form-check-input m-0 port-clone" type="checkbox" value="${escapeHtml(r.id)}" checked>
+                            <span>${ruleLabel(r)}</span>
+                        </label>`).join('')}
+                </div>
+                <div class="mb-1 fw-bold">${t('settings.portFwOldTitle', { old: preview.current_port })}</div>
+                <div class="form-selectgroup">
+                    <label class="form-selectgroup-item">
+                        <input type="radio" name="port-old-rules" value="disable" class="form-selectgroup-input" checked>
+                        <span class="form-selectgroup-label">${t('settings.portFwOldDisable')}</span>
+                    </label>
+                    <label class="form-selectgroup-item">
+                        <input type="radio" name="port-old-rules" value="keep" class="form-selectgroup-input">
+                        <span class="form-selectgroup-label">${t('settings.portFwOldKeep')}</span>
+                    </label>
+                </div>`;
+        } else {
+            firewallHtml = `
+                <div class="alert alert-warning mb-2">${t('settings.portFwNoRule', { old: preview.current_port })}</div>
+                <label class="form-check">
+                    <input class="form-check-input" type="checkbox" id="port-create-rule" checked>
+                    <span class="form-check-label">${t('settings.portFwCreate', { port })}</span>
+                </label>`;
+        }
+
         const confirmed = await confirmDialog(
             t('settings.changePortConfirmTitle'),
             `<p>${t('settings.portChangeMsg', { port })}</p>
-            <div class="alert alert-warning mb-2">
-                <div class="fw-bold mb-1"><i class="ti ti-shield-lock me-1"></i>Firewall</div>
-                <p class="mb-1">${t('settings.portFirewallWarning')}</p>
-                <code class="d-block p-1 bg-dark text-white rounded small">iptables -A INPUT -p tcp --dport ${port} -j ACCEPT</code>
-                <p class="mt-1 mb-0 small text-muted">${t('settings.portFirewallNoAccess')}</p>
-            </div>
-            <div class="alert alert-danger mb-0">
+            ${firewallHtml}
+            <div class="alert alert-danger mt-3 mb-0">
                 <i class="ti ti-plug-connected-x me-1"></i>
                 ${t('settings.portDisconnectWarning')}<br>
                 <strong>https://${escapeHtml(location.hostname)}:${port}</strong>
@@ -1114,9 +1158,19 @@ function setupEventListeners() {
             t('settings.portChangeAndRestart'),
             'btn-warning',
             true,
-            ''
+            'lg'
         );
         if (!confirmed) return;
+        // Read the choices now: the dialog's DOM is removed once it has faded out
+        const body = {
+            port,
+            clone_rule_ids: [...document.querySelectorAll('.port-clone:checked')].map(i => i.value),
+            create_rule: !!document.getElementById('port-create-rule')?.checked,
+            old_rules: document.querySelector('input[name="port-old-rules"]:checked')?.value || 'keep',
+        };
+        if (!preview.can_manage_firewall) {
+            body.clone_rule_ids = []; body.create_rule = false; body.old_rules = 'keep';
+        }
 
         const btn = document.getElementById('save-port');
         const originalText = btn.innerHTML;
@@ -1124,7 +1178,7 @@ function setupEventListeners() {
         btn.disabled = true;
 
         try {
-            await apiPost('/settings/network/port', { port });
+            await apiPost('/settings/network/port', body);
             showToast(t('settings.portChanged2', { port }), 'success');
             // Do not reload, connection will be lost
         } catch (e) {

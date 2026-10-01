@@ -655,7 +655,8 @@ class FirewallOrchestrator:
     async def create_rule(
         self,
         session: AsyncSession,
-        rule_data: Dict
+        rule_data: Dict,
+        apply: bool = True,
     ) -> MachineFirewallRule:
         """
         Create a new firewall rule.
@@ -723,8 +724,9 @@ class FirewallOrchestrator:
         session.add(rule)
         await session.flush()
 
-        # Apply rules
-        await self.apply_rules(session)
+        # Apply rules (callers creating several at once apply once at the end)
+        if apply:
+            await self.apply_rules(session)
 
         logger.info(f"Created firewall rule {rule.id}")
         return rule

@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlparse
 
 from config import get_settings
-from core.fsutil import atomic_write
+from core.fsutil import ConfigSnapshot, atomic_write
 from .models import CertificateInfo, NetworkSettingsResponse
 
 logger = logging.getLogger(__name__)
@@ -50,17 +50,21 @@ class NetworkService:
             certificate=cert_info
         )
 
-    async def update_port(self, new_port: int, extra_reserved_ports: set = None) -> bool:
-        """
-        Update management port in Nginx config.
-        Returns True if successful and Nginx reloaded.
-        """
+    def validate_new_port(self, new_port: int, extra_reserved_ports: set = None) -> None:
+        """Raise ValueError when the port cannot be the management port."""
         if not 1 <= new_port <= 65535:
             raise ValueError("Invalid port (1-65535)")
-
         all_reserved = RESERVED_PORTS | (extra_reserved_ports or set())
         if new_port in all_reserved:
             raise ValueError(f"Port {new_port} is already in use by another service")
+
+    async def update_port(self, new_port: int, extra_reserved_ports: set = None) -> bool:
+        """
+        Update management port in Nginx config.
+        Returns True if successful and Nginx reloaded; on failure the previous
+        config is put back (it would otherwise load at the next nginx restart).
+        """
+        self.validate_new_port(new_port, extra_reserved_ports)
             
         try:
             # Read config
@@ -84,11 +88,12 @@ class NetworkService:
             new_directive = full_match.replace(str(current_port), str(new_port))
             new_content = content.replace(full_match, new_directive)
             
-            # Write config
+            snapshot = ConfigSnapshot([NGINX_CONF_PATH])
             await self._write_nginx_conf(new_content)
-            
-            # Reload Nginx
-            return await self._reload_nginx()
+            if await self._reload_nginx():
+                return True
+            snapshot.restore()
+            return False
             
         except Exception as e:
             logger.error(f"Error updating port: {e}")
@@ -373,23 +378,18 @@ class NetworkService:
     async def _reload_nginx(self) -> bool:
         """Test config and reload Nginx."""
         # Test config
-        proc = await asyncio.create_subprocess_shell(
-            "nginx -t",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await proc.communicate()
-        if proc.returncode != 0:
-            return False
-            
-        # Reload
-        proc = await asyncio.create_subprocess_shell(
-            "systemctl reload nginx",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await proc.communicate()
-        return proc.returncode == 0
+        for argv in (["nginx", "-t"], ["systemctl", "reload", "nginx"]):
+            proc = await asyncio.create_subprocess_exec(
+                *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=60)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return False
+            if proc.returncode != 0:
+                return False
+        return True
 
     async def _get_certificate_info(self) -> Optional[CertificateInfo]:
         """Parse certificate info using openssl."""
