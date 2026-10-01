@@ -5,9 +5,10 @@ API endpoints for machine firewall management.
 """
 import asyncio
 import logging
+import subprocess
 from typing import List, Optional
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,8 @@ import uuid
 from pydantic import ValidationError
 
 from core.database import get_session
+from core.http import get_client_ip
+from config import get_settings
 from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 from sqlalchemy import select, delete
@@ -51,11 +54,14 @@ from .orchestrator import (
     redirect_input_fields, dnat_input_fields, effective_to_destination,
     IMPLICIT_DENY_COMMENT,
 )
-from .iptables import IptablesError, flush_conntrack_for_rule
+from .iptables import IptablesError
+from . import flowmatch
 from .protected_ports import validate_protected_port_collision, port_specs_overlap
 from . import addresses, geoip
 
 logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
 
@@ -1009,17 +1015,101 @@ async def delete_rule(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class FlushRequest(SQLModel):
+    # Preview by default: closing sessions is only done on an explicit confirm
+    dry_run: bool = True
+
+
+async def _rule_views(session: AsyncSession, chain: str) -> List[flowmatch.RuleView]:
+    """
+    Enabled filter rules of `chain` in evaluation order (FORWARD: groups in
+    ForwardSection order, then rule order), with address refs resolved to
+    networks. An FQDN object never resolved, or a country list not on disk,
+    makes that side "unknown": the matcher then keeps the connection.
+    """
+    import ipaddress
+    from . import geoip
+    from .orchestrator import section_key
+
+    rules = (await session.execute(
+        select(MachineFirewallRule).where(
+            MachineFirewallRule.table_name == "filter",
+            MachineFirewallRule.chain == chain,
+            MachineFirewallRule.enabled == True,  # noqa: E712
+        ).order_by(MachineFirewallRule.order)
+    )).scalars().all()
+    if chain == "FORWARD":
+        sections = (await session.execute(select(ForwardSection))).scalars().all()
+        pos = {(x.in_interface, x.out_interface): x.position for x in sections}
+        rules = sorted(rules, key=lambda r: (pos.get(section_key(r), len(pos)), r.order))
+
+    refs = (await session.execute(
+        select(FirewallRuleAddress).where(FirewallRuleAddress.rule_id.in_([r.id for r in rules]))
+    )).scalars().all() if rules else []
+    objects = {o.id: o for o in (await session.execute(select(AddressObject))).scalars().all()}
+    members: dict = {}
+    for m in (await session.execute(select(AddressGroupMember))).scalars().all():
+        if m.member_object_id:
+            members.setdefault(m.group_id, []).append(m.member_object_id)
+
+    def obj_nets(obj):
+        if obj is None or not obj.enabled:
+            return []
+        if obj.type == "fqdn":
+            ips = json.loads(obj.resolved_ips) if obj.resolved_ips else None
+            return None if not ips else [ipaddress.ip_network(ip, strict=False) for ip in ips]
+        entries = geoip._read_cached_cidrs(obj.value) if obj.type == "geo" else addresses.resolve_entries(obj.type, obj.value)
+        if obj.type == "geo" and not entries:
+            return None
+        return [ipaddress.ip_network(e, strict=False) for e in entries]
+
+    def side(rule, direction):
+        rows = [x for x in refs if x.rule_id == rule.id and x.direction == direction]
+        if not rows:
+            literal = rule.source if direction == "source" else rule.destination
+            return None if not literal else [ipaddress.ip_network(literal, strict=False)]
+        nets = []
+        for x in rows:
+            ids = [x.object_id] if x.object_id else members.get(x.group_id, [])
+            for oid in ids:
+                n = obj_nets(objects.get(oid))
+                if n is None:
+                    return "unknown"
+                nets.extend(n)
+        return nets
+
+    views = []
+    for r in rules:
+        try:
+            src, dst = side(r, "source"), side(r, "destination")
+        except ValueError:
+            src = dst = "unknown"
+        views.append(flowmatch.RuleView(
+            id=str(r.id), action=r.action, protocol=r.protocol, port=r.port,
+            in_interface=r.in_interface, out_interface=r.out_interface,
+            src=src, dst=dst, state=r.state, limited=bool(r.limit_rate),
+        ))
+    return views
+
+
 @router.post("/rules/{rule_id}/flush-conntrack")
 async def flush_rule_conntrack(
     rule_id: str,
+    request: Request,
+    data: Optional[FlushRequest] = Body(None),
     current_user: User = Depends(require_permission("firewall.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Flush conntrack entries matching a DROP/REJECT rule's criteria.
-    Call this after positioning the rule to immediately terminate existing
-    sessions that would now be blocked.
+    Close the established connections a DROP/REJECT rule would now stop.
+
+    Only connections whose first deciding rule — in the order the engine
+    evaluates the chain — is this one: a connection an earlier rule accepts is
+    left alone, and so is anything whose match depends on something unknown,
+    plus every connection of the requesting client. dry_run (default) returns
+    the preview; dry_run=false deletes exactly the listed entries.
     """
+    dry_run = data.dry_run if data else True
     try:
         rule_uuid = uuid.UUID(rule_id)
     except ValueError:
@@ -1028,18 +1118,43 @@ async def flush_rule_conntrack(
     rule = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
-
     if rule.action not in ("DROP", "REJECT"):
         raise HTTPException(status_code=400, detail="Flush conntrack is only applicable to DROP or REJECT rules")
+    if rule.table_name != "filter" or rule.chain not in ("INPUT", "FORWARD"):
+        raise HTTPException(status_code=400, detail="Chiusura sessioni disponibile solo per regole filter INPUT/FORWARD")
+    if not rule.enabled:
+        raise HTTPException(status_code=400, detail="La regola è disattivata")
 
-    flushed = await asyncio.to_thread(
-        flush_conntrack_for_rule,
-        protocol=rule.protocol,
-        source=rule.source,
-        destination=rule.destination,
-        port=rule.port,
-    )
-    return {"status": "ok", "flushed": flushed}
+    result = {"close": 0, "shadowed": 0, "uncertain": 0, "protected": 0, "samples": [], "deleted": 0}
+    if settings.mock_iptables:
+        return result
+
+    views = await _rule_views(session, rule.chain)
+    target = next((v for v in views if v.id == str(rule.id)), None)
+    if target is None:
+        return result
+    try:
+        topo = await asyncio.to_thread(flowmatch.Topology.from_system)
+        flows = await asyncio.to_thread(flowmatch.list_flows)
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as e:
+        logger.warning(f"conntrack preview failed: {e}")
+        raise HTTPException(status_code=503, detail="Impossibile leggere le sessioni attive (conntrack)")
+
+    sel = flowmatch.select_flows(flows, target, rule.chain, views, topo, {get_client_ip(request)})
+    result.update({k: len(v) for k, v in sel.items() if k != "close"})
+    result["close"] = len(sel["close"])
+    result["samples"] = [f.describe() for f in sel["close"][:10]]
+    if dry_run:
+        return result
+
+    to_close = sel["close"][:_FLUSH_MAX]
+    result["deleted"] = await asyncio.to_thread(lambda: sum(1 for f in to_close if flowmatch.delete_flow(f)))
+    logger.info(f"Closed {result['deleted']} sessions for rule {rule.id} "
+                f"(kept: {result['shadowed']} accepted earlier, {result['uncertain']} uncertain)")
+    return result
+
+
+_FLUSH_MAX = 5000
 
 
 @router.put("/rules/order")

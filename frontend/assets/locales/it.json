@@ -503,6 +503,13 @@
         "policyNatLabel": "NAT in uscita (masquerade)",
         "policyNatHint": "Genera automaticamente il MASQUERADE in POSTROUTING abbinato a questa policy",
         "terminateSessions": "Termina sessioni",
+        "sessions": {
+            "willClose": "Verranno chiuse {n} connessioni che la regola {action} ora blocca (è la prima regola a valutarle):",
+            "andMore": "…e altre {n}.",
+            "keptShadowed": "{n} connessioni restano attive: le accetta una regola precedente.",
+            "keptUncertain": "{n} connessioni restano attive: non è certo che questa regola le blocchi (oggetti non risolti o interfacce non determinabili).",
+            "keptProtected": "{n} connessioni del tuo client restano attive."
+        },
         "terminateSessionsTitle": "Termina connessioni esistenti",
         "terminateSessionsDesc": "Verranno terminate immediatamente tutte le sessioni attive che corrispondono a questa regola {action}. Questa operazione è utile principalmente per regole appena create o riposizionate, per forzare il re-evaluation del traffico già stabilito.",
         "terminateBtn": "Termina",

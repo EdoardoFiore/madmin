@@ -503,6 +503,13 @@
         "policyNatLabel": "Outbound NAT (masquerade)",
         "policyNatHint": "Automatically generates the paired POSTROUTING MASQUERADE for this policy",
         "terminateSessions": "Terminate sessions",
+        "sessions": {
+            "willClose": "{n} connections that the {action} rule now blocks will be closed (it is the first rule to evaluate them):",
+            "andMore": "…and {n} more.",
+            "keptShadowed": "{n} connections stay up: an earlier rule accepts them.",
+            "keptUncertain": "{n} connections stay up: it is not certain this rule blocks them (unresolved objects or undeterminable interfaces).",
+            "keptProtected": "{n} connections of your own client stay up."
+        },
         "terminateSessionsTitle": "Terminate existing connections",
         "terminateSessionsDesc": "All active sessions matching this {action} rule will be immediately terminated. This is useful mainly for newly created or repositioned rules, to force re-evaluation of already established traffic.",
         "terminateBtn": "Terminate",

@@ -14,7 +14,7 @@ import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
 import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId,
-    pairKey, pairsOverlap, groupBySections } from './shared.js';
+    pairKey, pairsOverlap, groupBySections, terminateSessions } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
@@ -550,26 +550,7 @@ function bindRowActions(wrap, mode) {
             // already-established ones keep flowing until conntrack is
             // flushed — offer to do it now (only makes sense on enable).
             if (mode === 'policy' && enabled && ['DROP', 'REJECT'].includes(r.action)) {
-                const confirmed = await confirmDialog(
-                    t('firewall.terminateSessionsTitle'),
-                    t('firewall.terminateSessionsDesc', { action: r.action }),
-                    t('firewall.terminateBtn'),
-                    'btn-warning'
-                );
-                if (confirmed) {
-                    try {
-                        const result = await apiPost(`/firewall/rules/${r.id}/flush-conntrack`, {});
-                        const count = result.flushed ?? 0;
-                        showToast(
-                            count > 0
-                                ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
-                                : t('firewall.noActiveSessions'),
-                            'success'
-                        );
-                    } catch (err) {
-                        showToast(t('common.errorPrefix') + err.message, 'error');
-                    }
-                }
+                await terminateSessions(r);
             }
         } catch (err) {
             e.target.checked = !enabled;

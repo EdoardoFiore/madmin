@@ -10,7 +10,7 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections } from './shared.js';
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions } from './shared.js';
 
 let rules = [];
 let sections = []; // forward groups in evaluation order (GET /firewall/sections)
@@ -1236,28 +1236,12 @@ function setupRowEvents(container) {
             const ruleId = row.dataset.id;
             const rule = rules.find(r => r.id === ruleId);
 
-            const confirmed = await confirmDialog(
-                t('firewall.terminateSessionsTitle'),
-                t('firewall.terminateSessionsDesc', { action: rule?.action || '' }),
-                t('firewall.terminateBtn'),
-                'btn-warning'
-            );
-            if (!confirmed) return;
-
+            if (!rule) return;
             btn.disabled = true;
             const icon = btn.querySelector('i');
             icon.className = 'ti ti-loader-2 spin';
             try {
-                const result = await apiPost(`/firewall/rules/${ruleId}/flush-conntrack`, {});
-                const count = result.flushed ?? 0;
-                showToast(
-                    count > 0
-                        ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
-                        : t('firewall.noActiveSessions'),
-                    'success'
-                );
-            } catch (error) {
-                showToast(t('common.errorPrefix') + error.message, 'error');
+                await terminateSessions(rule);
             } finally {
                 btn.disabled = false;
                 icon.className = 'ti ti-plug-x';

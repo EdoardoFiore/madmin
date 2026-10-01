@@ -4,7 +4,8 @@
  * Constants and small helpers shared by the Standard view, the rule editor and
  * the Advanced (power-user) view.
  */
-import { escapeHtml } from '../../utils.js';
+import { escapeHtml, confirmDialog, showToast } from '../../utils.js';
+import { apiPost } from '../../api.js';
 import { t } from '../../i18n.js';
 
 // Sentinel comment marking the protected managed-LAN navigation NAT policy
@@ -178,4 +179,61 @@ export function groupBySections(policies, sections) {
     }
     for (const [k, list] of groups) if (!list.length) groups.delete(k);
     return groups;
+}
+
+// ---------------------------------------------------------------------------
+// Closing the sessions a DROP/REJECT rule would now stop
+// ---------------------------------------------------------------------------
+
+/**
+ * Preview, confirm, close. The backend simulates the chain for every tracked
+ * connection and only closes those this rule is the first to decide: anything
+ * an earlier rule accepts, anything uncertain and the admin's own connections
+ * stay up. Nothing is closed without the confirm showing what will be.
+ */
+export async function terminateSessions(rule) {
+    let preview;
+    try {
+        preview = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: true });
+    } catch (err) {
+        showToast(t('common.errorPrefix') + err.message, 'error');
+        return;
+    }
+    const kept = [];
+    if (preview.shadowed) kept.push(t('firewall.sessions.keptShadowed', { n: preview.shadowed }));
+    if (preview.uncertain) kept.push(t('firewall.sessions.keptUncertain', { n: preview.uncertain }));
+    if (preview.protected) kept.push(t('firewall.sessions.keptProtected', { n: preview.protected }));
+
+    if (!preview.close) {
+        showToast([t('firewall.noActiveSessions'), ...kept].join(' '), 'info');
+        return;
+    }
+    const rows = preview.samples.map(f => `
+        <tr>
+            <td>${escapeHtml(f.proto)}</td>
+            <td><code>${escapeHtml(f.src)}${f.sport ? ':' + escapeHtml(f.sport) : ''}</code></td>
+            <td><code>${escapeHtml(f.to || f.dst)}${f.dport ? ':' + escapeHtml(f.dport) : ''}</code></td>
+        </tr>`).join('');
+    const html = `
+        <p>${escapeHtml(t('firewall.sessions.willClose', { n: preview.close, action: rule.action }))}</p>
+        <div class="table-responsive mb-2">
+            <table class="table table-sm table-vcenter card-table">
+                <thead><tr><th>${escapeHtml(t('firewall.protocol'))}</th>
+                    <th>${escapeHtml(t('firewall.source'))}</th><th>${escapeHtml(t('firewall.destination'))}</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+        ${preview.close > preview.samples.length
+            ? `<div class="text-muted small mb-2">${escapeHtml(t('firewall.sessions.andMore', { n: preview.close - preview.samples.length }))}</div>` : ''}
+        ${kept.map(k => `<div class="text-muted small"><i class="ti ti-shield-check me-1"></i>${escapeHtml(k)}</div>`).join('')}`;
+    const ok = await confirmDialog(t('firewall.terminateSessionsTitle'), html, t('firewall.terminateBtn'),
+                                   'btn-warning', true, 'lg');
+    if (!ok) return;
+    try {
+        const res = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: false });
+        showToast(res.deleted === 1 ? t('firewall.sessionTerminated')
+                                    : t('firewall.sessionsTerminated', { count: res.deleted }), 'success');
+    } catch (err) {
+        showToast(t('common.errorPrefix') + err.message, 'error');
+    }
 }
