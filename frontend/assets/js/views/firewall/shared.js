@@ -237,3 +237,21 @@ export async function terminateSessions(rule) {
         showToast(t('common.errorPrefix') + err.message, 'error');
     }
 }
+
+/**
+ * Badge for a rule an earlier rule makes useless (backend: shadow.py):
+ * shadowed = an earlier rule takes the opposite decision, this one never
+ * applies; duplicate / redundant = the same decision is already taken above.
+ */
+export function shadowBadge(rule) {
+    if (!rule.shadow_kind) return '';
+    const n = rule.shadowed_by_seq;
+    const map = {
+        shadowed: ['bg-red-lt', 'ti-eye-off', 'firewall.shadow.shadowed', 'firewall.shadow.shadowedHint'],
+        duplicate: ['bg-orange-lt', 'ti-copy', 'firewall.shadow.duplicate', 'firewall.shadow.duplicateHint'],
+        redundant: ['bg-yellow-lt', 'ti-arrow-bar-to-up', 'firewall.shadow.redundant', 'firewall.shadow.redundantHint'],
+    };
+    const [cls, icon, label, hint] = map[rule.shadow_kind] || map.shadowed;
+    return `<span class="badge ${cls} ms-1" title="${escapeHtml(t(hint, { n }))}">
+        <i class="ti ${icon} me-1"></i>${escapeHtml(t(label, { n }))}</span>`;
+}

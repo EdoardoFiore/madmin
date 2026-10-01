@@ -342,6 +342,10 @@
         "std": {
             "newPolicy": "Nuova regola",
             "dragSection": "Trascina per riordinare la sezione (priorità di valutazione)",
+            "seqHint": "Posizione nell'ordine di valutazione (come in Advanced)",
+            "moreActions": "Altre azioni",
+            "moveUp": "Sposta su",
+            "moveDown": "Sposta giù",
             "sectionOverlap": "Questo traffico può essere deciso prima da: {groups}. Trascina i gruppi per cambiare chi valuta per primo.",
             "sectionOverlapBadge": "valutato dopo {n}",
             "anyAddr": "qualsiasi",
@@ -503,6 +507,14 @@
         "policyNatLabel": "NAT in uscita (masquerade)",
         "policyNatHint": "Genera automaticamente il MASQUERADE in POSTROUTING abbinato a questa policy",
         "terminateSessions": "Termina sessioni",
+        "shadow": {
+            "shadowed": "Mai raggiunta (#{n})",
+            "shadowedHint": "La regola #{n}, più in alto, prende la decisione opposta su tutto il traffico di questa: questa regola non ha effetto. Spostala sopra la #{n} o restringi la #{n}.",
+            "duplicate": "Duplicata di #{n}",
+            "duplicateHint": "Identica alla regola #{n}, che viene valutata prima: si può eliminare.",
+            "redundant": "Già coperta da #{n}",
+            "redundantHint": "La regola #{n}, più in alto, prende già la stessa decisione su tutto il traffico di questa."
+        },
         "sessions": {
             "willClose": "Verranno chiuse {n} connessioni che la regola {action} ora blocca (è la prima regola a valutarle):",
             "andMore": "…e altre {n}.",

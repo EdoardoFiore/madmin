@@ -1,0 +1,114 @@
+"""
+Rules that can never decide anything: shadowed or duplicated by an earlier one.
+
+A rule is shadowed when an earlier enabled terminal rule of the same chain
+(in evaluation order) matches every packet it matches — the classic case is
+an ACCEPT added at the end of INPUT, below the final DROP: it looks active
+and is never reached. Conservative by design: anything that cannot be proven
+(different address objects, a rate-limited rule, partial state lists) is not
+reported. Only the filter table, where the first terminal match decides.
+"""
+import ipaddress
+from typing import Dict, Iterable, List, Optional, Sequence
+
+from .ports import parse_port_spec
+
+TERMINAL = {"ACCEPT", "DROP", "REJECT"}
+
+
+def _iface_covers(a: Optional[str], b: Optional[str]) -> bool:
+    if not a:
+        return True
+    if not b:
+        return False
+    if a.endswith("+"):
+        return b.startswith(a[:-1])
+    return a == b
+
+
+def _ports_cover(a: Optional[str], b: Optional[str]) -> bool:
+    if not a:
+        return True
+    if not b:
+        return False
+    try:
+        outer, inner = parse_port_spec(a), parse_port_spec(b)
+    except ValueError:
+        return False
+    return all(any(lo <= blo and bhi <= hi for lo, hi in outer) for blo, bhi in inner)
+
+
+def _refs_key(refs) -> Optional[frozenset]:
+    if not refs:
+        return None
+    out = set()
+    for r in refs:
+        oid = getattr(r, "object_id", None) if not isinstance(r, dict) else r.get("object_id")
+        gid = getattr(r, "group_id", None) if not isinstance(r, dict) else r.get("group_id")
+        out.add(("o", oid) if oid else ("g", gid))
+    return frozenset(out)
+
+
+def _addr_covers(a_lit, a_refs, b_lit, b_refs) -> bool:
+    ak, bk = _refs_key(a_refs), _refs_key(b_refs)
+    if ak is not None:
+        return ak == bk           # same objects/groups only: contents can change
+    if not a_lit:
+        return True
+    if bk is not None or not b_lit:
+        return False
+    try:
+        return ipaddress.ip_network(b_lit, strict=False).subnet_of(ipaddress.ip_network(a_lit, strict=False))
+    except (ValueError, TypeError):
+        return False
+
+
+def _state_covers(a: Optional[str], b: Optional[str]) -> bool:
+    if not a:
+        return True
+    if not b:
+        return False
+    return set(b.upper().split(",")) <= set(a.upper().split(","))
+
+
+def covers(a, b) -> bool:
+    """Does rule `a` match every packet rule `b` matches?"""
+    if a.limit_rate:
+        return False
+    if a.protocol and (a.protocol or "").lower() != (b.protocol or "").lower():
+        return False
+    if a.port and not ((a.protocol or "").lower() in ("tcp", "udp") and _ports_cover(a.port, b.port)):
+        return False
+    return (
+        _iface_covers(a.in_interface, b.in_interface)
+        and _iface_covers(a.out_interface, b.out_interface)
+        and _addr_covers(a.source, a.source_refs, b.source, b.source_refs)
+        and _addr_covers(a.destination, a.destination_refs, b.destination, b.destination_refs)
+        and _state_covers(a.state, b.state)
+    )
+
+
+def analyze(ordered: Sequence) -> Dict[str, dict]:
+    """
+    `ordered`: the rules of one filter chain in evaluation order (enabled and
+    disabled). Returns {rule_id: {"by": id, "kind": "shadowed"|"duplicate"|"redundant"}}
+    for every enabled rule an earlier enabled terminal rule makes useless.
+    """
+    out: Dict[str, dict] = {}
+    earlier: List = []
+    for rule in ordered:
+        if not rule.enabled:
+            continue
+        for prev in earlier:
+            if covers(prev, rule):
+                if prev.action != rule.action:
+                    kind = "shadowed"       # the opposite decision is taken above
+                elif covers(rule, prev):
+                    kind = "duplicate"
+                else:
+                    kind = "redundant"      # same decision, already taken above
+                out[str(rule.id)] = {"by": str(prev.id), "kind": kind}
+                break
+        if rule.action in TERMINAL:
+            earlier.append(rule)
+    return out

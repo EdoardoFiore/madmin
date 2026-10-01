@@ -478,6 +478,13 @@ class MachineFirewallRuleResponse(SQLModel):
     policy_nat: bool = False  # forward policy owns an outbound MASQUERADE companion
     hairpin: bool = False  # DNAT is reachable from the LAN via the WAN IP (NAT reflection)
     auto_generated: bool = False  # synthetic read-only row (e.g. DNAT/NAT companion)
+    # filter rules only: 1-based position in evaluation order within the chain
+    # (FORWARD: groups in section order), and an earlier rule that makes this
+    # one useless (see shadow.py)
+    seq: Optional[int] = None
+    shadowed_by: Optional[str] = None
+    shadowed_by_seq: Optional[int] = None
+    shadow_kind: Optional[str] = None   # shadowed | duplicate | redundant
     created_at: datetime
     updated_at: datetime
 

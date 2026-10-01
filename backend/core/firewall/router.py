@@ -709,6 +709,32 @@ def _implicit_deny_response() -> MachineFirewallRuleResponse:
     )
 
 
+async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses) -> None:
+    """Evaluation sequence and shadowed/duplicate rules, per filter chain."""
+    from . import shadow
+    from .orchestrator import section_key
+
+    sections = (await session.execute(select(ForwardSection))).scalars().all()
+    pos = {(x.in_interface, x.out_interface): x.position for x in sections}
+    by_id = {str(r.id): resp for r, resp in zip(rules, responses)}
+    chains: dict = {}
+    for r, resp in zip(rules, responses):
+        if r.table_name == "filter":
+            chains.setdefault(r.chain, []).append((r, resp))
+    for chain, items in chains.items():
+        if chain == "FORWARD":
+            items.sort(key=lambda it: (pos.get(section_key(it[0]), len(pos)), it[0].order))
+        else:
+            items.sort(key=lambda it: it[0].order)
+        for i, (_, resp) in enumerate(items, start=1):
+            resp.seq = i
+        for rid, info in shadow.analyze([resp for _, resp in items]).items():
+            resp = by_id[rid]
+            resp.shadowed_by = info["by"]
+            resp.shadowed_by_seq = by_id[info["by"]].seq
+            resp.shadow_kind = info["kind"]
+
+
 @router.get("/rules", response_model=List[MachineFirewallRuleResponse])
 async def list_rules(
     chain: Optional[str] = None,
@@ -720,6 +746,7 @@ async def list_rules(
     refs_map = await _rule_refs_map(session, [r.id for r in rules])
     dnat_obj_names = await _dnat_obj_names_map(session, rules)
     responses = [_rule_to_response(r, refs_map, dnat_obj_names) for r in rules]
+    await _annotate_sequence_and_shadow(session, rules, responses)
     # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)

@@ -14,7 +14,7 @@ import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
 import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId,
-    pairKey, pairsOverlap, groupBySections, terminateSessions } from './shared.js';
+    pairKey, pairsOverlap, groupBySections, terminateSessions, shadowBadge } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
@@ -89,6 +89,10 @@ async function loadCounters() {
  * stay inert until this runs. */
 function populateCounterPopovers() {
     containerEl?.querySelectorAll('.fw-counter[data-counter-id]').forEach(el => {
+        // Traffic visible in the row; packets and the time window in the popover
+        const c = counters.get(el.dataset.counterId);
+        const text = el.querySelector('.fw-counter-text');
+        if (text) text.textContent = c ? formatBytes(c.bytes) : '';
         el.setAttribute('title', t('firewall.std.counterTitle'));
         el.setAttribute('data-bs-content', counterPopoverHtml(counters.get(el.dataset.counterId)));
         bootstrap.Popover.getOrCreateInstance(el, {
@@ -125,7 +129,8 @@ function counterPopoverHtml(c) {
 function counterIcon(r) {
     const cid = counterRuleId(r);
     if (!cid) return '';
-    return `<i class="ti ti-chart-histogram fw-counter text-muted" data-counter-id="${escapeHtml(cid)}" style="cursor:help"></i>`;
+    return `<span class="fw-counter text-muted text-nowrap" data-counter-id="${escapeHtml(cid)}" style="cursor:help">
+        <i class="ti ti-chart-histogram"></i><span class="fw-counter-text small ms-1"></span></span>`;
 }
 
 /** Open the editor in-place, returning to this view on close. */
@@ -307,7 +312,7 @@ function renderPolicy() {
                     <table class="table table-vcenter card-table mb-0">
                         <thead>
                             <tr>
-                                <th style="width:42px"></th>
+                                <th style="width:64px">#</th>
                                 <th>${t('firewall.std.colSource')}</th>
                                 <th>${t('firewall.std.colDest')}</th>
                                 <th>${t('firewall.std.colService')}</th>
@@ -357,11 +362,12 @@ function policyRow(r, canManage) {
     const draggable = canManage && !locked;
     return `
         <tr class="${disabled} ${draggable ? 'fw-drag' : ''}" data-id="${escapeHtml(r.id)}" draggable="${draggable}">
-            <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
+            <td class="text-nowrap">${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}
+                ${r.seq ? `<span class="text-muted small ms-1" title="${escapeHtml(t('firewall.std.seqHint'))}">#${r.seq}</span>` : ''}</td>
             <td>${renderAddrCell(r.source, r.source_refs)}</td>
             <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
             <td><span class="text-muted">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
-            <td>${actionBadge(r.action)}</td>
+            <td class="text-nowrap">${actionBadge(r.action)}${shadowBadge(r)}</td>
             <td>${natCell(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
             <td>${counterIcon(r)}</td>
@@ -383,11 +389,21 @@ function rowButtons(locked = false) {
                 <button class="btn btn-ghost-danger fw-del" title="${t('common.delete')}"><i class="ti ti-trash"></i></button>
             </div>`;
     }
+    // Move up/down: the keyboard-reachable alternative to drag & drop
     return `
         <div class="btn-group btn-group-sm">
-            <button class="btn btn-ghost-secondary fw-dup" title="${t('common.copy')}"><i class="ti ti-copy"></i></button>
             <button class="btn btn-ghost-primary fw-edit" title="${t('common.edit')}"><i class="ti ti-edit"></i></button>
-            <button class="btn btn-ghost-danger fw-del" title="${t('common.delete')}"><i class="ti ti-trash"></i></button>
+            <div class="dropdown">
+                <button class="btn btn-ghost-secondary btn-sm" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}'
+                        aria-label="${escapeHtml(t('firewall.std.moreActions'))}"><i class="ti ti-dots-vertical"></i></button>
+                <div class="dropdown-menu dropdown-menu-end">
+                    <button class="dropdown-item fw-move" data-dir="-1"><i class="ti ti-arrow-up me-2"></i>${t('firewall.std.moveUp')}</button>
+                    <button class="dropdown-item fw-move" data-dir="1"><i class="ti ti-arrow-down me-2"></i>${t('firewall.std.moveDown')}</button>
+                    <div class="dropdown-divider"></div>
+                    <button class="dropdown-item fw-dup"><i class="ti ti-copy me-2"></i>${t('common.copy')}</button>
+                    <button class="dropdown-item text-danger fw-del"><i class="ti ti-trash me-2"></i>${t('common.delete')}</button>
+                </div>
+            </div>
         </div>`;
 }
 
@@ -559,6 +575,24 @@ function bindRowActions(wrap, mode) {
     }));
     wrap.querySelectorAll('.fw-edit').forEach(btn => btn.addEventListener('click', (e) => {
         const r = ruleOf(e); if (r) edit(mode, r);
+    }));
+    wrap.querySelectorAll('.fw-move').forEach(btn => btn.addEventListener('click', async (e) => {
+        const r = ruleOf(e); if (!r) return;
+        // Neighbour in the same list: the same interface group for policies,
+        // the same table/chain for port forwards and outbound NAT
+        const peers = rules
+            .filter(x => !isAutoRow(x) && x.table_name === r.table_name && x.chain === r.chain
+                && (mode !== 'policy' || pairKey(x.in_interface, x.out_interface) === pairKey(r.in_interface, r.out_interface)))
+            .sort((a, b) => a.order - b.order);
+        const other = peers[peers.findIndex(x => x.id === r.id) + parseInt(btn.dataset.dir)];
+        if (!other) return;
+        try {
+            await apiPatch(`/firewall/rules/${r.id}/reorder`, { new_order: other.order });
+            showToast(t('firewall.orderUpdated'), 'success');
+            await reload();
+        } catch (err) {
+            showToast(t('common.errorPrefix') + err.message, 'error');
+        }
     }));
     wrap.querySelectorAll('.fw-dup').forEach(btn => btn.addEventListener('click', (e) => {
         const r = ruleOf(e); if (r) edit(mode, r, true);

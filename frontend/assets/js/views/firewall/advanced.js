@@ -10,7 +10,7 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions } from './shared.js';
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge } from './shared.js';
 
 let rules = [];
 let sections = []; // forward groups in evaluation order (GET /firewall/sections)
@@ -1041,10 +1041,10 @@ function renderRuleRow(rule, orderedColumns) {
             <td class="rule-order">
                 <div style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
                     ${canManage ? '<i class="ti ti-grip-vertical drag-handle" style="cursor: grab;"></i>' : ''}
-                    <span>${rule.order + 1}</span>
+                    <span>${rule.seq ?? rule.order + 1}</span>
                 </div>
             </td>
-            <td>${actionBadge(rule.action)}</td>
+            <td class="text-nowrap">${actionBadge(rule.action)}${shadowBadge(rule)}</td>
             ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
             <td class="rule-actions">
                 ${canManage ? `
