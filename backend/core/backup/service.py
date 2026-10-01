@@ -139,6 +139,8 @@ async def export_config(session: AsyncSession) -> str:
         firewall_data = await _export_firewall_rules(session)
         _write_json(os.path.join(core_dir, "firewall.json"), firewall_data)
         logger.info(f"Exported {len(firewall_data)} firewall rules")
+        _write_json(os.path.join(core_dir, "firewall_sections.json"),
+                    await _export_forward_sections(session))
 
         # Address objects & groups
         address_data = await _export_address_catalog(session)
@@ -465,6 +467,7 @@ async def _import_plain_archive(session: AsyncSession, archive_path: str) -> dic
             result["firewall_rules_imported"] = count
             result["warnings"].extend(fw_warnings)
             logger.info(f"Imported {count} firewall rules")
+            await _import_forward_sections(session, os.path.join(core_path, "firewall_sections.json"))
         
         # 3. Settings
         settings_file = os.path.join(core_path, "settings.json")
@@ -1354,6 +1357,36 @@ def _is_legacy_forward_catchall(rule_dict: dict) -> bool:
     match_fields = ("protocol", "source", "destination", "port", "in_interface",
                     "out_interface", "state", "source_refs", "destination_refs")
     return not any(rule_dict.get(f) for f in match_fields)
+
+
+async def _export_forward_sections(session: AsyncSession) -> List[dict]:
+    """Order of the filter/FORWARD interface-pair groups ("" = any)."""
+    from core.firewall.models import ForwardSection
+    rows = (await session.execute(select(ForwardSection).order_by(ForwardSection.position))).scalars().all()
+    return [{"in_interface": r.in_interface, "out_interface": r.out_interface} for r in rows]
+
+
+async def _import_forward_sections(session: AsyncSession, sections_file: str) -> None:
+    """
+    Replace the group order with the archive's. Archives without it (older
+    versions) leave the table empty: the next apply seeds it from the order of
+    each pair's first rule, the order those systems evaluated groups in.
+    Pairs without rules are dropped by that apply.
+    """
+    from core.firewall.models import ForwardSection
+    await session.execute(delete(ForwardSection))
+    if not os.path.exists(sections_file):
+        return
+    with open(sections_file) as f:
+        data = json.load(f)
+    seen = set()
+    for item in data if isinstance(data, list) else []:
+        key = (str(item.get("in_interface") or ""), str(item.get("out_interface") or ""))
+        if key in seen or any(len(k) > 20 for k in key):
+            continue
+        seen.add(key)
+        session.add(ForwardSection(in_interface=key[0], out_interface=key[1], position=len(seen) - 1))
+    await session.flush()
 
 
 async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> tuple:

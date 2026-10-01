@@ -31,16 +31,16 @@ async def _get_vpn_ports_in_use(session: AsyncSession) -> set:
     """Raccoglie le porte usate dalle istanze VPN attive (OpenVPN, WireGuard)."""
     from sqlalchemy import text
     ports = set()
-    try:
-        res = await session.execute(text("SELECT port FROM ovpn_instance WHERE port IS NOT NULL"))
-        ports.update(r[0] for r in res.fetchall())
-    except Exception:
-        pass
-    try:
-        res = await session.execute(text("SELECT port FROM wg_instance WHERE port IS NOT NULL"))
-        ports.update(r[0] for r in res.fetchall())
-    except Exception:
-        pass
+    for table in ("ovpn_instance", "wg_instance"):
+        # The table exists only while its module is active. Savepoint: on
+        # PostgreSQL the failed SELECT would abort the whole transaction and
+        # every later query of the request with it (port change -> 500)
+        try:
+            async with session.begin_nested():
+                res = await session.execute(text(f"SELECT port FROM {table} WHERE port IS NOT NULL"))
+                ports.update(r[0] for r in res.fetchall())
+        except Exception:
+            pass
     return ports
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
@@ -451,6 +451,39 @@ async def get_network_settings(
     return await network_service.get_network_settings()
 
 
+async def _reserved_ports(session: AsyncSession) -> set:
+    extra_reserved = await _get_vpn_ports_in_use(session)
+    smtp_result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
+    smtp = smtp_result.scalar_one_or_none()
+    if smtp and smtp.public_download_url:
+        extra_reserved.add(network_service.get_public_download_port(smtp.public_download_url))
+    return extra_reserved
+
+
+@router.get("/network/port-change-preview")
+async def preview_management_port_change(
+    port: int,
+    current_user: User = Depends(require_permission("settings.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    What a change to `port` means for the firewall: the INPUT rules that open
+    the current port (to clone), and whether the caller may change them.
+    """
+    from core.firewall import mgmt_access
+    try:
+        network_service.validate_new_port(port, await _reserved_ports(session))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    current = await network_service._get_current_port()
+    rules = await mgmt_access.rules_opening_port(session, current)
+    return {
+        "current_port": current,
+        "rules": [mgmt_access.describe(r) for r in rules],
+        "can_manage_firewall": current_user.has_permission("firewall.manage"),
+    }
+
+
 @router.post("/network/port")
 async def update_management_port(
     data: PortChangeRequest,
@@ -459,26 +492,71 @@ async def update_management_port(
 ):
     """
     Update management port (restarts Nginx).
+
+    Order matters: the rules for the new port are created and applied BEFORE
+    nginx moves (INPUT ends with a DROP), removed again if nginx fails, and
+    the old ones are retired only after nginx listens on the new port.
     WARNING: This will disconnect the current session.
     """
+    from core.firewall import mgmt_access
+    from core.firewall.iptables import IptablesError
+    from core.firewall.orchestrator import firewall_orchestrator
+
+    touches_firewall = bool(data.clone_rule_ids or data.create_rule or data.old_rules == "disable")
+    if touches_firewall and not current_user.has_permission("firewall.manage"):
+        raise HTTPException(status_code=403, detail="Modificare le regole del firewall richiede firewall.manage")
+
+    reserved = await _reserved_ports(session)
     try:
-        # Raccogli porte in uso da VPN e dal blocco download pubblico
-        extra_reserved = await _get_vpn_ports_in_use(session)
-
-        smtp_result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
-        smtp = smtp_result.scalar_one_or_none()
-        if smtp and smtp.public_download_url:
-            extra_reserved.add(network_service.get_public_download_port(smtp.public_download_url))
-
-        if await network_service.update_port(data.port, extra_reserved_ports=extra_reserved):
-            return {"status": "success", "message": f"Port changed to {data.port}. Service reloaded."}
-        else:
-            raise HTTPException(status_code=500, detail="Failed to reload Nginx")
+        network_service.validate_new_port(data.port, reserved)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error updating management port: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+    current = await network_service._get_current_port()
+    if current == data.port:
+        return {"status": "success", "message": "Port unchanged"}
+
+    opening = await mgmt_access.rules_opening_port(session, current)
+    by_id = {str(r.id): r for r in opening}
+    if any(rid not in by_id for rid in data.clone_rule_ids):
+        raise HTTPException(status_code=400, detail="Regole da copiare non valide: aggiorna l'anteprima")
+
+    created = []
+    try:
+        if data.clone_rule_ids:
+            created = await mgmt_access.clone_for_port(
+                session, firewall_orchestrator, [by_id[i] for i in data.clone_rule_ids], data.port)
+        elif data.create_rule:
+            created = await mgmt_access.create_for_port(session, firewall_orchestrator, data.port)
+        if created:
+            await firewall_orchestrator.apply_rules(session)
+        await session.commit()
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=f"Regole firewall non applicate, porta invariata: {e}")
+
+    moved = False
+    try:
+        moved = await network_service.update_port(data.port, extra_reserved_ports=reserved)
+    except Exception:
+        logger.exception("Error updating management port")
+    if not moved:
+        if created:
+            await mgmt_access.delete_rules(session, created)
+            await firewall_orchestrator.apply_rules(session)
+            await session.commit()
+        raise HTTPException(status_code=500, detail="Riconfigurazione di nginx fallita: porta e firewall invariati")
+
+    notes = []
+    if data.old_rules == "disable" and opening:
+        notes = await mgmt_access.retire_old(session, opening, current)
+        try:
+            await firewall_orchestrator.apply_rules(session)
+            await session.commit()
+        except IptablesError as e:
+            await session.rollback()
+            notes.append(f"Regole della porta precedente non modificate: {e}")
+    return {"status": "success", "message": f"Port changed to {data.port}. Service reloaded.",
+            "created_rules": [str(i) for i in created], "notes": notes}
 
 
 @router.post("/network/ssl/renew", response_model=CertificateInfo)

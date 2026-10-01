@@ -167,9 +167,11 @@ async def deactivate_module(
     if module_id == "dhcp":
         from sqlalchemy import text
         try:
-            managed = (await session.execute(
-                text("SELECT COUNT(*) FROM dhcp_subnet WHERE managed = true")
-            )).scalar() or 0
+            # Savepoint: a failed SELECT must not abort the deactivation's transaction
+            async with session.begin_nested():
+                managed = (await session.execute(
+                    text("SELECT COUNT(*) FROM dhcp_subnet WHERE managed = true")
+                )).scalar() or 0
         except Exception:
             managed = 0
         if managed > 0:

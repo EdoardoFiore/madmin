@@ -10,9 +10,10 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL, validateRuleConstraints } from './shared.js';
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge } from './shared.js';
 
 let rules = [];
+let sections = []; // forward groups in evaluation order (GET /firewall/sections)
 let editingRule = null;
 let currentTable = 'filter';
 let currentChain = 'INPUT';
@@ -855,7 +856,10 @@ function updateIptablesPreview() {
  */
 async function loadRules() {
     try {
-        rules = await apiGet('/firewall/rules');
+        [rules, sections] = await Promise.all([
+            apiGet('/firewall/rules'),
+            apiGet('/firewall/sections').catch(() => []),
+        ]);
         renderRules();
     } catch (error) {
         showToast(t('firewall.loadRulesError', { error: error.message }), 'error');
@@ -890,21 +894,15 @@ function renderRules() {
 
         const orderedColumns = getOrderedVisibleColumns();
 
-        // filter/FORWARD: the engine dispatches rules with both interfaces set
-        // into per-pair subchains, evaluated at the pair's first-rule position
-        // (see orchestrator._build_forward_layout) — a flat order-sorted table
-        // misrepresents that. Group the same way standard.js's Policy section
-        // does, so the two views agree on what actually happens.
+        // filter/FORWARD: the engine puts every interface pair in its own
+        // subchain and jumps to them in section order (ForwardSection), so a
+        // flat order-sorted table would misrepresent it. Group the same way
+        // standard.js's Policy section does, so both views show what runs.
         if (currentTable === 'filter' && chain === 'FORWARD') {
             const userRules = chainRules.filter(r => !r.auto_generated);
             const autoRules = chainRules.filter(r => r.auto_generated);
 
-            const groups = new Map();
-            for (const r of userRules) {
-                const key = `${r.in_interface || '*'}|${r.out_interface || '*'}`;
-                if (!groups.has(key)) groups.set(key, []);
-                groups.get(key).push(r);
-            }
+            const groups = groupBySections(userRules, sections);
 
             const theadHtml = `
                 <thead>
@@ -1043,10 +1041,10 @@ function renderRuleRow(rule, orderedColumns) {
             <td class="rule-order">
                 <div style="display:flex;align-items:center;gap:4px;white-space:nowrap;">
                     ${canManage ? '<i class="ti ti-grip-vertical drag-handle" style="cursor: grab;"></i>' : ''}
-                    <span>${rule.order + 1}</span>
+                    <span>${rule.seq ?? rule.order + 1}</span>
                 </div>
             </td>
-            <td>${actionBadge(rule.action)}</td>
+            <td class="text-nowrap">${actionBadge(rule.action)}${shadowBadge(rule)}</td>
             ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
             <td class="rule-actions">
                 ${canManage ? `
@@ -1238,28 +1236,12 @@ function setupRowEvents(container) {
             const ruleId = row.dataset.id;
             const rule = rules.find(r => r.id === ruleId);
 
-            const confirmed = await confirmDialog(
-                t('firewall.terminateSessionsTitle'),
-                t('firewall.terminateSessionsDesc', { action: rule?.action || '' }),
-                t('firewall.terminateBtn'),
-                'btn-warning'
-            );
-            if (!confirmed) return;
-
+            if (!rule) return;
             btn.disabled = true;
             const icon = btn.querySelector('i');
             icon.className = 'ti ti-loader-2 spin';
             try {
-                const result = await apiPost(`/firewall/rules/${ruleId}/flush-conntrack`, {});
-                const count = result.flushed ?? 0;
-                showToast(
-                    count > 0
-                        ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
-                        : t('firewall.noActiveSessions'),
-                    'success'
-                );
-            } catch (error) {
-                showToast(t('common.errorPrefix') + error.message, 'error');
+                await terminateSessions(rule);
             } finally {
                 btn.disabled = false;
                 icon.className = 'ti ti-plug-x';

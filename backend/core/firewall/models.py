@@ -4,12 +4,15 @@ MADMIN Firewall Models
 Database models for machine firewall rules and module chain registration.
 """
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Column, BigInteger
+from sqlalchemy import Column, BigInteger, UniqueConstraint
 from pydantic import field_validator
 from typing import Optional, List
 from datetime import datetime
+import ipaddress
 import uuid
 import re
+
+from .ports import parse_port_spec
 
 
 class MachineFirewallRule(SQLModel, table=True):
@@ -118,6 +121,30 @@ class ModuleChain(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class ForwardSection(SQLModel, table=True):
+    """
+    Evaluation order of the filter/FORWARD interface-pair groups.
+
+    Every forward policy belongs to the group of its (in_interface,
+    out_interface) pair; "" means any. Each group is one MFWD_* subchain and
+    MADMIN_FORWARD jumps to them in `position` order, so this table — not the
+    rules' global `order` — decides which group sees a packet first. Rule
+    `order` only orders rules within their group.
+
+    Kept in sync with the rules by the orchestrator (sync_forward_sections, run
+    on every apply): a new pair is inserted by specificity (both interfaces,
+    then one, then none), an empty group is removed, and the admin can reorder
+    groups (PUT /firewall/sections/order).
+    """
+    __tablename__ = "firewall_forward_section"
+    __table_args__ = (UniqueConstraint("in_interface", "out_interface"),)
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    in_interface: str = Field(default="", max_length=20)
+    out_interface: str = Field(default="", max_length=20)
+    position: int = Field(default=0)
+
+
 class RuleCounter(SQLModel, table=True):
     """
     Durable hit/traffic accumulator for a firewall rule.
@@ -200,12 +227,16 @@ class _FirewallRuleValidators(SQLModel):
         if v is None or v == "":
             return v
         s = str(v).strip()
-        # Only literal IP / CIDR / hostname-ish (chars allowed by iptables -s/-d).
-        # Object/group references live in firewall_rule_address, not here. Legacy
-        # "geo:<cc>" tokens are migrated to geo address objects at startup
-        # (see backend/main.py), so they are no longer accepted on this field.
-        if not re.fullmatch(r'[\w.:/\-]+', s, re.ASCII):
-            raise ValueError(f"Sorgente/destinazione non valida: {v}")
+        # Literal IPv4 address or CIDR only. A hostname would be resolved by
+        # iptables at restore time (at boot, possibly before DNS works) and one
+        # unresolvable name fails the whole ruleset: names go in FQDN address
+        # objects. Object/group references live in firewall_rule_address.
+        try:
+            net = ipaddress.ip_network(s, strict=False)
+        except ValueError:
+            raise ValueError(f"Sorgente/destinazione non valida: {v} (indirizzo IPv4 o CIDR; per i nomi usa un oggetto FQDN)")
+        if net.version != 4:
+            raise ValueError(f"Sorgente/destinazione non valida: {v} (solo IPv4)")
         return s
 
     @field_validator('port', mode='before', check_fields=False)
@@ -213,12 +244,9 @@ class _FirewallRuleValidators(SQLModel):
     def validate_port(cls, v):
         if v is None or v == "":
             return None
-        # Accept single port, range "80:443", multiport "80,443,8080"
-        parts = re.split(r'[:,]', str(v))
-        for p in parts:
-            if not re.fullmatch(r'\d{1,5}', p) or not (1 <= int(p) <= 65535):
-                raise ValueError(f"Porta non valida: {p} (range 1-65535)")
-        return v
+        # Single port, range "8000:8080", list "80,443,8000:8080" (see ports.py)
+        parse_port_spec(v)
+        return str(v)
 
     @field_validator('protocol', mode='before', check_fields=False)
     @classmethod
@@ -450,6 +478,13 @@ class MachineFirewallRuleResponse(SQLModel):
     policy_nat: bool = False  # forward policy owns an outbound MASQUERADE companion
     hairpin: bool = False  # DNAT is reachable from the LAN via the WAN IP (NAT reflection)
     auto_generated: bool = False  # synthetic read-only row (e.g. DNAT/NAT companion)
+    # filter rules only: 1-based position in evaluation order within the chain
+    # (FORWARD: groups in section order), and an earlier rule that makes this
+    # one useless (see shadow.py)
+    seq: Optional[int] = None
+    shadowed_by: Optional[str] = None
+    shadowed_by_seq: Optional[int] = None
+    shadow_kind: Optional[str] = None   # shadowed | duplicate | redundant
     created_at: datetime
     updated_at: datetime
 
@@ -467,6 +502,15 @@ class RuleCounterResponse(SQLModel):
     bytes: int
     window_start: datetime  # "counting since" — see RuleCounter
     updated_at: datetime    # time range covered = [window_start, updated_at]
+
+
+class ForwardSectionResponse(SQLModel):
+    """GET /firewall/sections: interface-pair groups in evaluation order."""
+    id: str
+    in_interface: str          # "" = any
+    out_interface: str         # "" = any
+    position: int
+    rule_count: int
 
 
 class ModuleChainResponse(SQLModel):

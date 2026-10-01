@@ -17,7 +17,7 @@ import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { setPageActions, checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces, interfaceSelect } from './interfaces.js';
-import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode } from './shared.js';
+import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
 let st = null;   // editor state
@@ -663,26 +663,7 @@ async function save() {
     // offer to do it now (confirmDialog mounts on document.body, independent
     // of the editor container close() just tore down).
     if (mode === 'policy' && data.enabled && (data.action === 'DROP' || data.action === 'REJECT')) {
-        const confirmed = await confirmDialog(
-            t('firewall.terminateSessionsTitle'),
-            t('firewall.terminateSessionsDesc', { action: data.action }),
-            t('firewall.terminateBtn'),
-            'btn-warning'
-        );
-        if (confirmed) {
-            try {
-                const result = await apiPost(`/firewall/rules/${saved.id}/flush-conntrack`, {});
-                const count = result.flushed ?? 0;
-                showToast(
-                    count > 0
-                        ? (count === 1 ? t('firewall.sessionTerminated') : t('firewall.sessionsTerminated', { count }))
-                        : t('firewall.noActiveSessions'),
-                    'success'
-                );
-            } catch (err) {
-                showToast(t('common.errorPrefix') + err.message, 'error');
-            }
-        }
+        await terminateSessions({ id: saved.id, action: data.action });
     }
 }
 

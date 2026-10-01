@@ -153,6 +153,8 @@ async def lifespan(app: FastAPI):
     async with async_session_maker() as session:
         try:
             await firewall_orchestrator.apply_rules(session)
+            # apply_rules keeps the forward section table in sync with the rules
+            await session.commit()
         except Exception as e:
             logger.error(f"Firewall apply_rules failed on startup: {e}", exc_info=True)
 

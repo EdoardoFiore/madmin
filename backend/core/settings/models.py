@@ -8,7 +8,7 @@ from sqlmodel import SQLModel, Field
 from core import validation
 from pydantic import BaseModel, field_validator
 from sqlalchemy import Column, BigInteger, Text
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 import re
 
@@ -428,6 +428,21 @@ class NetworkSettingsResponse(BaseModel):
 
 
 class PortChangeRequest(BaseModel):
-    """Schema for changing management port."""
+    """
+    Schema for changing management port. INPUT ends with a DROP, so the rules
+    opening the current port are cloned for the new one (clone_rule_ids, from
+    the preview) or, when none names it, one rule is created (create_rule).
+    old_rules: "keep" or "disable" the rules of the previous port afterwards.
+    """
     port: int
+    clone_rule_ids: List[str] = []
+    create_rule: bool = False
+    old_rules: str = "keep"
+
+    @field_validator('old_rules')
+    @classmethod
+    def _old_rules(cls, v):
+        if v not in ("keep", "disable"):
+            raise ValueError("old_rules must be 'keep' or 'disable'")
+        return v
 

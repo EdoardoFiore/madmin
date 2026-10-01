@@ -5,9 +5,10 @@ API endpoints for machine firewall management.
 """
 import asyncio
 import logging
+import subprocess
 from typing import List, Optional
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,8 @@ import uuid
 from pydantic import ValidationError
 
 from core.database import get_session
+from core.http import get_client_ip
+from config import get_settings
 from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 from sqlalchemy import select, delete
@@ -30,6 +33,7 @@ from .models import (
     RuleOrderUpdate,
     RuleCounter,
     RuleCounterResponse,
+    ForwardSection, ForwardSectionResponse,
     ModuleChainResponse,
     RuleAddressRefResponse,
     AddressObject,
@@ -50,11 +54,14 @@ from .orchestrator import (
     redirect_input_fields, dnat_input_fields, effective_to_destination,
     IMPLICIT_DENY_COMMENT,
 )
-from .iptables import IptablesError, flush_conntrack_for_rule
+from .iptables import IptablesError
+from . import flowmatch
 from .protected_ports import validate_protected_port_collision, port_specs_overlap
 from . import addresses, geoip
 
 logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
 
@@ -702,6 +709,32 @@ def _implicit_deny_response() -> MachineFirewallRuleResponse:
     )
 
 
+async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses) -> None:
+    """Evaluation sequence and shadowed/duplicate rules, per filter chain."""
+    from . import shadow
+    from .orchestrator import section_key
+
+    sections = (await session.execute(select(ForwardSection))).scalars().all()
+    pos = {(x.in_interface, x.out_interface): x.position for x in sections}
+    by_id = {str(r.id): resp for r, resp in zip(rules, responses)}
+    chains: dict = {}
+    for r, resp in zip(rules, responses):
+        if r.table_name == "filter":
+            chains.setdefault(r.chain, []).append((r, resp))
+    for chain, items in chains.items():
+        if chain == "FORWARD":
+            items.sort(key=lambda it: (pos.get(section_key(it[0]), len(pos)), it[0].order))
+        else:
+            items.sort(key=lambda it: it[0].order)
+        for i, (_, resp) in enumerate(items, start=1):
+            resp.seq = i
+        for rid, info in shadow.analyze([resp for _, resp in items]).items():
+            resp = by_id[rid]
+            resp.shadowed_by = info["by"]
+            resp.shadowed_by_seq = by_id[info["by"]].seq
+            resp.shadow_kind = info["kind"]
+
+
 @router.get("/rules", response_model=List[MachineFirewallRuleResponse])
 async def list_rules(
     chain: Optional[str] = None,
@@ -713,6 +746,7 @@ async def list_rules(
     refs_map = await _rule_refs_map(session, [r.id for r in rules])
     dnat_obj_names = await _dnat_obj_names_map(session, rules)
     responses = [_rule_to_response(r, refs_map, dnat_obj_names) for r in rules]
+    await _annotate_sequence_and_shadow(session, rules, responses)
     # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
@@ -756,6 +790,63 @@ async def list_rules(
             fields = dnat_input_fields(r, target)
             responses.append(_auto_input_response(r, fields, f"→ DNAT self {target}"))
     return responses
+
+
+@router.get("/sections", response_model=List[ForwardSectionResponse])
+async def list_forward_sections(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """filter/FORWARD interface-pair groups in evaluation order ("" = any)."""
+    from sqlalchemy import func
+    rows = (await session.execute(
+        select(ForwardSection).order_by(ForwardSection.position)
+    )).scalars().all()
+    counts = {}
+    for in_if, out_if, n in (await session.execute(
+        select(MachineFirewallRule.in_interface, MachineFirewallRule.out_interface, func.count())
+        .where(MachineFirewallRule.table_name == "filter", MachineFirewallRule.chain == "FORWARD")
+        .group_by(MachineFirewallRule.in_interface, MachineFirewallRule.out_interface)
+    )).all():
+        key = (in_if or "", out_if or "")
+        counts[key] = counts.get(key, 0) + n
+    return [
+        ForwardSectionResponse(
+            id=str(r.id), in_interface=r.in_interface, out_interface=r.out_interface,
+            position=r.position, rule_count=counts.get((r.in_interface, r.out_interface), 0),
+        )
+        for r in rows
+    ]
+
+
+class SectionOrderUpdate(SQLModel):
+    section_ids: List[str]
+
+
+@router.put("/sections/order")
+async def update_forward_section_order(
+    data: SectionOrderUpdate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Reorder the interface-pair groups: the earlier group sees a packet first.
+    The list must name every current section exactly once.
+    """
+    rows = (await session.execute(select(ForwardSection))).scalars().all()
+    by_id = {str(r.id): r for r in rows}
+    if sorted(data.section_ids) != sorted(by_id):
+        raise HTTPException(status_code=400, detail="L'elenco deve contenere ogni gruppo una sola volta")
+    for i, sid in enumerate(data.section_ids):
+        by_id[sid].position = i
+    await session.flush()
+    try:
+        await firewall_orchestrator.apply_rules(session)
+        await session.commit()
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok"}
 
 
 @router.get("/counters", response_model=List[RuleCounterResponse])
@@ -951,17 +1042,101 @@ async def delete_rule(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class FlushRequest(SQLModel):
+    # Preview by default: closing sessions is only done on an explicit confirm
+    dry_run: bool = True
+
+
+async def _rule_views(session: AsyncSession, chain: str) -> List[flowmatch.RuleView]:
+    """
+    Enabled filter rules of `chain` in evaluation order (FORWARD: groups in
+    ForwardSection order, then rule order), with address refs resolved to
+    networks. An FQDN object never resolved, or a country list not on disk,
+    makes that side "unknown": the matcher then keeps the connection.
+    """
+    import ipaddress
+    from . import geoip
+    from .orchestrator import section_key
+
+    rules = (await session.execute(
+        select(MachineFirewallRule).where(
+            MachineFirewallRule.table_name == "filter",
+            MachineFirewallRule.chain == chain,
+            MachineFirewallRule.enabled == True,  # noqa: E712
+        ).order_by(MachineFirewallRule.order)
+    )).scalars().all()
+    if chain == "FORWARD":
+        sections = (await session.execute(select(ForwardSection))).scalars().all()
+        pos = {(x.in_interface, x.out_interface): x.position for x in sections}
+        rules = sorted(rules, key=lambda r: (pos.get(section_key(r), len(pos)), r.order))
+
+    refs = (await session.execute(
+        select(FirewallRuleAddress).where(FirewallRuleAddress.rule_id.in_([r.id for r in rules]))
+    )).scalars().all() if rules else []
+    objects = {o.id: o for o in (await session.execute(select(AddressObject))).scalars().all()}
+    members: dict = {}
+    for m in (await session.execute(select(AddressGroupMember))).scalars().all():
+        if m.member_object_id:
+            members.setdefault(m.group_id, []).append(m.member_object_id)
+
+    def obj_nets(obj):
+        if obj is None or not obj.enabled:
+            return []
+        if obj.type == "fqdn":
+            ips = json.loads(obj.resolved_ips) if obj.resolved_ips else None
+            return None if not ips else [ipaddress.ip_network(ip, strict=False) for ip in ips]
+        entries = geoip._read_cached_cidrs(obj.value) if obj.type == "geo" else addresses.resolve_entries(obj.type, obj.value)
+        if obj.type == "geo" and not entries:
+            return None
+        return [ipaddress.ip_network(e, strict=False) for e in entries]
+
+    def side(rule, direction):
+        rows = [x for x in refs if x.rule_id == rule.id and x.direction == direction]
+        if not rows:
+            literal = rule.source if direction == "source" else rule.destination
+            return None if not literal else [ipaddress.ip_network(literal, strict=False)]
+        nets = []
+        for x in rows:
+            ids = [x.object_id] if x.object_id else members.get(x.group_id, [])
+            for oid in ids:
+                n = obj_nets(objects.get(oid))
+                if n is None:
+                    return "unknown"
+                nets.extend(n)
+        return nets
+
+    views = []
+    for r in rules:
+        try:
+            src, dst = side(r, "source"), side(r, "destination")
+        except ValueError:
+            src = dst = "unknown"
+        views.append(flowmatch.RuleView(
+            id=str(r.id), action=r.action, protocol=r.protocol, port=r.port,
+            in_interface=r.in_interface, out_interface=r.out_interface,
+            src=src, dst=dst, state=r.state, limited=bool(r.limit_rate),
+        ))
+    return views
+
+
 @router.post("/rules/{rule_id}/flush-conntrack")
 async def flush_rule_conntrack(
     rule_id: str,
+    request: Request,
+    data: Optional[FlushRequest] = Body(None),
     current_user: User = Depends(require_permission("firewall.manage")),
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Flush conntrack entries matching a DROP/REJECT rule's criteria.
-    Call this after positioning the rule to immediately terminate existing
-    sessions that would now be blocked.
+    Close the established connections a DROP/REJECT rule would now stop.
+
+    Only connections whose first deciding rule — in the order the engine
+    evaluates the chain — is this one: a connection an earlier rule accepts is
+    left alone, and so is anything whose match depends on something unknown,
+    plus every connection of the requesting client. dry_run (default) returns
+    the preview; dry_run=false deletes exactly the listed entries.
     """
+    dry_run = data.dry_run if data else True
     try:
         rule_uuid = uuid.UUID(rule_id)
     except ValueError:
@@ -970,18 +1145,43 @@ async def flush_rule_conntrack(
     rule = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
-
     if rule.action not in ("DROP", "REJECT"):
         raise HTTPException(status_code=400, detail="Flush conntrack is only applicable to DROP or REJECT rules")
+    if rule.table_name != "filter" or rule.chain not in ("INPUT", "FORWARD"):
+        raise HTTPException(status_code=400, detail="Chiusura sessioni disponibile solo per regole filter INPUT/FORWARD")
+    if not rule.enabled:
+        raise HTTPException(status_code=400, detail="La regola è disattivata")
 
-    flushed = await asyncio.to_thread(
-        flush_conntrack_for_rule,
-        protocol=rule.protocol,
-        source=rule.source,
-        destination=rule.destination,
-        port=rule.port,
-    )
-    return {"status": "ok", "flushed": flushed}
+    result = {"close": 0, "shadowed": 0, "uncertain": 0, "protected": 0, "samples": [], "deleted": 0}
+    if settings.mock_iptables:
+        return result
+
+    views = await _rule_views(session, rule.chain)
+    target = next((v for v in views if v.id == str(rule.id)), None)
+    if target is None:
+        return result
+    try:
+        topo = await asyncio.to_thread(flowmatch.Topology.from_system)
+        flows = await asyncio.to_thread(flowmatch.list_flows)
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as e:
+        logger.warning(f"conntrack preview failed: {e}")
+        raise HTTPException(status_code=503, detail="Impossibile leggere le sessioni attive (conntrack)")
+
+    sel = flowmatch.select_flows(flows, target, rule.chain, views, topo, {get_client_ip(request)})
+    result.update({k: len(v) for k, v in sel.items() if k != "close"})
+    result["close"] = len(sel["close"])
+    result["samples"] = [f.describe() for f in sel["close"][:10]]
+    if dry_run:
+        return result
+
+    to_close = sel["close"][:_FLUSH_MAX]
+    result["deleted"] = await asyncio.to_thread(lambda: sum(1 for f in to_close if flowmatch.delete_flow(f)))
+    logger.info(f"Closed {result['deleted']} sessions for rule {rule.id} "
+                f"(kept: {result['shadowed']} accepted earlier, {result['uncertain']} uncertain)")
+    return result
+
+
+_FLUSH_MAX = 5000
 
 
 @router.put("/rules/order")

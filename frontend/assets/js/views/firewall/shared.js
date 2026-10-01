@@ -4,7 +4,8 @@
  * Constants and small helpers shared by the Standard view, the rule editor and
  * the Advanced (power-user) view.
  */
-import { escapeHtml } from '../../utils.js';
+import { escapeHtml, confirmDialog, showToast } from '../../utils.js';
+import { apiPost } from '../../api.js';
 import { t } from '../../i18n.js';
 
 // Sentinel comment marking the protected managed-LAN navigation NAT policy
@@ -134,4 +135,123 @@ export function validateRuleConstraints(data) {
         return t('firewall.validation.natActionHook', { action: data.action, chain });
     }
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// filter/FORWARD interface-pair groups (backend: ForwardSection)
+// ---------------------------------------------------------------------------
+
+/** Group key of a forward rule or section; "*" = any interface. */
+export function pairKey(inIf, outIf) {
+    return `${inIf || '*'}|${outIf || '*'}`;
+}
+
+/** Can two interface matches see the same packet? (iptables "eth+" = prefix) */
+function ifaceOverlap(a, b) {
+    if (a === '*' || b === '*') return true;
+    const pa = a.endsWith('+') ? a.slice(0, -1) : null;
+    const pb = b.endsWith('+') ? b.slice(0, -1) : null;
+    if (pa !== null && pb !== null) return pa.startsWith(pb) || pb.startsWith(pa);
+    if (pa !== null) return b.startsWith(pa);
+    if (pb !== null) return a.startsWith(pb);
+    return a === b;
+}
+
+/** True when some packet could be evaluated by both groups. */
+export function pairsOverlap(k1, k2) {
+    const [i1, o1] = k1.split('|');
+    const [i2, o2] = k2.split('|');
+    return ifaceOverlap(i1, i2) && ifaceOverlap(o1, o2);
+}
+
+/**
+ * Forward policies grouped by pair, in evaluation order: the section order
+ * from GET /firewall/sections (the order of the MADMIN_FORWARD jumps), pairs
+ * the backend has not synced yet last. Empty groups are dropped.
+ */
+export function groupBySections(policies, sections) {
+    const groups = new Map();
+    for (const s of sections || []) groups.set(pairKey(s.in_interface, s.out_interface), []);
+    for (const r of policies) {
+        const k = pairKey(r.in_interface, r.out_interface);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(r);
+    }
+    for (const [k, list] of groups) if (!list.length) groups.delete(k);
+    return groups;
+}
+
+// ---------------------------------------------------------------------------
+// Closing the sessions a DROP/REJECT rule would now stop
+// ---------------------------------------------------------------------------
+
+/**
+ * Preview, confirm, close. The backend simulates the chain for every tracked
+ * connection and only closes those this rule is the first to decide: anything
+ * an earlier rule accepts, anything uncertain and the admin's own connections
+ * stay up. Nothing is closed without the confirm showing what will be.
+ */
+export async function terminateSessions(rule) {
+    let preview;
+    try {
+        preview = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: true });
+    } catch (err) {
+        showToast(t('common.errorPrefix') + err.message, 'error');
+        return;
+    }
+    const kept = [];
+    if (preview.shadowed) kept.push(t('firewall.sessions.keptShadowed', { n: preview.shadowed }));
+    if (preview.uncertain) kept.push(t('firewall.sessions.keptUncertain', { n: preview.uncertain }));
+    if (preview.protected) kept.push(t('firewall.sessions.keptProtected', { n: preview.protected }));
+
+    if (!preview.close) {
+        showToast([t('firewall.noActiveSessions'), ...kept].join(' '), 'info');
+        return;
+    }
+    const rows = preview.samples.map(f => `
+        <tr>
+            <td>${escapeHtml(f.proto)}</td>
+            <td><code>${escapeHtml(f.src)}${f.sport ? ':' + escapeHtml(f.sport) : ''}</code></td>
+            <td><code>${escapeHtml(f.to || f.dst)}${f.dport ? ':' + escapeHtml(f.dport) : ''}</code></td>
+        </tr>`).join('');
+    const html = `
+        <p>${escapeHtml(t('firewall.sessions.willClose', { n: preview.close, action: rule.action }))}</p>
+        <div class="table-responsive mb-2">
+            <table class="table table-sm table-vcenter card-table">
+                <thead><tr><th>${escapeHtml(t('firewall.protocol'))}</th>
+                    <th>${escapeHtml(t('firewall.source'))}</th><th>${escapeHtml(t('firewall.destination'))}</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+        ${preview.close > preview.samples.length
+            ? `<div class="text-muted small mb-2">${escapeHtml(t('firewall.sessions.andMore', { n: preview.close - preview.samples.length }))}</div>` : ''}
+        ${kept.map(k => `<div class="text-muted small"><i class="ti ti-shield-check me-1"></i>${escapeHtml(k)}</div>`).join('')}`;
+    const ok = await confirmDialog(t('firewall.terminateSessionsTitle'), html, t('firewall.terminateBtn'),
+                                   'btn-warning', true, 'lg');
+    if (!ok) return;
+    try {
+        const res = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: false });
+        showToast(res.deleted === 1 ? t('firewall.sessionTerminated')
+                                    : t('firewall.sessionsTerminated', { count: res.deleted }), 'success');
+    } catch (err) {
+        showToast(t('common.errorPrefix') + err.message, 'error');
+    }
+}
+
+/**
+ * Badge for a rule an earlier rule makes useless (backend: shadow.py):
+ * shadowed = an earlier rule takes the opposite decision, this one never
+ * applies; duplicate / redundant = the same decision is already taken above.
+ */
+export function shadowBadge(rule) {
+    if (!rule.shadow_kind) return '';
+    const n = rule.shadowed_by_seq;
+    const map = {
+        shadowed: ['bg-red-lt', 'ti-eye-off', 'firewall.shadow.shadowed', 'firewall.shadow.shadowedHint'],
+        duplicate: ['bg-orange-lt', 'ti-copy', 'firewall.shadow.duplicate', 'firewall.shadow.duplicateHint'],
+        redundant: ['bg-yellow-lt', 'ti-arrow-bar-to-up', 'firewall.shadow.redundant', 'firewall.shadow.redundantHint'],
+    };
+    const [cls, icon, label, hint] = map[rule.shadow_kind] || map.shadowed;
+    return `<span class="badge ${cls} ms-1" title="${escapeHtml(t(hint, { n }))}">
+        <i class="ti ${icon} me-1"></i>${escapeHtml(t(label, { n }))}</span>`;
 }

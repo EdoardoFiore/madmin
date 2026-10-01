@@ -20,7 +20,7 @@ import json
 from .models import (
     MachineFirewallRule, ModuleChain,
     AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
-    RuleCounter,
+    RuleCounter, ForwardSection,
 )
 from . import iptables, addresses
 from core.concurrency import resource_lock, spawn_background
@@ -213,56 +213,68 @@ def _connmark_restore_line(madmin_chain: str, rule, eff_map: Dict, mark: int) ->
     ))
 
 
+def section_key(rule) -> Tuple[str, str]:
+    """Interface-pair group of a forward rule; "" = any."""
+    return (rule.in_interface or "", rule.out_interface or "")
+
+
+def section_rank(key: Tuple[str, str]) -> int:
+    """Specificity of a pair: both interfaces 0, one 1, none 2."""
+    return 2 - sum(1 for side in key if side)
+
+
 def _build_forward_layout(
     forward_rules: List,
     eff_map: Dict,
     nat_marks: Optional[Dict] = None,
+    section_order: Optional[List[Tuple[str, str]]] = None,
 ) -> Tuple[List[str], Dict[str, List[str]]]:
     """
-    Build the MADMIN_FORWARD body with per-interface-pair subchains.
+    Build the MADMIN_FORWARD body: one MFWD_* subchain per interface pair.
 
-    Any rule with at least one interface set (in, out, or both) is grouped into
-    a per-pair subchain, dispatched by a single jump — `-i X`, `-o Y`, or
-    `-i X -o Y` per whichever sides are specified — emitted at the position of
-    the pair's first rule. This makes iptables mirror the Standard UI 1:1 (every
-    interface group is its own MFWD_* chain) and lets a packet skip a whole
-    group in one interface test. Only the fully-wildcard pair (neither interface
-    set) stays inline. A packet matching no rule in its subchain falls through
-    (implicit RETURN) and continues in MADMIN_FORWARD toward later wildcard
-    rules, DNAT companions and the implicit deny.
+    Every pair — the fully-wildcard one included — is its own subchain,
+    dispatched by one jump (`-i X`, `-o Y`, both or neither). Jumps follow
+    `section_order` (ForwardSection.position), rules inside a subchain follow
+    their `order`. So the evaluation order is exactly the grouped order the
+    Standard and Advanced views show. (The wildcard pair used to stay inline at
+    each rule's global position, which the grouped views could not show: a
+    wildcard DROP listed above a pair's ACCEPT could run after it.)
 
-    nat_marks: {rule_id: mark_value} for filter/FORWARD policies with
-    policy_nat=True (see apply_rules). Each gets a CONNMARK line emitted
-    immediately before its own ACCEPT line, in the same (sub)chain — the mark
-    lands on the connection's first packet before it's accepted, and the
-    POSTROUTING masquerade companion (policy_nat_fields) matches by that mark
-    instead of by flow, so it can never fire for a different policy's traffic.
+    A packet matching no rule of a subchain returns and continues with the
+    next jump, then the DNAT companions and the implicit deny. A packet can
+    traverse several groups (eth1->* and eth1->eth0 both see eth1->eth0
+    traffic): the earlier group decides first.
+
+    nat_marks: {rule_id: mark} for policy_nat policies; each gets a CONNMARK
+    line right before its ACCEPT, in the same subchain, so the POSTROUTING
+    masquerade matches by mark (see policy_nat_fields).
 
     Returns (forward_lines, {subchain_name: [lines]}).
     """
     nat_marks = nat_marks or {}
+    groups: Dict[Tuple[str, str], List] = {key: [] for key in (section_order or [])}
+    for rule in forward_rules:
+        groups.setdefault(section_key(rule), []).append(rule)
+
     lines: List[str] = []
     subchains: Dict[str, List[str]] = {}
-    for rule in forward_rules:
-        mark = nat_marks.get(rule.id)
-        if rule.in_interface or rule.out_interface:
-            name = iptables.forward_subchain_name(rule.in_interface or "", rule.out_interface or "")
-            if name not in subchains:
-                subchains[name] = []
-                jump = f"-A {iptables.MADMIN_FORWARD_CHAIN}"
-                if rule.in_interface:
-                    jump += f" -i {rule.in_interface}"
-                if rule.out_interface:
-                    jump += f" -o {rule.out_interface}"
-                jump += f" -j {name}"
-                lines.append(jump)
+    for (in_if, out_if), members in groups.items():
+        if not members:
+            continue
+        name = iptables.forward_subchain_name(in_if, out_if)
+        jump = f"-A {iptables.MADMIN_FORWARD_CHAIN}"
+        if in_if:
+            jump += f" -i {in_if}"
+        if out_if:
+            jump += f" -o {out_if}"
+        lines.append(f"{jump} -j {name}")
+        body: List[str] = []
+        for rule in members:
+            mark = nat_marks.get(rule.id)
             if mark is not None:
-                subchains[name].append(_connmark_restore_line(name, rule, eff_map, mark))
-            subchains[name].append(_restore_line(name, rule, eff_map))
-        else:
-            if mark is not None:
-                lines.append(_connmark_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map, mark))
-            lines.append(_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map))
+                body.append(_connmark_restore_line(name, rule, eff_map, mark))
+            body.append(_restore_line(name, rule, eff_map))
+        subchains[name] = body
     return lines, subchains
 
 
@@ -643,7 +655,8 @@ class FirewallOrchestrator:
     async def create_rule(
         self,
         session: AsyncSession,
-        rule_data: Dict
+        rule_data: Dict,
+        apply: bool = True,
     ) -> MachineFirewallRule:
         """
         Create a new firewall rule.
@@ -711,8 +724,9 @@ class FirewallOrchestrator:
         session.add(rule)
         await session.flush()
 
-        # Apply rules
-        await self.apply_rules(session)
+        # Apply rules (callers creating several at once apply once at the end)
+        if apply:
+            await self.apply_rules(session)
 
         logger.info(f"Created firewall rule {rule.id}")
         return rule
@@ -1021,6 +1035,65 @@ class FirewallOrchestrator:
         plan = {"objects": plan_objects, "groups": plan_groups, "rule_sets": plan_rule_sets}
         return eff_map, plan
 
+    async def sync_forward_sections(self, session: AsyncSession) -> List[Tuple[str, str]]:
+        """
+        Make ForwardSection match the filter/FORWARD rules (disabled ones
+        included, so a group keeps its place while its rules are off) and
+        return the pairs in evaluation order.
+
+        - A pair without a section is inserted by specificity: before the first
+          less specific group, so a broad group never shadows a new narrow one.
+          When there are no sections at all (fresh install, restored archive)
+          the pairs keep the order of their first rule instead — the order the
+          engine used before groups had their own position.
+        - A section without rules is removed.
+        Runs inside the apply lock; the caller commits.
+        """
+        result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "filter", MachineFirewallRule.chain == "FORWARD")
+            .order_by(MachineFirewallRule.order)
+        )
+        used: List[Tuple[str, str]] = []
+        for rule in result.scalars().all():
+            key = section_key(rule)
+            if key not in used:
+                used.append(key)
+
+        # Sorted here, not by the query: positions changed in this session
+        # (PUT /sections/order) are not flushed yet (no autoflush)
+        rows = sorted(
+            (await session.execute(select(ForwardSection))).scalars().all(),
+            key=lambda r: r.position,
+        )
+        seeding = not rows
+        ordered: List[ForwardSection] = []
+        for row in rows:
+            if (row.in_interface, row.out_interface) in used:
+                ordered.append(row)
+            else:
+                await session.delete(row)
+        known = {(r.in_interface, r.out_interface) for r in ordered}
+        for key in used:
+            if key in known:
+                continue
+            row = ForwardSection(in_interface=key[0], out_interface=key[1])
+            session.add(row)
+            if seeding:
+                ordered.append(row)
+            else:
+                rank = section_rank(key)
+                idx = next(
+                    (i for i, r in enumerate(ordered)
+                     if section_rank((r.in_interface, r.out_interface)) > rank),
+                    len(ordered),
+                )
+                ordered.insert(idx, row)
+        for i, row in enumerate(ordered):
+            row.position = i
+        await session.flush()
+        return [(r.in_interface, r.out_interface) for r in ordered]
+
     async def apply_rules(self, session: AsyncSession) -> bool:
         """
         Serialized: two rebuilds interleaving at an await would each restore
@@ -1168,8 +1241,9 @@ class FirewallOrchestrator:
                 _restore_line(madmin_chain, rule, eff_map, dnat_targets.get(rule.id))
             )
 
-        # --- FORWARD layout: per-interface-pair subchains + inline wildcard rules ---
+        # --- FORWARD layout: one subchain per interface pair, in section order ---
         forward_rules = [r for r in rules if r.table_name == "filter" and r.chain == "FORWARD"]
+        section_order = await self.sync_forward_sections(session)
 
         # Conntrack marks for policy-NAT scoping: assigned by apply-order
         # enumeration on every apply. Netfilter decides a connection's NAT on
@@ -1185,7 +1259,7 @@ class FirewallOrchestrator:
             )
         nat_marks = {r.id: (i + 1) << 16 for i, r in enumerate(nat_policies[:255])}
 
-        forward_lines, subchain_map = _build_forward_layout(forward_rules, eff_map, nat_marks)
+        forward_lines, subchain_map = _build_forward_layout(forward_rules, eff_map, nat_marks, section_order)
         chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(forward_lines)
         chain_rules["filter"].update(subchain_map)
 

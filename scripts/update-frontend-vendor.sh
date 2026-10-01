@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-TABLER_VERSION="1.6.0"
+TABLER_VERSION="1.6.1"
 TABLER_ICONS_VERSION="3.48.0"
 # 4.7.0 is the last MIT release. From 5.2.0 ApexCharts is dual-licensed (free
 # only below $2M yearly revenue, OEM license for products used by others):
