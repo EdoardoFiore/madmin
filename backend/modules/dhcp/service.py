@@ -4,6 +4,7 @@ DHCP Module - Service Layer
 Business logic for DHCP operations: config generation, lease parsing,
 service management, and network interface discovery.
 """
+import asyncio
 import subprocess
 import logging
 import re
@@ -24,6 +25,7 @@ from .models import (
 )
 from core.network.service import NetworkService
 from core.services.service import SystemdService
+from core.fsutil import ConfigSnapshot, atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +207,7 @@ class DhcpService:
 
         try:
             DHCPD_CONF_PATH.parent.mkdir(parents=True, exist_ok=True)
-            DHCPD_CONF_PATH.write_text(config)
+            atomic_write(DHCPD_CONF_PATH, config)
             logger.info(f"Wrote DHCP config to {DHCPD_CONF_PATH}")
         except PermissionError:
             raise RuntimeError(f"Permission denied writing to {DHCPD_CONF_PATH}")
@@ -227,7 +229,7 @@ class DhcpService:
 
         try:
             content = f'INTERFACESv4="{interfaces_str}"\nINTERFACESv6=""\n'
-            DHCPD_DEFAULTS_PATH.write_text(content)
+            atomic_write(DHCPD_DEFAULTS_PATH, content)
             logger.info(f"Updated DHCP interfaces: {interfaces_str}")
         except PermissionError:
             raise RuntimeError(f"Permission denied writing to {DHCPD_DEFAULTS_PATH}")
@@ -312,7 +314,7 @@ class DhcpService:
             time.sleep(2)  # Wait for dhcpd to either stabilize or crash
             result = subprocess.run(
                 ["systemctl", "is-active", SERVICE_NAME],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=30
             )
             return result.stdout.strip() == "active"
         except Exception:
@@ -331,7 +333,7 @@ class DhcpService:
                 result = subprocess.run(
                     ["systemctl", "show", SERVICE_NAME,
                      "--property=ActiveEnterTimestamp"],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=30
                 )
                 parts = result.stdout.strip().split("=", 1)
                 if len(parts) > 1 and parts[1]:
@@ -446,6 +448,11 @@ class DhcpService:
             if not valid:
                 return False, f"Errore configurazione: {msg}"
 
+            # A rejected config must not stay on disk: dhcpd would fail on
+            # its next restart (or boot) with leases still being requested
+            snapshot = ConfigSnapshot([DHCPD_CONF_PATH, DHCPD_DEFAULTS_PATH])
+            was_running = SystemdService.get_status(SERVICE_NAME).get("active", False)
+
             # 2. Generate and write config
             await self.write_config(session)
 
@@ -453,13 +460,19 @@ class DhcpService:
             await self.update_interfaces_config(session)
 
             # 4. Validate config syntax
-            valid, msg = self.validate_config()
+            valid, msg = await asyncio.to_thread(self.validate_config)
             if not valid:
+                snapshot.restore()
                 return False, f"Config validation failed: {msg}"
 
             # 5. Restart service (includes health check)
-            success, msg = self.restart_service()
+            success, msg = await asyncio.to_thread(self.restart_service)
             if not success:
+                snapshot.restore()
+                if was_running:
+                    # Back on the last working config rather than leaving the LAN without DHCP
+                    restored, _ = await asyncio.to_thread(self.restart_service)
+                    msg += " (configurazione precedente ripristinata" + ("" if restored else ", riavvio fallito") + ")"
                 return False, msg
 
             return True, "Configuration applied and service restarted"

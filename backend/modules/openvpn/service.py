@@ -4,6 +4,7 @@ OpenVPN Module - Service Layer
 Business logic for OpenVPN operations: PKI management, config generation,
 interface control, IP allocation, CCD management, and firewall rules.
 """
+import asyncio
 import subprocess
 import logging
 import re
@@ -20,6 +21,7 @@ from .models import OvpnInstance, OvpnClient
 from core.validation import check_client_name, check_endpoint
 from core.network.utils import get_public_ip, get_default_interface
 from core.firewall import iptables as core_iptables
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +93,7 @@ class OpenVPNService:
                 ["./easyrsa", "init-pki"],
                 cwd=easyrsa_dir,
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=120
             )
             
             logger.info(f"PKI initialized for instance {instance_id}")
@@ -118,7 +120,7 @@ class OpenVPNService:
                 cwd=easyrsa_dir,
                 env={**subprocess.os.environ, **env},
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=120
             )
             
             # Read CA cert
@@ -134,6 +136,9 @@ class OpenVPNService:
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to build CA: {e.stderr.decode()}")
             return {"success": False, "error": str(e)}
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
+            return {"success": False, "error": f"timeout after {e.timeout}s"}
     
     @staticmethod
     def generate_server_cert(instance_id: str, days: int = 3650) -> Dict:
@@ -148,7 +153,7 @@ class OpenVPNService:
                  "build-server-full", server_name, "nopass"],
                 cwd=easyrsa_dir,
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=120
             )
             
             # Read cert and key
@@ -169,7 +174,7 @@ class OpenVPNService:
             subprocess.run(
                 ["openvpn", "--genkey", "tls-crypt-v2-server", str(tls_key_path)],
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=30
             )
             
             expiry = OpenVPNService._parse_cert_expiry(cert_path)
@@ -179,7 +184,7 @@ class OpenVPNService:
                 "success": True,
                 "expiry": expiry
             }
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to generate server cert: {e}")
             return {"success": False, "error": str(e)}
     
@@ -194,7 +199,7 @@ class OpenVPNService:
                  "build-client-full", client_name, "nopass"],
                 cwd=easyrsa_dir,
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=120
             )
             
             cert_path = easyrsa_dir / "pki" / "issued" / f"{client_name}.crt"
@@ -211,7 +216,7 @@ class OpenVPNService:
                 "expiry": expiry,
                 "fingerprint": fingerprint
             }
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to generate client cert: {e}")
             return {"success": False, "error": str(e)}
     
@@ -226,7 +231,7 @@ class OpenVPNService:
                 ["./easyrsa", "--batch", "revoke", client_name],
                 cwd=easyrsa_dir,
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=120
             )
             
             # Regenerate CRL
@@ -246,7 +251,7 @@ class OpenVPNService:
             
             logger.info(f"Client certificate revoked: {client_name}")
             return True
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to revoke cert: {e}")
             return False
     
@@ -274,7 +279,7 @@ class OpenVPNService:
                 cwd=easyrsa_dir,
                 env=env,
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=120
             )
 
             # Copy CRL to instance directory
@@ -285,7 +290,7 @@ class OpenVPNService:
 
             logger.info(f"CRL regenerated for {instance_id}")
             return True
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to regenerate CRL: {e}")
             return False
 
@@ -299,7 +304,7 @@ class OpenVPNService:
             result = subprocess.run(
                 ["openssl", "crl", "-nextupdate", "-noout", "-in", str(crl_path)],
                 capture_output=True,
-                text=True,
+                text=True, timeout=30
             )
             # Output: nextUpdate=Jan  7 12:00:00 2036 GMT
             match = re.search(r'nextUpdate=(.+)', result.stdout)
@@ -338,10 +343,10 @@ class OpenVPNService:
             try:
                 subprocess.run(
                     ["systemctl", "restart", f"openvpn-server@{instance_id}"],
-                    check=True, capture_output=True,
+                    check=True, capture_output=True, timeout=60
                 )
                 logger.info(f"Restarted openvpn-server@{instance_id} to load renewed CRL")
-            except subprocess.CalledProcessError as e:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 logger.error(f"Failed to restart instance {instance_id} after CRL renewal: {e}")
         return True
 
@@ -356,7 +361,7 @@ class OpenVPNService:
             subprocess.run(
                 ["./easyrsa", "--batch", "revoke", server_name],
                 cwd=easyrsa_dir,
-                capture_output=True
+                capture_output=True, timeout=120
             )
             
             # Remove old files
@@ -382,7 +387,7 @@ class OpenVPNService:
             subprocess.run(
                 ["./easyrsa", "--batch", "revoke", client_name],
                 cwd=easyrsa_dir,
-                capture_output=True
+                capture_output=True, timeout=120
             )
             
             # Remove old files
@@ -408,7 +413,7 @@ class OpenVPNService:
             result = subprocess.run(
                 ["openssl", "x509", "-enddate", "-noout", "-in", str(cert_path)],
                 capture_output=True,
-                text=True
+                text=True, timeout=30
             )
             # Output: notAfter=Jan  7 12:00:00 2036 GMT
             match = re.search(r'notAfter=(.+)', result.stdout)
@@ -426,7 +431,7 @@ class OpenVPNService:
             result = subprocess.run(
                 ["openssl", "x509", "-fingerprint", "-sha256", "-noout", "-in", str(cert_path)],
                 capture_output=True,
-                text=True
+                text=True, timeout=30
             )
             match = re.search(r'sha256 Fingerprint=(.+)', result.stdout, re.IGNORECASE)
             if match:
@@ -467,8 +472,7 @@ class OpenVPNService:
                 except Exception:
                     logger.warning(f"Skipping invalid remote_lan in CCD: {lan}")
 
-            ccd_file.write_text("".join(lines))
-            ccd_file.chmod(0o644)
+            atomic_write(ccd_file, "".join(lines), mode=0o644)
 
             logger.info(f"CCD file created: {client_name} -> {ip_only}, iroutes: {remote_lans or []}")
             return True
@@ -571,7 +575,7 @@ class OpenVPNService:
                     try:
                         net = IPv4Network(network_str, strict=False)
                         config_lines.append(f'push "route {net.network_address} {net.netmask}"')
-                    except:
+                    except ValueError:
                         pass
 
         # Site-to-site: push each MADMIN-side LAN to connecting clients.
@@ -684,7 +688,7 @@ class OpenVPNService:
                     ["openvpn", "--tls-crypt-v2", str(tls_server_key),
                      "--genkey", "tls-crypt-v2-client", tmp_path],
                     capture_output=True,
-                    text=True
+                    text=True, timeout=30
                 )
                 
                 if result.returncode == 0:
@@ -723,7 +727,7 @@ class OpenVPNService:
         paths produce an identical firewall state.
         """
         if instance.direction == "client":
-            if not cls.start_client_instance(instance.id):
+            if not await asyncio.to_thread(cls.start_client_instance, instance.id):
                 return False
             cls.apply_instance_firewall_rules(
                 instance.id, instance.port, instance.protocol,
@@ -735,7 +739,7 @@ class OpenVPNService:
             )
             return True
 
-        if not cls.start_instance(instance.id):
+        if not await asyncio.to_thread(cls.start_instance, instance.id):
             return False
         cls.apply_instance_firewall_rules(
             instance.id, instance.port, instance.protocol,
@@ -752,7 +756,7 @@ class OpenVPNService:
     async def bring_instance_down(cls, instance, db) -> bool:
         """Stop an instance (server or client) and remove its firewall rules."""
         if instance.direction == "client":
-            if not cls.stop_client_instance(instance.id):
+            if not await asyncio.to_thread(cls.stop_client_instance, instance.id):
                 return False
             cls.remove_instance_firewall_rules(
                 instance.id, instance.interface,
@@ -760,7 +764,7 @@ class OpenVPNService:
             )
             return True
 
-        if not cls.stop_instance(instance.id):
+        if not await asyncio.to_thread(cls.stop_instance, instance.id):
             return False
         await cls.remove_all_group_chains(instance.id, db)
         cls.remove_instance_firewall_rules(instance.id, instance.interface)
@@ -773,14 +777,11 @@ class OpenVPNService:
             subprocess.run(
                 ["systemctl", "start", f"openvpn-server@{instance_id}"],
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=60
             )
             logger.info(f"Started OpenVPN instance: {instance_id}")
             return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to start instance: {e}")
-            return True
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to start instance: {e}")
             return False
             
@@ -935,34 +936,32 @@ class OpenVPNService:
         client_dir.mkdir(parents=True, exist_ok=True)
 
         if parsed.get("ca"):
-            (client_dir / "ca.crt").write_text(parsed["ca"])
+            atomic_write(client_dir / "ca.crt", parsed["ca"])
         if parsed.get("cert"):
-            (client_dir / "client.crt").write_text(parsed["cert"])
+            atomic_write(client_dir / "client.crt", parsed["cert"])
         if parsed.get("key"):
             key_path = client_dir / "client.key"
-            key_path.write_text(parsed["key"])
-            key_path.chmod(0o600)
+            atomic_write(key_path, parsed["key"], mode=0o600)
 
         tls_directive = None
         if parsed.get("tls_crypt_v2"):
             tls_path = client_dir / "tls.key"
-            tls_path.write_text(parsed["tls_crypt_v2"])
+            atomic_write(tls_path, parsed["tls_crypt_v2"], mode=0o600)
             tls_directive = f"tls-crypt-v2 {tls_path}"
         elif parsed.get("tls_crypt"):
             tls_path = client_dir / "tls.key"
-            tls_path.write_text(parsed["tls_crypt"])
+            atomic_write(tls_path, parsed["tls_crypt"], mode=0o600)
             tls_directive = f"tls-crypt {tls_path}"
         elif parsed.get("tls_auth"):
             tls_path = client_dir / "tls.key"
-            tls_path.write_text(parsed["tls_auth"])
+            atomic_write(tls_path, parsed["tls_auth"], mode=0o600)
             direction = parsed.get("tls_auth_direction") or "1"
             tls_directive = f"tls-auth {tls_path} {direction}"
 
         auth_line = None
         if instance.auth_username and instance.auth_password:
             auth_txt = client_dir / "auth.txt"
-            auth_txt.write_text(f"{instance.auth_username}\n{instance.auth_password}\n")
-            auth_txt.chmod(0o600)
+            atomic_write(auth_txt, f"{instance.auth_username}\n{instance.auth_password}\n", mode=0o600)
             auth_line = f"auth-user-pass {auth_txt}"
 
         # Named tun interface: strip 'cli_' prefix, truncate to fit IFNAMSIZ (max 15)
@@ -997,8 +996,7 @@ class OpenVPNService:
             lines.append(auth_line)
 
         conf_path = OPENVPN_CLIENT_DIR / f"{instance.id}.conf"
-        conf_path.write_text("\n".join(lines) + "\n")
-        conf_path.chmod(0o600)
+        atomic_write(conf_path, "\n".join(lines) + "\n", mode=0o600)
 
         logger.info(f"Materialized OVPN client instance {instance.id} at {conf_path}")
         return True
@@ -1008,11 +1006,11 @@ class OpenVPNService:
         try:
             subprocess.run(
                 ["systemctl", "start", f"openvpn-client@{instance_id}"],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=60
             )
             logger.info(f"Started OVPN client instance: {instance_id}")
             return True
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to start client instance {instance_id}: {e.stderr}")
             return False
 
@@ -1021,10 +1019,10 @@ class OpenVPNService:
         try:
             subprocess.run(
                 ["systemctl", "stop", f"openvpn-client@{instance_id}"],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=60
             )
             return True
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return False
 
     @staticmethod
@@ -1032,7 +1030,7 @@ class OpenVPNService:
         try:
             result = subprocess.run(
                 ["systemctl", "is-active", f"openvpn-client@{instance_id}"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=30
             )
             return result.stdout.strip() == "active"
         except Exception:
@@ -1079,11 +1077,11 @@ class OpenVPNService:
             subprocess.run(
                 ["systemctl", "stop", f"openvpn-server@{instance_id}"],
                 check=True,
-                capture_output=True
+                capture_output=True, timeout=60
             )
             logger.info(f"Stopped OpenVPN instance: {instance_id}")
             return True
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to stop instance: {e}")
             return False
     
@@ -1094,10 +1092,10 @@ class OpenVPNService:
             result = subprocess.run(
                 ["systemctl", "is-active", f"openvpn-server@{instance_id}"],
                 capture_output=True,
-                text=True
+                text=True, timeout=30
             )
             return result.stdout.strip() == "active"
-        except:
+        except (OSError, subprocess.SubprocessError):
             return False
     
     @staticmethod

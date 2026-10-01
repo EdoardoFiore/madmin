@@ -4,6 +4,7 @@ Reverse Proxy Module - post_restore Hook
 After a config backup is restored, the DB rows exist again but the on-disk
 htpasswd files and vhosts don't. Re-render everything from DB state.
 """
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ async def run():
             if not ok:
                 logger.warning("apply_host(%s) failed: %s", hid, msg)
 
-    ok, msg = svc.nginx_reload()
+    ok, msg = await asyncio.to_thread(svc.nginx_reload)
     if not ok:
         logger.warning("nginx reload after restore failed: %s", msg)
 

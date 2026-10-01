@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from core.fsutil import atomic_write
 
 logger = logging.getLogger("hook_post_restore")
 
@@ -37,7 +38,7 @@ async def run(session: AsyncSession):
         # Generate server config
         config_content = OpenVPNService.create_server_config(instance)
         config_path = OPENVPN_BASE_DIR / f"{instance.id}.conf"
-        config_path.write_text(config_content)
+        atomic_write(config_path, config_content)
         logger.info(f"Regenerated {instance.id}.conf for instance {instance.name}")
         
         # Regenerate CCD files for all clients with allocated IPs

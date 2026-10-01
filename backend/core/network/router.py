@@ -3,6 +3,7 @@ MADMIN Network Router
 
 API endpoints for network interface information and netplan configuration.
 """
+import asyncio
 import ipaddress
 import logging
 import re
@@ -187,7 +188,8 @@ async def set_interface_config(
             detail=f"Interface {interface} is externally managed and not modifiable."
         )
 
-    success, message = netplan_service.set_interface_config(
+    success, message = await asyncio.to_thread(
+        netplan_service.set_interface_config,
         interface=interface,
         dhcp4=config.dhcp4,
         addresses=config.addresses,
@@ -241,7 +243,7 @@ async def apply_netplan(
     After apply, the firewall gateway protection is rebuilt to reflect the
     new network topology (new/removed/changed LAN interfaces).
     """
-    success, message = netplan_service.apply_netplan()
+    success, message = await asyncio.to_thread(netplan_service.apply_netplan)
 
     if not success:
         raise HTTPException(status_code=500, detail=message)

@@ -12,6 +12,7 @@ import os
 import re
 from typing import List, Optional, Tuple, Dict
 from config import get_settings
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -165,14 +166,14 @@ def _run_iptables(table: str, args: List[str], suppress_errors: bool = False) ->
         logger.debug(f"[MOCK] Would execute: {cmd_str}")
         return True, ""
     
-    cmd = ["iptables", "-t", table] + args
+    cmd = ["iptables", "-w", "-t", table] + args
     
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            check=True
+            check=True, timeout=30
         )
         return True, result.stdout
     except subprocess.CalledProcessError as e:
@@ -185,6 +186,11 @@ def _run_iptables(table: str, args: List[str], suppress_errors: bool = False) ->
             raise IptablesError(friendly_msg)
             
         return False, e.stderr
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
+        if not suppress_errors:
+            raise IptablesError(f"Comando scaduto dopo {e.timeout}s")
+        return False, "timeout"
     except FileNotFoundError:
         logger.error("iptables command not found")
         if not suppress_errors:
@@ -360,17 +366,20 @@ def restore_chains(table: str, chain_rules: Dict[str, List[str]]) -> bool:
 
     try:
         subprocess.run(
-            ["iptables-restore", "--noflush"],
+            ["iptables-restore", "-w", "--noflush"],
             input=restore_input,
             capture_output=True,
             text=True,
-            check=True
+            check=True, timeout=60
         )
         logger.debug(f"Atomically restored chains in table {table}: {list(chain_rules.keys())}")
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"iptables-restore failed for table {table}: {e.stderr}")
         raise IptablesError(parse_iptables_error(e.stderr))
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
+        raise IptablesError(f"Comando scaduto dopo {e.timeout}s")
     except FileNotFoundError:
         logger.error("iptables-restore not found")
         raise IptablesError("Comando iptables-restore non trovato sul sistema")
@@ -403,15 +412,15 @@ def restore_parent_chain_jumps(
 
     try:
         subprocess.run(
-            ["iptables-restore", "--noflush"],
+            ["iptables-restore", "-w", "--noflush"],
             input=restore_input,
             capture_output=True,
             text=True,
-            check=True
+            check=True, timeout=60
         )
         logger.debug(f"Atomically rebuilt jumps in {parent_chain} ({table}): {target_chains}")
         return True
-    except subprocess.CalledProcessError as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         logger.error(f"iptables-restore failed for {parent_chain} ({table}): {e.stderr}")
         return False
     except FileNotFoundError:
@@ -444,8 +453,8 @@ def ensure_jump_rule(
 
     # Check if already exists using -C (exact match)
     result = subprocess.run(
-        ["iptables", "-t", table, "-C", source_chain, "-j", target_chain],
-        capture_output=True
+        ["iptables", "-w", "-t", table, "-C", source_chain, "-j", target_chain],
+        capture_output=True, timeout=30
     )
     if result.returncode == 0:
         logger.debug(f"Jump to {target_chain} already exists in {source_chain}")
@@ -549,8 +558,8 @@ def _find_return_position(table: str, chain: str) -> Optional[int]:
     if settings.mock_iptables:
         return None
     result = subprocess.run(
-        ["iptables", "-t", table, "-S", chain],
-        capture_output=True, text=True
+        ["iptables", "-w", "-t", table, "-S", chain],
+        capture_output=True, text=True, timeout=30
     )
     if result.returncode != 0:
         return None
@@ -582,8 +591,8 @@ def ensure_interface_jump_rule(
 
     # Check if already exists
     result = subprocess.run(
-        ["iptables", "-t", table, "-C", source_chain] + rule_args,
-        capture_output=True
+        ["iptables", "-w", "-t", table, "-C", source_chain] + rule_args,
+        capture_output=True, timeout=30
     )
     if result.returncode == 0:
         return True
@@ -615,8 +624,8 @@ def ensure_interface_rule(
     rule_args.extend(["-j", action])
 
     result = subprocess.run(
-        ["iptables", "-t", table, "-C", chain] + rule_args,
-        capture_output=True
+        ["iptables", "-w", "-t", table, "-C", chain] + rule_args,
+        capture_output=True, timeout=30
     )
     if result.returncode == 0:
         return True
@@ -949,15 +958,16 @@ def save_rules() -> bool:
 
     try:
         os.makedirs("/etc/iptables", exist_ok=True)
-        rules = subprocess.run(["iptables-save"], capture_output=True, text=True)
-        with open("/etc/iptables/rules.v4", "w") as f:
-            f.write(rules.stdout)
+        rules = subprocess.run(["iptables-save"], capture_output=True, text=True, timeout=30)
+        if rules.returncode != 0:
+            logger.error(f"iptables-save failed: {rules.stderr}")
+            return False
+        atomic_write("/etc/iptables/rules.v4", rules.stdout, mode=0o640)
         # ipset save must accompany the rules (best-effort)
         try:
-            sets = subprocess.run(["ipset", "save"], capture_output=True, text=True)
+            sets = subprocess.run(["ipset", "save"], capture_output=True, text=True, timeout=30)
             if sets.returncode == 0:
-                with open("/etc/iptables/ipsets.conf", "w") as f:
-                    f.write(sets.stdout)
+                atomic_write("/etc/iptables/ipsets.conf", sets.stdout, mode=0o640)
         except FileNotFoundError:
             logger.warning("ipset binary not found; ipsets not persisted")
         logger.info("Iptables rules + ipsets saved to /etc/iptables/")
@@ -995,12 +1005,15 @@ def _run_ipset(args: List[str], suppress_errors: bool = False) -> bool:
             ["ipset"] + args,
             capture_output=True,
             text=True,
-            check=True
+            check=True, timeout=30
         )
         return True
     except subprocess.CalledProcessError as e:
         if not suppress_errors:
             logger.error(f"ipset command failed: ipset {' '.join(args)}: {e.stderr.strip()}")
+        return False
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
         return False
     except FileNotFoundError:
         logger.error("ipset command not found — install ipset package")
@@ -1058,12 +1071,15 @@ def ipset_restore_net(setname: str, cidrs: List[str]) -> bool:
             input=restore_input,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, timeout=120
         )
         logger.debug(f"ipset restore loaded {len(cidrs)} CIDRs into {setname}")
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"ipset restore failed for {setname}: {e.stderr.strip()}")
+        return False
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
         return False
     except FileNotFoundError:
         logger.error("ipset command not found — install ipset package")
@@ -1105,12 +1121,15 @@ def ipset_restore_list(setname: str, member_sets: List[str]) -> bool:
             input=restore_input,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, timeout=120
         )
         logger.debug(f"ipset restore loaded {len(member_sets)} members into {setname}")
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"ipset restore (list:set) failed for {setname}: {e.stderr.strip()}")
+        return False
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
         return False
     except FileNotFoundError:
         logger.error("ipset command not found — install ipset package")

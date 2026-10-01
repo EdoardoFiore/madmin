@@ -4,6 +4,7 @@ Reverse Proxy Module - Service Layer
 Renders nginx configs from DB state, writes them to disk under madmin-* prefix,
 manages access lists (htpasswd + IP rules), and drives certbot for Let's Encrypt.
 """
+import asyncio
 import os
 import shutil
 import re
@@ -26,6 +27,7 @@ from .models import (
     RevproxyAccessList, RevproxyAccessListAuth, RevproxyAccessListRule,
     RevproxyCertificate,
 )
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +409,7 @@ async def apply_host(session: AsyncSession, host_id) -> Tuple[bool, str]:
     # taking a previously-working host offline.
     prev_config = avail.read_text() if avail.exists() else None
 
-    avail.write_text(config)
+    atomic_write(avail, config)
 
     if not enabled.exists():
         try:
@@ -415,14 +417,14 @@ async def apply_host(session: AsyncSession, host_id) -> Tuple[bool, str]:
         except FileExistsError:
             pass
 
-    ok, msg = nginx_reload()
+    ok, msg = await asyncio.to_thread(nginx_reload)
     if not ok:
         # `nginx -t` failed, so the broken config was never loaded (reload runs
         # only after a passing test) — the live nginx is unchanged. Restore the
         # on-disk file to its previous good content so it doesn't poison the next
         # reload; if this host had no previous config, remove it entirely.
         if prev_config is not None:
-            avail.write_text(prev_config)
+            atomic_write(avail, prev_config)
         else:
             for p in (enabled, avail):
                 try:
@@ -440,7 +442,7 @@ async def remove_host(host_id) -> Tuple[bool, str]:
             p.unlink()
         except FileNotFoundError:
             pass
-    ok, msg = nginx_reload()
+    ok, msg = await asyncio.to_thread(nginx_reload)
     if not ok:
         return False, f"nginx reload fallito: {msg}"
     return True, "removed"
@@ -464,9 +466,8 @@ def write_htpasswd(acl_id, users: List[Tuple[str, str]]) -> None:
     path = _htpasswd_path(acl_id)
     # A row that did not come through the API must not add lines either
     lines = [f"{u}:{h}" for u, h in users if not any(c in u + h for c in ":\r\n")]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    atomic_write(path, "\n".join(lines) + ("\n" if lines else ""), mode=0o640)
     # Hashes: root and nginx's group only (it was world-readable)
-    os.chmod(path, 0o640)
     try:
         shutil.chown(path, group="www-data")
     except (LookupError, OSError, AttributeError):
@@ -490,7 +491,7 @@ async def apply_access_list(session: AsyncSession, acl_id) -> Tuple[bool, str]:
 
     SNIPPETS_DIR.mkdir(parents=True, exist_ok=True)
     snippet = render_access_list_snippet(acl)
-    _acl_snippet_path(acl.id).write_text(snippet)
+    atomic_write(_acl_snippet_path(acl.id), snippet)
 
     users = [(a.username, a.password_hash) for a in acl.auths]
     write_htpasswd(acl.id, users)
@@ -506,7 +507,7 @@ async def apply_access_list(session: AsyncSession, acl_id) -> Tuple[bool, str]:
             return False, f"apply_host({hid}) fallito: {msg}"
 
     if not affected:
-        ok, msg = nginx_reload()
+        ok, msg = await asyncio.to_thread(nginx_reload)
         if not ok:
             return False, msg
     return True, "applied"
@@ -521,7 +522,7 @@ async def remove_access_list(session: AsyncSession, acl_id) -> Tuple[bool, str]:
 
     # Reapply hosts that had it assigned (their access_list_id will be None now)
     # Caller is responsible for clearing FK before calling.
-    return nginx_reload()
+    return await asyncio.to_thread(nginx_reload)
 
 
 # ============================================================================

@@ -40,7 +40,7 @@ def get_default_interface() -> Optional[str]:
         result = subprocess.run(
             ["ip", "route", "show", "default"],
             capture_output=True,
-            text=True
+            text=True, timeout=30
         )
         if result.returncode == 0 and result.stdout:
             # Output format: "default via 1.2.3.4 dev eth0 ..."

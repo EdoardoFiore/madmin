@@ -9,6 +9,7 @@ from pathlib import Path
 from ipaddress import ip_network
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from core.fsutil import atomic_write
 
 logger = logging.getLogger("hook_post_restore")
 
@@ -62,8 +63,7 @@ async def run(session: AsyncSession):
         
         # Write config file
         config_path = WG_CONFIG_DIR / f"{instance.interface}.conf"
-        config_path.write_text(config)
-        config_path.chmod(0o600)
+        atomic_write(config_path, config, mode=0o600)
         
         logger.info(f"Regenerated {instance.interface}.conf with {len(clients)} peers")
     

@@ -220,7 +220,7 @@ def _destroy_unreferenced(keep: set) -> None:
         return
     import subprocess
     try:
-        result = subprocess.run(["ipset", "list", "-name"], capture_output=True, text=True)
+        result = subprocess.run(["ipset", "list", "-name"], capture_output=True, text=True, timeout=30)
     except FileNotFoundError:
         return
     if result.returncode != 0:

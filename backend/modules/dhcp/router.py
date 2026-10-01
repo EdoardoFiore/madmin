@@ -3,6 +3,7 @@ DHCP Module - API Router
 
 FastAPI endpoints for DHCP server management.
 """
+import asyncio
 import logging
 from typing import List, Optional
 from uuid import UUID
@@ -55,9 +56,9 @@ async def get_status(
     # Validate config
     config_valid = None
     try:
-        valid, _ = dhcp_service.validate_config()
+        valid, _ = await asyncio.to_thread(dhcp_service.validate_config)
         config_valid = valid
-    except:
+    except Exception:
         pass
 
     return DhcpServiceStatus(
@@ -148,7 +149,7 @@ async def stop_service(
             detail="DHCP non arrestabile: una LAN gestita è attiva e dipende dal servizio"
         )
 
-    success, message = dhcp_service.stop_service()
+    success, message = await asyncio.to_thread(dhcp_service.stop_service)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -206,7 +207,7 @@ async def validate_config(
     _user: User = Depends(require_permission("dhcp.manage"))
 ):
     """Validate current dhcpd.conf syntax."""
-    valid, message = dhcp_service.validate_config()
+    valid, message = await asyncio.to_thread(dhcp_service.validate_config)
     return {"valid": valid, "message": message}
 
 

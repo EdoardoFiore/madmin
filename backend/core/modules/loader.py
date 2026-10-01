@@ -344,23 +344,25 @@ class ModuleLoader:
                 run_fn = hook_module.run
                 # Pass the session only to hooks that declare a parameter for it
                 # (on_startup); no-arg hooks (post_install/on_disable) call run().
-                if session is not None and len(inspect.signature(run_fn).parameters) >= 1:
-                    result = run_fn(session)
+                args = (session,) if session is not None and len(inspect.signature(run_fn).parameters) >= 1 else ()
+                # Sync hooks run subprocesses (systemctl, iptables, sysctl) and
+                # sleeps: off the event loop, so activation doesn't freeze the API
+                if inspect.iscoroutinefunction(run_fn):
+                    await run_fn(*args)
                 else:
-                    result = run_fn()
-                # Support both sync and async run functions
-                if asyncio.iscoroutine(result):
-                    await result
+                    result = await asyncio.to_thread(run_fn, *args)
+                    if asyncio.iscoroutine(result):
+                        await result
                 logger.info(f"Executed {hook_name} hook for module")
                 return True
             else:
                 logger.warning(f"Hook {hook_path} has no 'run' function")
                 return True
                 
-        except Exception as e:
-            logger.error(f"Hook {hook_name} failed: {e}")
+        except Exception:
+            logger.exception(f"Hook {hook_name} failed")
             return False
-    
+
     async def load_module(
         self,
         app: FastAPI,

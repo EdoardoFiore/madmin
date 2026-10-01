@@ -11,6 +11,7 @@ import subprocess
 import logging
 import os
 from pathlib import Path
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,7 @@ def run():
     secrets_file = Path("/etc/swanctl/conf.d/madmin_secrets.conf")
     try:
         if not secrets_file.exists():
-            secrets_file.write_text("# MADMIN IPsec VPN secrets - managed by MADMIN\nsecrets {\n}\n")
-            os.chmod(secrets_file, 0o600)
+            atomic_write(secrets_file, "# MADMIN IPsec VPN secrets - managed by MADMIN\nsecrets {\n}\n", mode=0o600)
             logger.info(f"Created {secrets_file} with mode 600")
         else:
             logger.info(f"{secrets_file} already exists")
@@ -65,14 +65,14 @@ def run():
     try:
         # Write persistent configuration
         sysctl_content = "# IPsec VPN IP forwarding\nnet.ipv4.ip_forward=1\n"
-        sysctl_conf.write_text(sysctl_content)
+        atomic_write(sysctl_conf, sysctl_content)
         logger.info(f"Created {sysctl_conf}")
         
         # Apply immediately
         result = subprocess.run(
             ['sysctl', '-p', str(sysctl_conf)],
             capture_output=True,
-            text=True
+            text=True, timeout=30
         )
         if result.returncode == 0:
             logger.info("IP forwarding enabled")
@@ -84,7 +84,7 @@ def run():
     except FileNotFoundError:
         # Fallback: try direct sysctl
         try:
-            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'], check=True)
+            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'], check=True, timeout=30)
             logger.info("IP forwarding enabled (direct sysctl)")
         except Exception as e:
             errors.append(f"Failed to enable IP forwarding: {e}")
@@ -122,7 +122,7 @@ charon-systemd {
     }
 }
 """
-        logging_conf.write_text(logging_content)
+        atomic_write(logging_conf, logging_content)
         logger.info(f"Created {logging_conf} with ike_name enabled")
     except PermissionError:
         errors.append(f"Permission denied creating {logging_conf}")
@@ -137,11 +137,11 @@ charon-systemd {
         # First, stop and disable the legacy starter if running
         subprocess.run(
             ['systemctl', 'stop', 'strongswan-starter'],
-            capture_output=True
+            capture_output=True, timeout=60
         )
         subprocess.run(
             ['systemctl', 'disable', 'strongswan-starter'],
-            capture_output=True
+            capture_output=True, timeout=60
         )
         logger.info("Disabled legacy strongswan-starter")
         
@@ -149,7 +149,7 @@ charon-systemd {
         result = subprocess.run(
             ['systemctl', 'enable', 'strongswan'],
             capture_output=True,
-            text=True
+            text=True, timeout=60
         )
         if result.returncode == 0:
             logger.info("strongswan service enabled")
@@ -160,7 +160,7 @@ charon-systemd {
         result = subprocess.run(
             ['systemctl', 'start', 'strongswan'],
             capture_output=True,
-            text=True
+            text=True, timeout=60
         )
         if result.returncode == 0:
             logger.info("strongswan service started")
@@ -173,7 +173,7 @@ charon-systemd {
         result = subprocess.run(
             ['systemctl', 'restart', 'strongswan'],
             capture_output=True,
-            text=True
+            text=True, timeout=60
         )
         if result.returncode == 0:
             logger.info("strongswan service restarted successfully")

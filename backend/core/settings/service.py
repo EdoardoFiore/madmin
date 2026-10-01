@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlparse
 
 from config import get_settings
+from core.fsutil import atomic_write
 from .models import CertificateInfo, NetworkSettingsResponse
 
 logger = logging.getLogger(__name__)
@@ -177,8 +178,7 @@ class NetworkService:
 }}
 """
 
-        with open(NGINX_PUBLIC_CONF_PATH, "w") as f:
-            f.write(nginx_block)
+        atomic_write(NGINX_PUBLIC_CONF_PATH, nginx_block)
 
         # Symlink in sites-enabled (sovrascrive se esiste)
         if os.path.islink(NGINX_PUBLIC_CONF_ENABLED):
@@ -359,8 +359,7 @@ class NetworkService:
             return f.read()
 
     async def _write_nginx_conf(self, content: str):
-        with open(NGINX_CONF_PATH, "w") as f:
-            f.write(content)
+        atomic_write(NGINX_CONF_PATH, content)
 
     async def _get_current_port(self) -> int:
         content = await self._read_nginx_conf()

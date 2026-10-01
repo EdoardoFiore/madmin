@@ -10,6 +10,7 @@ import subprocess
 import logging
 import os
 from pathlib import Path
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def run():
     try:
         subprocess.run(
             ["systemctl", "stop", "isc-dhcp-server"],
-            capture_output=True, text=True
+            capture_output=True, text=True, timeout=60
         )
         logger.info("Stopped isc-dhcp-server (if was running)")
     except Exception as e:
@@ -49,13 +50,11 @@ def run():
     conf_path = Path("/etc/dhcp/dhcpd.conf")
     try:
         if not conf_path.exists() or conf_path.stat().st_size == 0:
-            conf_path.write_text(
-                "# DHCP Server Configuration\n"
+            atomic_write(conf_path, "# DHCP Server Configuration\n"
                 "# Managed by MADMIN DHCP Module\n"
                 "# Configuration will be generated when subnets are created.\n"
                 "\n"
-                "# No subnets configured yet.\n"
-            )
+                "# No subnets configured yet.\n")
             logger.info(f"Wrote initial config to {conf_path}")
     except PermissionError:
         errors.append(f"Permission denied writing to {conf_path}")
@@ -79,7 +78,7 @@ def run():
     defaults_path = Path("/etc/default/isc-dhcp-server")
     try:
         # Set empty interfaces initially (will be updated when subnets are created)
-        defaults_path.write_text('INTERFACESv4=""\nINTERFACESv6=""\n')
+        atomic_write(defaults_path, 'INTERFACESv4=""\nINTERFACESv6=""\n')
         logger.info(f"Wrote defaults to {defaults_path}")
     except PermissionError:
         errors.append(f"Permission denied writing to {defaults_path}")

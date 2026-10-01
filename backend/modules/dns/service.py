@@ -8,6 +8,7 @@ Uses core utilities:
 - core.firewall.iptables for firewall rules (port 53 UDP/TCP)
 - core.services.service.SystemdService for bind9 service control
 """
+import asyncio
 import subprocess
 import json
 import logging
@@ -28,6 +29,7 @@ from core.services.service import SystemdService
 from core.network.service import network_service
 
 from .models import DnsSettings, DnsZone, DnsRecord
+from core.fsutil import ConfigSnapshot, atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -253,12 +255,12 @@ class DnsService:
             
             # Write named.conf.options
             options_content = await self.generate_options_config(session)
-            OPTIONS_FILE.write_text(options_content)
+            atomic_write(OPTIONS_FILE, options_content)
             logger.info(f"Wrote {OPTIONS_FILE}")
             
             # Write named.conf.local
             local_content = await self.generate_local_config(session)
-            LOCAL_FILE.write_text(local_content)
+            atomic_write(LOCAL_FILE, local_content)
             logger.info(f"Wrote {LOCAL_FILE}")
             
             # Write zone files for master zones
@@ -273,7 +275,7 @@ class DnsService:
             for zone in zones:
                 zone_file = ZONES_DIR / f"db.{zone.name}"
                 zone_content = await self.generate_zone_file(session, zone)
-                zone_file.write_text(zone_content)
+                atomic_write(zone_file, zone_content)
                 logger.info(f"Wrote zone file {zone_file}")
             
             # Clean up zone files for deleted/disabled zones
@@ -385,24 +387,32 @@ class DnsService:
         3. Apply firewall rules
         4. Restart bind9
         """
+        # named refuses to start on a config it rejects: whatever fails below,
+        # the files go back to the version that was working
+        snapshot = ConfigSnapshot([OPTIONS_FILE, LOCAL_FILE], globs=[(ZONES_DIR, "db.*")])
+
         # 1. Write configs
         success, msg = await self.write_all_configs(session)
         if not success:
+            snapshot.restore()
             return False, f"Errore scrittura: {msg}"
         
         # 2. Validate
-        valid, msg = self.validate_config()
+        valid, msg = await asyncio.to_thread(self.validate_config)
         if not valid:
+            snapshot.restore()
             return False, f"Configurazione non valida: {msg}"
         
         # 3. Apply firewall rules
         fw_ok, fw_msg = self.apply_firewall_rules()
 
         # 4. Restart service
-        success, msg = SystemdService.restart(BIND_SERVICE)
+        success, msg = await asyncio.to_thread(SystemdService.restart, BIND_SERVICE)
         if not success:
-            journal_msg = self._get_journal_errors()
-            return False, f"Errore riavvio servizio: {msg}. {journal_msg}"
+            journal_msg = await asyncio.to_thread(self._get_journal_errors)
+            snapshot.restore()
+            await asyncio.to_thread(SystemdService.restart, BIND_SERVICE)
+            return False, f"Errore riavvio servizio: {msg}. {journal_msg} (configurazione precedente ripristinata)"
 
         result_msg = "Configurazione applicata e servizio riavviato"
         if not fw_ok:
@@ -419,6 +429,7 @@ class DnsService:
         
         This is faster than full apply_config since it doesn't restart the service.
         """
+        snapshot = ConfigSnapshot([ZONES_DIR / f"db.{zone.name}", LOCAL_FILE])
         try:
             ZONES_DIR.mkdir(parents=True, exist_ok=True)
             
@@ -426,37 +437,43 @@ class DnsService:
                 # Write zone file
                 zone_content = await self.generate_zone_file(session, zone)
                 zone_file = ZONES_DIR / f"db.{zone.name}"
-                zone_file.write_text(zone_content)
+                atomic_write(zone_file, zone_content)
                 logger.info(f"Wrote zone file {zone_file}")
                 
                 # Validate zone file
-                valid, msg = self.validate_zone_file(zone.name)
+                valid, msg = await asyncio.to_thread(self.validate_zone_file, zone.name)
                 if not valid:
+                    snapshot.restore()
                     return False, f"Zona non valida: {msg}"
             
             # Update named.conf.local (zone declarations)
             local_content = await self.generate_local_config(session)
-            LOCAL_FILE.write_text(local_content)
+            atomic_write(LOCAL_FILE, local_content)
             
             # Validate full config
-            valid, msg = self.validate_config()
+            valid, msg = await asyncio.to_thread(self.validate_config)
             if not valid:
+                snapshot.restore()
                 return False, f"Configurazione non valida: {msg}"
             
             # Reload bind9 gracefully
-            ok, msg = self._reload_service()
+            ok, msg = await asyncio.to_thread(self._reload_service)
             if not ok:
                 # Fallback to restart
-                ok, msg = SystemdService.restart(BIND_SERVICE)
+                ok, msg = await asyncio.to_thread(SystemdService.restart, BIND_SERVICE)
                 if not ok:
-                    return False, f"Errore reload/restart: {msg}"
+                    snapshot.restore()
+                    await asyncio.to_thread(SystemdService.restart, BIND_SERVICE)
+                    return False, f"Errore reload/restart: {msg} (configurazione precedente ripristinata)"
             
             return True, "Zona applicata con successo"
             
         except PermissionError as e:
+            snapshot.restore()
             return False, f"Permesso negato: {e}"
         except Exception as e:
-            logger.error(f"Error applying zone {zone.name}: {e}")
+            logger.exception(f"Error applying zone {zone.name}")
+            snapshot.restore()
             return False, str(e)
 
     async def remove_zone_files(self, zone_name: str, session: AsyncSession) -> Tuple[bool, str]:
@@ -471,10 +488,10 @@ class DnsService:
             
             # Update named.conf.local
             local_content = await self.generate_local_config(session)
-            LOCAL_FILE.write_text(local_content)
+            atomic_write(LOCAL_FILE, local_content)
             
             # Reload
-            self._reload_service()
+            await asyncio.to_thread(self._reload_service)
             return True, "Zona rimossa"
         except Exception as e:
             return False, str(e)
@@ -483,22 +500,27 @@ class DnsService:
         """
         Apply only settings changes (named.conf.options) + reload.
         """
+        snapshot = ConfigSnapshot([OPTIONS_FILE])
         try:
             options_content = await self.generate_options_config(session)
-            OPTIONS_FILE.write_text(options_content)
+            atomic_write(OPTIONS_FILE, options_content)
             
-            valid, msg = self.validate_config()
+            valid, msg = await asyncio.to_thread(self.validate_config)
             if not valid:
+                snapshot.restore()
                 return False, f"Configurazione non valida: {msg}"
             
-            ok, msg = self._reload_service()
+            ok, msg = await asyncio.to_thread(self._reload_service)
             if not ok:
-                ok, msg = SystemdService.restart(BIND_SERVICE)
+                ok, msg = await asyncio.to_thread(SystemdService.restart, BIND_SERVICE)
                 if not ok:
-                    return False, f"Errore reload: {msg}"
+                    snapshot.restore()
+                    await asyncio.to_thread(SystemdService.restart, BIND_SERVICE)
+                    return False, f"Errore reload: {msg} (configurazione precedente ripristinata)"
             
             return True, "Impostazioni applicate"
         except Exception as e:
+            snapshot.restore()
             return False, str(e)
 
     # =========================================================

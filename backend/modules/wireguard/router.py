@@ -3,6 +3,7 @@ WireGuard Module - API Router
 
 FastAPI endpoints for WireGuard VPN management.
 """
+import asyncio
 import html
 import logging
 import io
@@ -35,6 +36,7 @@ from core.validation import VpnInstanceValidators
 import ipaddress
 from .service import wireguard_service, WIREGUARD_CONFIG_DIR, WireGuardService, get_public_ip
 from core.network.service import NetworkService
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -145,8 +147,7 @@ async def create_instance(
         interface_name, data.port, private_key, f"{server_ip}/{network.prefixlen}"
     )
     config_path = WIREGUARD_CONFIG_DIR / f"{interface_name}.conf"
-    config_path.write_text(config)
-    config_path.chmod(0o600)
+    atomic_write(config_path, config, mode=0o600)
     
     await db.commit()
     
@@ -414,7 +415,7 @@ async def delete_instance(
     if not instance:
         raise HTTPException(404, "Istanza non trovata")
     
-    wireguard_service.stop_interface(instance.interface)
+    await asyncio.to_thread(wireguard_service.stop_interface, instance.interface)
 
     if instance.direction == "client":
         wireguard_service.remove_instance_firewall_rules(
@@ -587,7 +588,7 @@ async def import_client_instance(
         await db.commit()
         raise HTTPException(500, f"Errore scrittura configurazione: {e}")
 
-    started = wireguard_service.start_interface(instance.interface)
+    started = await asyncio.to_thread(wireguard_service.start_interface, instance.interface)
     if started:
         WireGuardService.apply_instance_firewall_rules(
             instance.id, None, instance.interface, None,
@@ -651,7 +652,7 @@ async def reconnect_instance(
     if instance.direction != "client":
         raise HTTPException(400, "Endpoint disponibile solo per istanze client")
 
-    wireguard_service.stop_interface(instance.interface)
+    await asyncio.to_thread(wireguard_service.stop_interface, instance.interface)
     WireGuardService.remove_instance_firewall_rules(
         instance.id, instance.interface, instance.client_lan_interfaces
     )
@@ -660,7 +661,7 @@ async def reconnect_instance(
         parsed = wireguard_service.parse_imported_wg(instance.imported_config)
         wireguard_service.materialize_wg_client_instance(instance, parsed)
 
-    started = wireguard_service.start_interface(instance.interface)
+    started = await asyncio.to_thread(wireguard_service.start_interface, instance.interface)
     if started:
         WireGuardService.apply_instance_firewall_rules(
             instance.id, None, instance.interface, None,
@@ -784,7 +785,7 @@ async def create_client(
     wireguard_service.add_peer_to_config(config_path, public_key, psk, peer_allowed_ips, data.name)
     
     if wireguard_service.get_interface_status(instance.interface):
-        wireguard_service.hot_reload_interface(instance.interface)
+        await asyncio.to_thread(wireguard_service.hot_reload_interface, instance.interface)
         
         # Apply per-client firewall rules
         effective = WireGuardService.get_effective_client_config(client, instance)
@@ -872,7 +873,7 @@ async def delete_client(
     )
     
     if wireguard_service.get_interface_status(instance.interface):
-        wireguard_service.hot_reload_interface(instance.interface)
+        await asyncio.to_thread(wireguard_service.hot_reload_interface, instance.interface)
         # Reapply group rules to remove orphan jump rules
         await WireGuardService.apply_group_firewall_rules(instance_id, db)
     

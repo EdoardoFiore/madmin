@@ -14,6 +14,7 @@ Does NOT remove:
 import subprocess
 import logging
 from pathlib import Path
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def run():
     try:
         subprocess.run(
             ["systemctl", "disable", "isc-dhcp-server"],
-            capture_output=True, text=True
+            capture_output=True, text=True, timeout=60
         )
         logger.info("isc-dhcp-server disabled")
     except Exception as e:
@@ -44,13 +45,11 @@ def run():
     # 2. Reset dhcpd.conf to initial empty state
     conf_path = Path("/etc/dhcp/dhcpd.conf")
     try:
-        conf_path.write_text(
-            "# DHCP Server Configuration\n"
+        atomic_write(conf_path, "# DHCP Server Configuration\n"
             "# Managed by MADMIN DHCP Module\n"
             "# Configuration will be generated when subnets are created.\n"
             "\n"
-            "# No subnets configured yet.\n"
-        )
+            "# No subnets configured yet.\n")
         logger.info(f"Reset {conf_path} to initial state")
     except Exception as e:
         logger.warning(f"Failed to reset config: {e}")
@@ -58,7 +57,7 @@ def run():
     # 3. Reset defaults file to empty interfaces
     defaults_path = Path("/etc/default/isc-dhcp-server")
     try:
-        defaults_path.write_text('INTERFACESv4=""\nINTERFACESv6=""\n')
+        atomic_write(defaults_path, 'INTERFACESv4=""\nINTERFACESv6=""\n')
         logger.info(f"Reset {defaults_path} to empty interfaces")
     except Exception as e:
         logger.warning(f"Failed to reset defaults: {e}")

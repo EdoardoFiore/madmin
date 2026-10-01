@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 import uuid
 from core.firewall import iptables as core_iptables
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ class StrongSwanService:
             result = subprocess.run(
                 ['swanctl'] + args,
                 capture_output=True,
-                text=True
+                text=True, timeout=30
             )
             if check and result.returncode != 0:
                 logger.warning(f"swanctl {args} failed: {result.stderr}")
@@ -387,7 +388,7 @@ connections {{
         config_file = config_path(tunnel_id)
         try:
             SWANCTL_CONF_DIR.mkdir(parents=True, exist_ok=True)
-            config_file.write_text(config)
+            atomic_write(config_file, config)
             logger.info(f"Saved tunnel config: {config_file}")
             return True
         except Exception as e:
@@ -408,7 +409,7 @@ connections {{
                 content += entry
             content += "\n}\n"
             
-            secrets_file.write_text(content)
+            atomic_write(secrets_file, content)
             import os
             os.chmod(secrets_file, 0o600)
             logger.info("Updated secrets file")
@@ -881,7 +882,7 @@ connections {{
             result = subprocess.run(
                 ['journalctl', '-u', 'strongswan', '-n', str(lines), '--no-pager', '-o', 'short-iso'],
                 capture_output=True,
-                text=True
+                text=True, timeout=30
             )
             
             all_lines = result.stdout.strip().split('\n') if result.stdout else []
@@ -1472,7 +1473,7 @@ connections {{
         removed = 0
         try:
             result = subprocess.run(
-                ['iptables', '-t', table, '-S', chain], capture_output=True, text=True
+                ['iptables', "-w", '-t', table, '-S', chain], capture_output=True, text=True, timeout=30
             )
             if result.returncode != 0:
                 return 0
@@ -1496,7 +1497,7 @@ connections {{
         chains = []
         try:
             result = subprocess.run(
-                ['iptables', '-t', 'filter', '-S'], capture_output=True, text=True
+                ['iptables', "-w", '-t', 'filter', '-S'], capture_output=True, text=True, timeout=30
             )
             if result.returncode != 0:
                 return chains

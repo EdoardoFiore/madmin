@@ -9,6 +9,7 @@ import os
 import re
 import glob
 from typing import List, Dict, Optional, Tuple
+from core.fsutil import ConfigSnapshot, atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -298,12 +299,17 @@ class NetplanService:
         filepath = os.path.join(NETPLAN_DIR, filename)
         
         try:
-            with open(filepath, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-            
-            # Set correct permissions
-            os.chmod(filepath, 0o600)
-            
+            snapshot = ConfigSnapshot([filepath])
+            atomic_write(filepath, yaml.dump(config, default_flow_style=False, sort_keys=False), mode=0o600)
+
+            # `netplan generate` parses every file: a config it rejects would
+            # break the next `netplan apply` (and the next boot), so put the
+            # previous one back now
+            ok, err = NetplanService.generate()
+            if not ok:
+                snapshot.restore()
+                return False, f"netplan rejected the configuration: {err}"
+
             logger.info(f"Wrote netplan config to {filepath}")
             return True, f"Configuration saved to {filename}"
             
@@ -313,6 +319,21 @@ class NetplanService:
             return False, str(e)
     
     @staticmethod
+    def generate() -> Tuple[bool, str]:
+        """Validate the netplan YAML (renders backend config, changes nothing live)."""
+        try:
+            result = subprocess.run(
+                ["netplan", "generate"], capture_output=True, text=True, timeout=60
+            )
+        except FileNotFoundError:
+            return False, "netplan command not found"
+        except subprocess.TimeoutExpired:
+            return False, "netplan generate timed out"
+        if result.returncode != 0:
+            return False, (result.stderr or result.stdout).strip()
+        return True, ""
+
+    @staticmethod
     def apply_netplan() -> Tuple[bool, str]:
         """
         Apply netplan configuration.
@@ -321,12 +342,14 @@ class NetplanService:
             Tuple of (success, output/error message)
         """
         try:
-            # First try netplan try (safer, with rollback)
+            ok, err = NetplanService.generate()
+            if not ok:
+                return False, f"netplan generate failed: {err}"
             result = subprocess.run(
                 ["netplan", "apply"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=120
             )
             
             if result.returncode != 0:

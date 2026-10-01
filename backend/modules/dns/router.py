@@ -3,6 +3,7 @@ DNS Module - API Router
 
 FastAPI endpoints for DNS server management.
 """
+import asyncio
 import json
 import logging
 from typing import List, Optional
@@ -77,13 +78,13 @@ async def start_service(
     if not ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
 
-    valid, msg = dns_service.validate_config()
+    valid, msg = await asyncio.to_thread(dns_service.validate_config)
     if not valid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
 
     dns_service.apply_firewall_rules()
 
-    ok, msg = dns_service.start_service()
+    ok, msg = await asyncio.to_thread(dns_service.start_service)
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
     # Persist desired state: service should be running (restored on app startup)
@@ -99,7 +100,7 @@ async def stop_service(
     _user: User = Depends(require_permission("dns.manage")),
 ):
     """Stop bind9."""
-    ok, msg = dns_service.stop_service()
+    ok, msg = await asyncio.to_thread(dns_service.stop_service)
     if not ok:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
     # Persist desired state: must stay DOWN across restarts
@@ -597,4 +598,4 @@ async def test_dns_query(
     _user: User = Depends(require_permission("dns.view")),
 ):
     """Test a DNS query against the local server."""
-    return dns_service.test_query(data.domain, data.record_type)
+    return await asyncio.to_thread(dns_service.test_query, data.domain, data.record_type)

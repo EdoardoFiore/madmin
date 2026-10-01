@@ -10,6 +10,7 @@ import subprocess
 import logging
 import os
 from pathlib import Path
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ def run():
         result = subprocess.run(
             ['modprobe', 'wireguard'],
             capture_output=True,
-            text=True
+            text=True, timeout=30
         )
         if result.returncode != 0:
             # On some kernels WireGuard is built-in, not a module
@@ -60,14 +61,14 @@ def run():
     sysctl_conf = Path("/etc/sysctl.d/99-wireguard.conf")
     try:
         # Write persistent configuration
-        sysctl_conf.write_text("net.ipv4.ip_forward=1\n")
+        atomic_write(sysctl_conf, "net.ipv4.ip_forward=1\n")
         logger.info(f"Created {sysctl_conf}")
         
         # Apply immediately
         result = subprocess.run(
             ['sysctl', '-p', str(sysctl_conf)],
             capture_output=True,
-            text=True
+            text=True, timeout=30
         )
         if result.returncode == 0:
             logger.info("IP forwarding enabled")
@@ -79,7 +80,7 @@ def run():
     except FileNotFoundError:
         # Fallback: try direct sysctl
         try:
-            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'], check=True)
+            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'], check=True, timeout=30)
             logger.info("IP forwarding enabled (direct sysctl)")
         except Exception as e:
             errors.append(f"Failed to enable IP forwarding: {e}")

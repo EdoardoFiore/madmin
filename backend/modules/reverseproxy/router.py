@@ -169,7 +169,7 @@ async def service_reload(
     _user: User = Depends(require_permission("reverseproxy.manage")),
 ):
     _block_if_disabled()
-    ok, msg = svc.nginx_reload()
+    ok, msg = await asyncio.to_thread(svc.nginx_reload)
     if not ok:
         raise HTTPException(status_code=500, detail=msg)
     return {"ok": True, "message": msg}
@@ -361,7 +361,7 @@ async def delete_host(
     host = await _load_host(db, host_id)
     # Best-effort revoke cert
     if host.certificate:
-        svc.revoke_certificate(host.id)
+        await asyncio.to_thread(svc.revoke_certificate, host.id)
     await db.delete(host)
     await db.commit()
     await svc.remove_host(host_id)
@@ -417,10 +417,7 @@ async def issue_host_certificate(
     sans = [d.domain for d in host.domains[1:]]
     # certbot is a blocking subprocess (up to ~180s) — run in thread pool
     # to avoid blocking the entire FastAPI event loop
-    loop = asyncio.get_event_loop()
-    ok, msg, info = await loop.run_in_executor(
-        None, lambda: svc.issue_certificate(host.id, primary, sans)
-    )
+    ok, msg, info = await asyncio.to_thread(svc.issue_certificate, host.id, primary, sans)
     if not ok:
         raise HTTPException(status_code=500, detail=f"certbot ha fallito: {msg}")
 
@@ -475,7 +472,7 @@ async def revoke_host_certificate(
     host = await _load_host(db, host_id)
     if not host.certificate:
         raise HTTPException(status_code=404, detail="Nessun certificato")
-    svc.revoke_certificate(host.id)
+    await asyncio.to_thread(svc.revoke_certificate, host.id)
     await db.delete(host.certificate)
     # If force_https was on, drop it so vhost still works HTTP-only
     host.force_https = False

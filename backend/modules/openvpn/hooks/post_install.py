@@ -8,6 +8,7 @@ Executed after module installation:
 import subprocess
 import logging
 from pathlib import Path
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,8 @@ async def run():
         
         # Enable permanently
         sysctl_conf = Path("/etc/sysctl.d/99-openvpn.conf")
-        sysctl_conf.write_text("net.ipv4.ip_forward = 1\n")
-        subprocess.run(["sysctl", "-p", str(sysctl_conf)], capture_output=True)
+        atomic_write(sysctl_conf, "net.ipv4.ip_forward = 1\n")
+        subprocess.run(["sysctl", "-p", str(sysctl_conf)], capture_output=True, timeout=30)
         logger.info("IPv4 forwarding enabled permanently")
     except Exception as e:
         logger.warning(f"Could not enable IP forwarding: {e}")

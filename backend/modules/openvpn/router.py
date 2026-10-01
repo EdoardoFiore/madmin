@@ -3,6 +3,7 @@ OpenVPN Module - API Router
 
 FastAPI endpoints for OpenVPN server management.
 """
+import asyncio
 import html
 import logging
 import io
@@ -38,6 +39,7 @@ import json
 from fastapi import UploadFile, File, Form, Query
 from .service import openvpn_service, OPENVPN_BASE_DIR, OPENVPN_CLIENT_DIR, OpenVPNService, get_public_ip
 from core.network.service import NetworkService
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -128,7 +130,7 @@ async def create_instance(
     interface = f"tun{data.port % 100}"
     
     # Initialize PKI
-    if not openvpn_service.init_pki(instance_id):
+    if not await asyncio.to_thread(openvpn_service.init_pki, instance_id):
         raise HTTPException(500, "Failed to initialize PKI")
     
     # Build CA
@@ -137,7 +139,7 @@ async def create_instance(
         raise HTTPException(500, f"Failed to build CA: {ca_result.get('error')}")
     
     # Generate server certificate
-    server_result = openvpn_service.generate_server_cert(instance_id, data.cert_duration_days)
+    server_result = await asyncio.to_thread(openvpn_service.generate_server_cert, instance_id, data.cert_duration_days)
     if not server_result.get("success"):
         raise HTTPException(500, f"Failed to generate server cert: {server_result.get('error')}")
     
@@ -164,11 +166,10 @@ async def create_instance(
     # Generate server config - write directly where systemd expects it
     config = openvpn_service.create_server_config(instance)
     config_path = OPENVPN_BASE_DIR / f"{instance_id}.conf"
-    config_path.write_text(config)
-    config_path.chmod(0o600)
+    atomic_write(config_path, config, mode=0o600)
     
     # Generate initial CRL
-    openvpn_service.regenerate_crl(instance_id)
+    await asyncio.to_thread(openvpn_service.regenerate_crl, instance_id)
     
     await db.commit()
     
@@ -255,7 +256,7 @@ async def delete_instance(
 
     if instance.direction == "client":
         # Stop the systemd client unit
-        openvpn_service.stop_client_instance(instance_id)
+        await asyncio.to_thread(openvpn_service.stop_client_instance, instance_id)
         # Remove client-mode firewall rules
         openvpn_service.remove_instance_firewall_rules(
             instance_id, instance.interface,
@@ -271,7 +272,7 @@ async def delete_instance(
             shutil.rmtree(client_dir)
     else:
         # Stop instance
-        openvpn_service.stop_instance(instance_id)
+        await asyncio.to_thread(openvpn_service.stop_instance, instance_id)
         # Remove group chains first (needs DB access)
         await OpenVPNService.remove_all_group_chains(instance.id, db)
         # Remove instance firewall rules
@@ -374,7 +375,7 @@ async def update_instance_routing(
     # Regenerate config
     config = openvpn_service.create_server_config(instance)
     config_path = OPENVPN_BASE_DIR / f"{instance_id}.conf"
-    config_path.write_text(config)
+    atomic_write(config_path, config)
     
     # Reapply firewall if running
     if openvpn_service.get_instance_status(instance_id):
@@ -432,7 +433,7 @@ async def update_instance_site_to_site(
     # Regenerate server config so site-to-site LAN pushes reach connecting clients
     config = openvpn_service.create_server_config(instance)
     config_path = OPENVPN_BASE_DIR / f"{instance_id}.conf"
-    config_path.write_text(config)
+    atomic_write(config_path, config)
 
     # Reapply firewall if running so the new NAT-exempt / MASQUERADE branch takes effect
     if openvpn_service.get_instance_status(instance_id):
@@ -550,7 +551,7 @@ async def import_client_instance(
         await db.commit()
         raise HTTPException(500, f"Errore scrittura file di configurazione: {e}")
 
-    started = OpenVPNService.start_client_instance(instance.id)
+    started = await asyncio.to_thread(OpenVPNService.start_client_instance, instance.id)
     if started:
         OpenVPNService.apply_instance_firewall_rules(
             instance.id, None, instance.protocol, instance.interface, None,
@@ -614,7 +615,7 @@ async def reconnect_instance(
     if instance.direction != "client":
         raise HTTPException(400, "Endpoint disponibile solo per istanze client")
 
-    OpenVPNService.stop_client_instance(instance.id)
+    await asyncio.to_thread(OpenVPNService.stop_client_instance, instance.id)
     OpenVPNService.remove_instance_firewall_rules(
         instance.id, instance.interface, instance.client_lan_interfaces
     )
@@ -624,7 +625,7 @@ async def reconnect_instance(
         parsed = openvpn_service.parse_imported_ovpn(instance.imported_config)
         openvpn_service.materialize_client_instance(instance, parsed)
 
-    started = OpenVPNService.start_client_instance(instance.id)
+    started = await asyncio.to_thread(OpenVPNService.start_client_instance, instance.id)
     if started:
         OpenVPNService.apply_instance_firewall_rules(
             instance.id, None, instance.protocol, instance.interface, None,
@@ -687,7 +688,7 @@ async def renew_server_cert(
     
     days = data.duration_days if data and data.duration_days else instance.cert_duration_days
     
-    renew_result = openvpn_service.renew_server_cert(instance_id, days)
+    renew_result = await asyncio.to_thread(openvpn_service.renew_server_cert, instance_id, days)
     if not renew_result.get("success"):
         raise HTTPException(500, f"Failed to renew certificate: {renew_result.get('error')}")
     
@@ -699,8 +700,8 @@ async def renew_server_cert(
     # Restart instance if running
     was_running = openvpn_service.get_instance_status(instance_id)
     if was_running:
-        openvpn_service.stop_instance(instance_id)
-        openvpn_service.start_instance(instance_id)
+        await asyncio.to_thread(openvpn_service.stop_instance, instance_id)
+        await asyncio.to_thread(openvpn_service.start_instance, instance_id)
     
     return {
         "success": True,
@@ -791,7 +792,7 @@ async def create_client(
 
     # Generate certificate
     days = data.cert_duration_days if data.cert_duration_days else instance.cert_duration_days
-    cert_result = openvpn_service.generate_client_cert(instance_id, data.name, days)
+    cert_result = await asyncio.to_thread(openvpn_service.generate_client_cert, instance_id, data.name, days)
     if not cert_result.get("success"):
         raise HTTPException(500, f"Failed to generate certificate: {cert_result.get('error')}")
 
@@ -834,7 +835,7 @@ async def create_client(
         config_text = openvpn_service.create_server_config(instance, remote_routes=aggregated_routes)
         config_path = OPENVPN_BASE_DIR / instance_id / f"{instance_id}.conf"
         if config_path.parent.exists():
-            config_path.write_text(config_text)
+            atomic_write(config_path, config_text)
             logger.info(f"Regenerated server config with remote routes: {aggregated_routes}")
 
     # Add FORWARD chain ACCEPT rules for remote_lans so split-tunnel doesn't drop their traffic
@@ -894,7 +895,7 @@ async def revoke_client(
         raise HTTPException(404, "Client not found")
     
     # Revoke certificate
-    openvpn_service.revoke_client_cert(instance_id, client_name)
+    await asyncio.to_thread(openvpn_service.revoke_client_cert, instance_id, client_name)
 
     # Delete CCD file
     openvpn_service.delete_ccd_file(instance_id, client_name)
@@ -979,7 +980,7 @@ async def restore_client(
         raise HTTPException(400, "Client is not revoked")
     
     # Generate new certificate (this will create a new cert with same name)
-    cert_result = openvpn_service.generate_client_cert(instance_id, client_name, instance.cert_duration_days)
+    cert_result = await asyncio.to_thread(openvpn_service.generate_client_cert, instance_id, client_name, instance.cert_duration_days)
     if not cert_result.get("success"):
         raise HTTPException(500, f"Failed to generate new certificate: {cert_result.get('error')}")
     
@@ -1135,7 +1136,7 @@ async def renew_client_cert(
     
     days = data.duration_days if data and data.duration_days else instance.cert_duration_days
     
-    renew_result = openvpn_service.renew_client_cert(instance_id, client_name, days)
+    renew_result = await asyncio.to_thread(openvpn_service.renew_client_cert, instance_id, client_name, days)
     if not renew_result.get("success"):
         raise HTTPException(500, f"Failed to renew certificate: {renew_result.get('error')}")
     

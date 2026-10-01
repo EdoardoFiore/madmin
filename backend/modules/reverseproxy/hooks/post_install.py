@@ -8,10 +8,12 @@ Reverse Proxy Module - Post Install Hook
 - Idempotent: regenerates all DB-tracked vhosts on re-enable.
 Note: firewall rules (80/443) are applied by router.py at import time.
 """
+import asyncio
 import os
 import shutil
 import logging
 from pathlib import Path
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,7 @@ async def run():
     NGINX_SITES_ENABLED.mkdir(parents=True, exist_ok=True)
     acme_available = NGINX_SITES_AVAILABLE / ACME_FILE
     acme_enabled = NGINX_SITES_ENABLED / ACME_FILE
-    acme_available.write_text(svc.render_acme_vhost())
+    atomic_write(acme_available, svc.render_acme_vhost())
     if not acme_enabled.exists():
         try:
             acme_enabled.symlink_to(acme_available)
@@ -82,12 +84,9 @@ async def run():
     try:
         hook_dir = svc.RENEWAL_HOOK.parent
         hook_dir.mkdir(parents=True, exist_ok=True)
-        svc.RENEWAL_HOOK.write_text(
-            "#!/bin/sh\n"
+        atomic_write(svc.RENEWAL_HOOK, "#!/bin/sh\n"
             "# Installed by MADMIN reverseproxy module\n"
-            "nginx -t && systemctl reload nginx\n"
-        )
-        os.chmod(svc.RENEWAL_HOOK, 0o755)
+            "nginx -t && systemctl reload nginx\n", mode=0o755)
     except Exception as e:
         logger.warning("Reverse Proxy post-install: cert renewal hook error: %s", e)
 
@@ -111,7 +110,7 @@ async def run():
         logger.warning("Reverse Proxy post-install: re-render error: %s", e)
 
     # 8) Reload nginx (apply ACME vhost at minimum)
-    ok, msg = svc.nginx_reload()
+    ok, msg = await asyncio.to_thread(svc.nginx_reload)
     if not ok:
         logger.error("Reverse Proxy post-install: nginx reload failed: %s", msg)
         return False

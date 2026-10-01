@@ -27,7 +27,7 @@ async def run():
         result = subprocess.run(
             ["wg", "show", "interfaces"],
             capture_output=True,
-            text=True
+            text=True, timeout=30
         )
         
         if result.returncode == 0 and result.stdout.strip():
@@ -35,7 +35,7 @@ async def run():
             for iface in interfaces:
                 if iface:
                     logger.info(f"Stopping WireGuard interface: {iface}")
-                    subprocess.run(["wg-quick", "down", iface], capture_output=True)
+                    subprocess.run(["wg-quick", "down", iface], capture_output=True, timeout=60)
     except Exception as e:
         logger.warning(f"Error stopping interfaces: {e}")
     
@@ -61,9 +61,9 @@ def _cleanup_iptables_chains():
     for table in ["filter", "nat"]:
         try:
             result = subprocess.run(
-                ["iptables", "-t", table, "-L", "-n"],
+                ["iptables", "-w", "-t", table, "-L", "-n"],
                 capture_output=True,
-                text=True
+                text=True, timeout=30
             )
             
             chains_to_remove = []
@@ -77,10 +77,10 @@ def _cleanup_iptables_chains():
             # Remove references first, then flush and delete
             for chain in chains_to_remove:
                 _remove_references_to_chain(table, chain)
-                subprocess.run(["iptables", "-t", table, "-F", chain], capture_output=True)
+                subprocess.run(["iptables", "-w", "-t", table, "-F", chain], capture_output=True, timeout=30)
             
             for chain in chains_to_remove:
-                subprocess.run(["iptables", "-t", table, "-X", chain], capture_output=True)
+                subprocess.run(["iptables", "-w", "-t", table, "-X", chain], capture_output=True, timeout=30)
                 logger.info(f"Removed chain: {chain} ({table})")
                 
         except Exception as e:
@@ -91,15 +91,15 @@ def _remove_references_to_chain(table: str, chain_name: str):
     """Remove all jump rules pointing to a chain."""
     try:
         result = subprocess.run(
-            ["iptables", "-t", table, "-S"],
+            ["iptables", "-w", "-t", table, "-S"],
             capture_output=True,
-            text=True
+            text=True, timeout=30
         )
         
         for line in result.stdout.split('\n'):
             if f"-j {chain_name}" in line and line.startswith('-A '):
                 parts = line.split()
-                delete_cmd = ["iptables", "-t", table] + ["-D" if p == "-A" else p for p in parts]
-                subprocess.run(delete_cmd, capture_output=True)
+                delete_cmd = ["iptables", "-w", "-t", table] + ["-D" if p == "-A" else p for p in parts]
+                subprocess.run(delete_cmd, capture_output=True, timeout=30)
     except Exception as e:
         logger.debug(f"Error removing references to {chain_name}: {e}")

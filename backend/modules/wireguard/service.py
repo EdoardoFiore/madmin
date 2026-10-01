@@ -4,6 +4,7 @@ WireGuard Module - Service Layer
 Business logic for WireGuard operations: key generation, config management,
 interface control, IP allocation, QR code generation.
 """
+import asyncio
 import subprocess
 import logging
 import urllib.request
@@ -17,6 +18,7 @@ from .models import WgInstance, WgClient
 from core.validation import check_client_name, check_endpoint
 from core.network.utils import get_public_ip, get_default_interface
 from core.firewall import iptables as core_iptables
+from core.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +41,12 @@ class WireGuardService:
             result = subprocess.run(
                 ['wg'] + args,
                 capture_output=True, text=True, check=True,
-                input=input_data
+                input=input_data, timeout=30
             )
             return result.stdout.strip()
         except FileNotFoundError:
             raise RuntimeError("WireGuard non installato")
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(f"Comando WireGuard fallito: {e.stderr}")
     
     @staticmethod
@@ -111,25 +113,24 @@ AllowedIPs = {allowed_ips}
         if current_block and not block_contains_target:
             new_lines.extend(current_block)
         
-        with open(config_path, "w") as f:
-            f.writelines(new_lines)
+        atomic_write(config_path, "".join(new_lines))
     
     @staticmethod
     def start_interface(interface: str) -> bool:
         """Start WireGuard interface."""
         try:
-            subprocess.run(['wg-quick', 'up', interface], check=True, capture_output=True)
+            subprocess.run(['wg-quick', 'up', interface], check=True, capture_output=True, timeout=60)
             return True
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return False
     
     @staticmethod
     def stop_interface(interface: str) -> bool:
         """Stop WireGuard interface."""
         try:
-            subprocess.run(['wg-quick', 'down', interface], check=True, capture_output=True)
+            subprocess.run(['wg-quick', 'down', interface], check=True, capture_output=True, timeout=60)
             return True
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return False
     
     @classmethod
@@ -139,7 +140,7 @@ AllowedIPs = {allowed_ips}
         Shared by the /start endpoint and the on_startup restore hook so both
         paths produce an identical firewall state.
         """
-        if not cls.start_interface(instance.interface):
+        if not await asyncio.to_thread(cls.start_interface, instance.interface):
             return False
         if instance.direction == "client":
             cls.apply_instance_firewall_rules(
@@ -162,7 +163,7 @@ AllowedIPs = {allowed_ips}
     @classmethod
     async def bring_instance_down(cls, instance, db) -> bool:
         """Stop an instance's interface and remove its firewall rules."""
-        if not cls.stop_interface(instance.interface):
+        if not await asyncio.to_thread(cls.stop_interface, instance.interface):
             return False
         if instance.direction == "client":
             cls.remove_instance_firewall_rules(
@@ -182,23 +183,23 @@ AllowedIPs = {allowed_ips}
         try:
             stripped = subprocess.run(
                 ['wg-quick', 'strip', str(config_path)],
-                check=True, capture_output=True, text=True
+                check=True, capture_output=True, text=True, timeout=60
             )
             subprocess.run(
                 ['wg', 'syncconf', interface, '/dev/stdin'],
-                input=stripped.stdout, check=True, capture_output=True, text=True
+                input=stripped.stdout, check=True, capture_output=True, text=True, timeout=30
             )
             return True
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return False
     
     @staticmethod
     def get_interface_status(interface: str) -> bool:
         """Check if interface is running."""
         try:
-            subprocess.run(['wg', 'show', interface], check=True, capture_output=True)
+            subprocess.run(['wg', 'show', interface], check=True, capture_output=True, timeout=30)
             return True
-        except:
+        except (OSError, subprocess.SubprocessError):
             return False
     
     @staticmethod
@@ -227,7 +228,7 @@ AllowedIPs = {allowed_ips}
         try:
             result = subprocess.run(
                 ['wg', 'show', interface, 'dump'],
-                capture_output=True, text=True, check=True
+                capture_output=True, text=True, check=True, timeout=30
             )
             
             lines = result.stdout.strip().split('\n')
@@ -265,7 +266,7 @@ AllowedIPs = {allowed_ips}
                         'tx_bytes': tx_bytes
                     }
             
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             # Interface might not be running
             pass
         except Exception as e:
@@ -365,8 +366,7 @@ AllowedIPs = {allowed_ips}
         keepalive = parsed.get("persistent_keepalive") or instance.persistent_keepalive or 25
         lines.append(f"PersistentKeepalive = {keepalive}")
 
-        config_path.write_text("\n".join(lines) + "\n")
-        config_path.chmod(0o600)
+        atomic_write(config_path, "\n".join(lines) + "\n", mode=0o600)
         logger.info(f"Materialized WG client instance {instance.id} at {config_path}")
         return True
 
@@ -378,7 +378,7 @@ AllowedIPs = {allowed_ips}
         try:
             result = subprocess.run(
                 ["wg", "show", interface, "dump"],
-                capture_output=True, text=True, check=True,
+                capture_output=True, text=True, check=True, timeout=30
             )
             lines = result.stdout.strip().splitlines()
             for line in lines[1:]:  # skip interface line
@@ -483,7 +483,7 @@ PersistentKeepalive = 25
         try:
             result = subprocess.run(
                 ['qrencode', '-t', 'PNG', '-o', '-'],
-                input=config.encode('utf-8'), capture_output=True, text=False, check=True
+                input=config.encode('utf-8'), capture_output=True, text=False, check=True, timeout=30
             )
             return result.stdout
         except FileNotFoundError:
