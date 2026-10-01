@@ -715,6 +715,8 @@ async function loadWelcome() {
 async function loadSystemStats() {
     try {
         const stats = await apiGet('/system/stats');
+        // The user may have left the dashboard while the request was in flight
+        if (!document.getElementById('system-stats-container')) return;
 
         if (!stats.available) {
             document.getElementById('system-stats-container').innerHTML = `
@@ -830,6 +832,8 @@ async function loadResourceGraphs(hours) {
         if (ramChart) ramChart.destroy();
         if (diskChart) diskChart.destroy();
 
+        // Left the dashboard while loading: ApexCharts would throw "Element not found"
+        if (!document.getElementById('chart-cpu')) return;
         cpuChart = new ApexCharts(document.getElementById('chart-cpu'), cpuOptions);
         ramChart = new ApexCharts(document.getElementById('chart-ram'), ramOptions);
         diskChart = new ApexCharts(document.getElementById('chart-disk'), diskOptions);
@@ -940,6 +944,7 @@ async function loadNetTrafficGraph(iface, hours) {
             legend: { show: false }
         };
 
+        if (!container || !container.isConnected) return;
         netTrafficChart = new ApexCharts(container, options);
         netTrafficChart.render();
 
