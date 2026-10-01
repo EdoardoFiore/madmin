@@ -8,8 +8,11 @@ from sqlalchemy import Column, BigInteger
 from pydantic import field_validator
 from typing import Optional, List
 from datetime import datetime
+import ipaddress
 import uuid
 import re
+
+from .ports import parse_port_spec
 
 
 class MachineFirewallRule(SQLModel, table=True):
@@ -200,12 +203,16 @@ class _FirewallRuleValidators(SQLModel):
         if v is None or v == "":
             return v
         s = str(v).strip()
-        # Only literal IP / CIDR / hostname-ish (chars allowed by iptables -s/-d).
-        # Object/group references live in firewall_rule_address, not here. Legacy
-        # "geo:<cc>" tokens are migrated to geo address objects at startup
-        # (see backend/main.py), so they are no longer accepted on this field.
-        if not re.fullmatch(r'[\w.:/\-]+', s, re.ASCII):
-            raise ValueError(f"Sorgente/destinazione non valida: {v}")
+        # Literal IPv4 address or CIDR only. A hostname would be resolved by
+        # iptables at restore time (at boot, possibly before DNS works) and one
+        # unresolvable name fails the whole ruleset: names go in FQDN address
+        # objects. Object/group references live in firewall_rule_address.
+        try:
+            net = ipaddress.ip_network(s, strict=False)
+        except ValueError:
+            raise ValueError(f"Sorgente/destinazione non valida: {v} (indirizzo IPv4 o CIDR; per i nomi usa un oggetto FQDN)")
+        if net.version != 4:
+            raise ValueError(f"Sorgente/destinazione non valida: {v} (solo IPv4)")
         return s
 
     @field_validator('port', mode='before', check_fields=False)
@@ -213,12 +220,9 @@ class _FirewallRuleValidators(SQLModel):
     def validate_port(cls, v):
         if v is None or v == "":
             return None
-        # Accept single port, range "80:443", multiport "80,443,8080"
-        parts = re.split(r'[:,]', str(v))
-        for p in parts:
-            if not re.fullmatch(r'\d{1,5}', p) or not (1 <= int(p) <= 65535):
-                raise ValueError(f"Porta non valida: {p} (range 1-65535)")
-        return v
+        # Single port, range "8000:8080", list "80,443,8000:8080" (see ports.py)
+        parse_port_spec(v)
+        return str(v)
 
     @field_validator('protocol', mode='before', check_fields=False)
     @classmethod

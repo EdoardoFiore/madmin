@@ -13,6 +13,7 @@ import re
 from typing import List, Optional, Tuple, Dict
 from config import get_settings
 from core.fsutil import atomic_write
+from .ports import parse_port_spec
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -975,11 +976,13 @@ def build_rule_args(
         args.extend(["-m", "connmark", "--mark", connmark_match])
 
     if port and protocol in ("tcp", "udp"):
-        # Support both single port and range
+        # Rows that bypassed the API (restored archives) are checked here too:
+        # iptables-restore would reject the whole ruleset for one bad spec
+        parse_port_spec(port)
         if "," in str(port):
-             args.extend(["-m", "multiport", "--dports", str(port)])
+            args.extend(["-m", "multiport", "--dports", str(port)])
         else:
-             args.extend(["--dport", str(port)])
+            args.extend(["--dport", str(port)])
     
     if limit_rate:
         # Rate limiting: -m limit --limit <rate> [--limit-burst <burst>]
