@@ -40,7 +40,7 @@ export function createEntriesPanel(panelEl, opts) {
         const sub = item.__kind === 'group' ? t('firewall.entries.group') : (item.value || item.type);
         return `
             <button type="button" class="list-group-item list-group-item-action d-flex align-items-center gap-2 ${sel ? 'active' : ''}"
-                    data-composite="${composite}">
+                    data-composite="${escapeHtml(composite)}">
                 <i class="ti ${icon}"></i>
                 <span class="flex-grow-1 text-truncate">${escapeHtml(item.name)}</span>
                 <small class="${sel ? '' : 'text-muted'} text-truncate" style="max-width:45%">${escapeHtml(sub || '')}</small>

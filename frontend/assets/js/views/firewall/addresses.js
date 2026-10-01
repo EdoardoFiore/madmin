@@ -367,7 +367,7 @@ function _memberChipPopover(m) {
     const obj = m.object_id ? addressObjects.find(o => o.id === m.object_id) : null;
     const labels = { cidr: 'CIDR', range: 'Range', fqdn: 'FQDN', geo: 'Geo' };
     let body = `<b>${escapeHtml(m.name)}</b>`;
-    if (m.type) body += ` <span class="badge bg-secondary-lt">${labels[m.type] || m.type}</span>`;
+    if (m.type) body += ` <span class="badge bg-secondary-lt">${escapeHtml(labels[m.type] || m.type)}</span>`;
     if (obj?.value) body += `<br><code>${escapeHtml(obj.value)}</code>`;
     if (obj?.resolved_ips && obj.resolved_ips.length) {
         const ips = obj.resolved_ips.slice(0, 4).map(ip => escapeHtml(ip)).join(', ');
@@ -456,7 +456,7 @@ function populateGeoSelect() {
     const sel = document.getElementById('ao-value-geo');
     if (!sel || !geoCountries) return;
     sel.innerHTML = geoCountries
-        .map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${c.code.toUpperCase()})</option>`)
+        .map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${escapeHtml((c.code || "").toUpperCase())})</option>`)
         .join('');
 }
 

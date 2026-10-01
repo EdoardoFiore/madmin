@@ -4,6 +4,7 @@
  * Constants and small helpers shared by the Standard view, the rule editor and
  * the Advanced (power-user) view.
  */
+import { escapeHtml } from '../../utils.js';
 import { t } from '../../i18n.js';
 
 // Sentinel comment marking the protected managed-LAN navigation NAT policy
@@ -50,11 +51,12 @@ export const SERVICE_PRESETS = [
 /** Human label for a rule's service (protocol + port). The engine only emits
  * --dport for tcp/udp (iptables.py build_rule_args), so a port set on any
  * other protocol is dead data and must not be shown as if it mattered. */
+/** HTML-safe "TCP/443" label (the result goes straight into markup). */
 export function serviceLabel(rule) {
     if (!rule.protocol) return 'ALL';
-    const proto = rule.protocol.toUpperCase();
+    const proto = escapeHtml(rule.protocol.toUpperCase());
     const portActive = rule.port && (rule.protocol === 'tcp' || rule.protocol === 'udp');
-    return portActive ? `${proto}/${rule.port}` : proto;
+    return portActive ? `${proto}/${escapeHtml(rule.port)}` : proto;
 }
 
 /** True for synthetic, read-only companion rows produced by the backend. */

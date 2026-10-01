@@ -299,7 +299,7 @@ function formFields(rule) {
                 <label class="form-label">${t('firewall.editor.intObj')}</label>
                 <select class="form-select" id="ed-intobj">
                     <option value="">—</option>
-                    ${intObjOptions.map(o => `<option value="${o.id}" ${hasIntObj && rule.to_destination_object_id === o.id ? 'selected' : ''}>${escapeHtml(o.name)} (${escapeHtml(o.value)})</option>`).join('')}
+                    ${intObjOptions.map(o => `<option value="${escapeHtml(o.id)}" ${hasIntObj && rule.to_destination_object_id === o.id ? 'selected' : ''}>${escapeHtml(o.name)} (${escapeHtml(o.value)})</option>`).join('')}
                 </select>
                 <small class="form-hint">${t('firewall.editor.intObjHint')}</small>
             </div>
@@ -511,7 +511,7 @@ function renderChips(field) {
 
 function chip(c, inner) {
     return `<span class="badge bg-azure-lt d-inline-flex align-items-center gap-1">${inner}
-        <button type="button" class="fw-chip-x btn-close" data-c="${c}"
+        <button type="button" class="fw-chip-x btn-close" data-c="${escapeHtml(c)}"
                 style="font-size:.6em;filter:none;opacity:.8;width:1em;height:1em"></button></span>`;
 }
 

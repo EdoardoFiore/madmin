@@ -120,7 +120,7 @@ function counterPopoverHtml(c) {
 function counterIcon(r) {
     const cid = counterRuleId(r);
     if (!cid) return '';
-    return `<i class="ti ti-chart-histogram fw-counter text-muted" data-counter-id="${cid}" style="cursor:help"></i>`;
+    return `<i class="ti ti-chart-histogram fw-counter text-muted" data-counter-id="${escapeHtml(cid)}" style="cursor:help"></i>`;
 }
 
 /** Open the editor in-place, returning to this view on close. */
@@ -216,7 +216,7 @@ function renderAutoForward() {
 
 function autoForwardRow(r, hint) {
     return `
-        <tr data-id="${r.id}">
+        <tr data-id="${escapeHtml(r.id)}">
             <td class="text-muted"><i class="ti ti-lock" title="${hint}"></i></td>
             <td>${r.in_interface
                 ? `<code>${escapeHtml(r.in_interface)}</code>`
@@ -327,7 +327,7 @@ function policyRow(r, canManage) {
     const disabled = r.enabled ? '' : 'opacity-50';
     if (isManagedNat(r)) {
         return `
-            <tr class="${disabled}" data-id="${r.id}">
+            <tr class="${disabled}" data-id="${escapeHtml(r.id)}">
                 <td class="text-muted"><i class="ti ti-lock" title="${t('firewall.managedNatHint')}"></i></td>
                 <td>${renderAddrCell(r.source, r.source_refs)}</td>
                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
@@ -343,7 +343,7 @@ function policyRow(r, canManage) {
     const locked = isLockedForMode(r, 'policy');
     const draggable = canManage && !locked;
     return `
-        <tr class="${disabled} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+        <tr class="${disabled} ${draggable ? 'fw-drag' : ''}" data-id="${escapeHtml(r.id)}" draggable="${draggable}">
             <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
             <td>${renderAddrCell(r.source, r.source_refs)}</td>
             <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
@@ -431,7 +431,7 @@ function renderPortForward() {
                             const locked = isLockedForMode(r, 'portforward');
                             const draggable = canManage && !locked;
                             return `
-                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${escapeHtml(r.id)}" draggable="${draggable}">
                                 <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
@@ -498,7 +498,7 @@ function renderOutboundNat() {
                             const actionLocked = isLockedForMode(r, 'outnat');
                             const draggable = canManage && !locked;
                             return `
-                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${r.id}" draggable="${draggable}">
+                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${escapeHtml(r.id)}" draggable="${draggable}">
                                 <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${renderAddrCell(r.source, r.source_refs)}</td>
                                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
