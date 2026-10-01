@@ -13,10 +13,12 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml, formatBy
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
-import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId } from './shared.js';
+import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId,
+    pairKey, pairsOverlap, groupBySections } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
+let sections = []; // GET /firewall/sections: forward groups in evaluation order
 let counters = new Map(); // rule uuid -> {rule_id, packets, bytes, window_start, updated_at}
 let containerEl = null;
 
@@ -49,7 +51,10 @@ export async function render(container, _params = []) {
 
 async function reload() {
     try {
-        rules = await apiGet('/firewall/rules');
+        [rules, sections] = await Promise.all([
+            apiGet('/firewall/rules'),
+            apiGet('/firewall/sections').catch(() => []),
+        ]);
     } catch (e) {
         showToast(t('firewall.loadRulesError', { error: e.message }), 'error');
         rules = [];
@@ -238,13 +243,9 @@ function renderPolicy() {
         .filter(r => r.table_name === 'filter' && r.chain === 'FORWARD' && !isAutoRow(r))
         .sort((a, b) => a.order - b.order);
 
-    // Group by in->out interface pair, preserving first-seen order.
-    const groups = new Map();
-    for (const r of policies) {
-        const key = `${r.in_interface || '*'}|${r.out_interface || '*'}`;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(r);
-    }
+    // Group by in->out interface pair, in the engine's evaluation order
+    // (one MFWD_* subchain per group, jumped to in section order).
+    const groups = groupBySections(policies, sections);
 
     const header = `
         <div class="card-header d-flex align-items-center">
@@ -275,9 +276,20 @@ function renderPolicy() {
         return;
     }
 
+    const pairName = (k) => {
+        const [i, o] = k.split('|');
+        return `${i === '*' ? t('firewall.editor.anyInterface') : i} → ${o === '*' ? t('firewall.editor.anyInterface') : o}`;
+    };
+    const keys = [...groups.keys()];
     let body = '';
     for (const [key, list] of groups) {
         const [inIf, outIf] = key.split('|');
+        // Groups listed above that can see the same packets decide first
+        const earlier = keys.slice(0, keys.indexOf(key)).filter(k => pairsOverlap(k, key));
+        const overlapHint = earlier.length
+            ? `<span class="badge bg-yellow-lt ms-2" title="${escapeHtml(t('firewall.std.sectionOverlap', { groups: earlier.map(pairName).join(', ') }))}">
+                   <i class="ti ti-arrows-split-2 me-1"></i>${t('firewall.std.sectionOverlapBadge', { n: earlier.length })}</span>`
+            : '';
         const pairLabel = `${inIf === '*' ? t('firewall.editor.anyInterface') : escapeHtml(inIf)}
             <i class="ti ti-arrow-right mx-1 text-muted"></i>
             ${outIf === '*' ? t('firewall.editor.anyInterface') : escapeHtml(outIf)}`;
@@ -289,6 +301,7 @@ function renderPolicy() {
                     <i class="ti ti-arrows-right-left me-2 text-muted"></i>
                     <strong>${pairLabel}</strong>
                     <span class="badge bg-secondary-lt ms-2">${list.length}</span>
+                    ${overlapHint}
                 </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table mb-0">
@@ -709,23 +722,15 @@ async function onSectionDrop(wrap, draggedEl, targetEl, before) {
     seqEls.splice(before ? idx : idx + 1, 0, draggedEl);
     const seq = seqEls.map(g => g.dataset.pair);
 
-    // Flat renumber of every forward policy following the new sequence.
-    const policies = rules
-        .filter(r => r.table_name === 'filter' && r.chain === 'FORWARD' && !isAutoRow(r))
-        .sort((a, b) => a.order - b.order);
-    const byPair = new Map();
-    for (const r of policies) {
-        const key = `${r.in_interface || '*'}|${r.out_interface || '*'}`;
-        if (!byPair.has(key)) byPair.set(key, []);
-        byPair.get(key).push(r);
-    }
-    const orders = [];
-    let i = 0;
-    for (const key of seq) {
-        for (const r of (byPair.get(key) || [])) orders.push({ id: r.id, order: i++ });
+    // The group order is its own table (ForwardSection): one PUT, rule order untouched
+    const idByKey = new Map(sections.map(sec => [pairKey(sec.in_interface, sec.out_interface), sec.id]));
+    const ids = seq.map(k => idByKey.get(k));
+    if (ids.some(id => !id) || ids.length !== sections.length) {
+        await reload();   // stale view: the backend's group list changed meanwhile
+        return;
     }
     try {
-        await apiPut('/firewall/rules/order', orders);
+        await apiPut('/firewall/sections/order', { section_ids: ids });
         showToast(t('firewall.orderUpdated'), 'success');
         await reload();
     } catch (err) {

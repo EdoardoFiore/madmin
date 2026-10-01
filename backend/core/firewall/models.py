@@ -4,7 +4,7 @@ MADMIN Firewall Models
 Database models for machine firewall rules and module chain registration.
 """
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Column, BigInteger
+from sqlalchemy import Column, BigInteger, UniqueConstraint
 from pydantic import field_validator
 from typing import Optional, List
 from datetime import datetime
@@ -119,6 +119,30 @@ class ModuleChain(SQLModel, table=True):
     table_name: str = Field(default="filter", max_length=20)
     
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ForwardSection(SQLModel, table=True):
+    """
+    Evaluation order of the filter/FORWARD interface-pair groups.
+
+    Every forward policy belongs to the group of its (in_interface,
+    out_interface) pair; "" means any. Each group is one MFWD_* subchain and
+    MADMIN_FORWARD jumps to them in `position` order, so this table — not the
+    rules' global `order` — decides which group sees a packet first. Rule
+    `order` only orders rules within their group.
+
+    Kept in sync with the rules by the orchestrator (sync_forward_sections, run
+    on every apply): a new pair is inserted by specificity (both interfaces,
+    then one, then none), an empty group is removed, and the admin can reorder
+    groups (PUT /firewall/sections/order).
+    """
+    __tablename__ = "firewall_forward_section"
+    __table_args__ = (UniqueConstraint("in_interface", "out_interface"),)
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    in_interface: str = Field(default="", max_length=20)
+    out_interface: str = Field(default="", max_length=20)
+    position: int = Field(default=0)
 
 
 class RuleCounter(SQLModel, table=True):
@@ -471,6 +495,15 @@ class RuleCounterResponse(SQLModel):
     bytes: int
     window_start: datetime  # "counting since" — see RuleCounter
     updated_at: datetime    # time range covered = [window_start, updated_at]
+
+
+class ForwardSectionResponse(SQLModel):
+    """GET /firewall/sections: interface-pair groups in evaluation order."""
+    id: str
+    in_interface: str          # "" = any
+    out_interface: str         # "" = any
+    position: int
+    rule_count: int
 
 
 class ModuleChainResponse(SQLModel):

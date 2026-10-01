@@ -30,6 +30,7 @@ from .models import (
     RuleOrderUpdate,
     RuleCounter,
     RuleCounterResponse,
+    ForwardSection, ForwardSectionResponse,
     ModuleChainResponse,
     RuleAddressRefResponse,
     AddressObject,
@@ -756,6 +757,63 @@ async def list_rules(
             fields = dnat_input_fields(r, target)
             responses.append(_auto_input_response(r, fields, f"→ DNAT self {target}"))
     return responses
+
+
+@router.get("/sections", response_model=List[ForwardSectionResponse])
+async def list_forward_sections(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """filter/FORWARD interface-pair groups in evaluation order ("" = any)."""
+    from sqlalchemy import func
+    rows = (await session.execute(
+        select(ForwardSection).order_by(ForwardSection.position)
+    )).scalars().all()
+    counts = {}
+    for in_if, out_if, n in (await session.execute(
+        select(MachineFirewallRule.in_interface, MachineFirewallRule.out_interface, func.count())
+        .where(MachineFirewallRule.table_name == "filter", MachineFirewallRule.chain == "FORWARD")
+        .group_by(MachineFirewallRule.in_interface, MachineFirewallRule.out_interface)
+    )).all():
+        key = (in_if or "", out_if or "")
+        counts[key] = counts.get(key, 0) + n
+    return [
+        ForwardSectionResponse(
+            id=str(r.id), in_interface=r.in_interface, out_interface=r.out_interface,
+            position=r.position, rule_count=counts.get((r.in_interface, r.out_interface), 0),
+        )
+        for r in rows
+    ]
+
+
+class SectionOrderUpdate(SQLModel):
+    section_ids: List[str]
+
+
+@router.put("/sections/order")
+async def update_forward_section_order(
+    data: SectionOrderUpdate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Reorder the interface-pair groups: the earlier group sees a packet first.
+    The list must name every current section exactly once.
+    """
+    rows = (await session.execute(select(ForwardSection))).scalars().all()
+    by_id = {str(r.id): r for r in rows}
+    if sorted(data.section_ids) != sorted(by_id):
+        raise HTTPException(status_code=400, detail="L'elenco deve contenere ogni gruppo una sola volta")
+    for i, sid in enumerate(data.section_ids):
+        by_id[sid].position = i
+    await session.flush()
+    try:
+        await firewall_orchestrator.apply_rules(session)
+        await session.commit()
+    except IptablesError as e:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok"}
 
 
 @router.get("/counters", response_model=List[RuleCounterResponse])

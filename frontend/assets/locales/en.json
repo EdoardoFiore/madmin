@@ -342,6 +342,8 @@
         "std": {
             "newPolicy": "New Policy",
             "dragSection": "Drag to reorder the section (evaluation precedence)",
+            "sectionOverlap": "This traffic can be decided first by: {groups}. Drag the groups to change which one evaluates first.",
+            "sectionOverlapBadge": "after {n}",
             "anyAddr": "any",
             "masquerade": "Masquerade",
             "policyTitle": "Firewall Policy",

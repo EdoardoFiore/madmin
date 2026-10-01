@@ -135,3 +135,47 @@ export function validateRuleConstraints(data) {
     }
     return null;
 }
+
+// ---------------------------------------------------------------------------
+// filter/FORWARD interface-pair groups (backend: ForwardSection)
+// ---------------------------------------------------------------------------
+
+/** Group key of a forward rule or section; "*" = any interface. */
+export function pairKey(inIf, outIf) {
+    return `${inIf || '*'}|${outIf || '*'}`;
+}
+
+/** Can two interface matches see the same packet? (iptables "eth+" = prefix) */
+function ifaceOverlap(a, b) {
+    if (a === '*' || b === '*') return true;
+    const pa = a.endsWith('+') ? a.slice(0, -1) : null;
+    const pb = b.endsWith('+') ? b.slice(0, -1) : null;
+    if (pa !== null && pb !== null) return pa.startsWith(pb) || pb.startsWith(pa);
+    if (pa !== null) return b.startsWith(pa);
+    if (pb !== null) return a.startsWith(pb);
+    return a === b;
+}
+
+/** True when some packet could be evaluated by both groups. */
+export function pairsOverlap(k1, k2) {
+    const [i1, o1] = k1.split('|');
+    const [i2, o2] = k2.split('|');
+    return ifaceOverlap(i1, i2) && ifaceOverlap(o1, o2);
+}
+
+/**
+ * Forward policies grouped by pair, in evaluation order: the section order
+ * from GET /firewall/sections (the order of the MADMIN_FORWARD jumps), pairs
+ * the backend has not synced yet last. Empty groups are dropped.
+ */
+export function groupBySections(policies, sections) {
+    const groups = new Map();
+    for (const s of sections || []) groups.set(pairKey(s.in_interface, s.out_interface), []);
+    for (const r of policies) {
+        const k = pairKey(r.in_interface, r.out_interface);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(r);
+    }
+    for (const [k, list] of groups) if (!list.length) groups.delete(k);
+    return groups;
+}

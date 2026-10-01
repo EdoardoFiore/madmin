@@ -342,6 +342,8 @@
         "std": {
             "newPolicy": "Nuova regola",
             "dragSection": "Trascina per riordinare la sezione (priorità di valutazione)",
+            "sectionOverlap": "Questo traffico può essere deciso prima da: {groups}. Trascina i gruppi per cambiare chi valuta per primo.",
+            "sectionOverlapBadge": "valutato dopo {n}",
             "anyAddr": "qualsiasi",
             "masquerade": "Masquerade",
             "policyTitle": "Regole Firewall",
