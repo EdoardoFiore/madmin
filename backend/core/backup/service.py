@@ -27,7 +27,7 @@ import subprocess
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path, PurePosixPath
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text, delete
@@ -74,6 +74,32 @@ def ensure_imports_dir():
 # ============== CONFIG EXPORT ==============
 
 
+def _reserve_export_name() -> Tuple[str, str]:
+    """
+    A name no other archive uses, and its staging directory.
+
+    The timestamp has one-second resolution: two exports in the same second
+    (an export followed by a module deactivation, two clicks) shared the
+    staging directory and the archive file, and an encrypted export removed
+    the plain archive written just before. mkdir is atomic, so it also
+    reserves the name against a concurrent export.
+    """
+    backup_dir = ensure_backup_dir()
+    base = f"madmin-config-{MADMIN_VERSION}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    n = 1
+    while True:
+        name = base if n == 1 else f"{base}-{n}"
+        path = os.path.join(backup_dir, name)
+        n += 1
+        if any(os.path.exists(path + suffix) for suffix in (PLAIN_SUFFIX, ENCRYPTED_SUFFIX)):
+            continue
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return name, path
+
+
 async def export_config(session: AsyncSession) -> str:
     """
     Export full configuration as a portable tar.gz archive.
@@ -88,11 +114,8 @@ async def export_config(session: AsyncSession) -> str:
     
     Returns path to created archive.
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    export_name = f"madmin-config-{MADMIN_VERSION}-{timestamp}"
-    export_path = os.path.join(ensure_backup_dir(), export_name)
-    os.makedirs(export_path, exist_ok=True)
-    
+    export_name, export_path = _reserve_export_name()
+
     try:
         # --- Config manifest ---
         active_modules = await _get_active_modules(session)
