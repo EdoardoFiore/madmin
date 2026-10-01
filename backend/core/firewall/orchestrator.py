@@ -7,11 +7,12 @@ High-level firewall management that coordinates:
 - Rule application from database
 """
 import asyncio
+import ipaddress
 import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, or_
 import uuid
 
 import json
@@ -19,14 +20,45 @@ import json
 from .models import (
     MachineFirewallRule, ModuleChain,
     AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
+    RuleCounter,
 )
 from . import iptables, addresses
 from core.concurrency import resource_lock, spawn_background
 
 logger = logging.getLogger(__name__)
 
+# Comment marking the always-last implicit deny appended to MADMIN_FORWARD by
+# apply_rules(). The FORWARD catch-all is no longer a DB rule: new policies are
+# always reachable by construction, FortiGate-style.
+IMPLICIT_DENY_COMMENT = "MADMIN_IMPLICIT_DENY"
 
-def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
+
+def effective_to_destination(rule, obj_value: Optional[str] = None) -> Optional[str]:
+    """
+    The literal ip[:port] this DNAT rule actually rewrites to. When the rule
+    references an address object (to_destination_object_id), obj_value is
+    that object's resolved value — router.py only accepts /32 cidr objects
+    here (a single host), never a range or wider CIDR: --to-destination
+    rewrites to one address, and every companion below embeds the target as
+    a plain -d match, which a range or /24-style CIDR can't be (iptables
+    doesn't accept a range there, and a wider CIDR isn't a single rewrite
+    target to begin with). Otherwise the rule's own literal to_destination
+    column is used unchanged.
+
+    Every apply-time and display-time consumer of a DNAT target — the
+    restore line itself, the FORWARD/INPUT/hairpin companions, and the
+    protected-port guard — must resolve through this (or receive its result
+    via the `to_destination` kwarg the *_fields helpers below accept),
+    never read rule.to_destination directly, so switching a rule between a
+    literal and an object target can never leave one consumer stale.
+    """
+    if obj_value:
+        base = obj_value[:-3] if obj_value.endswith("/32") else obj_value
+        return f"{base}:{rule.to_destination_port}" if rule.to_destination_port else base
+    return rule.to_destination
+
+
+def dnat_forward_fields(rule, to_destination: Optional[str] = None) -> Dict[str, Optional[str]]:
     """
     Compute the FORWARD ACCEPT match for a DNAT rule's companion forward.
 
@@ -34,8 +66,12 @@ def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
     must be accepted toward that translated destination. Refined by the DNAT's
     incoming interface and source when present. Shared by apply_rules (iptables
     generation) and the API listing (read-only synthetic row) so they stay in sync.
+
+    to_destination: pre-resolved via effective_to_destination() by the caller
+    (falls back to the rule's literal column when the caller has nothing else
+    to resolve, e.g. a plain literal-target rule).
     """
-    dest_ip, dest_port = iptables.split_ip_port(rule.to_destination)
+    dest_ip, dest_port = iptables.split_ip_port(to_destination if to_destination is not None else rule.to_destination)
     return {
         "protocol": rule.protocol,
         "source": rule.source,
@@ -43,6 +79,191 @@ def dnat_forward_fields(rule) -> Dict[str, Optional[str]]:
         "port": dest_port or rule.port,
         "in_interface": rule.in_interface,
     }
+
+
+def redirect_input_fields(rule) -> Dict[str, Optional[str]]:
+    """
+    Compute the INPUT ACCEPT match for a nat/PREROUTING REDIRECT companion.
+
+    REDIRECT always delivers to the host itself, so the packet traverses INPUT
+    (not FORWARD) after the rewrite — without a companion it dies on the
+    default INPUT catch-all. Shared by apply_rules and the API listing so they
+    stay in sync (dnat_forward_fields/policy_nat_fields pattern).
+    """
+    dport = rule.to_ports or rule.port
+    # to_ports is validated as \d+(-\d+)? (a range) but --dport wants ':'.
+    if dport and "-" in dport:
+        dport = dport.replace("-", ":")
+    return {
+        "protocol": rule.protocol,
+        "port": dport,
+        "source": rule.source,
+        "in_interface": rule.in_interface,
+    }
+
+
+def dnat_input_fields(rule, to_destination: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """
+    Compute the INPUT ACCEPT match for a DNAT whose target is a local address.
+
+    DNAT rewrites the destination before the routing decision, so by the time
+    the packet reaches INPUT it already carries the translated (local)
+    destination — matching -d dest_ip here is correct post-NAT state.
+
+    to_destination: pre-resolved via effective_to_destination() by the caller.
+    """
+    dest_ip, dest_port = iptables.split_ip_port(to_destination if to_destination is not None else rule.to_destination)
+    return {
+        "protocol": rule.protocol,
+        "port": dest_port or rule.port,
+        "source": rule.source,
+        "destination": dest_ip,
+        "in_interface": rule.in_interface,
+    }
+
+
+def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
+    """
+    Compute the effective fields for a forward policy's POSTROUTING NAT
+    companion.
+
+    A filter/FORWARD policy with policy_nat=True owns its outbound masquerade.
+    The companion no longer matches by flow (protocol/port/source/destination):
+    it matches by conntrack mark (see apply_rules' nat_marks and
+    _connmark_restore_line), which is set on the connection by a CONNMARK line
+    that shares the policy's exact match — so the masquerade can never fire for
+    traffic accepted by a *different*, non-NAT policy, even one with an
+    overlapping match (the old flow-based companion could leak this way).
+    out_interface may be topologically defaulted at apply time when the policy
+    doesn't set one (see apply_rules) — this function returns the rule's own
+    value only; the caller resolves the fallback.
+    Shared by apply_rules (iptables generation) and the API listing (read-only
+    synthetic row) so they stay in sync.
+    """
+    return {
+        "out_interface": rule.out_interface,
+    }
+
+
+def hairpin_masq_fields(rule, to_destination: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """
+    Compute the POSTROUTING MASQUERADE match for a hairpin-NAT DNAT companion.
+
+    Lets a LAN client reach a port forward via the WAN IP: without this, the
+    internal server would reply to the LAN client directly (with its own IP),
+    which the client's connection doesn't expect. Scoping (source subnet,
+    -d/--dport) is topology-dependent and filled in by the caller — this only
+    computes the destination-side match shared with apply_rules' hairpin DNAT
+    line, so the two stay in sync the same way dnat_forward_fields/policy_nat_fields do.
+
+    to_destination: pre-resolved via effective_to_destination() by the caller.
+    """
+    dest_ip, dest_port = iptables.split_ip_port(to_destination if to_destination is not None else rule.to_destination)
+    return {
+        "protocol": rule.protocol,
+        "destination": dest_ip,
+        "port": dest_port or rule.port,
+    }
+
+
+def _restore_line(madmin_chain: str, rule, eff_map: Dict, to_destination: Optional[str] = None) -> str:
+    """Restore-format line for a rule, honoring resolved address-set tokens.
+
+    to_destination: resolved DNAT target (see effective_to_destination),
+    passed by apply_rules for DNAT rules with an object-based target; not
+    used for any other rule (build_rule_args ignores it unless action=DNAT).
+    """
+    eff = eff_map.get(rule.id)
+    if eff:
+        eff_src, eff_dst = eff
+        return iptables.rule_to_restore_line(
+            madmin_chain, rule,
+            source=eff_src if eff_src is not None else rule.source,
+            destination=eff_dst if eff_dst is not None else rule.destination,
+            to_destination=to_destination if to_destination is not None else rule.to_destination,
+        )
+    return iptables.rule_to_restore_line(
+        madmin_chain, rule,
+        to_destination=to_destination if to_destination is not None else rule.to_destination,
+    )
+
+
+def _connmark_restore_line(madmin_chain: str, rule, eff_map: Dict, mark: int) -> str:
+    """
+    Restore-format CONNMARK line for a policy-NAT rule's mark companion.
+
+    Reproduces the rule's exact match (protocol/source/destination — honoring
+    resolved set:<ipset> tokens the same way _restore_line does — plus
+    port/interfaces/state) so the mark is set on precisely the connections this
+    policy accepts. Deliberately excludes limit_rate/limit_burst: a rate-limited
+    CONNMARK line would own a separate `-m limit` token bucket from the ACCEPT
+    line right below it and could mark/skip out of sync with it. Also excludes
+    the LOG/REJECT-only extras (irrelevant to an ACCEPT-only policy_nat rule).
+    """
+    eff = eff_map.get(rule.id)
+    source = eff[0] if eff and eff[0] is not None else rule.source
+    destination = eff[1] if eff and eff[1] is not None else rule.destination
+    xmark = f"0x{mark:x}/0x{iptables.POLICY_NAT_MARK_MASK:x}"
+    return " ".join(iptables.build_rule_args(
+        chain=madmin_chain, action="CONNMARK",
+        protocol=rule.protocol, source=source, destination=destination,
+        port=rule.port, in_interface=rule.in_interface, out_interface=rule.out_interface,
+        state=rule.state, set_xmark=xmark,
+        comment=f"MADMIN_NATMARK_{rule.id}", operation="-A",
+    ))
+
+
+def _build_forward_layout(
+    forward_rules: List,
+    eff_map: Dict,
+    nat_marks: Optional[Dict] = None,
+) -> Tuple[List[str], Dict[str, List[str]]]:
+    """
+    Build the MADMIN_FORWARD body with per-interface-pair subchains.
+
+    Any rule with at least one interface set (in, out, or both) is grouped into
+    a per-pair subchain, dispatched by a single jump — `-i X`, `-o Y`, or
+    `-i X -o Y` per whichever sides are specified — emitted at the position of
+    the pair's first rule. This makes iptables mirror the Standard UI 1:1 (every
+    interface group is its own MFWD_* chain) and lets a packet skip a whole
+    group in one interface test. Only the fully-wildcard pair (neither interface
+    set) stays inline. A packet matching no rule in its subchain falls through
+    (implicit RETURN) and continues in MADMIN_FORWARD toward later wildcard
+    rules, DNAT companions and the implicit deny.
+
+    nat_marks: {rule_id: mark_value} for filter/FORWARD policies with
+    policy_nat=True (see apply_rules). Each gets a CONNMARK line emitted
+    immediately before its own ACCEPT line, in the same (sub)chain — the mark
+    lands on the connection's first packet before it's accepted, and the
+    POSTROUTING masquerade companion (policy_nat_fields) matches by that mark
+    instead of by flow, so it can never fire for a different policy's traffic.
+
+    Returns (forward_lines, {subchain_name: [lines]}).
+    """
+    nat_marks = nat_marks or {}
+    lines: List[str] = []
+    subchains: Dict[str, List[str]] = {}
+    for rule in forward_rules:
+        mark = nat_marks.get(rule.id)
+        if rule.in_interface or rule.out_interface:
+            name = iptables.forward_subchain_name(rule.in_interface or "", rule.out_interface or "")
+            if name not in subchains:
+                subchains[name] = []
+                jump = f"-A {iptables.MADMIN_FORWARD_CHAIN}"
+                if rule.in_interface:
+                    jump += f" -i {rule.in_interface}"
+                if rule.out_interface:
+                    jump += f" -o {rule.out_interface}"
+                jump += f" -j {name}"
+                lines.append(jump)
+            if mark is not None:
+                subchains[name].append(_connmark_restore_line(name, rule, eff_map, mark))
+            subchains[name].append(_restore_line(name, rule, eff_map))
+        else:
+            if mark is not None:
+                lines.append(_connmark_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map, mark))
+            lines.append(_restore_line(iptables.MADMIN_FORWARD_CHAIN, rule, eff_map))
+    return lines, subchains
 
 
 class FirewallOrchestrator:
@@ -249,6 +470,33 @@ class FirewallOrchestrator:
         result = await session.execute(query)
         return result.scalars().all()
 
+    async def resolve_dnat_targets(
+        self,
+        session: AsyncSession,
+        rules,
+    ) -> Dict[uuid.UUID, Optional[str]]:
+        """
+        Effective to_destination (see effective_to_destination) for every DNAT
+        rule in `rules`: literal-target rules resolve to their own column
+        unchanged, object-target rules resolve through the referenced
+        AddressObject's value — one batched query for every object referenced,
+        regardless of how many rules share it. Shared by apply_rules and the
+        API layer (router.py) so a DNAT's target is always computed the same
+        way no matter which one is asking.
+        """
+        dnat_rules = [r for r in rules if r.action == "DNAT"]
+        obj_ids = {r.to_destination_object_id for r in dnat_rules if r.to_destination_object_id}
+        obj_values: Dict[uuid.UUID, str] = {}
+        if obj_ids:
+            ores = await session.execute(select(AddressObject).where(AddressObject.id.in_(obj_ids)))
+            obj_values = {o.id: o.value for o in ores.scalars().all()}
+        return {
+            r.id: effective_to_destination(
+                r, obj_values.get(r.to_destination_object_id) if r.to_destination_object_id else None
+            )
+            for r in dnat_rules
+        }
+
     async def get_enabled_dnat_rules(
         self,
         session: AsyncSession
@@ -259,10 +507,88 @@ class FirewallOrchestrator:
             .where(MachineFirewallRule.table_name == "nat")
             .where(MachineFirewallRule.action == "DNAT")
             .where(MachineFirewallRule.enabled == True)
-            .where(MachineFirewallRule.to_destination.is_not(None))
+            .where(or_(
+                MachineFirewallRule.to_destination.is_not(None),
+                MachineFirewallRule.to_destination_object_id.is_not(None),
+            ))
             .order_by(MachineFirewallRule.order)
         )
         return result.scalars().all()
+
+    async def get_enabled_policy_nat_rules(
+        self,
+        session: AsyncSession
+    ) -> List[MachineFirewallRule]:
+        """Get enabled forward policies with policy_nat — source of the POSTROUTING masquerade companions."""
+        result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "filter")
+            .where(MachineFirewallRule.chain == "FORWARD")
+            .where(MachineFirewallRule.policy_nat == True)
+            .where(MachineFirewallRule.enabled == True)
+            .order_by(MachineFirewallRule.order)
+        )
+        return result.scalars().all()
+
+    async def get_enabled_hairpin_rules(
+        self,
+        session: AsyncSession
+    ) -> List[MachineFirewallRule]:
+        """Get enabled DNAT rules with hairpin=True — source of the hairpin-NAT companions."""
+        result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "nat")
+            .where(MachineFirewallRule.action == "DNAT")
+            .where(MachineFirewallRule.hairpin == True)
+            .where(MachineFirewallRule.enabled == True)
+            .where(or_(
+                MachineFirewallRule.to_destination.is_not(None),
+                MachineFirewallRule.to_destination_object_id.is_not(None),
+            ))
+            .order_by(MachineFirewallRule.order)
+        )
+        return result.scalars().all()
+
+    async def get_enabled_input_companion_rules(
+        self,
+        session: AsyncSession
+    ) -> Dict[str, List[MachineFirewallRule]]:
+        """
+        Enabled nat/PREROUTING REDIRECT rules and DNAT rules whose target is a
+        local address — source of the INPUT ACCEPT companions (both deliver to
+        the gateway itself, so they traverse INPUT rather than FORWARD).
+        """
+        redirect_result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "nat")
+            .where(MachineFirewallRule.chain == "PREROUTING")
+            .where(MachineFirewallRule.action == "REDIRECT")
+            .where(MachineFirewallRule.enabled == True)
+            .order_by(MachineFirewallRule.order)
+        )
+        redirect_rules = list(redirect_result.scalars().all())
+
+        dnat_result = await session.execute(
+            select(MachineFirewallRule)
+            .where(MachineFirewallRule.table_name == "nat")
+            .where(MachineFirewallRule.action == "DNAT")
+            .where(MachineFirewallRule.enabled == True)
+            .where(or_(
+                MachineFirewallRule.to_destination.is_not(None),
+                MachineFirewallRule.to_destination_object_id.is_not(None),
+            ))
+            .order_by(MachineFirewallRule.order)
+        )
+        dnat_candidates = list(dnat_result.scalars().all())
+        dnat_targets = await self.resolve_dnat_targets(session, dnat_candidates)
+        topo = await self._get_interface_topology()
+        dnat_self_rules = []
+        for rule in dnat_candidates:
+            dest_ip, _ = iptables.split_ip_port(dnat_targets.get(rule.id))
+            if dest_ip and dest_ip in topo["local_ips"]:
+                dnat_self_rules.append(rule)
+
+        return {"redirect": redirect_rules, "dnat_self": dnat_self_rules}
 
     async def get_rule_by_id(
         self,
@@ -324,11 +650,14 @@ class FirewallOrchestrator:
         Automatically assigns order (appends to end of chain).
         """
         chain = rule_data.get("chain", "INPUT")
-        
-        # Get max order for this chain
+        table_name = rule_data.get("table_name", "filter")
+
+        # Get max order for this (table, chain) — chains like FORWARD exist in
+        # multiple tables and must not share numbering
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.chain == chain)
+            .where(MachineFirewallRule.table_name == table_name)
             .order_by(MachineFirewallRule.order.desc())
             .limit(1)
         )
@@ -348,15 +677,25 @@ class FirewallOrchestrator:
             limit_rate=rule_data.get("limit_rate"),
             limit_burst=rule_data.get("limit_burst"),
             to_destination=rule_data.get("to_destination"),
+            to_destination_object_id=(
+                uuid.UUID(rule_data["to_destination_object_id"])
+                if rule_data.get("to_destination_object_id") else None
+            ),
+            to_destination_port=rule_data.get("to_destination_port"),
             to_source=rule_data.get("to_source"),
             to_ports=rule_data.get("to_ports"),
             log_prefix=rule_data.get("log_prefix"),
             log_level=rule_data.get("log_level"),
             reject_with=rule_data.get("reject_with"),
             comment=rule_data.get("comment"),
-            table_name=rule_data.get("table_name", "filter"),
+            table_name=table_name,
             order=max_order + 1,
-            enabled=rule_data.get("enabled", True)
+            enabled=rule_data.get("enabled", True),
+            policy_nat=rule_data.get("policy_nat", False),
+            # NOTE: was missing entirely before this fix — every hairpin-enabled
+            # DNAT created via POST /firewall/rules silently persisted as
+            # hairpin=False regardless of what the client sent.
+            hairpin=rule_data.get("hairpin", False),
         )
         
         session.add(rule)
@@ -392,6 +731,10 @@ class FirewallOrchestrator:
         # Update fields (source_refs/destination_refs are not model columns and
         # are handled separately below)
         for key, value in rule_data.items():
+            # to_destination_object_id is a UUID column; the API layer only
+            # ever hands this loop a plain str (see MachineFirewallRuleUpdate).
+            if key == "to_destination_object_id" and isinstance(value, str):
+                value = uuid.UUID(value)
             if hasattr(rule, key):
                 setattr(rule, key, value)
 
@@ -427,17 +770,23 @@ class FirewallOrchestrator:
             return False
         
         chain = rule.chain
-        # Remove the rule's object/group references first (no DB-level cascade)
+        table_name = rule.table_name
+        # Remove the rule's object/group references and counter row first
+        # (no DB-level cascade)
         await session.execute(
             delete(FirewallRuleAddress).where(FirewallRuleAddress.rule_id == rule_id)
+        )
+        await session.execute(
+            delete(RuleCounter).where(RuleCounter.rule_id == rule_id)
         )
         await session.delete(rule)
         await session.flush()
 
-        # Reorder remaining rules in chain
+        # Reorder remaining rules in the same (table, chain)
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.chain == chain)
+            .where(MachineFirewallRule.table_name == table_name)
             .order_by(MachineFirewallRule.order)
         )
         rules = result.scalars().all()
@@ -455,9 +804,10 @@ class FirewallOrchestrator:
         Used for full config restore/replace.
         """
         await session.execute(delete(FirewallRuleAddress))
+        await session.execute(delete(RuleCounter))
         await session.execute(delete(MachineFirewallRule))
         await session.flush()
-        
+
         # Apply (clear) rules
         await self.apply_rules(session)
         
@@ -495,6 +845,18 @@ class FirewallOrchestrator:
         """
         Return list of (iface_name, [ip, ...]) for all physical LAN interfaces.
         Excludes WAN (default route interface) and loopback.
+        """
+        return (await self._get_interface_topology())["lan_interfaces"]
+
+    async def _get_interface_topology(self) -> Dict:
+        """
+        Resolve live network topology once per apply: LAN interfaces/subnets, WAN
+        IPs, and every IPv4 address owned by a physical interface. Backs the
+        hairpin-NAT companions (need each LAN subnet + which one contains a given
+        target) and the DNAT/REDIRECT-to-self INPUT companions (need "is this
+        address one of ours"). NetworkService already excludes loopback/virtual
+        interfaces, so local_ips never includes 127.0.0.1 — that's fine, a DNAT
+        to loopback is rejected outright by protected_ports.py Guard B.
         NetworkService.get_interfaces() is synchronous — runs in executor.
         """
         from core.network.service import NetworkService
@@ -504,15 +866,45 @@ class FirewallOrchestrator:
         loop = asyncio.get_event_loop()
         all_ifaces = await loop.run_in_executor(None, NetworkService().get_interfaces)
 
-        result = []
+        lan_interfaces: List[Tuple[str, List[str]]] = []
+        lan_networks: List[ipaddress.IPv4Network] = []
+        wan_ips: List[str] = []
+        local_ips: set = set()
+
         for iface in all_ifaces:
             name = iface.get("name", "")
-            if not name or name == wan_iface or name == "lo":
+            if not name:
                 continue
             ips = iface.get("addresses", [])
-            if ips:
-                result.append((name, ips))
-        return result
+            local_ips.update(ips)
+
+            is_wan = name == wan_iface
+            if is_wan:
+                wan_ips.extend(ips)
+            elif ips:
+                lan_interfaces.append((name, ips))
+
+            # Subnets are only meaningful for the LAN side (hairpin scoping).
+            if is_wan:
+                continue
+            for entry in iface.get("addr_info", []):
+                ip, netmask = entry.get("address"), entry.get("netmask")
+                if not ip or not netmask:
+                    continue  # e.g. point-to-point links report no netmask
+                try:
+                    net = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                except ValueError:
+                    continue
+                if net not in lan_networks:
+                    lan_networks.append(net)
+
+        return {
+            "lan_interfaces": lan_interfaces,
+            "lan_networks": lan_networks,
+            "wan_ips": wan_ips,
+            "local_ips": local_ips,
+            "wan_interface": wan_iface,
+        }
 
     async def _rebuild_gateway_ipsets(
         self,
@@ -642,18 +1034,18 @@ class FirewallOrchestrator:
         """
         Apply all rules from database to iptables atomically.
 
-        Uses iptables-restore --noflush to flush and repopulate each MADMIN
-        core chain as a single kernel transaction — no window where chains are
-        empty and traffic is unprotected.
+        Uses a single iptables-restore --noflush invocation to flush and
+        repopulate every MADMIN core chain (plus the per-pair FORWARD
+        subchains) — no window where chains are empty and traffic is
+        unprotected. Raises IptablesError on failure; the previous ruleset
+        stays in place.
 
         Also rebuilds MADMIN_GW_PROTECT from current network topology (ipset-based
         cross-gateway isolation) and MADMIN_GW_EXCEPTS from DB rules.
         """
-        success = True
-
         # --- Gateway protection: resolve topology and rebuild ipsets ---
-        lan_interfaces = await self._get_lan_interfaces()
-        await self._rebuild_gateway_ipsets(lan_interfaces)
+        topo = await self._get_interface_topology()
+        await self._rebuild_gateway_ipsets(topo["lan_interfaces"])
 
         # --- Get all enabled DB rules ordered by chain and order ---
         result = await session.execute(
@@ -675,6 +1067,27 @@ class FirewallOrchestrator:
         addresses.ensure_sets_exist(addr_plan)
         spawn_background(_sync_address_sets(addr_plan), "firewall-address-sync")
 
+        # DNAT targets that reference an address object resolve to a literal
+        # ip[:port] here, once, for every consumer below (the DNAT restore
+        # line itself, its FORWARD/INPUT/hairpin companions) — see
+        # effective_to_destination / resolve_dnat_targets.
+        dnat_targets = await self.resolve_dnat_targets(session, rules)
+
+        # One unusable row (a value the builders reject) is skipped on its own:
+        # failing the whole restore would leave the previous ruleset, or at boot
+        # the fail-closed guard blocking everything. Filtered once here, so no
+        # companion (FORWARD/INPUT/hairpin/NAT) is derived from a skipped rule.
+        usable = []
+        for rule in rules:
+            chain = iptables.get_madmin_chain(rule.table_name, rule.chain) or iptables.MADMIN_FORWARD_CHAIN
+            try:
+                _restore_line(chain, rule, eff_map, dnat_targets.get(rule.id))
+            except ValueError as e:
+                logger.error(f"Firewall rule {rule.id} skipped: {e}")
+                continue
+            usable.append(rule)
+        rules = usable
+
         # Build per-table chain rules: {table: {madmin_chain: [restore-format lines]}}
         chain_rules: Dict[str, Dict[str, List[str]]] = {}
         for table, chains in iptables.CHAIN_MAP.items():
@@ -690,47 +1103,106 @@ class FirewallOrchestrator:
                 chain_rules[table][madmin_chain] = lines
 
         # --- Inject auto-generated MADMIN_GW_PROTECT content ---
-        protect_lines = iptables.build_gateway_protect_lines(lan_interfaces)
+        protect_lines = iptables.build_gateway_protect_lines(topo["lan_interfaces"])
         chain_rules["filter"][iptables.MADMIN_GW_PROTECT_CHAIN] = protect_lines
 
         # MADMIN_GW_EXCEPTS starts empty (populated below by DB rules with chain=GW_EXCEPTIONS)
         chain_rules["filter"][iptables.MADMIN_GW_EXCEPTS_CHAIN] = []
 
-        # --- Assign DB rules to their respective MADMIN chains ---
+        # --- Auto-generate INPUT ACCEPT for REDIRECT / DNAT-to-self rules ---
+        # A REDIRECT always delivers to the host itself; a DNAT whose target is
+        # one of the host's own addresses does too — both traverse INPUT (not
+        # FORWARD) after the rewrite and would hit the INPUT catch-all. Unlike
+        # the FORWARD implicit deny (engine-owned, always last), that catch-all
+        # is an ordinary DB rule (see defaults.py) — appending companions after
+        # DB rules would make them dead on every default install. Prepended
+        # here, right after the built-in ESTABLISHED line and before any DB
+        # INPUT rule, so they encode the same "the admin explicitly published
+        # this service" intent the DNAT/FORWARD companion already carries.
+        # Consequence (deliberate, FortiGate-VIP-like): an explicit user INPUT
+        # DROP cannot override one of these — disable the PREROUTING rule (or
+        # scope its `source`, which the companion inherits) to block it instead.
+        auto_input_lines: List[str] = []
         for rule in rules:
-            madmin_chain = iptables.get_madmin_chain(rule.table_name, rule.chain)
-            if not madmin_chain:
-                logger.warning(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id}")
+            if rule.table_name != "nat":
+                continue
+            if rule.chain == "PREROUTING" and rule.action == "REDIRECT":
+                fields = redirect_input_fields(rule)
+            elif rule.action == "DNAT":
+                target = dnat_targets.get(rule.id)
+                if not target:
+                    continue
+                dest_ip, _ = iptables.split_ip_port(target)
+                if not dest_ip or dest_ip not in topo["local_ips"]:
+                    continue
+                fields = dnat_input_fields(rule, target)
+            else:
                 continue
             eff = eff_map.get(rule.id)
-            try:
-                if eff:
-                    eff_src, eff_dst = eff
-                    line = iptables.rule_to_restore_line(
-                        madmin_chain, rule,
-                        source=eff_src if eff_src is not None else rule.source,
-                        destination=eff_dst if eff_dst is not None else rule.destination,
-                    )
-                else:
-                    line = iptables.rule_to_restore_line(madmin_chain, rule)
-            except ValueError as e:
-                # One unusable row must not take the whole ruleset down with it
-                # (at boot that leaves the fail-closed guard blocking everything)
-                logger.error(f"Firewall rule {rule.id} skipped: {e}")
+            if eff and eff[0] is not None:
+                fields["source"] = eff[0]   # honor object/group source refs
+            auto_input_lines.append(
+                " ".join(iptables.build_rule_args(
+                    chain=iptables.MADMIN_INPUT_CHAIN,
+                    action="ACCEPT",
+                    comment=f"MADMIN_AUTO_RDR_{rule.id}",
+                    operation="-A",
+                    **fields,
+                ))
+            )
+        if auto_input_lines:
+            chain_rules["filter"][iptables.MADMIN_INPUT_CHAIN].extend(auto_input_lines)
+
+        # --- Assign DB rules to their respective MADMIN chains ---
+        # filter/FORWARD is handled by the pair-subchain layout builder below.
+        for rule in rules:
+            if rule.table_name == "filter" and rule.chain == "FORWARD":
                 continue
-            chain_rules[rule.table_name][madmin_chain].append(line)
+            madmin_chain = iptables.get_madmin_chain(rule.table_name, rule.chain)
+            if not madmin_chain:
+                # The API rejects these since table/chain validation; legacy bad
+                # rows must not break the whole apply.
+                logger.error(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id} — skipped")
+                continue
+            chain_rules[rule.table_name][madmin_chain].append(
+                _restore_line(madmin_chain, rule, eff_map, dnat_targets.get(rule.id))
+            )
+
+        # --- FORWARD layout: per-interface-pair subchains + inline wildcard rules ---
+        forward_rules = [r for r in rules if r.table_name == "filter" and r.chain == "FORWARD"]
+
+        # Conntrack marks for policy-NAT scoping: assigned by apply-order
+        # enumeration on every apply. Netfilter decides a connection's NAT on
+        # its FIRST packet only, so re-numbering marks across applies can
+        # never re-NAT or break an already-established connection; a stale
+        # ctmark left on an old connection is inert (the nat table is never
+        # re-consulted for it once a connection has a NAT decision).
+        nat_policies = [r for r in forward_rules if r.policy_nat]
+        if len(nat_policies) > 255:
+            logger.error(
+                f"{len(nat_policies)} policy-NAT rules exceed the 255-mark budget "
+                f"(POLICY_NAT_MARK_MASK); the extra {len(nat_policies) - 255} get no NAT companion."
+            )
+        nat_marks = {r.id: (i + 1) << 16 for i, r in enumerate(nat_policies[:255])}
+
+        forward_lines, subchain_map = _build_forward_layout(forward_rules, eff_map, nat_marks)
+        chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(forward_lines)
+        chain_rules["filter"].update(subchain_map)
 
         # --- Auto-generate FORWARD ACCEPT for DNAT rules ---
         # A DNAT in PREROUTING/OUTPUT rewrites the destination to an internal host;
-        # the translated packet then traverses FORWARD and would hit the default DROP.
-        # Emit a companion ACCEPT toward the translated destination, refined by the
-        # DNAT's incoming interface and source when present, inserted right after the
-        # built-in ESTABLISHED line so it precedes the FORWARD DROP catch-all.
+        # the translated packet then traverses FORWARD and would hit the implicit
+        # deny. Emit a companion ACCEPT toward the translated destination, refined
+        # by the DNAT's incoming interface and source when present, appended AFTER
+        # the user policies so an explicit deny can block port-forwarded traffic.
         auto_forward_lines: List[str] = []
         for rule in rules:
-            if rule.table_name != "nat" or rule.action != "DNAT" or not rule.to_destination:
+            if rule.table_name != "nat" or rule.action != "DNAT":
                 continue
-            fields = dnat_forward_fields(rule)
+            target = dnat_targets.get(rule.id)
+            if not target:
+                continue
+            fields = dnat_forward_fields(rule, target)
             eff = eff_map.get(rule.id)
             if eff and eff[0] is not None:
                 fields["source"] = eff[0]   # honor object/group source refs
@@ -747,35 +1219,273 @@ class FirewallOrchestrator:
             except ValueError as e:
                 logger.error(f"Auto FORWARD for DNAT rule {rule.id} skipped: {e}")
         if auto_forward_lines:
-            fwd = chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN]
-            # Index 1 = after the built-in ESTABLISHED/RELATED line, before DB rules (incl. DROP)
-            insert_at = 1 if fwd else 0
-            fwd[insert_at:insert_at] = auto_forward_lines
+            chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(auto_forward_lines)
 
-        # --- Apply atomically per table ---
-        for table, chains in chain_rules.items():
-            if not iptables.restore_chains(table, chains):
-                logger.error(f"Failed to atomically restore table {table}")
-                success = False
+        # --- Auto-generate POSTROUTING MASQUERADE for policies with policy_nat ---
+        # A filter/FORWARD policy can own its outbound NAT (navigation masquerade).
+        # Scoped by conntrack mark (set by the CONNMARK companion emitted in
+        # _build_forward_layout above), not by flow — this is what closes the
+        # cross-policy masquerade leak the old flow-based match had: a packet
+        # accepted by a *different*, non-NAT policy never carries this mark,
+        # no matter how much its match overlaps this policy's.
+        auto_nat_lines: List[str] = []
+        for rule in nat_policies:
+            mark = nat_marks.get(rule.id)
+            if mark is None:
+                continue  # 255-mark budget exhausted, already logged above
+            fields = policy_nat_fields(rule)
+            out_if = fields["out_interface"] or topo["wan_interface"]
+            if not out_if:
+                logger.warning(
+                    f"policy NAT {rule.id}: no out_interface and no default-route "
+                    "interface resolved — emitting MASQUERADE unscoped as a last resort."
+                )
+            xmark = f"0x{mark:x}/0x{iptables.POLICY_NAT_MARK_MASK:x}"
+            auto_nat_lines.append(
+                " ".join(iptables.build_rule_args(
+                    chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,
+                    action="MASQUERADE",
+                    out_interface=out_if,
+                    connmark_match=xmark,
+                    comment=f"MADMIN_AUTO_NAT_{rule.id}",
+                    operation="-A",
+                ))
+            )
+        if auto_nat_lines:
+            chain_rules["nat"][iptables.MADMIN_POSTROUTING_NAT_CHAIN].extend(auto_nat_lines)
+
+        # --- Auto-generate hairpin-NAT companions for DNAT rules with hairpin=True ---
+        # Lets a LAN client reach a port forward via the WAN IP (NAT reflection).
+        # The original DNAT carries -i <wan> and never matches LAN-sourced
+        # traffic, so without this a LAN client hitting the WAN IP would route
+        # to the host itself or die in FORWARD. Per LAN subnet: a PREROUTING
+        # DNAT without -i (appended after user PREROUTING rules — matches are
+        # disjoint from the original rule anyway), a POSTROUTING MASQUERADE so
+        # the internal server's reply routes back through the gateway, and a
+        # FORWARD ACCEPT for the LAN-sourced flow (the DNAT's own FORWARD
+        # companion above carries -i <wan> and won't match it).
+        hairpin_prerouting_lines: List[str] = []
+        hairpin_postrouting_lines: List[str] = []
+        hairpin_forward_lines: List[str] = []
+        for rule in rules:
+            if rule.table_name != "nat" or rule.action != "DNAT" or not rule.hairpin:
+                continue
+            target = dnat_targets.get(rule.id)
+            if not target:
+                continue
+            if not topo["lan_networks"]:
+                logger.warning(f"Hairpin NAT skipped for rule {rule.id}: no LAN subnet resolved")
+                continue
+
+            dest_ip, dest_port = iptables.split_ip_port(target)
+            int_port = dest_port or rule.port
+
+            eff = eff_map.get(rule.id)
+            eff_dest = eff[1] if (eff and eff[1] is not None) else rule.destination
+
+            # Never leave the hairpin DNAT's destination unscoped: an unscoped
+            # -d would hijack ALL LAN traffic on this dport, not just traffic
+            # aimed at this forward's public IP(s). Fall back to the host's own
+            # WAN addresses (what the forward actually binds to); if neither is
+            # available, skip rather than guess.
+            if eff_dest:
+                dest_targets = [eff_dest]
+            elif topo["wan_ips"]:
+                dest_targets = topo["wan_ips"]
+            else:
+                logger.warning(f"Hairpin NAT skipped for rule {rule.id}: no destination and no WAN IP to scope to")
+                dest_targets = []
+
+            for subnet in topo["lan_networks"]:
+                for dest in dest_targets:
+                    hairpin_prerouting_lines.append(
+                        " ".join(iptables.build_rule_args(
+                            chain=iptables.MADMIN_PREROUTING_NAT_CHAIN,
+                            action="DNAT",
+                            protocol=rule.protocol,
+                            source=str(subnet),
+                            destination=dest,
+                            port=rule.port,
+                            to_destination=target,
+                            comment=f"MADMIN_AUTO_HAIRPIN_{rule.id}",
+                            operation="-A",
+                        ))
+                    )
+                hairpin_forward_lines.append(
+                    " ".join(iptables.build_rule_args(
+                        chain=iptables.MADMIN_FORWARD_CHAIN,
+                        action="ACCEPT",
+                        protocol=rule.protocol,
+                        source=str(subnet),
+                        destination=dest_ip,
+                        port=int_port,
+                        comment=f"MADMIN_AUTO_HAIRPIN_{rule.id}",
+                        operation="-A",
+                    ))
+                )
+
+            # Scope the masquerade to the subnet actually containing the
+            # target so unrelated intra-subnet flows aren't masqueraded;
+            # fall back to every LAN subnet when the target isn't in any of them.
+            masq_fields = hairpin_masq_fields(rule, target)
+            try:
+                target_addr = ipaddress.IPv4Address(dest_ip) if dest_ip else None
+            except ValueError:
+                target_addr = None
+            matching_subnets = [n for n in topo["lan_networks"] if target_addr and target_addr in n] \
+                or topo["lan_networks"]
+            for subnet in matching_subnets:
+                hairpin_postrouting_lines.append(
+                    " ".join(iptables.build_rule_args(
+                        chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,
+                        action="MASQUERADE",
+                        source=str(subnet),
+                        comment=f"MADMIN_AUTO_HAIRPIN_{rule.id}",
+                        operation="-A",
+                        **masq_fields,
+                    ))
+                )
+
+        if hairpin_prerouting_lines:
+            chain_rules["nat"][iptables.MADMIN_PREROUTING_NAT_CHAIN].extend(hairpin_prerouting_lines)
+        if hairpin_postrouting_lines:
+            chain_rules["nat"][iptables.MADMIN_POSTROUTING_NAT_CHAIN].extend(hairpin_postrouting_lines)
+        if hairpin_forward_lines:
+            chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(hairpin_forward_lines)
+
+        # --- Implicit deny: always-last FORWARD drop (not a DB rule) ---
+        chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].append(
+            f"-A {iptables.MADMIN_FORWARD_CHAIN}"
+            f" -m comment --comment {IMPLICIT_DENY_COMMENT} -j DROP"
+        )
+
+        # --- Stale pair subchains (pairs no longer in use): flushed and deleted
+        #     in the same restore transaction ---
+        stale = sorted(set(await asyncio.to_thread(iptables.list_forward_subchains)) - set(subchain_map))
+
+        # --- Capture durable counters before the flush zeroes them ---
+        # restore_all() below is `-F` + `:chain - [0:0]` on every MADMIN chain,
+        # which resets kernel packet/byte counters. Snapshot first so the
+        # counts accumulated since the last apply aren't lost, and rebaseline
+        # so the next read's delta is computed from a freshly-flushed kernel.
+        # Best-effort: counter bookkeeping must never break a firewall apply.
+        try:
+            await self.snapshot_counters(session, zero_baseline=True)
+        except Exception as e:
+            logger.warning(f"snapshot_counters failed before apply (non-fatal): {e}")
+
+        # --- Apply atomically: single iptables-restore across all tables ---
+        try:
+            iptables.restore_all(chain_rules, delete_chains={"filter": stale})
+        except iptables.IptablesError:
+            logger.error("Atomic firewall restore failed; previous ruleset left in place")
+            raise
 
         # --- Rebuild parent-chain jump order for INPUT ---
         # Ensures MADMIN_GW_EXCEPTS → MADMIN_GW_PROTECT → MADMIN_INPUT are wired
         # in the correct order even when no module chain is registered for INPUT.
         await self.rebuild_chain_jumps(session, "INPUT", "filter")
 
-        if success:
-            logger.info(
-                f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
-                f" (gateway protect: {len(lan_interfaces)} LAN interfaces)"
-            )
-            # Persist rules + ipsets so the fail-closed boot guard can restore a
-            # self-consistent last-good ruleset after a reboot. Best-effort, off
-            # the event loop. (Dynamic geo/fqdn sets may still be filling in via
-            # sync_referenced; that's fine — madmin always rebuilds from the DB on
-            # the next startup, this snapshot only covers the boot window.)
-            spawn_background(_save_rules(), "firewall-save")
+        logger.info(
+            f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
+            f" ({len(subchain_map)} forward subchains, gateway protect: {len(topo['lan_interfaces'])} LAN interfaces)"
+        )
+        # Persist rules + ipsets so the fail-closed boot guard can restore a
+        # self-consistent last-good ruleset after a reboot. Best-effort, off
+        # the event loop. (Dynamic geo/fqdn sets may still be filling in via
+        # sync_referenced; that's fine — madmin always rebuilds from the DB on
+        # the next startup, this snapshot only covers the boot window.)
+        spawn_background(_save_rules(), "firewall-save")
 
-        return success
+        return True
+
+    async def snapshot_counters(self, session: AsyncSession, zero_baseline: bool = False) -> None:
+        """
+        Accumulate live kernel packet/byte counters into the durable
+        RuleCounter table (see models.RuleCounter for why this exists —
+        kernel counters are zeroed on every apply_rules() flush).
+
+        Called from two places:
+        - apply_rules(), just before restore_all() flushes the chains
+          (zero_baseline=True): captures the counts the flush is about to
+          discard, then rebaselines last_packets/last_bytes to 0 so the next
+          snapshot's delta is computed against a freshly-flushed kernel.
+        - GET /firewall/counters (zero_baseline=False): a plain delta-accumulate
+          against current kernel state, so the UI sees fresh totals on page
+          load without waiting for the next apply.
+
+        No-ops (does not touch window_start/updated_at) when
+        iptables.read_rule_counters() returns nothing — mock mode, or a
+        transient iptables-save failure — never misreadable as "traffic
+        stopped", just "nothing new to accumulate this round".
+        """
+        # Serialized: the GET endpoint and an apply would otherwise both read the
+        # same baseline and add the same delta twice
+        async with resource_lock("firewall:counters"):
+            await self._snapshot_counters(session, zero_baseline)
+
+    async def _snapshot_counters(self, session: AsyncSession, zero_baseline: bool) -> None:
+        live = await asyncio.to_thread(iptables.read_rule_counters)
+        if not live:
+            return
+
+        result = await session.execute(select(RuleCounter))
+        existing = {c.rule_id: c for c in result.scalars().all()}
+
+        # A rule_id read from the (pre-flush) kernel may no longer have a
+        # MachineFirewallRule: this runs from apply_rules() *after* delete_rule()
+        # already removed both the DB row and its RuleCounter, but *before* the
+        # flush that would drop the tag from the kernel too — the deleted
+        # rule's old comment tag is still live in this read. Only rules that
+        # still exist may get a fresh counter row (the FK would reject one
+        # for a vanished rule_id); a delta for a since-deleted rule is simply
+        # dropped, which is correct — nothing left in the UI to show it on.
+        valid_ids = set((await session.execute(select(MachineFirewallRule.id))).scalars().all())
+
+        now = datetime.utcnow()
+        for rule_id_str, (pkts, byte_count) in live.items():
+            try:
+                rule_id = uuid.UUID(rule_id_str)
+            except ValueError:
+                continue
+            counter = existing.get(rule_id)
+            if counter is None:
+                if rule_id not in valid_ids:
+                    continue
+                counter = RuleCounter(rule_id=rule_id, window_start=now)
+                session.add(counter)
+                existing[rule_id] = counter
+
+            if pkts < counter.last_packets or byte_count < counter.last_bytes:
+                # Kernel counters were reset by something other than our own
+                # flush (manual `iptables -Z`, reboot before this ran, ...) —
+                # the live values themselves are the delta.
+                delta_p, delta_b = pkts, byte_count
+            else:
+                delta_p = pkts - counter.last_packets
+                delta_b = byte_count - counter.last_bytes
+
+            counter.packets += delta_p
+            counter.bytes += delta_b
+            counter.last_packets = pkts
+            counter.last_bytes = byte_count
+            # updated_at is "last used", not "last polled" — only advance it
+            # when this round actually saw new traffic, so a rule with zero
+            # hits since the previous snapshot doesn't look freshly active.
+            if delta_p or delta_b:
+                counter.updated_at = now
+
+        if zero_baseline:
+            # The imminent restore_all() flush is about to zero every kernel
+            # counter; rebaseline last_* to 0 now so it stays truthful (the
+            # reset-detection branch above would also handle a stale nonzero
+            # baseline correctly, but this keeps the row consistent with what
+            # the kernel will actually read as immediately after the flush).
+            for counter in existing.values():
+                counter.last_packets = 0
+                counter.last_bytes = 0
+
+        await session.flush()
 
     async def resync_addresses(self, session: AsyncSession) -> bool:
         """

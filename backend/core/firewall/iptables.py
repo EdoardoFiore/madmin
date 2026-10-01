@@ -5,8 +5,8 @@ Low-level wrapper for iptables commands.
 Handles chain creation, rule application, and command execution.
 Supports all standard iptables tables: filter, nat, mangle, raw.
 """
-import subprocess
 import hashlib
+import subprocess
 import logging
 import os
 import re
@@ -35,6 +35,16 @@ MADMIN_PREROUTING_NAT_CHAIN = "MADMIN_PREROUTING"
 MADMIN_POSTROUTING_NAT_CHAIN = "MADMIN_POSTROUTING"
 MADMIN_OUTPUT_NAT_CHAIN = "MADMIN_OUTPUT_NAT"
 
+# Conntrack-mark region reserved for policy-NAT (bits 16-23, up to 255
+# concurrent NAT policies). This is a CONNTRACK mark (ctmark, set via
+# CONNMARK --set-xmark / matched via -m connmark), not a packet mark
+# (fwmark, set via MARK / matched via -m mark) — different netfilter
+# namespaces entirely. WireGuard's fwmark 51820 (0xCA6C, bits 2-15) can
+# never collide even numerically: 0xCA6C & 0x00FF0000 == 0. MADMIN never
+# emits `CONNMARK --restore-mark`, so this ctmark never leaks into a
+# packet mark or a routing decision.
+POLICY_NAT_MARK_MASK = 0x00FF0000
+
 # Mangle table chains
 MADMIN_PREROUTING_MANGLE_CHAIN = "MADMIN_PREROUTING_MANGLE"
 MADMIN_INPUT_MANGLE_CHAIN = "MADMIN_INPUT_MANGLE"
@@ -45,6 +55,111 @@ MADMIN_POSTROUTING_MANGLE_CHAIN = "MADMIN_POSTROUTING_MANGLE"
 # Raw table chains
 MADMIN_PREROUTING_RAW_CHAIN = "MADMIN_PREROUTING_RAW"
 MADMIN_OUTPUT_RAW_CHAIN = "MADMIN_OUTPUT_RAW"
+
+# Per-interface-pair FORWARD subchains (filter table). One subchain per fully
+# specified (in_interface, out_interface) pair, dispatched from MADMIN_FORWARD.
+FORWARD_SUBCHAIN_PREFIX = "MFWD_"
+
+
+def forward_subchain_name(in_if: str, out_if: str) -> str:
+    """
+    Deterministic subchain name for a (in_interface, out_interface) pair.
+
+    Either side may be empty (wildcard); it renders as "any" in the readable
+    part while the hash is still taken over the raw pair so wildcard groups stay
+    distinct (e.g. ""|eth0 vs ens19|eth0). iptables chain names are limited to
+    28 chars while interface names can be up to 15, so each side is truncated to
+    6 chars and disambiguated with a 4-hex-char hash of the full pair
+    (vlan100/vlan101 share the prefix but get different hashes). Max length:
+    5 + 6 + 1 + 6 + 1 + 4 = 23.
+    """
+    pair_hash = hashlib.sha1(f"{in_if}|{out_if}".encode()).hexdigest()[:4]
+
+    def san(name: str) -> str:
+        if not name:
+            return "any"
+        return re.sub(r'[^A-Za-z0-9_.]', '_', name)[:6]
+
+    return f"{FORWARD_SUBCHAIN_PREFIX}{san(in_if)}_{san(out_if)}_{pair_hash}"
+
+
+def list_forward_subchains() -> List[str]:
+    """List the MFWD_* pair subchains currently present in the filter table."""
+    if settings.mock_iptables:
+        return []
+    try:
+        result = subprocess.run(
+            ["iptables-save", "-t", "filter"],
+            capture_output=True,
+            text=True,
+            check=True, timeout=30
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.warning(f"Could not list forward subchains: {e}")
+        return []
+    chains = []
+    for line in result.stdout.splitlines():
+        if line.startswith(f":{FORWARD_SUBCHAIN_PREFIX}"):
+            chains.append(line[1:].split(" ")[0])
+    return chains
+
+
+# =============================================================================
+# COUNTERS
+# =============================================================================
+
+# A saved rule line looks like: [123:45678] -A MADMIN_FORWARD -s 10.0.0.0/24
+# -j ACCEPT -m comment --comment "ID_a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# (iptables-save quotes the comment match value regardless of content).
+_COUNTER_LINE_RE = re.compile(r'^\[(\d+):(\d+)\]\s+-A\s+\S+\s+(.*)$')
+_COUNTER_COMMENT_RE = re.compile(
+    r'--comment\s+"?(?:ID_|MADMIN_AUTO_[A-Z]+_|MADMIN_NATMARK_)'
+    r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"?'
+)
+
+
+def read_rule_counters() -> Dict[str, Tuple[int, int]]:
+    """
+    Read current kernel packet/byte counters for every MADMIN-managed rule,
+    summed per rule UUID.
+
+    Every user rule carries a comment tag with its DB id — `ID_<uuid>`
+    (rule_to_restore_line) — and auto-generated companions carry
+    `MADMIN_AUTO_<TYPE>_<uuid>` / `MADMIN_NATMARK_<uuid>` (orchestrator.py). A
+    single DB rule can expand into several kernel lines (e.g. a policy_nat
+    FORWARD rule -> ACCEPT + MASQUERADE + CONNMARK companions); their counters
+    are summed here so callers see one total per rule id.
+
+    Returns {} in mock mode or if iptables-save fails — the caller
+    (orchestrator.snapshot_counters) treats that as "nothing to accumulate
+    this round", never as a reset to zero.
+    """
+    if settings.mock_iptables:
+        return {}
+    try:
+        result = subprocess.run(
+            ["iptables-save", "-c"],
+            capture_output=True,
+            text=True,
+            check=True, timeout=30
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.warning(f"Could not read rule counters: {e}")
+        return {}
+
+    totals: Dict[str, Tuple[int, int]] = {}
+    for line in result.stdout.splitlines():
+        m = _COUNTER_LINE_RE.match(line)
+        if not m:
+            continue
+        cm = _COUNTER_COMMENT_RE.search(m.group(3))
+        if not cm:
+            continue
+        packets, byte_count = int(m.group(1)), int(m.group(2))
+        rule_id = cm.group(1)
+        prev_p, prev_b = totals.get(rule_id, (0, 0))
+        totals[rule_id] = (prev_p + packets, prev_b + byte_count)
+    return totals
 
 
 # =============================================================================
@@ -290,12 +405,18 @@ def split_ip_port(value: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
 _UNSET = object()
 
 
-def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET) -> str:
+def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET,
+                          to_destination=_UNSET) -> str:
     """Convert a MachineFirewallRule to an iptables-restore format line (-A ...).
 
     `source`/`destination` may be overridden with an effective value (e.g. a
     'set:<ipset>' token resolved from the rule's address-object references)
-    without mutating the ORM object; if omitted, the rule's own columns are used.
+    without mutating the ORM object; if omitted, the rule's own columns are
+    used. `to_destination` may likewise be overridden with the DNAT target
+    resolved from an address-object reference (see orchestrator
+    effective_to_destination) — a DNAT with to_destination_object_id set
+    carries no literal to_destination column, so the caller must resolve and
+    pass one for the rule to rewrite to anything at all.
     """
     args = build_rule_args(
         chain=madmin_chain,
@@ -310,7 +431,7 @@ def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UN
         comment=f"ID_{rule.id}",
         limit_rate=rule.limit_rate,
         limit_burst=rule.limit_burst,
-        to_destination=rule.to_destination,
+        to_destination=rule.to_destination if to_destination is _UNSET else to_destination,
         to_source=rule.to_source,
         to_ports=rule.to_ports,
         log_prefix=rule.log_prefix,
@@ -377,6 +498,119 @@ def restore_chains(table: str, chain_rules: Dict[str, List[str]]) -> bool:
     except subprocess.CalledProcessError as e:
         logger.error(f"iptables-restore failed for table {table}: {e.stderr}")
         raise IptablesError(parse_iptables_error(e.stderr))
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
+        raise IptablesError(f"Comando scaduto dopo {e.timeout}s")
+    except FileNotFoundError:
+        logger.error("iptables-restore not found")
+        raise IptablesError("Comando iptables-restore non trovato sul sistema")
+
+
+# Kernel table application order: filter last so the packet-filtering table is
+# only touched if raw/mangle/nat succeeded (relevant with legacy iptables where
+# each COMMIT is a separate kernel transaction; iptables-nft applies the whole
+# file atomically).
+_RESTORE_TABLE_ORDER = ("raw", "mangle", "nat", "filter")
+
+
+def _validate_restore_payload(tables: Dict[str, Dict[str, List[str]]]) -> None:
+    """
+    Sanity-check a restore payload before touching the kernel.
+
+    Catches programming errors that iptables-restore would reject wholesale:
+    over-long chain names and interface flags invalid for the hook
+    (-i in POSTROUTING, -o in PREROUTING).
+    """
+    for table, chains in tables.items():
+        for chain, lines in chains.items():
+            if len(chain) > IPTABLES_MAX_CHAIN_LEN:
+                raise IptablesError(
+                    f"Nome chain troppo lungo: '{chain}' ({len(chain)} caratteri, max {IPTABLES_MAX_CHAIN_LEN})"
+                )
+            for line in lines:
+                # One rule per line: a newline would append commands of its own
+                # to the restore file (COMMIT, -F, -A of another chain)
+                if any(ord(ch) < 32 or ord(ch) == 127 for ch in line):
+                    raise IptablesError(f"Carattere di controllo in una regola di '{chain}'")
+                if "POSTROUTING" in chain and re.search(r'(^|\s)-i\s', line):
+                    raise IptablesError(
+                        f"Flag -i non valido in POSTROUTING: {line}"
+                    )
+                if "PREROUTING" in chain and re.search(r'(^|\s)-o\s', line):
+                    raise IptablesError(
+                        f"Flag -o non valido in PREROUTING: {line}"
+                    )
+
+
+def restore_all(
+    tables: Dict[str, Dict[str, List[str]]],
+    delete_chains: Optional[Dict[str, List[str]]] = None
+) -> None:
+    """
+    Atomically flush and repopulate MADMIN chains across all tables with a
+    single iptables-restore --noflush invocation.
+
+    tables: {table: {chain_name: [restore-format rule lines ("-A chain ...")]}}
+    delete_chains: {table: [chain names]} — stale chains flushed and deleted in
+    the same transaction. Their -X lines are emitted after all -A lines: the
+    jumps referencing them disappear when their parent is flushed/rebuilt in
+    the same batch, so the delete succeeds at commit time.
+
+    With iptables-nft (deployment target) the whole file is one kernel
+    transaction — all-or-nothing across tables. With legacy iptables each
+    COMMIT is per-table; filter is ordered last so filtering is only touched
+    once raw/mangle/nat succeeded.
+
+    Raises IptablesError on failure, including the offending payload line when
+    iptables-restore reports one.
+    """
+    _validate_restore_payload(tables)
+    delete_chains = delete_chains or {}
+
+    if settings.mock_iptables:
+        total = sum(len(chains) for chains in tables.values())
+        logger.debug(f"[MOCK] Would restore {total} chains across {len(tables)} tables")
+        return
+
+    lines: List[str] = []
+    for table in _RESTORE_TABLE_ORDER:
+        if table not in tables and table not in delete_chains:
+            continue
+        chains = tables.get(table, {})
+        stale = delete_chains.get(table, [])
+        lines.append(f"*{table}")
+        for chain in chains:
+            lines.append(f":{chain} - [0:0]")
+        for chain in list(chains) + list(stale):
+            lines.append(f"-F {chain}")
+        for rules in chains.values():
+            lines.extend(rules)
+        for chain in stale:
+            lines.append(f"-X {chain}")
+        lines.append("COMMIT")
+    restore_input = "\n".join(lines) + "\n"
+
+    try:
+        subprocess.run(
+            ["iptables-restore", "-w", "--noflush"],
+            input=restore_input,
+            capture_output=True,
+            text=True,
+            check=True, timeout=60
+        )
+        logger.debug(f"Atomically restored {sum(len(c) for c in tables.values())} chains across tables")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"iptables-restore failed: {e.stderr}")
+        logger.debug(f"iptables-restore payload:\n{restore_input}")
+        detail = parse_iptables_error(e.stderr)
+        # iptables-restore reports "Error occurred at line: N" — surface the
+        # offending payload line to make failures diagnosable from the API.
+        m = re.search(r'line:?\s+(\d+)', e.stderr or "")
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= len(lines):
+                detail = f"{detail} (riga {n}: {lines[n - 1]})"
+        raise IptablesError(detail)
     except subprocess.TimeoutExpired as e:
         logger.error(f"Command timed out after {e.timeout}s: {e.cmd}")
         raise IptablesError(f"Comando scaduto dopo {e.timeout}s")
@@ -676,14 +910,16 @@ def build_rule_args(
     log_prefix: Optional[str] = None,
     log_level: Optional[str] = None,
     reject_with: Optional[str] = None,
+    connmark_match: Optional[str] = None,
+    set_xmark: Optional[str] = None,
     operation: str = "-A"
 ) -> List[str]:
     """
     Build iptables command arguments for a rule.
-    
+
     Args:
         chain: Target chain name
-        action: Rule action (ACCEPT, DROP, REJECT, MASQUERADE, etc.)
+        action: Rule action (ACCEPT, DROP, REJECT, MASQUERADE, CONNMARK, etc.)
         protocol: Protocol (tcp, udp, icmp, all)
         source: Source IP/CIDR
         destination: Destination IP/CIDR
@@ -699,6 +935,8 @@ def build_rule_args(
         log_prefix: Log prefix
         log_level: Log level
         reject_with: Reject type (e.g. icmp-port-unreachable)
+        connmark_match: "-m connmark --mark <value>[/<mask>]" match (policy-NAT scoping)
+        set_xmark: "--set-xmark <value>[/<mask>]" for action=CONNMARK
         operation: -A (append), -I (insert), -D (delete)
 
     Returns:
@@ -732,7 +970,10 @@ def build_rule_args(
     
     if state:
         args.extend(["-m", "state", "--state", state])
-    
+
+    if connmark_match:
+        args.extend(["-m", "connmark", "--mark", connmark_match])
+
     if port and protocol in ("tcp", "udp"):
         # Support both single port and range
         if "," in str(port):
@@ -751,6 +992,9 @@ def build_rule_args(
         args.extend(["-m", "comment", "--comment", safe_comment])
     
     args.extend(["-j", action])
+
+    if action == "CONNMARK" and set_xmark:
+        args.extend(["--set-xmark", set_xmark])
 
     if action == "DNAT" and to_destination:
         args.extend(["--to-destination", to_destination])

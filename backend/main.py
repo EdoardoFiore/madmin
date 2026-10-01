@@ -14,10 +14,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from sqlalchemy import select
 from config import MADMIN_VERSION
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import select
 import os
 
 from config import get_settings
@@ -488,7 +488,6 @@ def create_app() -> FastAPI:
             {"label": "menu.dashboard", "icon": "home", "route": "#dashboard", "permission": None},
             {"label": "menu.users", "icon": "users", "route": "#users", "permission": "users.view"},
             {"label": "menu.firewall", "icon": "shield", "route": "#firewall", "permission": "firewall.view"},
-            {"label": "menu.firewallAddresses", "icon": "address-book", "route": "#firewall-addresses", "permission": "firewall.view"},
             {"label": "menu.network", "icon": "network", "route": "#network", "permission": "network.view"},
             {"label": "menu.crontab", "icon": "clock", "route": "#crontab", "permission": "cron.view"},
             {"label": "menu.logs", "icon": "file-text", "route": "#logs", "permission": "logs.view"},

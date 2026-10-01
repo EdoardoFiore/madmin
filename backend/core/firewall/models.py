@@ -4,6 +4,7 @@ MADMIN Firewall Models
 Database models for machine firewall rules and module chain registration.
 """
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, BigInteger
 from pydantic import field_validator
 from typing import Optional, List
 from datetime import datetime
@@ -55,12 +56,37 @@ class MachineFirewallRule(SQLModel, table=True):
 
     # Action specific fields
     to_destination: Optional[str] = Field(default=None, max_length=50)  # DNAT
+    # Alternative to the literal `to_destination` above: a DNAT can target an
+    # address object instead of a hand-typed IP (cidr /32 or range). Resolved
+    # to an effective "ip[:port]"/"a-b[:port]" string at apply time by
+    # orchestrator.effective_to_destination(); when set it takes precedence
+    # over the literal column (mirrors source/destination refs precedence).
+    to_destination_object_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="firewall_address_object.id"
+    )
+    to_destination_port: Optional[str] = Field(default=None, max_length=20)
     to_source: Optional[str] = Field(default=None, max_length=50)       # SNAT
     to_ports: Optional[str] = Field(default=None, max_length=50)        # REDIRECT/MASQUERADE
     log_prefix: Optional[str] = Field(default=None, max_length=50)      # LOG
     log_level: Optional[str] = Field(default=None, max_length=20)       # LOG
     reject_with: Optional[str] = Field(default=None, max_length=50)     # REJECT
     
+    # Outbound NAT intent (forward policies only). When True on a filter/FORWARD
+    # rule, apply_rules auto-generates a paired POSTROUTING MASQUERADE companion
+    # (comment MADMIN_AUTO_NAT_<id>), mirroring the DNAT->FORWARD companion. This
+    # is how navigation masquerade is owned by the policy instead of a separate
+    # standalone POSTROUTING rule.
+    policy_nat: bool = Field(default=False)
+
+    # Hairpin NAT (nat/PREROUTING DNAT rules only). When True, apply_rules
+    # auto-generates the companion lines (comment MADMIN_AUTO_HAIRPIN_<id>) that
+    # let LAN clients reach this port forward via the WAN IP: a PREROUTING DNAT
+    # scoped to each LAN subnet (no -i), a POSTROUTING MASQUERADE so the internal
+    # server's reply routes back through the gateway, and a FORWARD ACCEPT for
+    # the LAN-sourced flow (the original DNAT's FORWARD companion carries the
+    # WAN in_interface and won't match hairpin traffic).
+    hairpin: bool = Field(default=False)
+
     # Metadata
     comment: Optional[str] = Field(default=None, max_length=255)
     table_name: str = Field(default="filter", max_length=20)  # filter, nat, mangle, raw
@@ -90,6 +116,41 @@ class ModuleChain(SQLModel, table=True):
     table_name: str = Field(default="filter", max_length=20)
     
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RuleCounter(SQLModel, table=True):
+    """
+    Durable hit/traffic accumulator for a firewall rule.
+
+    Kernel iptables counters are ephemeral: apply_rules() flushes and rebuilds
+    every MADMIN chain on any rule create/edit/delete/reorder (iptables-restore
+    `:chain - [0:0]` + `-F`), zeroing per-rule packet/byte counters. This table
+    accumulates deltas across those resets so totals — and window_start, the
+    "counting since" timestamp — survive rule edits and reboots.
+
+    One row per rule_id (comment `ID_<uuid>` / `MADMIN_AUTO_*_<uuid>` on the
+    kernel side, summed across every kernel line a single rule expands to —
+    see orchestrator.snapshot_counters). last_packets/last_bytes hold the most
+    recent raw kernel snapshot, used only to compute the next delta and detect
+    a counter reset (kernel value dropping below the last snapshot).
+    """
+    __tablename__ = "firewall_rule_counter"
+
+    # No DB-level cascade (matches FirewallRuleAddress convention elsewhere in
+    # this module) — delete_rule()/delete_all_rules() remove the row explicitly.
+    rule_id: uuid.UUID = Field(foreign_key="machine_firewall_rule.id", primary_key=True)
+
+    # Accumulated totals since window_start. BIGINT: cumulative byte counts on
+    # a busy policy overflow a 32-bit INTEGER.
+    packets: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+    bytes: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+
+    # Last raw kernel snapshot (not accumulated) — delta/reset baseline.
+    last_packets: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+    last_bytes: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+
+    window_start: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # --- Pydantic Schemas ---
@@ -253,6 +314,27 @@ class _FirewallRuleValidators(SQLModel):
             raise ValueError(f"Valore non valido: {v}")
         return v
 
+    @field_validator('to_destination_object_id', mode='before', check_fields=False)
+    @classmethod
+    def validate_to_destination_object_id(cls, v):
+        # Existence is checked by the router; here only the shape
+        if v is None or v == "":
+            return None
+        try:
+            return str(uuid.UUID(str(v)))
+        except ValueError:
+            raise ValueError(f"Oggetto di destinazione non valido: {v}")
+
+    @field_validator('to_destination_port', mode='before', check_fields=False)
+    @classmethod
+    def validate_to_destination_port(cls, v):
+        if v is None or v == "":
+            return None
+        s = str(v)
+        if not s.isdigit() or not (1 <= int(s) <= 65535):
+            raise ValueError(f"Porta interna non valida: {v} (range 1-65535)")
+        return s
+
 
 class RuleAddressRef(SQLModel):
     """Object/group reference in a rule create/update payload (per direction).
@@ -277,6 +359,8 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     limit_rate: Optional[str] = None
     limit_burst: Optional[int] = None
     to_destination: Optional[str] = None
+    to_destination_object_id: Optional[str] = None
+    to_destination_port: Optional[str] = None
     to_source: Optional[str] = None
     to_ports: Optional[str] = None
     log_prefix: Optional[str] = None
@@ -285,6 +369,8 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: str = "filter"
     enabled: bool = True
+    policy_nat: bool = False
+    hairpin: bool = False
     # Object/group references (multi-select, OR semantics). When non-empty for a
     # direction they take precedence over the literal source/destination field.
     source_refs: Optional[List[RuleAddressRef]] = None
@@ -305,6 +391,8 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     limit_rate: Optional[str] = None
     limit_burst: Optional[int] = None
     to_destination: Optional[str] = None
+    to_destination_object_id: Optional[str] = None
+    to_destination_port: Optional[str] = None
     to_source: Optional[str] = None
     to_ports: Optional[str] = None
     log_prefix: Optional[str] = None
@@ -313,6 +401,8 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     comment: Optional[str] = None
     table_name: Optional[str] = None
     enabled: Optional[bool] = None
+    policy_nat: Optional[bool] = None
+    hairpin: Optional[bool] = None
     source_refs: Optional[List[RuleAddressRef]] = None
     destination_refs: Optional[List[RuleAddressRef]] = None
 
@@ -345,6 +435,9 @@ class MachineFirewallRuleResponse(SQLModel):
     limit_rate: Optional[str]
     limit_burst: Optional[int]
     to_destination: Optional[str]
+    to_destination_object_id: Optional[str] = None
+    to_destination_object_name: Optional[str] = None
+    to_destination_port: Optional[str] = None
     to_source: Optional[str]
     to_ports: Optional[str]
     log_prefix: Optional[str]
@@ -354,7 +447,9 @@ class MachineFirewallRuleResponse(SQLModel):
     table_name: str
     order: int
     enabled: bool
-    auto_generated: bool = False  # synthetic read-only row (e.g. DNAT forward companion)
+    policy_nat: bool = False  # forward policy owns an outbound MASQUERADE companion
+    hairpin: bool = False  # DNAT is reachable from the LAN via the WAN IP (NAT reflection)
+    auto_generated: bool = False  # synthetic read-only row (e.g. DNAT/NAT companion)
     created_at: datetime
     updated_at: datetime
 
@@ -363,6 +458,15 @@ class RuleOrderUpdate(SQLModel):
     """Schema for updating rule order."""
     id: str
     order: int
+
+
+class RuleCounterResponse(SQLModel):
+    """Schema for GET /firewall/counters — durable hit/traffic totals per rule."""
+    rule_id: str
+    packets: int
+    bytes: int
+    window_start: datetime  # "counting since" — see RuleCounter
+    updated_at: datetime    # time range covered = [window_start, updated_at]
 
 
 class ModuleChainResponse(SQLModel):
