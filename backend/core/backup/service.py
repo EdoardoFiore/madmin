@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text, delete
 
 from config import get_settings, MADMIN_VERSION
+from core import secrets as data_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -1141,10 +1142,8 @@ async def _export_settings(session: AsyncSession) -> dict:
     smtp = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
     smtp_row = smtp.scalar_one_or_none()
     if smtp_row:
-        from core.auth.service import encrypt_totp_secret
-        smtp_password_enc = None
-        if smtp_row.smtp_password:
-            smtp_password_enc = encrypt_totp_secret(smtp_row.smtp_password)
+        # Stored encrypted already (core.secrets): exported as the same token
+        smtp_password_enc = data_secrets.encrypt_setting(smtp_row.smtp_password) or None
         result["smtp"] = {
             "smtp_host": smtp_row.smtp_host,
             "smtp_port": smtp_row.smtp_port,
@@ -1160,10 +1159,7 @@ async def _export_settings(session: AsyncSession) -> dict:
     bk = await session.execute(select(BackupSettings).where(BackupSettings.id == 1))
     bk_row = bk.scalar_one_or_none()
     if bk_row:
-        from core.auth.service import encrypt_totp_secret
-        remote_password_enc = None
-        if bk_row.remote_password:
-            remote_password_enc = encrypt_totp_secret(bk_row.remote_password)
+        remote_password_enc = data_secrets.encrypt_setting(bk_row.remote_password) or None
         result["backup"] = {
             "enabled": bk_row.enabled,
             "frequency": bk_row.frequency,
@@ -1500,8 +1496,10 @@ async def _import_settings(session: AsyncSession, settings_file: str) -> Optiona
         # Decrypt password if present; skip silently on SECRET_KEY mismatch
         if smtp_data.get("smtp_password_enc"):
             try:
-                from core.auth.service import decrypt_totp_secret
-                smtp_data["smtp_password"] = decrypt_totp_secret(smtp_data["smtp_password_enc"])
+                # Re-encrypted under this instance's data key for storage
+                smtp_data["smtp_password"] = data_secrets.encrypt(
+                    data_secrets.decrypt(smtp_data["smtp_password_enc"])
+                )
             except Exception:
                 logger.warning("Import: smtp_password non decifrata (SECRET_KEY diversa), campo azzerato")
         smtp_data.pop("smtp_password_enc", None)
@@ -1525,8 +1523,9 @@ async def _import_settings(session: AsyncSession, settings_file: str) -> Optiona
         # Decrypt password if present; skip silently on SECRET_KEY mismatch
         if bk_data.get("remote_password_enc"):
             try:
-                from core.auth.service import decrypt_totp_secret
-                bk_data["remote_password"] = decrypt_totp_secret(bk_data["remote_password_enc"])
+                bk_data["remote_password"] = data_secrets.encrypt(
+                    data_secrets.decrypt(bk_data["remote_password_enc"])
+                )
             except Exception:
                 logger.warning("Import: remote_password non decifrata (SECRET_KEY diversa), campo azzerato")
         bk_data.pop("remote_password_enc", None)

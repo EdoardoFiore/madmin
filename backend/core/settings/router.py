@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from core.secrets import encrypt_setting, decrypt_setting
 from core.database import get_session
 from core.auth.dependencies import require_permission
 from core.auth.dependencies import get_current_user
@@ -179,6 +180,8 @@ async def update_smtp_settings(
     old_download_url = settings.public_download_url
 
     update_data = data.model_dump(exclude_unset=True)
+    if update_data.get('smtp_password'):
+        update_data['smtp_password'] = encrypt_setting(update_data['smtp_password'])
     nullable_fields = {'public_download_url', 'smtp_username', 'smtp_password'}
     for key, value in update_data.items():
         if key in nullable_fields:
@@ -252,7 +255,7 @@ async def test_smtp_settings(
         smtp_port=settings.smtp_port,
         smtp_encryption=settings.smtp_encryption,
         smtp_username=settings.smtp_username,
-        smtp_password=settings.smtp_password,
+        smtp_password=decrypt_setting(settings.smtp_password),
         sender_email=settings.sender_email,
         sender_name=settings.sender_name,
         recipient_email=data.recipient_email
@@ -281,20 +284,7 @@ async def get_backup_settings(
         await session.commit()
         await session.refresh(settings)
     
-    return BackupSettingsResponse(
-        enabled=settings.enabled,
-        frequency=settings.frequency,
-        time=settings.time,
-        retention_days=settings.retention_days,
-        remote_protocol=settings.remote_protocol,
-        remote_host=settings.remote_host,
-        remote_port=settings.remote_port,
-        remote_user=settings.remote_user,
-        remote_path=settings.remote_path,
-        last_run_status=settings.last_run_status,
-        last_run_time=settings.last_run_time,
-        updated_at=settings.updated_at
-    )
+    return _backup_response(settings)
 
 
 @router.patch("/backup", response_model=BackupSettingsResponse)
@@ -311,15 +301,34 @@ async def update_backup_settings(
         settings = BackupSettings(id=1)
         session.add(settings)
     
-    for key, value in data.model_dump(exclude_unset=True).items():
+    update_data = data.model_dump(exclude_unset=True)
+
+    # A different server is a different key: pin again at the next connection
+    if any(k in update_data and update_data[k] != getattr(settings, k)
+           for k in ("remote_host", "remote_port", "remote_protocol")):
+        settings.remote_host_key = None
+
+    # Secrets are stored encrypted; "" clears the passphrase (no encryption)
+    if "encryption_passphrase" in update_data:
+        passphrase = update_data.pop("encryption_passphrase")
+        settings.encryption_passphrase = encrypt_setting(passphrase) if passphrase else None
+    if update_data.get("remote_password"):
+        update_data["remote_password"] = encrypt_setting(update_data["remote_password"])
+
+    for key, value in update_data.items():
         if value is not None:
             setattr(settings, key, value)
-    
+
     settings.updated_at = datetime.utcnow()
     session.add(settings)
     await session.commit()
     await session.refresh(settings)
-    
+
+    return _backup_response(settings)
+
+
+def _backup_response(settings: BackupSettings) -> BackupSettingsResponse:
+    """Backup settings as returned by the API: never a password or the passphrase."""
     return BackupSettingsResponse(
         enabled=settings.enabled,
         frequency=settings.frequency,
@@ -330,6 +339,8 @@ async def update_backup_settings(
         remote_port=settings.remote_port,
         remote_user=settings.remote_user,
         remote_path=settings.remote_path,
+        remote_host_key=settings.remote_host_key,
+        encryption_enabled=bool(settings.encryption_passphrase),
         last_run_status=settings.last_run_status,
         last_run_time=settings.last_run_time,
         updated_at=settings.updated_at

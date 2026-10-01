@@ -18,6 +18,7 @@ from core.database import get_session
 from core.auth.dependencies import require_permission
 from core.auth.models import User
 from core.settings.models import BackupSettings
+from core import secrets as data_secrets
 from .service import (
     export_config, import_config, preview_config,
     run_backup, list_local_backups, list_import_files,
@@ -271,7 +272,7 @@ async def trigger_backup(
         remote_host=bk_settings.remote_host if bk_settings else None,
         remote_port=(bk_settings.remote_port or 22) if bk_settings else 22,
         remote_user=bk_settings.remote_user if bk_settings else None,
-        remote_password=bk_settings.remote_password if bk_settings else None,
+        remote_password=data_secrets.decrypt_setting(bk_settings.remote_password) if bk_settings else None,
         remote_path=(bk_settings.remote_path or "/") if bk_settings else "/",
         retention_days=(bk_settings.retention_days or 30) if bk_settings else 30
     )
@@ -357,7 +358,7 @@ async def list_remote_backup_files(
         bk_settings.remote_host,
         bk_settings.remote_port or 22,
         bk_settings.remote_user or "",
-        bk_settings.remote_password or "",
+        data_secrets.decrypt_setting(bk_settings.remote_password) or "",
         bk_settings.remote_path or "/"
     )
     
@@ -393,7 +394,7 @@ async def download_remote_backup_file(
         bk_settings.remote_host,
         bk_settings.remote_port or 22,
         bk_settings.remote_user or "",
-        bk_settings.remote_password or "",
+        data_secrets.decrypt_setting(bk_settings.remote_password) or "",
         bk_settings.remote_path or "/",
         safe_name
     )
@@ -426,7 +427,7 @@ async def delete_remote_backup_file(
         bk_settings.remote_host,
         bk_settings.remote_port or 22,
         bk_settings.remote_user or "",
-        bk_settings.remote_password or "",
+        data_secrets.decrypt_setting(bk_settings.remote_password) or "",
         bk_settings.remote_path or "/",
         safe_name
     )
@@ -454,7 +455,7 @@ async def cleanup_remote_storage(
         bk_settings.remote_host,
         bk_settings.remote_port or 22,
         bk_settings.remote_user or "",
-        bk_settings.remote_password or "",
+        data_secrets.decrypt_setting(bk_settings.remote_password) or "",
         bk_settings.remote_path or "/",
         bk_settings.retention_days or 30
     )

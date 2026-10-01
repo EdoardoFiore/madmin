@@ -12,12 +12,9 @@ import re
 import time
 import asyncio
 import secrets
-import hashlib
-import base64
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
 from passlib.context import CryptContext
-from cryptography.fernet import Fernet
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, text
@@ -26,6 +23,7 @@ import uuid
 import logging
 
 from config import get_settings
+from core import secrets as data_secrets
 from .models import User, Permission, UserPermission, UserCreate, UserUpdate, CORE_PERMISSIONS
 
 logger = logging.getLogger(__name__)
@@ -118,25 +116,14 @@ def validate_password_strength(password: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def _get_fernet() -> Fernet:
-    """
-    Return a Fernet instance derived deterministically from SECRET_KEY.
-    No extra configuration required.
-    """
-    key = base64.urlsafe_b64encode(
-        hashlib.sha256(settings.secret_key.encode()).digest()
-    )
-    return Fernet(key)
-
-
 def encrypt_totp_secret(secret: str) -> str:
-    """Encrypt a TOTP secret before storing in the database."""
-    return _get_fernet().encrypt(secret.encode()).decode()
+    """Encrypt a TOTP secret before storing in the database (see core.secrets)."""
+    return data_secrets.encrypt(secret)
 
 
 def decrypt_totp_secret(encrypted: str) -> str:
-    """Decrypt a TOTP secret retrieved from the database."""
-    return _get_fernet().decrypt(encrypted.encode()).decode()
+    """Decrypt a TOTP secret retrieved from the database (older keys included)."""
+    return data_secrets.decrypt(encrypted)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

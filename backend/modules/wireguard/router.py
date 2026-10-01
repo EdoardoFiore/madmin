@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from sqlmodel import SQLModel
 
+from core.secrets import decrypt_setting
 from core.database import get_session
 from core.auth.dependencies import require_permission
 from core.auth.models import User
@@ -1155,7 +1156,7 @@ async def send_client_config_email(
         smtp_port=smtp_settings.smtp_port,
         smtp_encryption=smtp_settings.smtp_encryption,
         smtp_username=smtp_settings.smtp_username,
-        smtp_password=smtp_settings.smtp_password,
+        smtp_password=decrypt_setting(smtp_settings.smtp_password),
         sender_email=smtp_settings.sender_email,
         sender_name=smtp_settings.sender_name,
         recipient_email=data.email,

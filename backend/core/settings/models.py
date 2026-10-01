@@ -5,6 +5,7 @@ Database models for system configuration.
 All settings tables are singleton (only id=1 used).
 """
 from sqlmodel import SQLModel, Field
+from core import validation
 from pydantic import BaseModel, field_validator
 from sqlalchemy import Column, BigInteger
 from typing import Optional
@@ -82,7 +83,7 @@ class SMTPSettings(SQLModel, table=True):
     smtp_port: int = Field(default=587)
     smtp_encryption: str = Field(default="tls", max_length=10)  # none, tls, ssl
     smtp_username: Optional[str] = Field(default=None, max_length=255)
-    smtp_password: Optional[str] = Field(default=None, max_length=255)
+    smtp_password: Optional[str] = Field(default=None, max_length=512)  # encrypted (core.secrets)
     sender_email: str = Field(default="noreply@localhost", max_length=255)
     sender_name: str = Field(default="MADMIN", max_length=100)
     public_download_url: Optional[str] = Field(default=None, max_length=255)
@@ -103,12 +104,18 @@ class BackupSettings(SQLModel, table=True):
     time: str = Field(default="03:00", max_length=10)
     
     # Remote storage settings
-    remote_protocol: str = Field(default="sftp", max_length=10)  # ftp, sftp
+    remote_protocol: str = Field(default="sftp", max_length=10)  # sftp, ftps
     remote_host: str = Field(default="", max_length=255)
     remote_port: int = Field(default=22)
     remote_user: str = Field(default="", max_length=100)
-    remote_password: str = Field(default="", max_length=255)
+    remote_password: str = Field(default="", max_length=512)  # encrypted (core.secrets)
     remote_path: str = Field(default="/", max_length=255)
+    # SFTP server key pinned at the first connection ("<type> SHA256:<b64>");
+    # cleared when host or port change, or on request
+    remote_host_key: Optional[str] = Field(default=None, max_length=255)
+
+    # Archives are encrypted when set (encrypted at rest, never returned)
+    encryption_passphrase: Optional[str] = Field(default=None, max_length=512)
     
     last_run_status: Optional[str] = Field(default=None, max_length=50)
     last_run_time: Optional[datetime] = Field(default=None)
@@ -212,6 +219,55 @@ class BackupSettingsUpdate(SQLModel):
     remote_user: Optional[str] = None
     remote_password: Optional[str] = None
     remote_path: Optional[str] = None
+    # "" removes it (new archives unencrypted); min 12 characters otherwise
+    encryption_passphrase: Optional[str] = None
+
+    @field_validator('remote_protocol', mode='before')
+    @classmethod
+    def _protocol(cls, v):
+        # Plain FTP is gone: credentials and archives travelled in clear.
+        # "ftp" (older settings, restored archives) now means FTPS.
+        if v is None:
+            return v
+        v = "ftps" if v == "ftp" else v
+        return validation.one_of(v, ("sftp", "ftps"), "remote_protocol")
+
+    @field_validator('frequency', mode='before')
+    @classmethod
+    def _frequency(cls, v):
+        return v if v is None else validation.one_of(v, ("daily", "weekly"), "frequency")
+
+    @field_validator('time', mode='before')
+    @classmethod
+    def _time(cls, v):
+        if v is not None and not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', str(v)):
+            raise ValueError("time: formato HH:MM")
+        return v
+
+    @field_validator('remote_host', mode='before')
+    @classmethod
+    def _host(cls, v):
+        return v if v in (None, "") else validation.host(v, "remote_host")
+
+    @field_validator('remote_port', mode='before')
+    @classmethod
+    def _port(cls, v):
+        return v if v is None else int(validation.port(v))
+
+    @field_validator('remote_user', 'remote_path', mode='before')
+    @classmethod
+    def _text(cls, v, info):
+        return v if v is None else validation.no_control_chars(v, info.field_name)
+
+    @field_validator('encryption_passphrase', mode='before')
+    @classmethod
+    def _passphrase(cls, v):
+        if v in (None, ""):
+            return v
+        validation.no_control_chars(v, "passphrase", 256)
+        if len(v) < 12:
+            raise ValueError("La passphrase deve avere almeno 12 caratteri")
+        return v
 
 
 class BackupSettingsResponse(SQLModel):
@@ -225,6 +281,8 @@ class BackupSettingsResponse(SQLModel):
     remote_port: int
     remote_user: str
     remote_path: str
+    remote_host_key: Optional[str] = None
+    encryption_enabled: bool = False
     last_run_status: Optional[str]
     last_run_time: Optional[datetime]
     updated_at: datetime
