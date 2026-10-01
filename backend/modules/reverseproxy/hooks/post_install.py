@@ -9,6 +9,7 @@ Reverse Proxy Module - Post Install Hook
 Note: firewall rules (80/443) are applied by router.py at import time.
 """
 import os
+import shutil
 import logging
 from pathlib import Path
 
@@ -49,7 +50,12 @@ async def run():
         svc.SENTINEL_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)
-    os.chmod(svc.HTPASSWD_DIR, 0o755)
+    # Password hashes: root and nginx's group only
+    os.chmod(svc.HTPASSWD_DIR, 0o750)
+    try:
+        shutil.chown(svc.HTPASSWD_DIR, group="www-data")
+    except (LookupError, OSError):
+        pass
     logger.info("Reverse Proxy post-install: directories ready")
 
     # 3) Install ACME catch-all vhost (idempotent)

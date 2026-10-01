@@ -38,8 +38,8 @@ def hash_backup_codes(codes: List[str]) -> List[dict]:
     Returns:
         List of {"hash": bcrypt_hash, "used": False} dicts for DB storage.
     """
-    from .service import pwd_context
-    return [{"hash": pwd_context.hash(code.upper()), "used": False} for code in codes]
+    from .service import get_password_hash
+    return [{"hash": get_password_hash(code.upper()), "used": False} for code in codes]
 
 
 def get_provisioning_uri(secret: str, username: str, issuer: str = "MADMIN") -> str:
@@ -119,7 +119,7 @@ def verify_backup_code(codes_json: str, code: str) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_valid, updated_codes_json)
     """
-    from .service import pwd_context
+    from .service import verify_password
 
     codes = json.loads(codes_json) if codes_json else []
     code_clean = code.upper().replace("-", "").replace(" ", "")
@@ -127,7 +127,7 @@ def verify_backup_code(codes_json: str, code: str) -> Tuple[bool, str]:
     for i, entry in enumerate(codes):
         if entry.get("used", False):
             continue
-        if pwd_context.verify(code_clean, entry["hash"]):
+        if verify_password(code_clean, entry["hash"]):
             codes[i] = {**entry, "used": True}
             return True, json.dumps(codes)
 

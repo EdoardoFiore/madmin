@@ -4,8 +4,10 @@ Reverse Proxy Module - Database Models
 Proxy hosts (source domain → backend), access lists (HTTP basic auth + IP rules)
 and Let's Encrypt certificates.
 """
+import re
 from typing import Optional, List
 from datetime import datetime
+from pydantic import field_validator
 from sqlmodel import Field, SQLModel, Relationship, JSON, Column
 from sqlalchemy import Text
 import uuid
@@ -223,6 +225,15 @@ class RevproxyAccessListAuthRead(SQLModel):
 class RevproxyAccessListAuthCreate(SQLModel):
     username: str
     password: str  # plaintext from client; never persisted
+
+    @field_validator('username')
+    @classmethod
+    def _username(cls, v: str) -> str:
+        # One "user:hash" line per user in the htpasswd file nginx reads: a
+        # newline or ':' would add a user of the caller's choosing
+        if not re.fullmatch(r'[A-Za-z0-9._@-]{1,64}', v or ""):
+            raise ValueError("Username non valido: lettere, cifre, '.', '_', '@' o '-' (max 64)")
+        return v
 
 
 class RevproxyAccessListRuleRead(SQLModel):

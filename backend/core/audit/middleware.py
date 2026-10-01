@@ -19,7 +19,7 @@ import logging
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from jose import jwt, JWTError
+import jwt
 
 from config import get_settings
 from core.http import get_client_ip
@@ -105,7 +105,7 @@ def _extract_username(request: Request) -> str:
         settings = get_settings()
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         return payload.get("sub", "anonymous")
-    except JWTError:
+    except jwt.PyJWTError:
         return "anonymous"
 
 

@@ -30,8 +30,11 @@ class Settings(BaseSettings):
     @field_validator('secret_key')
     @classmethod
     def validate_secret_key(cls, v: str) -> str:
+        # Rejects the placeholders too (.env.example's CHANGE_THIS_TO_A_RANDOM_...
+        # is 48 characters long and used to pass): a known key lets anyone
+        # forge sessions and read the encrypted settings
         weak = {'CHANGE_THIS_IN_PRODUCTION', '', 'secret', 'changeme', 'password'}
-        if v in weak or len(v) < 32:
+        if v in weak or len(v) < 32 or 'change' in v.lower():
             raise ValueError(
                 'SECRET_KEY non sicuro o troppo corto. '
                 'Genera un valore con: python -c "import secrets; print(secrets.token_hex(32))"'

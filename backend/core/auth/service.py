@@ -14,8 +14,8 @@ import asyncio
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Tuple
-from passlib.context import CryptContext
-from jose import JWTError, jwt
+import bcrypt
+import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, text
 from sqlalchemy.orm import selectinload
@@ -29,8 +29,6 @@ from .models import User, Permission, UserPermission, UserCreate, UserUpdate, CO
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT Configuration
 ALGORITHM = "HS256"
@@ -38,12 +36,16 @@ ALGORITHM = "HS256"
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    # bcrypt directly (passlib is unmaintained); hashes are the same $2b$ format
+    try:
+        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    except ValueError:  # not a bcrypt hash
+        return False
 
 
 def get_password_hash(password: str) -> str:
     """Hash a password for storage."""
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 _DUMMY_HASH: Optional[str] = None
@@ -176,7 +178,7 @@ def decode_access_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         return payload
-    except JWTError as e:
+    except jwt.PyJWTError as e:
         logger.warning(f"JWT decode error: {e}")
         return None
 

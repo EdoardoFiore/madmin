@@ -5,6 +5,7 @@ Renders nginx configs from DB state, writes them to disk under madmin-* prefix,
 manages access lists (htpasswd + IP rules), and drives certbot for Let's Encrypt.
 """
 import os
+import shutil
 import re
 import subprocess
 import logging
@@ -461,24 +462,25 @@ def write_htpasswd(acl_id, users: List[Tuple[str, str]]) -> None:
     """Write the htpasswd file. `users` = [(username, bcrypt_hash), ...]."""
     HTPASSWD_DIR.mkdir(parents=True, exist_ok=True)
     path = _htpasswd_path(acl_id)
-    lines = [f"{u}:{h}" for u, h in users]
+    # A row that did not come through the API must not add lines either
+    lines = [f"{u}:{h}" for u, h in users if not any(c in u + h for c in ":\r\n")]
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
-    os.chmod(path, 0o644)
+    # Hashes: root and nginx's group only (it was world-readable)
+    os.chmod(path, 0o640)
+    try:
+        shutil.chown(path, group="www-data")
+    except (LookupError, OSError, AttributeError):
+        pass
 
 
 def hash_password(plain: str) -> str:
-    """Hash plain password using `htpasswd -nbB`. Returns the hash portion only."""
-    r = subprocess.run(
-        ["htpasswd", "-nbB", "x", plain],
-        capture_output=True, text=True, timeout=10,
-    )
-    if r.returncode != 0:
-        raise RuntimeError(f"htpasswd failed: {r.stderr.strip()}")
-    out = r.stdout.strip()
-    # Format: "x:$2y$...". Strip the dummy username.
-    if ":" in out:
-        return out.split(":", 1)[1]
-    return out
+    """
+    bcrypt hash for nginx auth_basic ($2b$, accepted by libxcrypt). Computed
+    here rather than with `htpasswd -nbB x <password>`, which put the password
+    on the command line, visible in the process list.
+    """
+    import bcrypt
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 
 async def apply_access_list(session: AsyncSession, acl_id) -> Tuple[bool, str]:

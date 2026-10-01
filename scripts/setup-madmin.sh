@@ -188,7 +188,6 @@ apt-get install -y \
     openssl \
     debconf-utils \
     build-essential \
-    libmagic-dev \
     libffi-dev \
     sudo \
     net-tools \
