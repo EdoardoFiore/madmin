@@ -348,7 +348,24 @@ add_header X-Content-Type-Options "nosniff" always;
 add_header Referrer-Policy "no-referrer" always;
 EOF
 
+# Proxy settings shared by every location that forwards to the backend.
+# X-Real-IP is what the login rate limiter and the audit log key on.
+cat > /etc/nginx/snippets/madmin-proxy.conf << 'EOF'
+proxy_pass http://127.0.0.1:8000;
+proxy_http_version 1.1;
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+EOF
+
+# Note: Settings changes the management port by rewriting the first
+# "listen <port>[ ssl];" line of this file, keep that form.
 cat > /etc/nginx/sites-available/madmin.conf << EOF
+# Login endpoints (password, 2FA, forced password change): a first brake per
+# client IP in front of the backend's own per-IP and per-account limits
+limit_req_zone \$binary_remote_addr zone=madmin_login:1m rate=10r/m;
+
 server {
     listen 7443 ssl;
     server_name $PUBLIC_IP _;
@@ -357,7 +374,16 @@ server {
     ssl_certificate_key $INSTALL_DIR/data/ssl/server.key;
 
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:MADMIN:10m;
+    ssl_session_timeout 1d;
+
+    # Plain http:// on the TLS port: redirect instead of nginx's 400 page
+    error_page 497 =301 https://\$host:\$server_port\$request_uri;
+
+    # Default request body limit; larger only where an upload needs it
+    client_max_body_size 4m;
 
     server_tokens off;
     include snippets/madmin-security-headers.conf;
@@ -367,10 +393,7 @@ server {
 
     # Module static files (served by FastAPI, mounted dynamically)
     location /static/modules {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        include snippets/madmin-proxy.conf;
     }
 
     # Third-party libraries: the version is in the path, so they never change
@@ -391,10 +414,7 @@ server {
 
     # Uploaded files (logos, favicons, etc.)
     location /uploads {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        include snippets/madmin-proxy.conf;
     }
 
     # First-user bootstrap is for the installer only, which calls the backend
@@ -403,14 +423,26 @@ server {
         return 404;
     }
 
-    # API reverse proxy
+    location /api/auth/token {
+        limit_req zone=madmin_login burst=10 nodelay;
+        limit_req_status 429;
+        include snippets/madmin-proxy.conf;
+    }
+
+    # Configuration archives (restore, preview)
+    location /api/backup/import {
+        client_max_body_size 200m;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        include snippets/madmin-proxy.conf;
+    }
+
+    # API reverse proxy. Some calls take minutes (certbot, easy-rsa, a backup
+    # upload to the remote server): nginx's 60s default would cut them off
     location /api {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        include snippets/madmin-proxy.conf;
     }
 
     # Login page
@@ -447,16 +479,33 @@ log_info "Step 6/7: Configuring systemd service..."
 cat > /etc/systemd/system/madmin.service << EOF
 [Unit]
 Description=MADMIN Backend (FastAPI)
-After=network.target postgresql.service
+Wants=network-online.target postgresql.service
+After=network-online.target postgresql.service
 
 [Service]
-Type=simple
+# READY=1 once startup is done; watchdog pings come from the event loop, so a
+# blocked loop (process alive, no request answered) gets the service restarted
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+TimeoutStartSec=300
+TimeoutStopSec=30
 User=root
 WorkingDirectory=$INSTALL_DIR/backend
 Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+# Exactly one worker: login limits, audit queue, locks, background tasks and
+# the module routers mounted at runtime all live in this process. Never add
+# --workers.
 ExecStart=$INSTALL_DIR/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=5
+LimitNOFILE=65536
+# Root is needed (iptables, /etc/*, systemctl), so only what the modules never
+# use is taken away. Not ProtectSystem/ProtectKernelTunables: modules write
+# /etc and net.ipv4.ip_forward
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
 
 [Install]
 WantedBy=multi-user.target
