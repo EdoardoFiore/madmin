@@ -729,6 +729,8 @@ class ModuleLoader:
     ) -> dict:
         """
         Deactivate a module (clean slate):
+        0. Export the whole configuration to BACKUP_DIR (the tables are dropped
+           below: this archive is the only way back)
         1. Call on_disable hook (module handles its own system cleanup)
         2. Remove firewall chain records
         3. Remove permission records
@@ -755,7 +757,21 @@ class ModuleLoader:
         module_name = db_module.name
         module_path = self.modules_dir / module_id
         errors = []  # Track non-fatal errors during cleanup
-        
+
+        # 0. Safety copy. Without it the module's data is gone for good, so a
+        #    failed export stops the deactivation.
+        try:
+            from core.backup.service import export_config
+            safety_archive = await export_config(session)
+            logger.info(f"Configuration exported before deactivating {module_id}: {safety_archive}")
+        except Exception:
+            logger.exception(f"Export before deactivating {module_id} failed")
+            return {
+                "success": False,
+                "error": "Export di sicurezza della configurazione fallito: disattivazione annullata "
+                         "(i dati del modulo verrebbero eliminati). Controlla lo spazio su disco e i log.",
+            }
+
         try:
             # 1. Execute on_disable hook FIRST — module cleans its own system resources
             manifest_path = module_path / "manifest.json"
@@ -781,10 +797,10 @@ class ModuleLoader:
                 mod_chains = chain_result.scalars().all()
                 affected_parents = list({(mc.parent_chain, mc.table_name) for mc in mod_chains})
 
-                await session.execute(
-                    delete(ModuleChain).where(ModuleChain.module_id == module_id)
-                )
-                await session.flush()
+                async with session.begin_nested():
+                    await session.execute(
+                        delete(ModuleChain).where(ModuleChain.module_id == module_id)
+                    )
 
                 # Rebuild jump rules for each affected parent chain so remaining
                 # module chains and MADMIN core chains stay properly connected
@@ -804,16 +820,17 @@ class ModuleLoader:
                 # below down with it.
                 from core.auth.models import UserPermission
 
-                await session.execute(
-                    delete(UserPermission).where(
-                        UserPermission.permission_slug.in_(
-                            select(Permission.slug).where(Permission.module_id == module_id)
+                async with session.begin_nested():
+                    await session.execute(
+                        delete(UserPermission).where(
+                            UserPermission.permission_slug.in_(
+                                select(Permission.slug).where(Permission.module_id == module_id)
+                            )
                         )
                     )
-                )
-                await session.execute(
-                    delete(Permission).where(Permission.module_id == module_id)
-                )
+                    await session.execute(
+                        delete(Permission).where(Permission.module_id == module_id)
+                    )
                 logger.info(f"Removed permission records for {module_id}")
             except Exception as e:
                 logger.error(f"Failed to remove permissions for {module_id}: {e}")
@@ -834,7 +851,10 @@ class ModuleLoader:
                         
                         for table_name in reversed(tables_to_drop):
                             try:
-                                await session.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
+                                # Savepoint: on PostgreSQL a failed DROP would abort the
+                                # transaction and every later statement with it
+                                async with session.begin_nested():
+                                    await session.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
                                 logger.info(f"Dropped table: {table_name}")
                             except Exception as e:
                                 logger.warning(f"Failed to drop table {table_name}: {e}")
@@ -849,7 +869,10 @@ class ModuleLoader:
             
             logger.info(f"Fully deactivated module: {module_id}")
             
-            message = f"Modulo {module_name} disattivato e dati rimossi. Riavvio richiesto."
+            message = (
+                f"Modulo {module_name} disattivato e dati rimossi. Riavvio richiesto. "
+                f"Configurazione precedente salvata in {os.path.basename(safety_archive)}."
+            )
             if errors:
                 message += f" Attenzione: {len(errors)} avviso/i durante la pulizia."
                 logger.warning(f"Deactivation warnings for {module_id}: {errors}")
@@ -857,7 +880,8 @@ class ModuleLoader:
             return {
                 "success": True,
                 "message": message,
-                "warnings": errors if errors else None
+                "warnings": errors if errors else None,
+                "backup": os.path.basename(safety_archive),
             }
         
         except Exception as e:
