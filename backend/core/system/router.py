@@ -13,7 +13,7 @@ from core.auth.dependencies import get_current_user, require_permission
 from core.auth.models import User
 
 from .service import (
-    system_service, save_stats_to_history, get_stats_history,
+    system_service, get_stats_history,
     get_network_traffic_history, get_system_alerts
 )
 
@@ -80,34 +80,14 @@ class AlertItem(BaseModel):
 @router.get("/stats")
 async def get_system_stats(
     _user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
 ):
     """
-    Get system statistics.
-    
-    Returns CPU, Memory, and Disk usage information.
-    Also saves stats to history for graphs.
+    Get system statistics: CPU, memory and disk usage.
+
+    History for the graphs is written only by the 60s background task: every
+    open dashboard polling this endpoint used to add its own rows.
     """
-    stats = system_service.get_stats()
-    
-    # Save to history if stats are available
-    if stats.get("available"):
-        try:
-            await save_stats_to_history(
-                session,
-                cpu=stats["cpu"]["percent"],
-                ram=stats["memory"]["percent"],
-                disk=stats["disk"]["percent"],
-                ram_used=stats["memory"]["used"],
-                ram_total=stats["memory"]["total"],
-                disk_used=stats["disk"]["used"],
-                disk_total=stats["disk"]["total"]
-            )
-        except Exception:
-            # Don't fail the request if history save fails
-            pass
-    
-    return stats
+    return system_service.get_stats()
 
 
 @router.get("/services")

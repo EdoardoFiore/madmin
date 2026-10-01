@@ -14,6 +14,7 @@ import asyncio
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from core.concurrency import spawn_background
 
 logger = logging.getLogger("hook_on_startup")
 
@@ -101,5 +102,5 @@ async def run(session: AsyncSession):
     # upgrades any legacy 180-day CRL to the long validity window immediately.
     if not _crl_loop_started:
         _crl_loop_started = True
-        asyncio.create_task(_crl_renewal_loop())
+        spawn_background(_crl_renewal_loop(), "openvpn-crl-renewal")
         logger.info("OpenVPN CRL auto-renewal loop started (daily)")

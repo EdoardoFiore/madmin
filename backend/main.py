@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from config import MADMIN_VERSION
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import select
 import os
 
@@ -39,6 +39,11 @@ async def lifespan(app: FastAPI):
     Runs on startup and shutdown.
     """
     logger.info("MADMIN starting up...")
+
+    # First, so systemd sees pings while the rest of startup runs
+    import asyncio
+    from core import sdnotify
+    watchdog_task = asyncio.create_task(sdnotify.watchdog_loop(), name="systemd-watchdog")
     
     # Import here to avoid circular imports
     from core.database import init_db, async_session_maker
@@ -150,8 +155,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Firewall apply_rules failed on startup: {e}", exc_info=True)
 
-    import asyncio
-
     # Restore services that were UP before the last restart (non-blocking).
     # Runs each module's on_startup hook after firewall rules are applied, so
     # module start logic can layer its dynamic chains on top of the base ruleset.
@@ -177,7 +180,7 @@ async def lifespan(app: FastAPI):
             try:
                 async with async_session_maker() as session:
                     # Collect system stats
-                    stats = system_service.get_stats()
+                    stats = await asyncio.to_thread(system_service.get_stats)
                     if stats.get("available"):
                         await save_stats_to_history(
                             session,
@@ -192,8 +195,8 @@ async def lifespan(app: FastAPI):
                     
                     # Collect network traffic
                     await save_network_traffic(session)
-            except Exception as e:
-                logger.error(f"Background stats collection error: {e}")
+            except Exception:
+                logger.exception("Background stats collection error")
             
             await asyncio.sleep(60)  # Collect every 60 seconds
     
@@ -203,16 +206,13 @@ async def lifespan(app: FastAPI):
     
     # Start scheduled backup task
     from core.settings.models import BackupSettings
-    from core.backup.service import run_backup
-    from datetime import datetime
-    
+    from core.backup.service import backup_due, run_backup
+    from datetime import datetime, timedelta
+
     backup_task_running = True
-    last_backup_date = None
-    
+
     async def scheduled_backup_task():
         """Background task to run scheduled backups."""
-        nonlocal last_backup_date
-        
         while backup_task_running:
             try:
                 async with async_session_maker() as session:
@@ -220,74 +220,68 @@ async def lifespan(app: FastAPI):
                         select(BackupSettings).where(BackupSettings.id == 1)
                     )
                     settings = result.scalar_one_or_none()
-                    
-                    if settings and settings.enabled:
-                        now = datetime.now()
-                        current_time = now.strftime("%H:%M")
-                        current_date = now.date()
-                        
-                        # Check if it's time to run backup
-                        should_run = False
-                        
-                        if settings.frequency == "daily":
-                            # Run once per day at specified time
-                            if current_time == settings.time and last_backup_date != current_date:
-                                should_run = True
-                        elif settings.frequency == "weekly":
-                            # Run on Sundays at specified time
-                            if now.weekday() == 6 and current_time == settings.time and last_backup_date != current_date:
-                                should_run = True
-                        
-                        if should_run:
-                            logger.info(f"Starting scheduled backup (frequency: {settings.frequency})")
-                            last_backup_date = current_date
-                            
-                            backup_result = await run_backup(
-                                session=session,
-                                retention_days=settings.retention_days
-                            )
-                            
-                            # Update last run status
-                            settings.last_run_time = datetime.utcnow()
-                            if backup_result.get("success"):
-                                settings.last_run_status = "success"
-                            elif backup_result.get("archive"):
-                                # Archive created locally, but upload failed
-                                settings.last_run_status = "upload_failed"
-                            else:
-                                settings.last_run_status = "failed"
-                            session.add(settings)
-                            await session.commit()
-                            
-                            if backup_result.get("success"):
-                                logger.info(f"Scheduled backup completed: {backup_result.get('archive')}")
-                            else:
-                                logger.error(f"Scheduled backup failed: {backup_result.get('errors')}")
-                            
-            except Exception as e:
-                logger.error(f"Scheduled backup task error: {e}")
-            
+
+                    if settings and settings.enabled and backup_due(settings, datetime.now()):
+                        logger.info(f"Starting scheduled backup (frequency: {settings.frequency})")
+                        # Marked before running: a backup that crashes the task
+                        # must not be retried every minute
+                        settings.last_run_time = datetime.utcnow()
+                        settings.last_run_status = "running"
+                        session.add(settings)
+                        await session.commit()
+
+                        backup_result = await run_backup(
+                            session=session,
+                            retention_days=settings.retention_days
+                        )
+
+                        if backup_result.get("success"):
+                            settings.last_run_status = "success"
+                        elif backup_result.get("archive"):
+                            # Archive created locally, but upload failed
+                            settings.last_run_status = "upload_failed"
+                        else:
+                            settings.last_run_status = "failed"
+                        session.add(settings)
+                        await session.commit()
+
+                        if backup_result.get("success"):
+                            logger.info(f"Scheduled backup completed: {backup_result.get('archive')}")
+                        else:
+                            logger.error(f"Scheduled backup failed: {backup_result.get('errors')}")
+
+            except Exception:
+                logger.exception("Scheduled backup task error")
+
             await asyncio.sleep(60)  # Check every minute
-    
+
     backup_task = asyncio.create_task(scheduled_backup_task())
     logger.info("Scheduled backup task started")
     
     # Start audit log cleanup task
     from core.audit.service import cleanup_old_logs
+    from core.auth.rate_limiter import login_rate_limiter
     
     audit_cleanup_running = True
     
     async def audit_cleanup_task():
-        """Background task to clean up old audit log entries (runs every 24h)."""
+        """
+        Prune old audit entries and stale login-limiter rows. First run shortly
+        after startup (a VM rebooted daily would otherwise never reach the
+        24h mark), then every 24h.
+        """
+        delay = 300
         while audit_cleanup_running:
             try:
-                await asyncio.sleep(86400)  # Wait 24 hours
+                await asyncio.sleep(delay)
+                delay = 86400
                 async with async_session_maker() as session:
                     await cleanup_old_logs(session)
+                    await login_rate_limiter.cleanup_stale(session)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Audit log cleanup error: {e}")
+            except Exception:
+                logger.exception("Audit log cleanup error")
     
     audit_task = asyncio.create_task(audit_cleanup_task())
     logger.info("Audit log cleanup task started (every 24h)")
@@ -297,7 +291,6 @@ async def lifespan(app: FastAPI):
     import json as _json
     from core.firewall import addresses as fw_addresses
     from core.firewall.models import AddressObject
-    from datetime import timedelta
 
     address_refresh_running = True
 
@@ -347,18 +340,21 @@ async def lifespan(app: FastAPI):
                     logger.info(f"Address: refreshed {len(objs)} dynamic objects (fqdn/geo)")
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Address refresh task error: {e}")
+            except Exception:
+                logger.exception("Address refresh task error")
 
     address_task = asyncio.create_task(address_refresh_task())
     logger.info("Address dynamic refresh task started (daily at midnight)")
 
     logger.info("MADMIN ready!")
+    sdnotify.notify("READY=1")
     
     yield
     
     # Shutdown
     logger.info("MADMIN shutting down...")
+    sdnotify.notify("STOPPING=1")
+    watchdog_task.cancel()
     stats_task_running = False
     backup_task_running = False
     audit_cleanup_running = False
@@ -424,6 +420,13 @@ def create_app() -> FastAPI:
 
     # Custom OpenAPI schema with JWT security
     setup_openapi(app)
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception(request: Request, exc: Exception):
+        # Full traceback in the journal; the client gets no internals (paths,
+        # SQL, command lines), whatever DEBUG says
+        logger.error(f"Unhandled error on {request.method} {request.url.path}", exc_info=exc)
+        return JSONResponse(status_code=500, content={"detail": "Errore interno del server"})
     
     # CORS middleware — no allow_credentials; auth uses Bearer token in localStorage
     app.add_middleware(
@@ -504,16 +507,22 @@ def create_app() -> FastAPI:
     # Health check endpoint
     @app.get("/api/health", tags=["System"])
     async def health_check():
-        """Health check endpoint."""
+        """
+        Health check endpoint, unauthenticated (installer, monitoring). 503
+        when the database is unreachable, so a probe reading only the status
+        code sees the outage. The version is not disclosed here.
+        """
         from core.database import check_db_connection
 
         db_healthy = await check_db_connection()
 
-        return {
-            "status": "healthy" if db_healthy else "degraded",
-            "database": "connected" if db_healthy else "disconnected",
-            "version": MADMIN_VERSION
-        }
+        return JSONResponse(
+            status_code=200 if db_healthy else 503,
+            content={
+                "status": "healthy" if db_healthy else "degraded",
+                "database": "connected" if db_healthy else "disconnected",
+            },
+        )
     
     # Mount static frontend files
     # This should be done after all API routes

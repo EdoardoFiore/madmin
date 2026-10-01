@@ -111,7 +111,7 @@ export async function apiGet(endpoint) {
 
     if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(_extractDetail(error));
+        throw Object.assign(new Error(_extractDetail(error)), { status: response.status });
     }
 
     return response.json();

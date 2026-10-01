@@ -199,7 +199,18 @@ function getOrderedWidgets() {
 
 // ============== MAIN RENDER ==============
 
+function stopAutoRefresh() {
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+    }
+}
+
 export async function render(container) {
+    // The module is cached across navigations: an interval left by a previous
+    // visit would keep polling (and stack with a new one)
+    stopAutoRefresh();
+
     // Load module widgets first (registers them in WIDGET_MAP)
     await loadModuleWidgets();
 
@@ -1091,8 +1102,11 @@ async function loadStatCards() {
             </span>
         `;
     } catch (e) {
+        // /health answers 503 when the database is unreachable
         const el = document.getElementById('system-status');
-        if (el) el.innerHTML = `<span class="status-dot status-dot-warning me-2"></span>${t('dashboard.loadingError')}`;
+        if (el) el.innerHTML = `<span class="status-dot status-dot-warning me-2"></span>${t(e.status === 503 ? 'dashboard.degraded' : 'dashboard.loadingError')}`;
+        const db = document.getElementById('db-status');
+        if (db && e.status === 503) db.innerHTML = `<span class="badge bg-danger">${t('dashboard.disconnected')}</span>`;
     }
 
     // The remaining cards are only rendered when permitted: skip their calls otherwise,
@@ -1180,13 +1194,16 @@ function setupEventListeners() {
 
     // Auto-refresh toggle
     document.getElementById('auto-refresh-toggle')?.addEventListener('change', (e) => {
+        stopAutoRefresh();
         if (e.target.checked) {
-            autoRefreshInterval = setInterval(loadSystemStats, 30000);
-        } else {
-            if (autoRefreshInterval) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshInterval = null;
-            }
+            autoRefreshInterval = setInterval(() => {
+                // Left the dashboard: stop instead of polling for elements that are gone
+                if (!document.getElementById('auto-refresh-toggle')) {
+                    stopAutoRefresh();
+                    return;
+                }
+                loadSystemStats();
+            }, 30000);
         }
     });
 

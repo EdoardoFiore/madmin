@@ -26,7 +26,7 @@ import importlib.util
 import subprocess
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path, PurePosixPath
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -578,6 +578,36 @@ def _schedule_restart():
 
 
 # ============== SCHEDULED BACKUP (uses export_config) ==============
+
+
+def backup_due(settings, now: datetime) -> bool:
+    """
+    True when the most recent scheduled slot (today at `time`, or the last
+    Sunday for weekly) has passed and no backup ran since. Comparing with
+    the persisted last_run_time, not the current minute, means a slot
+    missed during a restart or a long-running loop iteration still runs,
+    and never twice.
+    """
+    try:
+        hh, mm = (int(x) for x in settings.time.split(":"))
+    except (AttributeError, ValueError):
+        return False
+    slot = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if settings.frequency == "weekly":
+        slot -= timedelta(days=(slot.weekday() - 6) % 7)  # back to Sunday
+        if slot > now:
+            slot -= timedelta(days=7)
+    elif settings.frequency == "daily":
+        if slot > now:
+            slot -= timedelta(days=1)
+    else:
+        return False
+    if settings.last_run_time is None:
+        # Never ran: only today's slot, not a catch-up the moment backups are enabled
+        return now - slot < timedelta(minutes=5)
+    # last_run_time is naive UTC; the schedule is in local time
+    slot_utc = slot.astimezone(timezone.utc).replace(tzinfo=None)
+    return settings.last_run_time < slot_utc
 
 
 async def run_backup(session: AsyncSession, upload: bool = True, retention_days: int = 30) -> dict:

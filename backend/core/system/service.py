@@ -59,8 +59,9 @@ class SystemService:
             }
         
         try:
-            # CPU usage (non-blocking, 0 interval returns cached value)
-            cpu_percent = psutil.cpu_percent(interval=0.1)
+            # Usage since the previous call (no sleep on the event loop); the
+            # first call after startup reads 0.0
+            cpu_percent = psutil.cpu_percent(interval=None)
             cpu_count = psutil.cpu_count()
             
             # Memory usage

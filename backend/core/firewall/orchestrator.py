@@ -21,6 +21,7 @@ from .models import (
     AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
 )
 from . import iptables, addresses
+from core.concurrency import resource_lock, spawn_background
 
 logger = logging.getLogger(__name__)
 
@@ -630,6 +631,15 @@ class FirewallOrchestrator:
 
     async def apply_rules(self, session: AsyncSession) -> bool:
         """
+        Serialized: two rebuilds interleaving at an await would each restore
+        chains computed from a different snapshot of the DB, and the last
+        writer could be the older one.
+        """
+        async with resource_lock("firewall:apply"):
+            return await self._apply_rules(session)
+
+    async def _apply_rules(self, session: AsyncSession) -> bool:
+        """
         Apply all rules from database to iptables atomically.
 
         Uses iptables-restore --noflush to flush and repopulate each MADMIN
@@ -663,7 +673,7 @@ class FirewallOrchestrator:
         #    returns immediately; the set matches nothing until it finishes.
         eff_map, addr_plan = await self._build_address_plan(session, rules)
         addresses.ensure_sets_exist(addr_plan)
-        asyncio.create_task(asyncio.to_thread(addresses.sync_referenced, addr_plan))
+        spawn_background(_sync_address_sets(addr_plan), "firewall-address-sync")
 
         # Build per-table chain rules: {table: {madmin_chain: [restore-format lines]}}
         chain_rules: Dict[str, Dict[str, List[str]]] = {}
@@ -763,7 +773,7 @@ class FirewallOrchestrator:
             # the event loop. (Dynamic geo/fqdn sets may still be filling in via
             # sync_referenced; that's fine — madmin always rebuilds from the DB on
             # the next startup, this snapshot only covers the boot window.)
-            asyncio.create_task(asyncio.to_thread(iptables.save_rules))
+            spawn_background(_save_rules(), "firewall-save")
 
         return success
 
@@ -780,8 +790,19 @@ class FirewallOrchestrator:
         rules = result.scalars().all()
         _, plan = await self._build_address_plan(session, rules)
         addresses.ensure_sets_exist(plan)
-        asyncio.create_task(asyncio.to_thread(addresses.sync_referenced, plan))
+        spawn_background(_sync_address_sets(plan), "firewall-address-sync")
         return True
+
+
+async def _sync_address_sets(plan) -> None:
+    # One at a time: two workers filling the same ipsets would race on the swap
+    async with resource_lock("firewall:address-sets"):
+        await asyncio.to_thread(addresses.sync_referenced, plan)
+
+
+async def _save_rules() -> None:
+    async with resource_lock("firewall:save"):
+        await asyncio.to_thread(iptables.save_rules)
 
 
 # Singleton instance

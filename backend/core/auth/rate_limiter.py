@@ -194,6 +194,26 @@ class LoginRateLimiter:
 
         await session.execute(delete(LoginAttempt).where(LoginAttempt.ip.in_(keys)))
 
+    async def cleanup_stale(self, session) -> int:
+        """
+        Delete persisted rows of keys that are not blocked and have been idle
+        for a day: failed logins against random usernames would otherwise
+        grow the table forever (one row per IP and per name tried).
+        """
+        from datetime import timedelta
+        from sqlalchemy import delete, or_
+        from .models import LoginAttempt
+
+        now = datetime.utcnow()
+        result = await session.execute(
+            delete(LoginAttempt).where(
+                LoginAttempt.last_attempt < now - timedelta(days=1),
+                or_(LoginAttempt.blocked_until.is_(None), LoginAttempt.blocked_until < now),
+            )
+        )
+        await session.commit()
+        return result.rowcount
+
 
 # Singleton
 login_rate_limiter = LoginRateLimiter()
