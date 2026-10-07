@@ -149,7 +149,12 @@ async def get_network_interfaces(
     - Traffic stats (bytes/packets sent/received)
     - Netplan configuration (if available)
     """
-    interfaces = network_service.get_interfaces()
+    interfaces = await asyncio.to_thread(network_service.get_interfaces)
+    # The default-route interface (the WAN): the firewall editor turns NAT on
+    # by default only for policies going out of it
+    default_if = await asyncio.to_thread(get_default_interface)
+    for iface in interfaces:
+        iface["default_route"] = iface.get("name") == default_if
     return {"interfaces": interfaces}
 
 

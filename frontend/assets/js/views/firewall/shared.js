@@ -98,13 +98,32 @@ export const STD_EDITABLE_ACTIONS = {
     portforward: ['DNAT'],
 };
 
+/** Did a save change how a policy's connections are NATed? */
+export function natChanged(before, after) {
+    return !!before.policy_nat !== !!after.policy_nat
+        || (before.to_source || null) !== (after.to_source || null)
+        || (before.nat_pool_id || null) !== (after.nat_pool_id || null)
+        || (!!after.policy_nat && (before.out_interface || null) !== (after.out_interface || null));
+}
+
 /** NAT cell of a forward policy: none, the interface address, or a specific one. */
 export function natBadge(rule) {
     if (!rule.policy_nat) return '<span class="text-muted">—</span>';
-    const warn = rule.nat_warning === 'ip_not_local'
+    let warn = rule.nat_warning === 'ip_not_local'
         ? `<span class="badge bg-red-lt ms-1" title="${escapeHtml(t('firewall.nat.ipNotLocalHint'))}">
                <i class="ti ti-alert-triangle me-1"></i>${escapeHtml(t('firewall.nat.ipNotLocal'))}</span>`
         : '';
+    // No outgoing interface: the NAT applies only toward the WAN
+    if (rule.nat_via) {
+        warn += `<span class="text-muted small ms-1" title="${escapeHtml(t('firewall.nat.viaHint', { iface: rule.nat_via }))}">
+            → ${escapeHtml(rule.nat_via)}</span>`;
+    }
+    // Standard and Advanced disagree: an Advanced NAT rule decides first
+    if (rule.nat_overridden_by) {
+        const n = rule.nat_overridden_by_seq ?? '?';
+        warn += `<span class="badge bg-orange-lt ms-1" title="${escapeHtml(t('firewall.nat.overriddenHint', { n }))}">
+            <i class="ti ti-arrows-exchange-2 me-1"></i>${escapeHtml(t('firewall.nat.overridden', { n }))}</span>`;
+    }
     if (rule.nat_pool_id) {
         return `<span class="badge bg-green-lt" title="${escapeHtml(t('firewall.pools.badgeHint'))}">
             <i class="ti ti-world-share me-1"></i>${escapeHtml(t('firewall.pools.badge', { name: rule.nat_pool_name || '?' }))}</span>`;
@@ -210,7 +229,8 @@ export function groupBySections(policies, sections) {
  * an earlier rule accepts, anything uncertain and the admin's own connections
  * stay up. Nothing is closed without the confirm showing what will be.
  */
-export async function terminateSessions(rule) {
+export async function terminateSessions(rule, { reason = 'block' } = {}) {
+    const nat = reason === 'nat';   // a policy whose NAT changed: reopen its connections
     let preview;
     try {
         preview = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: true });
@@ -224,7 +244,7 @@ export async function terminateSessions(rule) {
     if (preview.protected) kept.push(t('firewall.sessions.keptProtected', { n: preview.protected }));
 
     if (!preview.close) {
-        showToast([t('firewall.noActiveSessions'), ...kept].join(' '), 'info');
+        if (!nat) showToast([t('firewall.noActiveSessions'), ...kept].join(' '), 'info');
         return;
     }
     const rows = preview.samples.map(f => `
@@ -234,7 +254,8 @@ export async function terminateSessions(rule) {
             <td><code>${escapeHtml(f.to || f.dst)}${f.dport ? ':' + escapeHtml(f.dport) : ''}</code></td>
         </tr>`).join('');
     const html = `
-        <p>${escapeHtml(t('firewall.sessions.willClose', { n: preview.close, action: rule.action }))}</p>
+        <p>${escapeHtml(nat ? t('firewall.sessions.natWillClose', { n: preview.close })
+                            : t('firewall.sessions.willClose', { n: preview.close, action: rule.action }))}</p>
         <div class="table-responsive mb-2">
             <table class="table table-sm table-vcenter card-table">
                 <thead><tr><th>${escapeHtml(t('firewall.protocol'))}</th>
@@ -245,8 +266,8 @@ export async function terminateSessions(rule) {
         ${preview.close > preview.samples.length
             ? `<div class="text-muted small mb-2">${escapeHtml(t('firewall.sessions.andMore', { n: preview.close - preview.samples.length }))}</div>` : ''}
         ${kept.map(k => `<div class="text-muted small"><i class="ti ti-shield-check me-1"></i>${escapeHtml(k)}</div>`).join('')}`;
-    const ok = await confirmDialog(t('firewall.terminateSessionsTitle'), html, t('firewall.terminateBtn'),
-                                   'btn-warning', true, 'lg');
+    const ok = await confirmDialog(t(nat ? 'firewall.sessions.natTitle' : 'firewall.terminateSessionsTitle'), html,
+                                   t('firewall.terminateBtn'), 'btn-warning', true, 'lg');
     if (!ok) return;
     try {
         const res = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: false });

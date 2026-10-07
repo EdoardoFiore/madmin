@@ -10,7 +10,8 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge, natBadge } from './shared.js';
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge, natBadge,
+    natChanged } from './shared.js';
 import { loadInterfaces, natSourceOptions, natSourcePayload } from './interfaces.js';
 
 let rules = [];
@@ -693,6 +694,7 @@ function setupEventListeners() {
     // Action change - show/hide specific fields
     document.getElementById('rule-action')?.addEventListener('change', () => {
         toggleActionFields();
+        togglePolicyNatField();
         updateIptablesPreview();
     });
 
@@ -783,7 +785,9 @@ function togglePolicyNatField() {
     if (!wrap) return;
     const table = document.getElementById('rule-table')?.value;
     const chain = document.getElementById('rule-chain')?.value;
-    const show = table === 'filter' && chain === 'FORWARD';
+    // NAT belongs to accepting forward policies only
+    const show = table === 'filter' && chain === 'FORWARD'
+        && document.getElementById('rule-action')?.value === 'ACCEPT';
     wrap.style.display = show ? 'block' : 'none';
     if (!show) {
         const cb = document.getElementById('rule-policy-nat');
@@ -1580,6 +1584,7 @@ async function handleRuleSubmit(e) {
         return;
     }
 
+    const before = editingRule;
     try {
         if (editingRule) {
             await apiPatch(`/firewall/rules/${editingRule.id}`, data);
@@ -1594,6 +1599,12 @@ async function handleRuleSubmit(e) {
 
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');
+        return;
+    }
+    // NAT is decided on a connection's first packet: open ones keep the old address
+    if (before && data.enabled && data.action === 'ACCEPT' && table_name === 'filter' && chain === 'FORWARD'
+            && natChanged(before, data)) {
+        await terminateSessions({ id: before.id, action: data.action }, { reason: 'nat' });
     }
 }
 

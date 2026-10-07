@@ -550,7 +550,9 @@
             "andMore": "…e altre {n}.",
             "keptShadowed": "{n} connessioni restano attive: le accetta una regola precedente.",
             "keptUncertain": "{n} connessioni restano attive: non è certo che questa regola le blocchi (oggetti non risolti o interfacce non determinabili).",
-            "keptProtected": "{n} connessioni del tuo client restano attive."
+            "keptProtected": "{n} connessioni del tuo client restano attive.",
+            "natTitle": "Applicare il nuovo NAT?",
+            "natWillClose": "Ci sono {n} connessioni aperte da questa policy: usano ancora il NAT precedente, perché il NAT si decide sul primo pacchetto. Chiuderle ora? I client le riapriranno con il nuovo indirizzo."
         },
         "terminateSessionsTitle": "Termina connessioni esistenti",
         "terminateSessionsDesc": "Verranno terminate immediatamente tutte le sessioni attive che corrispondono a questa regola {action}. Questa operazione è utile principalmente per regole appena create o riposizionate, per forzare il re-evaluation del traffico già stabilito.",
@@ -645,7 +647,10 @@
             "ipNotLocalHint": "Questo indirizzo non è più configurato sull'interfaccia: le connessioni nattate non ricevono risposta. Riaggiungilo da Rete o scegli un altro IP.",
             "snatHint": "NAT con questo indirizzo (SNAT)",
             "masqHint": "NAT con l'indirizzo dell'interfaccia di uscita (MASQUERADE)",
-            "advancedRules": "Regole NAT personalizzate in Advanced: {n}. Vengono valutate prima del NAT delle policy."
+            "advancedRules": "Regole NAT personalizzate in Advanced: {n}. Vengono valutate prima del NAT delle policy.",
+            "viaHint": "Nessuna interfaccia di uscita: il NAT si applica solo al traffico che esce da {iface} (la rotta di default). Sulle altre uscite il traffico non viene nattato.",
+            "overridden": "NAT sostituito (#{n} Advanced)",
+            "overriddenHint": "La regola NAT #{n} di Advanced viene valutata prima e natta diversamente tutto il traffico di questa policy: il NAT scelto qui non si applica. Modifica o restringi quella regola in Advanced."
         },
         "pools": {
             "tab": "IP Pool",
