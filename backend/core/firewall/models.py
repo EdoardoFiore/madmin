@@ -68,17 +68,22 @@ class MachineFirewallRule(SQLModel, table=True):
         default=None, foreign_key="firewall_address_object.id"
     )
     to_destination_port: Optional[str] = Field(default=None, max_length=20)
-    to_source: Optional[str] = Field(default=None, max_length=50)       # SNAT
+    # nat/POSTROUTING SNAT: --to-source ip[-ip][:ports]. On a filter/FORWARD
+    # policy with policy_nat: the single IP its NAT companion uses (SNAT)
+    # instead of the interface address (MASQUERADE).
+    to_source: Optional[str] = Field(default=None, max_length=50)
+    # Alternative to to_source: NAT through an IP pool (same two places)
+    nat_pool_id: Optional[uuid.UUID] = Field(default=None, foreign_key="firewall_nat_pool.id")
     to_ports: Optional[str] = Field(default=None, max_length=50)        # REDIRECT/MASQUERADE
     log_prefix: Optional[str] = Field(default=None, max_length=50)      # LOG
     log_level: Optional[str] = Field(default=None, max_length=20)       # LOG
     reject_with: Optional[str] = Field(default=None, max_length=50)     # REJECT
     
     # Outbound NAT intent (forward policies only). When True on a filter/FORWARD
-    # rule, apply_rules auto-generates a paired POSTROUTING MASQUERADE companion
-    # (comment MADMIN_AUTO_NAT_<id>), mirroring the DNAT->FORWARD companion. This
-    # is how navigation masquerade is owned by the policy instead of a separate
-    # standalone POSTROUTING rule.
+    # rule, apply_rules auto-generates a paired POSTROUTING companion (comment
+    # MADMIN_AUTO_NAT_<id>): MASQUERADE, or SNAT toward to_source when set.
+    # Outbound NAT is owned by the policies, in their evaluation order;
+    # nat/POSTROUTING rules (Advanced) come first as explicit overrides.
     policy_nat: bool = Field(default=False)
 
     # Hairpin NAT (nat/PREROUTING DNAT rules only). When True, apply_rules
@@ -198,6 +203,36 @@ class RuleCounter(SQLModel, table=True):
 
 # --- Pydantic Schemas ---
 
+_TO_SOURCE_RE = re.compile(
+    r'(\d{1,3}(?:\.\d{1,3}){3})(?:-(\d{1,3}(?:\.\d{1,3}){3}))?(?::(\d{1,5})(?:-(\d{1,5}))?)?'
+)
+
+
+def parse_to_source(value: str):
+    """
+    SNAT --to-source grammar: ip[-ip][:port[-port]], IPv4 only, a range in
+    ascending order. Returns (first_ip, last_ip, port_from, port_to) with None
+    for absent parts, or None when the value is not valid.
+    """
+    m = _TO_SOURCE_RE.fullmatch(value) if value.isascii() else None
+    if not m:
+        return None
+    try:
+        first = ipaddress.IPv4Address(m.group(1))
+        last = ipaddress.IPv4Address(m.group(2)) if m.group(2) else None
+    except ValueError:
+        return None
+    if last is not None and last < first:
+        return None
+    p1 = int(m.group(3)) if m.group(3) else None
+    p2 = int(m.group(4)) if m.group(4) else None
+    if p1 is not None and not 1 <= p1 <= 65535:
+        return None
+    if p2 is not None and not p1 <= p2 <= 65535:
+        return None
+    return str(first), str(last) if last else None, p1, p2
+
+
 _STATES = {"NEW", "ESTABLISHED", "RELATED", "INVALID", "UNTRACKED"}
 _LOG_LEVELS = {"emerg", "alert", "crit", "error", "warning", "notice", "info", "debug",
                "0", "1", "2", "3", "4", "5", "6", "7"}
@@ -219,7 +254,7 @@ class _FirewallRuleValidators(SQLModel):
     trailing newline through).
     """
 
-    @field_validator('to_destination', 'to_source', mode='before', check_fields=False)
+    @field_validator('to_destination', mode='before', check_fields=False)
     @classmethod
     def validate_ip_port(cls, v):
         if v is None or v == "":
@@ -227,6 +262,15 @@ class _FirewallRuleValidators(SQLModel):
         if not re.fullmatch(r'[\d.:/-]+', str(v)):
             raise ValueError(f"Formato IP/porta non valido: {v}")
         return v
+
+    @field_validator('to_source', mode='before', check_fields=False)
+    @classmethod
+    def validate_to_source(cls, v):
+        if v is None or v == "":
+            return None
+        if not parse_to_source(str(v)):
+            raise ValueError(f"IP di uscita non valido: {v} (IPv4, range a-b, porta facoltativa :p o :p1-p2)")
+        return str(v)
 
     @field_validator('to_ports', mode='before', check_fields=False)
     @classmethod
@@ -358,7 +402,7 @@ class _FirewallRuleValidators(SQLModel):
             raise ValueError(f"Valore non valido: {v}")
         return v
 
-    @field_validator('to_destination_object_id', mode='before', check_fields=False)
+    @field_validator('to_destination_object_id', 'nat_pool_id', mode='before', check_fields=False)
     @classmethod
     def validate_to_destination_object_id(cls, v):
         # Existence is checked by the router; here only the shape
@@ -367,7 +411,7 @@ class _FirewallRuleValidators(SQLModel):
         try:
             return str(uuid.UUID(str(v)))
         except ValueError:
-            raise ValueError(f"Oggetto di destinazione non valido: {v}")
+            raise ValueError(f"Identificativo non valido: {v}")
 
     @field_validator('to_destination_port', mode='before', check_fields=False)
     @classmethod
@@ -406,6 +450,7 @@ class MachineFirewallRuleCreate(_FirewallRuleValidators):
     to_destination_object_id: Optional[str] = None
     to_destination_port: Optional[str] = None
     to_source: Optional[str] = None
+    nat_pool_id: Optional[str] = None
     to_ports: Optional[str] = None
     log_prefix: Optional[str] = None
     log_level: Optional[str] = None
@@ -438,6 +483,7 @@ class MachineFirewallRuleUpdate(_FirewallRuleValidators):
     to_destination_object_id: Optional[str] = None
     to_destination_port: Optional[str] = None
     to_source: Optional[str] = None
+    nat_pool_id: Optional[str] = None
     to_ports: Optional[str] = None
     log_prefix: Optional[str] = None
     log_level: Optional[str] = None
@@ -483,6 +529,8 @@ class MachineFirewallRuleResponse(SQLModel):
     to_destination_object_name: Optional[str] = None
     to_destination_port: Optional[str] = None
     to_source: Optional[str]
+    nat_pool_id: Optional[str] = None
+    nat_pool_name: Optional[str] = None
     to_ports: Optional[str]
     log_prefix: Optional[str]
     log_level: Optional[str]
@@ -501,6 +549,9 @@ class MachineFirewallRuleResponse(SQLModel):
     shadowed_by: Optional[str] = None
     shadowed_by_seq: Optional[int] = None
     shadow_kind: Optional[str] = None   # shadowed | duplicate | redundant
+    # policy NAT toward a specific IP that is no longer on the machine
+    # (removed from Network): the SNAT is still generated, replies can't return
+    nat_warning: Optional[str] = None   # ip_not_local
     created_at: datetime
     updated_at: datetime
 
@@ -700,5 +751,91 @@ class AddressGroupResponse(SQLModel):
     enabled: bool
     set_name: str             # MADMIN_AG_<ref_key>
     members: List[AddressGroupMemberResponse] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+# --- Outbound NAT pools ---
+
+NAT_POOL_TYPES = ("overload", "one_to_one")
+
+
+class NatPool(SQLModel, table=True):
+    """
+    FortiGate-style IP pool a forward policy (or an Advanced SNAT rule) NATs to.
+
+    - overload:   value "a" or "a-b"; SNAT --to-source a-b --persistent
+    - one_to_one: value a CIDR; NETMAP --to cidr (the policy's source must be
+                  a CIDR of the same size)
+    arp_reply: MADMIN adds each address as a /32 on the interface whose subnet
+    contains it, so the machine answers ARP for it (see natpool.py); off for
+    a block the provider routes to the machine.
+    """
+    __tablename__ = "firewall_nat_pool"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str = Field(max_length=64, unique=True, index=True)
+    type: str = Field(default="overload", max_length=12)
+    value: str = Field(max_length=40)
+    arp_reply: bool = Field(default=True)
+    description: Optional[str] = Field(default=None, max_length=255)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class _NatPoolValidators(SQLModel):
+    @field_validator('name', mode='before', check_fields=False)
+    @classmethod
+    def validate_name(cls, v):
+        if v is None:
+            return v
+        if not re.fullmatch(r'[A-Za-z0-9 ._()-]{1,64}', str(v)):
+            raise ValueError("Nome non valido: max 64 caratteri tra lettere, cifre, spazio e ._()-")
+        return str(v).strip()
+
+    @field_validator('type', mode='before', check_fields=False)
+    @classmethod
+    def validate_type(cls, v):
+        if v is not None and v not in NAT_POOL_TYPES:
+            raise ValueError(f"Tipo non valido: {v} (overload, one_to_one)")
+        return v
+
+    @field_validator('description', mode='before', check_fields=False)
+    @classmethod
+    def validate_description(cls, v):
+        if v is None or v == "":
+            return None
+        if len(str(v)) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in str(v)):
+            raise ValueError("Descrizione non valida: max 255 caratteri, niente caratteri di controllo")
+        return v
+
+
+class NatPoolCreate(_NatPoolValidators):
+    name: str
+    type: str = "overload"
+    value: str
+    arp_reply: bool = True
+    description: Optional[str] = None
+
+
+class NatPoolUpdate(_NatPoolValidators):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    value: Optional[str] = None
+    arp_reply: Optional[bool] = None
+    description: Optional[str] = None
+
+
+class NatPoolResponse(SQLModel):
+    id: str
+    name: str
+    type: str
+    value: str
+    arp_reply: bool
+    description: Optional[str]
+    size: int
+    in_use: int = 0                   # rules NATing through it
+    interfaces: List[str] = []        # where its /32s go (arp_reply)
+    warnings: List[str] = []          # not_on_connected_subnet | overlaps_pool | overlaps_interface_ip
     created_at: datetime
     updated_at: datetime

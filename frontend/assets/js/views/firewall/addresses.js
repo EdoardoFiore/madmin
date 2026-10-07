@@ -2,7 +2,7 @@
  * MADMIN - Address Objects & Groups View
  *
  * FortiGate-style dedicated page for managing reusable address objects and groups.
- * Two tabs: Addresses (single objects) and Groups.
+ * Three tabs: Addresses (single objects), Groups and IP pools (natpools.js).
  */
 
 import { apiGet, apiPost, apiPatch, apiDelete } from '../../api.js';
@@ -57,6 +57,12 @@ export async function render(container) {
                             <i class="ti ti-stack-2 me-1"></i>${t('firewall.addr.tabGroups')}
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="tab"
+                                data-bs-target="#addr-page-pools" type="button" role="tab">
+                            <i class="ti ti-world-share me-1"></i>${t('firewall.pools.tab')}
+                        </button>
+                    </li>
                 </ul>
             </div>
             <div class="card-body p-0">
@@ -73,6 +79,7 @@ export async function render(container) {
                         </div>
                         <div id="groups-table-wrap"></div>
                     </div>
+                    <div class="tab-pane p-3" id="addr-page-pools"></div>
                 </div>
             </div>
         </div>
@@ -162,6 +169,7 @@ export async function render(container) {
     await loadAll();
     renderObjects();
     renderGroups();
+    await (await import('./natpools.js')).mountPools(document.getElementById('addr-page-pools'));
 }
 
 // ---------------------------------------------------------------------------

@@ -141,6 +141,8 @@ async def export_config(session: AsyncSession) -> str:
         logger.info(f"Exported {len(firewall_data)} firewall rules")
         _write_json(os.path.join(core_dir, "firewall_sections.json"),
                     await _export_forward_sections(session))
+        _write_json(os.path.join(core_dir, "firewall_nat_pools.json"),
+                    await _export_nat_pools(session))
 
         # Address objects & groups
         address_data = await _export_address_catalog(session)
@@ -459,6 +461,11 @@ async def _import_plain_archive(session: AsyncSession, archive_path: str) -> dic
                 f"Imported {addr_counts['objects']} address objects, "
                 f"{addr_counts['groups']} groups"
             )
+
+        # 2a'. IP pools (rules reference them by name)
+        pools_file = os.path.join(core_path, "firewall_nat_pools.json")
+        if os.path.exists(pools_file):
+            result["warnings"].extend(await _import_nat_pools(session, pools_file))
 
         # 2b. Firewall rules
         firewall_file = os.path.join(core_path, "firewall.json")
@@ -942,7 +949,7 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
     from core.firewall.models import (
         MachineFirewallRule, FirewallRuleAddress, AddressObject, AddressGroup,
     )
-    from core.firewall.router import _dnat_obj_names_map
+    from core.firewall.router import _dnat_obj_names_map, _pool_names_map
 
     result = await session.execute(
         select(MachineFirewallRule).order_by(MachineFirewallRule.order)
@@ -952,6 +959,7 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
     # {rule_id: object_name} — same helper the API listing uses to label a
     # rule's object-based DNAT target, so export and UI never disagree.
     dnat_obj_names = await _dnat_obj_names_map(session, rules)
+    pool_names = await _pool_names_map(session)
 
     ra_res = await session.execute(
         select(FirewallRuleAddress).order_by(FirewallRuleAddress.order)
@@ -994,6 +1002,8 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
             # By name (see docstring) — resolved back to an id on import.
             "to_destination_object": dnat_obj_names.get(r.id),
             "to_source": r.to_source,
+            # IP pool by name, like the DNAT object target
+            "nat_pool": pool_names.get(r.nat_pool_id),
             "to_ports": r.to_ports,
             "log_prefix": r.log_prefix,
             "log_level": r.log_level,
@@ -1366,6 +1376,41 @@ async def _export_forward_sections(session: AsyncSession) -> List[dict]:
     return [{"in_interface": r.in_interface, "out_interface": r.out_interface} for r in rows]
 
 
+async def _export_nat_pools(session: AsyncSession) -> List[dict]:
+    """IP pools, referenced by name from the rules (firewall.json "nat_pool")."""
+    from core.firewall.models import NatPool
+    rows = (await session.execute(select(NatPool).order_by(NatPool.name))).scalars().all()
+    return [{"name": p.name, "type": p.type, "value": p.value, "arp_reply": p.arp_reply,
+             "description": p.description} for p in rows]
+
+
+async def _import_nat_pools(session: AsyncSession, pools_file: str) -> List[str]:
+    """Replace the IP pools with the archive's. Invalid entries are skipped with a warning."""
+    from core.firewall import natpool
+    from core.firewall.models import NatPool, NatPoolCreate, MachineFirewallRule
+
+    with open(pools_file) as f:
+        data = json.load(f)
+    warnings: List[str] = []
+    await session.execute(update(MachineFirewallRule).values(nat_pool_id=None))
+    await session.execute(delete(NatPool))
+    await session.flush()
+    seen = set()
+    for item in data if isinstance(data, list) else []:
+        try:
+            pool = NatPoolCreate.model_validate(item)
+            natpool.parse_pool(pool.type, pool.value)
+        except ValueError as e:   # pydantic ValidationError included
+            warnings.append(f"IP pool '{item.get('name') if isinstance(item, dict) else item}' saltato: {e}")
+            continue
+        if pool.name in seen:
+            continue
+        seen.add(pool.name)
+        session.add(NatPool(**pool.model_dump()))
+    await session.flush()
+    return warnings
+
+
 async def _import_forward_sections(session: AsyncSession, sections_file: str) -> None:
     """
     Replace the group order with the archive's. Archives without it (older
@@ -1398,7 +1443,7 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
     not duplicated here. Returns (count, warnings).
     """
     from core.firewall.models import (
-        MachineFirewallRule, FirewallRuleAddress, RuleCounter, AddressObject,
+        MachineFirewallRule, FirewallRuleAddress, RuleCounter, AddressObject, NatPool,
     )
     from core.firewall.router import _resolve_imported_refs
 
@@ -1421,7 +1466,7 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
     # resolved to to_destination_object_id below, after the address catalog import.
     exclude_fields = {
         "id", "created_at", "updated_at",
-        "source_refs", "destination_refs", "to_destination_object",
+        "source_refs", "destination_refs", "to_destination_object", "nat_pool", "nat_pool_id",
     }
 
     for idx, rule_dict in enumerate(rules_data):
@@ -1453,6 +1498,19 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
                 warnings.append(
                     f"Regola #{idx + 1}: oggetto di destinazione DNAT '{obj_name}' non trovato — "
                     f"il port forward resta senza destinazione interna."
+                )
+
+        pool_name = rule_dict.get("nat_pool")
+        if pool_name:
+            pool = (await session.execute(
+                select(NatPool).where(NatPool.name == pool_name)
+            )).scalar_one_or_none()
+            if pool:
+                rule.nat_pool_id = pool.id
+            else:
+                warnings.append(
+                    f"Regola #{idx + 1}: IP pool '{pool_name}' non trovato — "
+                    f"la policy usa l'IP dell'interfaccia, una regola SNAT resta inattiva."
                 )
 
         session.add(rule)

@@ -4,6 +4,7 @@ MADMIN Firewall Router
 API endpoints for machine firewall management.
 """
 import asyncio
+import ipaddress
 import logging
 import subprocess
 from typing import List, Optional
@@ -35,6 +36,7 @@ from .models import (
     RuleCounter,
     RuleCounterResponse, RuleTrafficSample,
     ForwardSection, ForwardSectionResponse,
+    NatPool, NatPoolCreate, NatPoolUpdate, NatPoolResponse,
     ModuleChainResponse,
     RuleAddressRefResponse,
     AddressObject,
@@ -51,14 +53,14 @@ from .models import (
     ADDRESS_OBJECT_TYPES,
 )
 from .orchestrator import (
-    firewall_orchestrator, dnat_forward_fields, policy_nat_fields, hairpin_masq_fields,
-    redirect_input_fields, dnat_input_fields, effective_to_destination,
+    firewall_orchestrator, dnat_forward_fields, policy_nat_fields, policy_nat_target, hairpin_masq_fields,
+    redirect_input_fields, dnat_input_fields, effective_to_destination, section_key,
     IMPLICIT_DENY_COMMENT,
 )
 from .iptables import IptablesError
 from . import flowmatch
 from .protected_ports import validate_protected_port_collision, port_specs_overlap
-from . import addresses, geoip
+from . import addresses, geoip, natpool
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +143,41 @@ async def _validate_rule_payload(
     if rule.get("policy_nat") and not (table == "filter" and chain == "FORWARD"):
         raise HTTPException(status_code=400, detail="policy_nat è disponibile solo su regole filter/FORWARD.")
 
+    to_source = rule.get("to_source")
+    if to_source:
+        if table == "filter":
+            # A policy's NAT address: SNAT toward one address of the machine
+            if not (chain == "FORWARD" and rule.get("policy_nat")):
+                raise HTTPException(status_code=400, detail="L'IP di uscita richiede una policy FORWARD con NAT attivo.")
+            if not natpool.is_single_ipv4(to_source):
+                raise HTTPException(status_code=400, detail="L'IP di uscita di una policy è un singolo indirizzo IPv4.")
+            if touched is None or {"to_source", "out_interface", "policy_nat", "enabled"} & touched:
+                addrs = await asyncio.to_thread(natpool.interface_addresses)
+                if not natpool.nat_ip_is_local(to_source, rule.get("out_interface"), addrs):
+                    where = (f"sull'interfaccia {rule.get('out_interface')}" if rule.get("out_interface")
+                             else "su nessuna interfaccia")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"L'indirizzo {to_source} non è configurato {where}: le risposte non tornerebbero.",
+                    )
+        elif not (table == "nat" and action == "SNAT"):
+            raise HTTPException(status_code=400, detail="to_source è disponibile solo su SNAT in nat/POSTROUTING o sul NAT delle policy.")
+
+    pool_id = rule.get("nat_pool_id")
+    if pool_id:
+        if to_source:
+            raise HTTPException(status_code=400, detail="Indicare un IP di uscita oppure un IP pool, non entrambi.")
+        if not ((table == "filter" and chain == "FORWARD" and rule.get("policy_nat"))
+                or (table == "nat" and action == "SNAT")):
+            raise HTTPException(status_code=400, detail="Un IP pool si usa sul NAT di una policy FORWARD o su una regola SNAT.")
+        pool = await session.get(NatPool, _uuid(pool_id))
+        if not pool:
+            raise HTTPException(status_code=400, detail="IP pool non trovato")
+        if pool.type == "one_to_one":
+            _validate_one_to_one_source(pool, rule.get("source"), has_source_refs)
+    elif table == "nat" and action == "SNAT" and not to_source:
+        raise HTTPException(status_code=400, detail="Una regola SNAT richiede l'indirizzo di uscita (to_source) o un IP pool.")
+
     obj_id = rule.get("to_destination_object_id")
     if obj_id and not (table == "nat" and action == "DNAT"):
         raise HTTPException(
@@ -193,6 +230,24 @@ async def _validate_rule_payload(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+
+def _validate_one_to_one_source(pool, source: Optional[str], has_source_refs: bool) -> None:
+    """NETMAP keeps the host part: the source must be a subnet of the pool's size."""
+    _, _, pool_net = natpool.parse_pool(pool.type, pool.value)
+    net = None
+    if source and not has_source_refs:
+        try:
+            net = ipaddress.IPv4Network(source, strict=False)
+        except ValueError:
+            net = None
+    if net is None or net.prefixlen != pool_net.prefixlen:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Il pool one-to-one '{pool.name}' ({pool.value}) richiede come sorgente una "
+                   f"subnet /{pool_net.prefixlen} scritta nella regola: ogni host esce con l'indirizzo "
+                   f"corrispondente del pool.",
+        )
 
 
 def _uuid(value) -> uuid.UUID:
@@ -437,10 +492,16 @@ async def _dnat_obj_names_map(session: AsyncSession, rules) -> dict:
     }
 
 
-def _rule_to_response(rule, refs_map=None, dnat_obj_names=None) -> MachineFirewallRuleResponse:
+async def _pool_names_map(session: AsyncSession) -> dict:
+    """{pool id: name}, for rules that NAT through a pool."""
+    return {p.id: p.name for p in (await session.execute(select(NatPool))).scalars().all()}
+
+
+def _rule_to_response(rule, refs_map=None, dnat_obj_names=None, pool_names=None) -> MachineFirewallRuleResponse:
     """Convert database model to API response, including resolved address refs."""
     refs_map = refs_map or {}
     dnat_obj_names = dnat_obj_names or {}
+    pool_names = pool_names or {}
     return MachineFirewallRuleResponse(
         id=str(rule.id),
         chain=rule.chain,
@@ -461,6 +522,8 @@ def _rule_to_response(rule, refs_map=None, dnat_obj_names=None) -> MachineFirewa
         to_destination_object_name=dnat_obj_names.get(rule.id),
         to_destination_port=rule.to_destination_port,
         to_source=rule.to_source,
+        nat_pool_id=str(rule.nat_pool_id) if rule.nat_pool_id else None,
+        nat_pool_name=pool_names.get(rule.nat_pool_id),
         to_ports=rule.to_ports,
         log_prefix=rule.log_prefix,
         log_level=rule.log_level,
@@ -476,19 +539,26 @@ def _rule_to_response(rule, refs_map=None, dnat_obj_names=None) -> MachineFirewa
     )
 
 
-def _auto_nat_response(policy, default_if: Optional[str] = None) -> MachineFirewallRuleResponse:
-    """Build the read-only synthetic POSTROUTING MASQUERADE row mirroring a
-    policy_nat companion. The real companion matches by conntrack mark, not
-    by flow (see policy_nat_fields) — no single protocol/port/source/
-    destination value represents it, so those stay None; the comment
-    identifies the owning policy instead. default_if mirrors apply_rules'
-    fallback to the default-route interface when the policy sets none."""
+def _auto_nat_response(policy, default_if: Optional[str] = None, position: int = 0,
+                       pools: Optional[dict] = None) -> MachineFirewallRuleResponse:
+    """Build the read-only synthetic POSTROUTING row mirroring a policy_nat
+    companion (MASQUERADE or SNAT, see policy_nat_target). The real companion
+    matches by conntrack mark, not by flow (see policy_nat_fields) — no single
+    protocol/port/source/destination value represents it, so those stay None;
+    the comment identifies the owning policy instead. default_if mirrors
+    apply_rules' fallback to the default-route interface when the policy sets
+    none. position: the policy's place in evaluation order."""
     fields = policy_nat_fields(policy)
     out_if = fields["out_interface"] or default_if
+    try:
+        nat_action, nat_args = policy_nat_target(policy, pools)
+    except ValueError:
+        nat_action, nat_args = "SNAT", {}
+    pool = (pools or {}).get(policy.nat_pool_id) if policy.nat_pool_id else None
     return MachineFirewallRuleResponse(
         id=f"auto-nat-{policy.id}",
         chain="POSTROUTING",
-        action="MASQUERADE",
+        action=nat_action,
         protocol=None,
         source=None,
         destination=None,
@@ -499,14 +569,16 @@ def _auto_nat_response(policy, default_if: Optional[str] = None) -> MachineFirew
         limit_rate=None,
         limit_burst=None,
         to_destination=None,
-        to_source=None,
+        to_source=nat_args.get("to_source") or nat_args.get("netmap_to"),
+        nat_pool_id=str(pool.id) if pool else None,
+        nat_pool_name=pool.name if pool else None,
         to_ports=None,
         log_prefix=None,
         log_level=None,
         reject_with=None,
         comment=f"→ NAT (connmark) per policy: {policy.comment or str(policy.id)[:8]}",
         table_name="nat",
-        order=999_998,  # companions sit after user POSTROUTING rules
+        order=900_000 + position,  # after user POSTROUTING rules, in policy order
         enabled=True,
         auto_generated=True,
         created_at=policy.created_at,
@@ -711,29 +783,44 @@ def _implicit_deny_response() -> MachineFirewallRuleResponse:
 
 
 async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses) -> None:
-    """Evaluation sequence and shadowed/duplicate rules, per filter chain."""
+    """Evaluation sequence and shadowed/duplicate rules, per filter chain and nat/POSTROUTING."""
     from . import shadow
-    from .orchestrator import section_key
 
     sections = (await session.execute(select(ForwardSection))).scalars().all()
     pos = {(x.in_interface, x.out_interface): x.position for x in sections}
     by_id = {str(r.id): resp for r, resp in zip(rules, responses)}
     chains: dict = {}
     for r, resp in zip(rules, responses):
-        if r.table_name == "filter":
-            chains.setdefault(r.chain, []).append((r, resp))
-    for chain, items in chains.items():
+        if r.table_name == "filter" or (r.table_name == "nat" and r.chain == "POSTROUTING"):
+            chains.setdefault((r.table_name, r.chain), []).append((r, resp))
+    for (table, chain), items in chains.items():
         if chain == "FORWARD":
             items.sort(key=lambda it: (pos.get(section_key(it[0]), len(pos)), it[0].order))
         else:
             items.sort(key=lambda it: it[0].order)
         for i, (_, resp) in enumerate(items, start=1):
             resp.seq = i
-        for rid, info in shadow.analyze([resp for _, resp in items]).items():
+        for rid, info in shadow.analyze([resp for _, resp in items], nat=table == "nat").items():
             resp = by_id[rid]
             resp.shadowed_by = info["by"]
             resp.shadowed_by_seq = by_id[info["by"]].seq
             resp.shadow_kind = info["kind"]
+
+
+async def _annotate_nat_warnings(rules, responses) -> None:
+    """Flag policies whose NAT address is no longer on the machine."""
+    targets = [(r, resp) for r, resp in zip(rules, responses)
+               if r.table_name == "filter" and r.policy_nat and r.to_source]
+    if not targets:
+        return
+    try:
+        addrs = await asyncio.to_thread(natpool.interface_addresses)
+    except Exception:
+        logger.exception("Interface addresses unavailable for the NAT check")
+        return
+    for rule, resp in targets:
+        if not natpool.nat_ip_is_local(rule.to_source, rule.out_interface, addrs):
+            resp.nat_warning = "ip_not_local"
 
 
 @router.get("/rules", response_model=List[MachineFirewallRuleResponse])
@@ -746,8 +833,11 @@ async def list_rules(
     rules = await firewall_orchestrator.get_all_rules(session, chain)
     refs_map = await _rule_refs_map(session, [r.id for r in rules])
     dnat_obj_names = await _dnat_obj_names_map(session, rules)
-    responses = [_rule_to_response(r, refs_map, dnat_obj_names) for r in rules]
+    pools = {p.id: p for p in (await session.execute(select(NatPool))).scalars().all()}
+    pool_names = {pid: p.name for pid, p in pools.items()}
+    responses = [_rule_to_response(r, refs_map, dnat_obj_names, pool_names) for r in rules]
     await _annotate_sequence_and_shadow(session, rules, responses)
+    await _annotate_nat_warnings(rules, responses)
     # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
@@ -772,7 +862,14 @@ async def list_rules(
         from core.network.utils import get_default_interface
         default_if = get_default_interface()
         nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
-        responses.extend(_auto_nat_response(p, default_if) for p in nat_policies)
+        # In the order apply_rules emits them: the policies' evaluation order
+        positions = {
+            (s.in_interface, s.out_interface): s.position
+            for s in (await session.execute(select(ForwardSection))).scalars().all()
+        }
+        nat_policies = sorted(nat_policies, key=lambda p: (
+            positions.get(section_key(p), len(positions)), p.order))
+        responses.extend(_auto_nat_response(p, default_if, i, pools) for i, p in enumerate(nat_policies))
         hairpin_rules = await firewall_orchestrator.get_enabled_hairpin_rules(session)
         hairpin_targets = await firewall_orchestrator.resolve_dnat_targets(session, hairpin_rules)
         responses.extend(_auto_hairpin_nat_response(d, hairpin_targets.get(d.id)) for d in hairpin_rules)
@@ -816,15 +913,25 @@ async def preview_ruleset(
     if rule_id:
         lines = [x for x in lines if rule_id in x["line"]]
     text_parts = []
+    tables = []
     for table in _RESTORE_TABLE_ORDER:
         chains = chain_rules.get(table, {})
         if not chains:
             continue
-        text_parts.append(f"*{table}")
-        text_parts.extend(f":{c} - [0:0]" for c in chains)
-        text_parts.extend(x["line"] for x in lines if x["table"] == table)
-        text_parts.append("COMMIT")
-    return {"lines": lines, "text": "\n".join(text_parts) + "\n"}
+        block = [f"*{table}"]
+        block.extend(f":{c} - [0:0]" for c in chains)
+        table_lines = [x["line"] for x in lines if x["table"] == table]
+        block.extend(table_lines)
+        block.append("COMMIT")
+        text_parts.extend(block)
+        # One block per table for the Advanced preview tabs
+        tables.append({
+            "table": table,
+            "chains": len(chains),
+            "rules": len(table_lines),
+            "text": "\n".join(block) + "\n",
+        })
+    return {"lines": lines, "tables": tables, "text": "\n".join(text_parts) + "\n"}
 
 
 @router.get("/sections", response_model=List[ForwardSectionResponse])
@@ -953,7 +1060,7 @@ async def get_rule(
 
     refs_map = await _rule_refs_map(session, [rule.id])
     dnat_obj_names = await _dnat_obj_names_map(session, [rule])
-    return _rule_to_response(rule, refs_map, dnat_obj_names)
+    return _rule_to_response(rule, refs_map, dnat_obj_names, await _pool_names_map(session))
 
 
 @router.post("/rules", response_model=MachineFirewallRuleResponse, status_code=status.HTTP_201_CREATED)
@@ -975,7 +1082,7 @@ async def create_rule(
         await session.commit()
         refs_map = await _rule_refs_map(session, [rule.id])
         dnat_obj_names = await _dnat_obj_names_map(session, [rule])
-        return _rule_to_response(rule, refs_map, dnat_obj_names)
+        return _rule_to_response(rule, refs_map, dnat_obj_names, await _pool_names_map(session))
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -1050,7 +1157,7 @@ async def update_rule(
 
         refs_map = await _rule_refs_map(session, [rule.id])
         dnat_obj_names = await _dnat_obj_names_map(session, [rule])
-        return _rule_to_response(rule, refs_map, dnat_obj_names)
+        return _rule_to_response(rule, refs_map, dnat_obj_names, await _pool_names_map(session))
     except IptablesError as e:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -1116,7 +1223,6 @@ async def _rule_views(session: AsyncSession, chain: str, table: str = "filter") 
     """
     import ipaddress
     from . import geoip
-    from .orchestrator import section_key
 
     rules = (await session.execute(
         select(MachineFirewallRule).where(
@@ -1221,12 +1327,11 @@ class TraceRequest(SQLModel):
         return v
 
 
-async def _seq_map(session: AsyncSession, chain: str) -> dict:
+async def _seq_map(session: AsyncSession, chain: str, table: str = "filter") -> dict:
     """rule id -> 1-based position in evaluation order (as in GET /rules)."""
-    from .orchestrator import section_key
     rules = (await session.execute(
         select(MachineFirewallRule).where(
-            MachineFirewallRule.table_name == "filter", MachineFirewallRule.chain == chain,
+            MachineFirewallRule.table_name == table, MachineFirewallRule.chain == chain,
         )
     )).scalars().all()
     if chain == "FORWARD":
@@ -1236,6 +1341,66 @@ async def _seq_map(session: AsyncSession, chain: str) -> dict:
     else:
         rules.sort(key=lambda r: r.order)
     return {str(r.id): i for i, r in enumerate(rules, start=1)}
+
+
+async def _trace_snat(session: AsyncSession, flow, topo, decision: dict) -> dict:
+    """
+    The address a forwarded connection leaves with. The nat/POSTROUTING rules
+    of Advanced come first, in order (the first match decides); then the NAT
+    of the policy that accepted the connection (its connection mark).
+    kind: none | masquerade | snat | pool | netmap | unknown.
+    """
+    from .orchestrator import rule_nat_target
+    pools = {p.id: p for p in (await session.execute(select(NatPool))).scalars().all()}
+    out_dev = topo.dev_for(flow.reply_src)
+    try:
+        addrs = await asyncio.to_thread(natpool.interface_addresses)
+    except Exception:
+        addrs = {}
+
+    def describe(action, args, pool):
+        if action == "MASQUERADE":
+            ips = addrs.get(out_dev) or []
+            return {"kind": "masquerade", "ip": ips[0] if ips else None, "interface": out_dev}
+        if action == "NETMAP":
+            # NETMAP keeps the host part of the source
+            net = ipaddress.IPv4Network(args["netmap_to"])
+            host = int(ipaddress.IPv4Address(flow.src)) & int(net.hostmask)
+            return {"kind": "netmap", "ip": str(net.network_address + host), "pool": pool.name if pool else None}
+        return {"kind": "pool" if pool else "snat", "ip": args.get("to_source"),
+                "pool": pool.name if pool else None}
+
+    rows = {str(r.id): r for r in (await session.execute(
+        select(MachineFirewallRule).where(
+            MachineFirewallRule.table_name == "nat", MachineFirewallRule.chain == "POSTROUTING")
+    )).scalars().all()}
+    seq = await _seq_map(session, "POSTROUTING", table="nat")
+    for view in await _rule_views(session, "POSTROUTING", table="nat"):
+        m = flowmatch.match(view, flow, "POSTROUTING", topo)
+        if m is False:
+            continue
+        where = {"rule_id": view.id, "seq": seq.get(view.id), "advanced": True}
+        if m is None:
+            return {"kind": "unknown", **where}
+        rule = rows[view.id]
+        if rule.action in ("ACCEPT", "RETURN"):
+            return {"kind": "none", **where}
+        try:
+            action, args = rule_nat_target(rule, pools) or (rule.action, {"to_source": rule.to_source})
+        except ValueError:
+            return {"kind": "unknown", **where}
+        return {**describe(action, args, pools.get(rule.nat_pool_id)), **where}
+
+    policy_id = decision.get("rule_id")
+    policy = await session.get(MachineFirewallRule, uuid.UUID(policy_id)) if policy_id else None
+    if policy is not None and policy.policy_nat:
+        try:
+            action, args = policy_nat_target(policy, pools)
+        except ValueError:
+            return {"kind": "unknown", "rule_id": policy_id, "seq": decision.get("seq")}
+        return {**describe(action, args, pools.get(policy.nat_pool_id)),
+                "rule_id": policy_id, "seq": decision.get("seq")}
+    return {"kind": "none"}
 
 
 @router.post("/trace")
@@ -1251,6 +1416,8 @@ async def trace_packet(
     DNAT) rewrite the destination first, then INPUT (to this machine) or
     FORWARD. Interfaces not given are inferred from the routing table.
     Module chains (VPN, IPsec, DNS) run before MADMIN's and are not simulated.
+    A forwarded connection that is accepted also gets `snat`: the address it
+    leaves with (see _trace_snat).
     """
     import ipaddress
     try:
@@ -1317,11 +1484,15 @@ async def trace_packet(
             decision = {"auto": "implicit_deny", "action": "DROP"}
         else:
             decision = {"auto": "chain_policy", "action": "ACCEPT"}
+    snat = None
+    if chain == "FORWARD" and decision["action"] == "ACCEPT":
+        snat = await _trace_snat(session, flow, ttopo, decision)
     return {
         "chain": chain,
         "in_interface": ttopo.dev_for(data.source),
         "out_interface": ttopo.dev_for(reply_src) if chain == "FORWARD" else None,
-        "dnat": dnat, "steps": steps, "decision": decision, "notes": sorted(set(notes)),
+        "dnat": dnat, "steps": steps, "decision": decision, "snat": snat,
+        "notes": sorted(set(notes)),
     }
 
 
@@ -1960,6 +2131,137 @@ async def delete_address_group(
     await session.commit()
 
 
+# --- IP pool endpoints ---
+
+async def _pool_responses(session: AsyncSession, pools) -> List[NatPoolResponse]:
+    from core.network.service import NetworkService
+    from sqlalchemy import func
+    all_pools = (await session.execute(select(NatPool))).scalars().all()
+    usage = dict((await session.execute(
+        select(MachineFirewallRule.nat_pool_id, func.count())
+        .where(MachineFirewallRule.nat_pool_id.isnot(None))
+        .group_by(MachineFirewallRule.nat_pool_id)
+    )).all())
+    ifaces = await asyncio.to_thread(NetworkService.get_interfaces)
+    out = []
+    for p in pools:
+        devs, warnings = natpool.describe(p, all_pools, ifaces)
+        out.append(NatPoolResponse(
+            id=str(p.id), name=p.name, type=p.type, value=p.value, arp_reply=p.arp_reply,
+            description=p.description, size=len(natpool.pool_addresses(p)),
+            in_use=usage.get(p.id, 0), interfaces=devs, warnings=warnings,
+            created_at=p.created_at, updated_at=p.updated_at,
+        ))
+    return out
+
+
+async def _validate_pool(session: AsyncSession, pool: NatPool) -> None:
+    """Grammar, overlap with another pool, with an address configured on an interface."""
+    from core.network.service import NetworkService
+    try:
+        natpool.parse_pool(pool.type, pool.value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    others = (await session.execute(select(NatPool).where(NatPool.id != pool.id))).scalars().all()
+    clash = next((o for o in others if natpool.pools_overlap(pool, o)), None)
+    if clash:
+        raise HTTPException(status_code=400, detail=f"Gli indirizzi si sovrappongono al pool '{clash.name}'.")
+    # A configured address in a pool would be caught by the guard that keeps
+    # the pool's /32s from receiving new connections
+    configured = {a for i in await asyncio.to_thread(NetworkService.get_interfaces)
+                  for a in (i.get("addresses") or [])}
+    taken = sorted(configured.intersection(natpool.pool_addresses(pool)))
+    if taken:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{', '.join(taken)} è già configurato su un'interfaccia: usalo come IP di uscita della policy, non in un pool.",
+        )
+
+
+@router.get("/nat-pools", response_model=List[NatPoolResponse])
+async def list_nat_pools(
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    pools = (await session.execute(select(NatPool).order_by(NatPool.name))).scalars().all()
+    return await _pool_responses(session, pools)
+
+
+@router.post("/nat-pools", response_model=NatPoolResponse, status_code=status.HTTP_201_CREATED)
+async def create_nat_pool(
+    data: NatPoolCreate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    if (await session.execute(select(NatPool).where(NatPool.name == data.name))).scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=f"Esiste già un pool '{data.name}'")
+    pool = NatPool(**data.model_dump())
+    await _validate_pool(session, pool)
+    session.add(pool)
+    await session.flush()
+    await firewall_orchestrator.apply_rules(session)
+    await session.commit()
+    return (await _pool_responses(session, [pool]))[0]
+
+
+@router.patch("/nat-pools/{pool_id}", response_model=NatPoolResponse)
+async def update_nat_pool(
+    pool_id: str,
+    data: NatPoolUpdate,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    pool = await session.get(NatPool, _uuid(pool_id))
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool non trovato")
+    changes = data.model_dump(exclude_unset=True)
+    if changes.get("name") and changes["name"] != pool.name and (await session.execute(
+            select(NatPool).where(NatPool.name == changes["name"]))).scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=f"Esiste già un pool '{changes['name']}'")
+    for key, value in changes.items():
+        if value is not None or key == "description":
+            setattr(pool, key, value)
+    await _validate_pool(session, pool)
+    if pool.type == "one_to_one":
+        # every rule using it must still match its size
+        users = (await session.execute(
+            select(MachineFirewallRule).where(MachineFirewallRule.nat_pool_id == pool.id)
+        )).scalars().all()
+        with_refs = set((await session.execute(
+            select(FirewallRuleAddress.rule_id).where(
+                FirewallRuleAddress.rule_id.in_([u.id for u in users]),
+                FirewallRuleAddress.direction == "source")
+        )).scalars().all()) if users else set()
+        for rule in users:
+            _validate_one_to_one_source(pool, rule.source, rule.id in with_refs)
+    pool.updated_at = datetime.utcnow()
+    session.add(pool)
+    await session.flush()
+    await firewall_orchestrator.apply_rules(session)
+    await session.commit()
+    return (await _pool_responses(session, [pool]))[0]
+
+
+@router.delete("/nat-pools/{pool_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_nat_pool(
+    pool_id: str,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    pool = await session.get(NatPool, _uuid(pool_id))
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool non trovato")
+    used = (await session.execute(
+        select(MachineFirewallRule.id).where(MachineFirewallRule.nat_pool_id == pool.id).limit(1)
+    )).first()
+    if used:
+        raise HTTPException(status_code=409, detail=f"Pool '{pool.name}' usato da una regola: cambia prima il NAT della regola.")
+    await session.delete(pool)
+    await session.flush()
+    await firewall_orchestrator.apply_rules(session)
+    await session.commit()
+
+
 @router.get("/export", response_class=JSONResponse)
 async def export_rules(
     current_user: User = Depends(require_permission("firewall.view")),
@@ -1971,7 +2273,8 @@ async def export_rules(
     rules = await firewall_orchestrator.get_all_rules(session)
     refs_map = await _rule_refs_map(session, [r.id for r in rules])
     dnat_obj_names = await _dnat_obj_names_map(session, rules)
-    export_data = [_rule_to_response(r, refs_map, dnat_obj_names).model_dump() for r in rules]
+    pool_names = await _pool_names_map(session)
+    export_data = [_rule_to_response(r, refs_map, dnat_obj_names, pool_names).model_dump() for r in rules]
 
     return JSONResponse(
         content=jsonable_encoder(export_data),
@@ -2077,6 +2380,19 @@ async def import_rules(
                             f"Rule #{i+1}: oggetto indirizzo di destinazione '{obj_name}' "
                             f"non trovato, riferimento DNAT saltato"
                         )
+
+                # IP pools likewise, by name
+                pool_name = rule_dict.get("nat_pool_name")
+                clean_data["nat_pool_id"] = None
+                if pool_name:
+                    pool = (await session.execute(
+                        select(NatPool).where(NatPool.name == pool_name)
+                    )).scalar_one_or_none()
+                    if pool:
+                        clean_data["nat_pool_id"] = str(pool.id)
+                    else:
+                        errors.append(f"Rule #{i+1}: IP pool '{pool_name}' non trovato")
+                        continue
 
                 # Same checks as POST /rules: the file is as untrusted as a request
                 try:

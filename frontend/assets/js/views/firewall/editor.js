@@ -4,10 +4,12 @@
  * FortiGate-style editor in a wide right-hand offcanvas over the rule list,
  * with the "Select Entries" panel as its right column. Clicking outside or
  * Esc closes it when nothing changed and asks for confirmation otherwise;
- * onClose runs once it is gone. Three curated modes:
- *   policy      -> filter/FORWARD ACCEPT|DROP with optional NAT (policy_nat)
+ * onClose runs once it is gone. Two curated modes:
+ *   policy      -> filter/FORWARD ACCEPT|DROP with optional NAT (policy_nat),
+ *                  through the outgoing interface's address or one picked
+ *                  address of the machine (to_source)
  *   portforward -> nat/PREROUTING DNAT
- *   outnat      -> nat/POSTROUTING MASQUERADE|SNAT
+ * Outbound NAT has no mode of its own: it belongs to the policies.
  *
  * Source/Destination are combined fields: type a CIDR/IP (Enter) or pick/create
  * address objects via the entries panel. Mapping to the backend: a single typed
@@ -18,7 +20,7 @@ import { apiGet, apiPost, apiPatch } from '../../api.js';
 import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
-import { loadInterfaces, interfaceSelect } from './interfaces.js';
+import { loadInterfaces, interfaceSelect, natSourceOptions, natSourceValue, natSourcePayload } from './interfaces.js';
 import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
@@ -53,7 +55,7 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
         isEdit,
         rule: isEdit ? rule : null,
         origAction: rule?.action || null,
-        objects: [], groups: [],
+        objects: [], groups: [], pools: [],
         activeField: null,
         panel: null,
         dirty: false,
@@ -67,12 +69,14 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
 
     await loadInterfaces();
     try {
-        const [objs, grps] = await Promise.all([
+        const [objs, grps, pools] = await Promise.all([
             apiGet('/firewall/addresses'),
             apiGet('/firewall/address-groups'),
+            mode === 'policy' ? apiGet('/firewall/nat-pools').catch(() => []) : [],
         ]);
         st.objects = objs || [];
         st.groups = grps || [];
+        st.pools = pools || [];
     } catch { st.objects = []; st.groups = []; }
 
     // Seed direction state from the rule being edited/duplicated.
@@ -172,7 +176,7 @@ function seedDirection(field, rule) {
 // ---------------------------------------------------------------------------
 
 function titleFor(mode, isEdit) {
-    const k = { policy: 'policyTitle', portforward: 'portFwdTitle', outnat: 'outNatTitle' }[mode];
+    const k = { policy: 'policyTitle', portforward: 'portFwdTitle' }[mode];
     return (isEdit ? t('firewall.editor.editPrefix') : t('firewall.editor.newPrefix')) + ' ' + t('firewall.editor.' + k);
 }
 
@@ -187,11 +191,6 @@ function renderLayout(rule, duplicate) {
             <div class="row g-4">
                 <div class="col-lg-7">
                     <div id="ed-form" class="row g-3">${formFields(rule)}</div>
-                    ${isEdit ? `
-                    <details class="mt-4" id="ed-preview">
-                        <summary class="text-muted"><i class="ti ti-terminal-2 me-1"></i>${t('firewall.preview.ruleLines')}</summary>
-                        <pre class="mt-2 mb-0 small" id="ed-preview-lines">…</pre>
-                    </details>` : ''}
                 </div>
                 <div class="col-lg-5 fw-editor-entries">
                     <div class="text-uppercase text-muted small fw-bold mb-2">
@@ -280,6 +279,8 @@ function formFields(rule) {
     const { mode } = st;
     if (mode === 'policy') {
         const action = rule?.action || 'ACCEPT';
+        const natOn = rule ? rule.policy_nat : true;
+        const natCurrent = natSourceValue(rule);
         return `
             ${nameHtml(rule)}
             <div class="col-md-6">
@@ -305,9 +306,14 @@ function formFields(rule) {
             <div class="col-md-6">
                 <label class="form-label d-block">${t('firewall.std.colNat')}</label>
                 <label class="form-check form-switch">
-                    <input class="form-check-input" type="checkbox" id="ed-nat" ${(rule ? rule.policy_nat : true) ? 'checked' : ''}>
+                    <input class="form-check-input" type="checkbox" id="ed-nat" ${natOn ? 'checked' : ''}>
                     <span class="form-check-label">${t('firewall.editor.natHint')}</span>
                 </label>
+            </div>
+            <div class="col-md-6 offset-md-6 ${natOn ? '' : 'd-none'}" id="ed-natsrc-wrap">
+                <label class="form-label">${t('firewall.nat.sourceLabel')}</label>
+                <select class="form-select" id="ed-natsrc">${natSourceOptions(rule?.out_interface || '', natCurrent, { pools: st.pools })}</select>
+                <small class="form-hint" id="ed-natsrc-hint">${natSourceHint(rule?.out_interface || '')}</small>
             </div>
             ${enabledHtml(rule)}`;
     }
@@ -365,35 +371,12 @@ function formFields(rule) {
             </div>
             ${enabledHtml(rule)}`;
     }
-    // outnat
-    const action = rule?.action || 'MASQUERADE';
-    // Destination and service are valid matches in nat/POSTROUTING (-d/-p/--dport)
-    // and were previously Advanced-only: the Standard list rendered a
-    // Destination column the editor could not show, so a destination-scoped
-    // SNAT looked unscoped here while silently staying scoped on save
-    // (PATCH exclude_unset). Editing them where they are displayed removes
-    // that blind spot.
-    return `
-        ${nameHtml(rule)}
-        ${addrFieldHtml('source', t('firewall.std.colSource'))}
-        ${addrFieldHtml('destination', t('firewall.std.colDest'), t('firewall.editor.outNatDestHint'))}
-        ${serviceHtml(rule)}
-        <div class="col-md-6">
-            <label class="form-label">${t('firewall.outInterface')}</label>
-            ${interfaceSelect('ed-out', rule?.out_interface || '')}
-        </div>
-        <div class="col-md-6">
-            <label class="form-label">${t('firewall.action')}</label>
-            <select class="form-select" id="ed-nataction">
-                <option value="MASQUERADE" ${action === 'MASQUERADE' ? 'selected' : ''}>MASQUERADE</option>
-                <option value="SNAT" ${action === 'SNAT' ? 'selected' : ''}>SNAT</option>
-            </select>
-        </div>
-        <div class="col-md-6 ${action === 'SNAT' ? '' : 'd-none'}" id="ed-tosource-wrap">
-            <label class="form-label">${t('firewall.editor.toSource')}</label>
-            <input type="text" class="form-control" id="ed-tosource" value="${escapeHtml(rule?.to_source || '')}" placeholder="1.2.3.4">
-        </div>
-        ${enabledHtml(rule)}`;
+    return '';
+}
+
+/** Hint under the NAT address select: which addresses it can offer. */
+function natSourceHint(outIf) {
+    return outIf ? t('firewall.nat.sourceHint') : t('firewall.nat.pickOutIface');
 }
 
 // ---------------------------------------------------------------------------
@@ -411,9 +394,6 @@ function bindForm() {
     form?.addEventListener('input', markDirty);
     form?.addEventListener('change', markDirty);
 
-    // iptables lines of the rule being edited, loaded when first opened
-    container.querySelector('#ed-preview')?.addEventListener('toggle', loadRulePreview, { once: true });
-
     // Service preset -> protocol/port
     container.querySelector('#ed-preset')?.addEventListener('change', (e) => {
         if (!e.target.value) return;
@@ -430,9 +410,16 @@ function bindForm() {
     container.querySelector('#ed-in')?.addEventListener('change', updateIfaceExclusion);
     container.querySelector('#ed-out')?.addEventListener('change', updateIfaceExclusion);
 
-    // Outbound NAT action -> show/hide to-source
-    container.querySelector('#ed-nataction')?.addEventListener('change', (e) => {
-        container.querySelector('#ed-tosource-wrap')?.classList.toggle('d-none', e.target.value !== 'SNAT');
+    // Policy NAT: the address select shows with the switch and follows the
+    // outgoing interface (its addresses are the ones offered)
+    container.querySelector('#ed-nat')?.addEventListener('change', (e) => {
+        container.querySelector('#ed-natsrc-wrap')?.classList.toggle('d-none', !e.target.checked);
+    });
+    container.querySelector('#ed-out')?.addEventListener('change', (e) => {
+        const sel = container.querySelector('#ed-natsrc');
+        if (!sel) return;
+        sel.innerHTML = natSourceOptions(e.target.value, sel.value, { pools: st.pools });
+        container.querySelector('#ed-natsrc-hint').textContent = natSourceHint(e.target.value);
     });
 
     // Internal target: literal IP and address object are mutually exclusive.
@@ -472,19 +459,6 @@ function setActive(field) {
     st.container.querySelectorAll('.fw-addr-field').forEach(el =>
         el.classList.toggle('border-primary', el.dataset.field === field));
     st.panel?.render();
-}
-
-async function loadRulePreview() {
-    const pre = st?.container.querySelector('#ed-preview-lines');
-    if (!pre || !st.rule) return;
-    try {
-        const res = await apiGet(`/firewall/preview?rule_id=${encodeURIComponent(st.rule.id)}`);
-        pre.textContent = res.lines.length
-            ? res.lines.map(l => `*${l.table}  ${l.line}`).join('\n')
-            : t('firewall.preview.noLines');
-    } catch (err) {
-        pre.textContent = t('common.errorPrefix') + err.message;
-    }
 }
 
 /** Hide the port field when the protocol carries no port (all / ICMP). Also
@@ -618,6 +592,8 @@ async function save() {
         const action = selected === 'ACCEPT' ? 'ACCEPT'
             : (st.origAction === 'REJECT' ? 'REJECT' : 'DROP');
         const proto = container.querySelector('#ed-proto').value || null;
+        const natOn = container.querySelector('#ed-nat').checked;
+        const natSrc = container.querySelector('#ed-natsrc')?.value || '';
         plain = {
             table_name: 'filter', chain: 'FORWARD', action,
             comment: name,
@@ -627,7 +603,10 @@ async function save() {
             // The engine only matches --dport for tcp/udp; a port set under
             // any other protocol is dead data (see backend port/protocol guard).
             port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
-            policy_nat: container.querySelector('#ed-nat').checked,
+            policy_nat: natOn,
+            // '' = the outgoing interface's address (MASQUERADE), 'ip:x' = SNAT
+            // to x, 'pool:id' = an IP pool
+            ...natSourcePayload(natOn ? natSrc : ''),
             enabled,
         };
     } else if (mode === 'portforward') {
@@ -658,25 +637,6 @@ async function save() {
             hairpin: container.querySelector('#ed-hairpin')?.checked || false,
             enabled,
         };
-    } else { // outnat
-        const action = container.querySelector('#ed-nataction').value;
-        const toSource = container.querySelector('#ed-tosource')?.value.trim() || '';
-        if (action === 'SNAT' && !IPV4_RE.test(toSource)) {
-            showToast(t('firewall.validation.snatToSource'), 'error');
-            return;
-        }
-        const proto = container.querySelector('#ed-proto').value || null;
-        plain = {
-            table_name: 'nat', chain: 'POSTROUTING', action,
-            comment: name,
-            out_interface: container.querySelector('#ed-out').value || null,
-            protocol: proto,
-            // Same tcp/udp-only guard as the policy branch: the engine emits
-            // --dport for those protocols only (backend _validate_port_protocol).
-            port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
-            to_source: action === 'SNAT' ? toSource : null,
-            enabled,
-        };
     }
 
     const constraintError = validateRuleConstraints(plain);
@@ -684,7 +644,7 @@ async function save() {
 
     // Phase 2: resolve address chips (may create address objects — only
     // reached once every other field has already passed validation). Every
-    // mode now carries both directions (outnat included, see formFields).
+    // mode carries both directions.
     let data;
     try {
         const src = await resolveDirection('source');
