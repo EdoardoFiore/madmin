@@ -542,7 +542,8 @@
             "duplicate": "Duplicata di #{n}",
             "duplicateHint": "Identica alla regola #{n}, che viene valutata prima: si può eliminare.",
             "redundant": "Già coperta da #{n}",
-            "redundantHint": "La regola #{n}, più in alto, prende già la stessa decisione su tutto il traffico di questa."
+            "redundantHint": "La regola #{n}, più in alto, prende già la stessa decisione su tutto il traffico di questa.",
+            "shadowedNatHint": "La regola #{n}, più in alto, accetta già tutto il traffico di questa con un NAT diverso (o senza NAT): il NAT configurato qui non viene mai applicato. Sposta questa regola sopra la #{n} o restringi la #{n}."
         },
         "sessions": {
             "willClose": "Verranno chiuse {n} connessioni che la regola {action} ora blocca (è la prima regola a valutarle):",

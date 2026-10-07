@@ -548,7 +548,7 @@ class MachineFirewallRuleResponse(SQLModel):
     seq: Optional[int] = None
     shadowed_by: Optional[str] = None
     shadowed_by_seq: Optional[int] = None
-    shadow_kind: Optional[str] = None   # shadowed | duplicate | redundant
+    shadow_kind: Optional[str] = None   # shadowed | shadowed_nat | duplicate | redundant
     # policy NAT toward a specific IP that is no longer on the machine
     # (removed from Network): the SNAT is still generated, replies can't return
     nat_warning: Optional[str] = None   # ip_not_local

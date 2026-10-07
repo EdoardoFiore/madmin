@@ -267,6 +267,8 @@ export function shadowBadge(rule) {
     const n = rule.shadowed_by_seq;
     const map = {
         shadowed: ['bg-red-lt', 'ti-eye-off', 'firewall.shadow.shadowed', 'firewall.shadow.shadowedHint'],
+        // accepted above with another NAT: this rule's NAT never applies
+        shadowed_nat: ['bg-red-lt', 'ti-eye-off', 'firewall.shadow.shadowed', 'firewall.shadow.shadowedNatHint'],
         duplicate: ['bg-orange-lt', 'ti-copy', 'firewall.shadow.duplicate', 'firewall.shadow.duplicateHint'],
         redundant: ['bg-yellow-lt', 'ti-arrow-bar-to-up', 'firewall.shadow.redundant', 'firewall.shadow.redundantHint'],
     };
