@@ -552,6 +552,13 @@ class MachineFirewallRuleResponse(SQLModel):
     # policy NAT toward a specific IP that is no longer on the machine
     # (removed from Network): the SNAT is still generated, replies can't return
     nat_warning: Optional[str] = None   # ip_not_local
+    # policy with NAT and no outgoing interface: the NAT applies only toward
+    # this one (the default-route interface)
+    nat_via: Optional[str] = None
+    # an Advanced nat/POSTROUTING rule, evaluated first, NATs all of this
+    # policy's traffic differently: the policy's NAT never applies
+    nat_overridden_by: Optional[str] = None
+    nat_overridden_by_seq: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

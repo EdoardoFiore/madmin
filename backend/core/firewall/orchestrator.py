@@ -1384,7 +1384,7 @@ class FirewallOrchestrator:
         # companions below read in the same order as the policies.
         nat_policies = [
             r for members in forward_groups(forward_rules, section_order).values()
-            for r in members if r.policy_nat
+            for r in members if r.policy_nat and r.action == "ACCEPT"
         ]
         if len(nat_policies) > 255:
             logger.error(

@@ -550,7 +550,9 @@
             "andMore": "…and {n} more.",
             "keptShadowed": "{n} connections stay up: an earlier rule accepts them.",
             "keptUncertain": "{n} connections stay up: it is not certain this rule blocks them (unresolved objects or undeterminable interfaces).",
-            "keptProtected": "{n} connections of your own client stay up."
+            "keptProtected": "{n} connections of your own client stay up.",
+            "natTitle": "Apply the new NAT?",
+            "natWillClose": "{n} connections opened by this policy still use the previous NAT, because NAT is decided on the first packet. Close them now? Clients will reopen them with the new address."
         },
         "terminateSessionsTitle": "Terminate existing connections",
         "terminateSessionsDesc": "All active sessions matching this {action} rule will be immediately terminated. This is useful mainly for newly created or repositioned rules, to force re-evaluation of already established traffic.",
@@ -645,7 +647,10 @@
             "ipNotLocalHint": "This address is no longer configured on the interface: NATed connections get no replies. Add it back from Network or pick another address.",
             "snatHint": "NAT with this address (SNAT)",
             "masqHint": "NAT with the outgoing interface address (MASQUERADE)",
-            "advancedRules": "Custom NAT rules in Advanced: {n}. They are evaluated before the policies' NAT."
+            "advancedRules": "Custom NAT rules in Advanced: {n}. They are evaluated before the policies' NAT.",
+            "viaHint": "No outgoing interface: the NAT applies only to traffic leaving {iface} (the default route). Traffic leaving through other interfaces is not NATed.",
+            "overridden": "NAT overridden (#{n} Advanced)",
+            "overriddenHint": "Advanced NAT rule #{n} is evaluated first and NATs all of this policy's traffic differently: the NAT chosen here does not apply. Edit or narrow that rule in Advanced."
         },
         "pools": {
             "tab": "IP pools",

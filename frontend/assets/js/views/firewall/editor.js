@@ -20,8 +20,8 @@ import { apiGet, apiPost, apiPatch } from '../../api.js';
 import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
-import { loadInterfaces, interfaceSelect, natSourceOptions, natSourceValue, natSourcePayload } from './interfaces.js';
-import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions } from './shared.js';
+import { loadInterfaces, interfaceSelect, cachedInterfaces, natSourceOptions, natSourceValue, natSourcePayload } from './interfaces.js';
+import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions, natChanged } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
 let st = null;   // editor state
@@ -56,6 +56,7 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
         rule: isEdit ? rule : null,
         origAction: rule?.action || null,
         objects: [], groups: [], pools: [],
+        duplicate, natTouched: false,
         activeField: null,
         panel: null,
         dirty: false,
@@ -279,7 +280,11 @@ function formFields(rule) {
     const { mode } = st;
     if (mode === 'policy') {
         const action = rule?.action || 'ACCEPT';
-        const natOn = rule ? rule.policy_nat : true;
+        // A new policy starts without NAT: it is turned on when the outgoing
+        // interface picked is the WAN (see onOutChange), never for LAN-to-LAN,
+        // VPN or inbound policies, whose servers must see the real source
+        const natOn = rule ? rule.policy_nat : false;
+        const deny = action === 'DROP' || action === 'REJECT';
         const natCurrent = natSourceValue(rule);
         return `
             ${nameHtml(rule)}
@@ -303,14 +308,14 @@ function formFields(rule) {
                     <label class="btn btn-outline-danger" for="ed-act-deny"><i class="ti ti-ban me-1"></i>${t('firewall.editor.deny')}</label>
                 </div>
             </div>
-            <div class="col-md-6">
+            <div class="col-md-6 ${deny ? 'd-none' : ''}" id="ed-nat-wrap">
                 <label class="form-label d-block">${t('firewall.std.colNat')}</label>
                 <label class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="ed-nat" ${natOn ? 'checked' : ''}>
                     <span class="form-check-label">${t('firewall.editor.natHint')}</span>
                 </label>
             </div>
-            <div class="col-md-6 offset-md-6 ${natOn ? '' : 'd-none'}" id="ed-natsrc-wrap">
+            <div class="col-md-6 offset-md-6 ${natOn && !deny ? '' : 'd-none'}" id="ed-natsrc-wrap">
                 <label class="form-label">${t('firewall.nat.sourceLabel')}</label>
                 <select class="form-select" id="ed-natsrc">${natSourceOptions(rule?.out_interface || '', natCurrent, { pools: st.pools })}</select>
                 <small class="form-hint" id="ed-natsrc-hint">${natSourceHint(rule?.out_interface || '')}</small>
@@ -374,6 +379,16 @@ function formFields(rule) {
     return '';
 }
 
+/** NAT switch only for Accept, address select only with the switch on. */
+function updateNatVisibility() {
+    const c = st?.container;
+    if (!c) return;
+    const accept = (c.querySelector('input[name="ed-action"]:checked')?.value || 'ACCEPT') === 'ACCEPT';
+    const on = c.querySelector('#ed-nat')?.checked;
+    c.querySelector('#ed-nat-wrap')?.classList.toggle('d-none', !accept);
+    c.querySelector('#ed-natsrc-wrap')?.classList.toggle('d-none', !(accept && on));
+}
+
 /** Hint under the NAT address select: which addresses it can offer. */
 function natSourceHint(outIf) {
     return outIf ? t('firewall.nat.sourceHint') : t('firewall.nat.pickOutIface');
@@ -412,12 +427,21 @@ function bindForm() {
 
     // Policy NAT: the address select shows with the switch and follows the
     // outgoing interface (its addresses are the ones offered)
-    container.querySelector('#ed-nat')?.addEventListener('change', (e) => {
-        container.querySelector('#ed-natsrc-wrap')?.classList.toggle('d-none', !e.target.checked);
+    container.querySelector('#ed-nat')?.addEventListener('change', () => {
+        st.natTouched = true;
+        updateNatVisibility();
     });
+    // NAT belongs to accepting policies only
+    container.querySelectorAll('input[name="ed-action"]').forEach(r => r.addEventListener('change', updateNatVisibility));
     container.querySelector('#ed-out')?.addEventListener('change', (e) => {
         const sel = container.querySelector('#ed-natsrc');
         if (!sel) return;
+        // New policy, switch never touched: NAT on exactly when going out of the WAN
+        if (!st.rule && !st.natTouched && !st.duplicate) {
+            const iface = cachedInterfaces().find(i => i.name === e.target.value);
+            container.querySelector('#ed-nat').checked = !!iface?.default_route;
+            updateNatVisibility();
+        }
         sel.innerHTML = natSourceOptions(e.target.value, sel.value, { pools: st.pools });
         container.querySelector('#ed-natsrc-hint').textContent = natSourceHint(e.target.value);
     });
@@ -575,6 +599,7 @@ async function resolveDirection(field) {
 }
 
 async function save() {
+    const st0 = st;   // the panel tears down (st = null) once hidden
     const { container, mode } = st;
     const name = container.querySelector('#ed-name')?.value.trim() || null;
     const enabled = container.querySelector('#ed-enabled')?.checked !== false;
@@ -592,7 +617,7 @@ async function save() {
         const action = selected === 'ACCEPT' ? 'ACCEPT'
             : (st.origAction === 'REJECT' ? 'REJECT' : 'DROP');
         const proto = container.querySelector('#ed-proto').value || null;
-        const natOn = container.querySelector('#ed-nat').checked;
+        const natOn = action === 'ACCEPT' && container.querySelector('#ed-nat').checked;
         const natSrc = container.querySelector('#ed-natsrc')?.value || '';
         plain = {
             table_name: 'filter', chain: 'FORWARD', action,
@@ -683,6 +708,9 @@ async function save() {
     // of the editor panel being closed).
     if (mode === 'policy' && data.enabled && (data.action === 'DROP' || data.action === 'REJECT')) {
         await terminateSessions({ id: saved.id, action: data.action });
+    } else if (mode === 'policy' && data.enabled && st0.rule && natChanged(st0.rule, data)) {
+        // NAT is decided on a connection's first packet: open ones keep the old address
+        await terminateSessions({ id: saved.id, action: data.action }, { reason: 'nat' });
     }
 }
 

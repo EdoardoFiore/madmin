@@ -48,6 +48,11 @@ def interface_addresses() -> Dict[str, List[str]]:
     return out
 
 
+def iface_matches(pattern: str, name: str) -> bool:
+    """iptables interface match ("eth+" = prefix)."""
+    return name.startswith(pattern[:-1]) if pattern.endswith("+") else name == pattern
+
+
 def nat_ip_is_local(ip: str, out_interface: Optional[str], addrs: Dict[str, List[str]]) -> bool:
     """True when ip is an address of out_interface, or of any interface when the policy names none."""
     if out_interface:

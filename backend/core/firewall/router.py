@@ -21,6 +21,7 @@ from pydantic import ValidationError, field_validator
 from core.database import get_session
 from core.http import get_client_ip
 from config import get_settings
+from core.network.utils import get_default_interface
 from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 from sqlalchemy import select, delete
@@ -142,6 +143,16 @@ async def _validate_rule_payload(
 
     if rule.get("policy_nat") and not (table == "filter" and chain == "FORWARD"):
         raise HTTPException(status_code=400, detail="policy_nat è disponibile solo su regole filter/FORWARD.")
+    if (rule.get("policy_nat") and action != "ACCEPT"
+            and (touched is None or {"policy_nat", "action"} & touched)):
+        raise HTTPException(status_code=400, detail="Il NAT si applica solo alle policy che accettano il traffico.")
+
+    # Where a policy's NAT applies: its outgoing interface, or the
+    # default-route interface when it names none (see build_ruleset)
+    nat_checks = touched is None or {"to_source", "nat_pool_id", "out_interface", "policy_nat", "enabled"} & touched
+    nat_out = rule.get("out_interface")
+    if table == "filter" and rule.get("policy_nat") and nat_checks and not nat_out:
+        nat_out = await asyncio.to_thread(get_default_interface)
 
     to_source = rule.get("to_source")
     if to_source:
@@ -151,14 +162,19 @@ async def _validate_rule_payload(
                 raise HTTPException(status_code=400, detail="L'IP di uscita richiede una policy FORWARD con NAT attivo.")
             if not natpool.is_single_ipv4(to_source):
                 raise HTTPException(status_code=400, detail="L'IP di uscita di una policy è un singolo indirizzo IPv4.")
-            if touched is None or {"to_source", "out_interface", "policy_nat", "enabled"} & touched:
+            if nat_checks:
                 addrs = await asyncio.to_thread(natpool.interface_addresses)
-                if not natpool.nat_ip_is_local(to_source, rule.get("out_interface"), addrs):
-                    where = (f"sull'interfaccia {rule.get('out_interface')}" if rule.get("out_interface")
-                             else "su nessuna interfaccia")
+                if not natpool.nat_ip_is_local(to_source, nat_out, addrs):
+                    if rule.get("out_interface"):
+                        where = f"non è configurato sull'interfaccia {nat_out}"
+                    elif nat_out:
+                        where = (f"non è sull'interfaccia {nat_out}: senza interfaccia di uscita il NAT "
+                                 f"si applica solo verso {nat_out}, scegli l'interfaccia di uscita")
+                    else:
+                        where = "non è configurato su nessuna interfaccia"
                     raise HTTPException(
                         status_code=400,
-                        detail=f"L'indirizzo {to_source} non è configurato {where}: le risposte non tornerebbero.",
+                        detail=f"L'indirizzo {to_source} {where}: le risposte non tornerebbero.",
                     )
         elif not (table == "nat" and action == "SNAT"):
             raise HTTPException(status_code=400, detail="to_source è disponibile solo su SNAT in nat/POSTROUTING o sul NAT delle policy.")
@@ -175,6 +191,18 @@ async def _validate_rule_payload(
             raise HTTPException(status_code=400, detail="IP pool non trovato")
         if pool.type == "one_to_one":
             _validate_one_to_one_source(pool, rule.get("source"), has_source_refs)
+        if table == "filter" and nat_checks and pool.arp_reply and nat_out:
+            # the pool's addresses live on the interface of their subnet: the
+            # NAT must leave through that one
+            from core.network.service import NetworkService
+            devs, _ = natpool.describe(pool, [], await asyncio.to_thread(NetworkService.get_interfaces))
+            if devs and not all(natpool.iface_matches(nat_out, d) for d in devs):
+                hint = "" if rule.get("out_interface") else " (senza interfaccia di uscita il NAT si applica solo verso " + nat_out + ")"
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Gli indirizzi del pool '{pool.name}' sono su {', '.join(devs)}, "
+                           f"il NAT di questa policy esce da {nat_out}{hint}.",
+                )
     elif table == "nat" and action == "SNAT" and not to_source:
         raise HTTPException(status_code=400, detail="Una regola SNAT richiede l'indirizzo di uscita (to_source) o un IP pool.")
 
@@ -807,20 +835,55 @@ async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses)
             resp.shadow_kind = info["kind"]
 
 
-async def _annotate_nat_warnings(rules, responses) -> None:
-    """Flag policies whose NAT address is no longer on the machine."""
-    targets = [(r, resp) for r, resp in zip(rules, responses)
-               if r.table_name == "filter" and r.policy_nat and r.to_source]
-    if not targets:
+def _policy_nat_decision(resp) -> tuple:
+    """A policy's NAT in shadow.nat_decision's terms (comparable to an SNAT rule)."""
+    if resp.to_source or resp.nat_pool_id:
+        return ("SNAT", resp.to_source, resp.nat_pool_id)
+    return ("MASQUERADE", None, None)
+
+
+async def _annotate_nat(rules, responses, default_if: Optional[str], full: bool) -> None:
+    """
+    For every forward policy with NAT:
+    - nat_via: where its NAT applies when it names no outgoing interface
+      (the default-route interface: the companion carries -o <it>);
+    - nat_warning ip_not_local: its address is no longer on that interface;
+    - nat_overridden_by: an enabled nat/POSTROUTING rule of Advanced that
+      matches all of its traffic and NATs it differently. Those rules are
+      evaluated first, so the policy's NAT never applies: Standard and
+      Advanced disagree. Only with the full listing (full=True).
+    """
+    from types import SimpleNamespace
+    from . import shadow
+    policies = [(r, resp) for r, resp in zip(rules, responses)
+                if r.table_name == "filter" and r.chain == "FORWARD" and r.policy_nat and r.action == "ACCEPT"]
+    if not policies:
         return
-    try:
-        addrs = await asyncio.to_thread(natpool.interface_addresses)
-    except Exception:
-        logger.exception("Interface addresses unavailable for the NAT check")
-        return
-    for rule, resp in targets:
-        if not natpool.nat_ip_is_local(rule.to_source, rule.out_interface, addrs):
+    addrs = None
+    if any(r.to_source for r, _ in policies):
+        try:
+            addrs = await asyncio.to_thread(natpool.interface_addresses)
+        except Exception:
+            logger.exception("Interface addresses unavailable for the NAT check")
+    advanced = sorted((resp for r, resp in zip(rules, responses)
+                       if r.table_name == "nat" and r.chain == "POSTROUTING" and r.enabled),
+                      key=lambda x: x.order)
+    for rule, resp in policies:
+        out = rule.out_interface or default_if
+        if not rule.out_interface:
+            resp.nat_via = default_if
+        if rule.to_source and addrs is not None and not natpool.nat_ip_is_local(rule.to_source, out, addrs):
             resp.nat_warning = "ip_not_local"
+        if not (full and rule.enabled):
+            continue
+        # the policy's traffic as POSTROUTING sees it
+        view = SimpleNamespace(**{**resp.model_dump(), "out_interface": out})
+        for adv in advanced:
+            if shadow.covers(adv, view):
+                if shadow.nat_decision(adv) != _policy_nat_decision(resp):
+                    resp.nat_overridden_by = adv.id
+                    resp.nat_overridden_by_seq = adv.seq
+                break
 
 
 @router.get("/rules", response_model=List[MachineFirewallRuleResponse])
@@ -837,7 +900,8 @@ async def list_rules(
     pool_names = {pid: p.name for pid, p in pools.items()}
     responses = [_rule_to_response(r, refs_map, dnat_obj_names, pool_names) for r in rules]
     await _annotate_sequence_and_shadow(session, rules, responses)
-    await _annotate_nat_warnings(rules, responses)
+    default_if = await asyncio.to_thread(get_default_interface)
+    await _annotate_nat(rules, responses, default_if, full=chain is None)
     # Surface auto-generated DNAT forward companions on the FORWARD (filter) chain
     if chain in (None, "FORWARD"):
         dnat_rules = await firewall_orchestrator.get_enabled_dnat_rules(session)
@@ -859,8 +923,6 @@ async def list_rules(
         responses.append(_implicit_deny_response())
     # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
     if chain in (None, "POSTROUTING"):
-        from core.network.utils import get_default_interface
-        default_if = get_default_interface()
         nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
         # In the order apply_rules emits them: the policies' evaluation order
         positions = {
@@ -1505,7 +1567,10 @@ async def flush_rule_conntrack(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Close the established connections a DROP/REJECT rule would now stop.
+    Close the established connections a DROP/REJECT rule would now stop, or
+    those a FORWARD ACCEPT policy decides, after its NAT changed: the NAT of a
+    connection is decided on its first packet, so open ones keep the old
+    address until they are reopened.
 
     Only connections whose first deciding rule — in the order the engine
     evaluates the chain — is this one: a connection an earlier rule accepts is
@@ -1522,8 +1587,8 @@ async def flush_rule_conntrack(
     rule = await firewall_orchestrator.get_rule_by_id(session, rule_uuid)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
-    if rule.action not in ("DROP", "REJECT"):
-        raise HTTPException(status_code=400, detail="Flush conntrack is only applicable to DROP or REJECT rules")
+    if rule.action not in ("DROP", "REJECT") and not (rule.action == "ACCEPT" and rule.chain == "FORWARD"):
+        raise HTTPException(status_code=400, detail="Chiusura sessioni disponibile per DROP/REJECT e per le policy FORWARD")
     if rule.table_name != "filter" or rule.chain not in ("INPUT", "FORWARD"):
         raise HTTPException(status_code=400, detail="Chiusura sessioni disponibile solo per regole filter INPUT/FORWARD")
     if not rule.enabled:
