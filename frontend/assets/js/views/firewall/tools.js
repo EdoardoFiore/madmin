@@ -46,7 +46,8 @@ function highlightRule(ruleId, seq) {
 // Packet tracer
 // ---------------------------------------------------------------------------
 
-export async function openTracer() {
+/** advanced: also show engine details (chain names) in the result. */
+export async function openTracer({ advanced = false } = {}) {
     await loadInterfaces();
     const body = `
         <p class="text-muted small">${t('firewall.trace.intro')}</p>
@@ -91,13 +92,13 @@ export async function openTracer() {
             });
             el.querySelector('#tr-form').addEventListener('submit', (e) => {
                 e.preventDefault();
-                runTrace(el);
+                runTrace(el, advanced);
             });
         },
     });
 }
 
-async function runTrace(el) {
+async function runTrace(el, advanced) {
     const proto = el.querySelector('#tr-proto').value;
     const port = el.querySelector('#tr-port').value;
     const payload = {
@@ -117,14 +118,14 @@ async function runTrace(el) {
         out.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
         return;
     }
-    out.innerHTML = traceResultHtml(res);
+    out.innerHTML = traceResultHtml(res, advanced);
     out.querySelectorAll('[data-goto-rule]').forEach(a => a.addEventListener('click', (e) => {
         e.preventDefault();
         highlightRule(a.dataset.gotoRule, a.dataset.seq);
     }));
 }
 
-function traceResultHtml(res) {
+function traceResultHtml(res, advanced) {
     const d = res.decision;
     const ruleLink = (id, seq) => `<a href="#" data-goto-rule="${escapeHtml(id)}" data-seq="${escapeHtml(seq ?? '')}">#${escapeHtml(seq ?? '?')}</a>`;
     let verdict;
@@ -153,7 +154,7 @@ function traceResultHtml(res) {
             </div>
         </div>
         <dl class="row small mb-3">
-            <dt class="col-4">${t('firewall.trace.chain')}</dt><dd class="col-8"><code>${escapeHtml(res.chain)}</code></dd>
+            ${advanced ? `<dt class="col-4">${t('firewall.trace.chain')}</dt><dd class="col-8"><code>${escapeHtml(res.chain)}</code></dd>` : ''}
             <dt class="col-4">${t('firewall.trace.interfaces')}</dt>
             <dd class="col-8"><code>${escapeHtml(res.in_interface || '?')}</code>${res.out_interface ? ` → <code>${escapeHtml(res.out_interface)}</code>` : ''}</dd>
             ${res.dnat ? `<dt class="col-4">${t('firewall.trace.portForward')}</dt>
@@ -176,29 +177,54 @@ function traceResultHtml(res) {
 export async function openPreview() {
     const body = `
         <p class="text-muted small">${t('firewall.preview.intro')}</p>
-        <div class="d-flex gap-2 mb-2">
-            <input type="search" class="form-control" id="pv-filter" placeholder="${escapeHtml(t('firewall.preview.filter'))}">
-            ${copyButton('#pv-text')}
-        </div>
-        <pre class="small" id="pv-text" style="white-space:pre-wrap;word-break:break-all">…</pre>`;
+        <div id="pv-content"><div class="text-center py-3"><span class="spinner-border spinner-border-sm"></span></div></div>`;
     openSidePanel({
         title: t('firewall.preview.title'), icon: 'ti-terminal-2', body, width: 'min(1000px, 96vw)',
         onShown: async (el) => {
-            const pre = el.querySelector('#pv-text');
-            let text = '';
+            const content = el.querySelector('#pv-content');
+            let tables;
             try {
-                text = (await apiGet('/firewall/preview')).text;
+                tables = (await apiGet('/firewall/preview')).tables || [];
             } catch (err) {
-                pre.textContent = t('common.errorPrefix') + err.message;
+                content.innerHTML = `<div class="alert alert-danger">${escapeHtml(err.message)}</div>`;
                 return;
             }
-            const show = (q) => {
-                pre.textContent = q
-                    ? text.split('\n').filter(l => l.toLowerCase().includes(q.toLowerCase())).join('\n')
-                    : text;
+            if (!tables.length) {
+                content.innerHTML = `<div class="text-muted">${t('firewall.preview.noLines')}</div>`;
+                return;
+            }
+            // One tab per iptables table (filter, nat, mangle, raw), each with
+            // its own copy button; the text filter applies to the active tab.
+            content.innerHTML = `
+                <ul class="nav nav-tabs mb-2" role="tablist">
+                    ${tables.map((tb, i) => `
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link ${i === 0 ? 'active' : ''}" data-bs-toggle="tab" type="button" role="tab"
+                                data-bs-target="#pv-tab-${escapeHtml(tb.table)}">
+                            ${escapeHtml(tb.table)} <span class="badge bg-secondary-lt ms-1">${Number(tb.rules)}</span>
+                        </button>
+                    </li>`).join('')}
+                </ul>
+                <input type="search" class="form-control mb-2" id="pv-filter" placeholder="${escapeHtml(t('firewall.preview.filter'))}">
+                <div class="tab-content">
+                    ${tables.map((tb, i) => `
+                    <div class="tab-pane position-relative ${i === 0 ? 'active show' : ''}" id="pv-tab-${escapeHtml(tb.table)}" role="tabpanel">
+                        <div class="position-absolute top-0 end-0 m-2">${copyButton(`#pv-text-${tb.table}`, 'btn btn-icon btn-sm btn-dark')}</div>
+                        <pre class="small pe-5" id="pv-text-${escapeHtml(tb.table)}" style="white-space:pre-wrap;word-break:break-all"></pre>
+                    </div>`).join('')}
+                </div>`;
+            const filterInput = content.querySelector('#pv-filter');
+            const show = () => {
+                const q = filterInput.value.trim().toLowerCase();
+                tables.forEach(tb => {
+                    const pre = content.querySelector(`#pv-text-${CSS.escape(tb.table)}`);
+                    pre.textContent = q
+                        ? tb.text.split('\n').filter(l => l.toLowerCase().includes(q)).join('\n')
+                        : tb.text;
+                });
             };
-            show('');
-            el.querySelector('#pv-filter').addEventListener('input', (e) => show(e.target.value.trim()));
+            show();
+            filterInput.addEventListener('input', show);
         },
     });
 }

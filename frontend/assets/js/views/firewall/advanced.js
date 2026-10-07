@@ -10,7 +10,8 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge } from './shared.js';
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge, natBadge } from './shared.js';
+import { loadInterfaces, natSourceOptions } from './interfaces.js';
 
 let rules = [];
 let sections = []; // forward groups in evaluation order (GET /firewall/sections)
@@ -307,6 +308,12 @@ export async function render(container) {
                                     </label>
                                     <small class="form-hint">${t('firewall.policyNatHint')}</small>
                                 </div>
+                                <div class="col-md-6 field-policy-nat-src" style="display:none">
+                                    <label class="form-label">${t('firewall.nat.sourceLabel')}</label>
+                                    <select class="form-select" id="rule-nat-source"></select>
+                                    <input type="text" class="form-control mt-2 d-none" id="rule-nat-custom" placeholder="203.0.113.10">
+                                    <small class="form-hint">${t('firewall.nat.advancedHint')}</small>
+                                </div>
                                 <div class="col-12">
                                     <label class="form-label">${t('firewall.comment')}</label>
                                     <input type="text" class="form-control" id="rule-comment"
@@ -434,7 +441,7 @@ iptables -t filter -A INPUT -j ACCEPT
 
     setupEventListeners();
     renderChainTabs();
-    await loadUserPreferences(); // Load preferences before rules
+    await Promise.all([loadUserPreferences(), loadInterfaces()]); // preferences before rules; interfaces for the NAT address select
     await loadAddresses();       // Load address objects/groups (rule chips + refs)
     await loadRules();
 }
@@ -665,6 +672,17 @@ function setupEventListeners() {
     document.getElementById('rule-chain')?.addEventListener('change', () => {
         togglePolicyNatField();
     });
+    document.getElementById('rule-policy-nat')?.addEventListener('change', () => {
+        togglePolicyNatField();
+        updateIptablesPreview();
+    });
+    // The NAT address select offers the addresses of the outgoing interface
+    document.getElementById('rule-out-interface')?.addEventListener('input', () => fillNatSource());
+    document.getElementById('rule-nat-source')?.addEventListener('change', (e) => {
+        document.getElementById('rule-nat-custom')?.classList.toggle('d-none', e.target.value !== 'custom');
+        updateIptablesPreview();
+    });
+    document.getElementById('rule-nat-custom')?.addEventListener('input', updateIptablesPreview);
 
     // Action change - show/hide specific fields
     document.getElementById('rule-action')?.addEventListener('change', () => {
@@ -765,6 +783,28 @@ function togglePolicyNatField() {
         const cb = document.getElementById('rule-policy-nat');
         if (cb) cb.checked = false;
     }
+    const src = document.querySelector('.field-policy-nat-src');
+    if (src) src.style.display = show && document.getElementById('rule-policy-nat')?.checked ? 'block' : 'none';
+}
+
+/**
+ * (Re)build the NAT address select for the typed outgoing interface:
+ * interface address (MASQUERADE), one of its addresses, or a typed one.
+ * current: '' | 'ip:<addr>' | 'custom' (keeps the selection when possible).
+ */
+function fillNatSource(current) {
+    const sel = document.getElementById('rule-nat-source');
+    if (!sel) return;
+    const outIf = document.getElementById('rule-out-interface')?.value.trim() || '';
+    sel.innerHTML = natSourceOptions(outIf, current ?? sel.value, { custom: true });
+    document.getElementById('rule-nat-custom')?.classList.toggle('d-none', sel.value !== 'custom');
+}
+
+/** to_source of a filter/FORWARD policy with NAT, from the select (null = MASQUERADE). */
+function natSourceValue() {
+    const v = document.getElementById('rule-nat-source')?.value || '';
+    if (v === 'custom') return document.getElementById('rule-nat-custom').value.trim() || null;
+    return v.startsWith('ip:') ? v.slice(3) : null;
 }
 
 /**
@@ -847,6 +887,14 @@ function updateIptablesPreview() {
         if (logLevel) cmd += ` --log-level ${logLevel}`;
     }
     if (action === 'REJECT' && rejectWith) cmd += ` --reject-with ${rejectWith}`;
+
+    // A policy with NAT also owns its POSTROUTING companion, scoped by the
+    // connection mark the policy sets (see backend policy_nat_target)
+    if (table === 'filter' && chain === 'FORWARD' && document.getElementById('rule-policy-nat')?.checked) {
+        const natSrc = natSourceValue();
+        cmd += `\niptables -t nat -A POSTROUTING${outIface ? ` -o ${outIface}` : ''} -m connmark --mark <policy>`
+            + (natSrc ? ` -j SNAT --to-source ${natSrc}` : ' -j MASQUERADE');
+    }
 
     preview.textContent = cmd;
 }
@@ -1155,9 +1203,7 @@ function renderCell(rule, column) {
         case 'to_ports': return rule.to_ports ? `<code>${esc(rule.to_ports)}</code>` : '-';
         case 'log_prefix': return rule.log_prefix ? `<code>${esc(rule.log_prefix)}</code>` : '-';
         case 'limit_rate': return rule.limit_rate ? `${esc(rule.limit_rate)}${rule.limit_burst ? ` (burst: ${rule.limit_burst})` : ''}` : '-';
-        case 'policy_nat': return rule.policy_nat
-            ? `<span class="badge bg-green-lt"><i class="ti ti-arrows-exchange me-1"></i>${t('firewall.std.masquerade')}</span>`
-            : '<span class="text-muted">-</span>';
+        case 'policy_nat': return natBadge(rule);
         default: return '-';
     }
 }
@@ -1407,12 +1453,16 @@ function openRuleModal(rule = null, isDuplicate = false) {
     document.getElementById('rule-limit-burst').value = rule?.limit_burst || '';
     document.getElementById('rule-enabled').checked = rule?.enabled !== false;
     document.getElementById('rule-policy-nat').checked = rule?.policy_nat || false;
+    // A policy's NAT address: listed when on the interface, typed otherwise
+    const natAddr = (rule?.table_name === 'filter' && rule?.to_source) ? rule.to_source : '';
+    document.getElementById('rule-nat-custom').value = natAddr;
+    fillNatSource(natAddr ? `ip:${natAddr}` : '');
     togglePolicyNatField();
     document.getElementById('rule-comment').value = rule?.comment || '';
 
     // New fields
     document.getElementById('rule-to-destination').value = rule?.to_destination || '';
-    document.getElementById('rule-to-source').value = rule?.to_source || '';
+    document.getElementById('rule-to-source').value = (rule?.table_name === 'nat' && rule?.to_source) || '';
     document.getElementById('rule-to-ports').value = rule?.to_ports || '';
     document.getElementById('rule-log-prefix').value = rule?.log_prefix || '';
     document.getElementById('rule-log-level').value = rule?.log_level || '';
@@ -1442,10 +1492,13 @@ async function handleRuleSubmit(e) {
     const table_name = document.getElementById('rule-table').value;
     const chain = document.getElementById('rule-chain').value;
     const protocol = document.getElementById('rule-protocol').value || null;
+    const action = document.getElementById('rule-action').value;
+    const policyNat = (table_name === 'filter' && chain === 'FORWARD')
+        && (document.getElementById('rule-policy-nat')?.checked || false);
     const data = {
         table_name,
         chain,
-        action: document.getElementById('rule-action').value,
+        action,
         protocol,
         // The engine only matches --dport for tcp/udp (build_rule_args); a port
         // left in the (possibly hidden, e.g. after loading a legacy rule) field
@@ -1465,12 +1518,13 @@ async function handleRuleSubmit(e) {
         // Only meaningful on filter/FORWARD (backend router rejects it elsewhere);
         // gating here mirrors togglePolicyNatField and keeps duplicate-from-Advanced
         // from silently dropping the flag (previously omitted entirely).
-        policy_nat: (table_name === 'filter' && chain === 'FORWARD')
-            ? (document.getElementById('rule-policy-nat')?.checked || false) : false,
+        policy_nat: policyNat,
 
         // New fields
         to_destination: document.getElementById('rule-to-destination').value || null,
-        to_source: document.getElementById('rule-to-source').value || null,
+        // SNAT target on nat rules, the NAT address on a policy; nothing elsewhere
+        to_source: action === 'SNAT' ? (document.getElementById('rule-to-source').value.trim() || null)
+            : policyNat ? natSourceValue() : null,
         to_ports: document.getElementById('rule-to-ports').value || null,
         log_prefix: document.getElementById('rule-log-prefix').value || null,
         log_level: document.getElementById('rule-log-level').value || null,

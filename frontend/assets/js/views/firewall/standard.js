@@ -1,12 +1,13 @@
 /**
  * MADMIN - Firewall Standard view
  *
- * FortiGate-style simplified view. Three areas:
+ * FortiGate-style simplified view. Two areas:
  *  1. Firewall Policy   — filter/FORWARD rules grouped by interface pair (in->out),
- *                          NAT shown inline (policy_nat).
+ *                          NAT shown inline (policy_nat, address in to_source).
  *  2. Port Forwarding   — nat/PREROUTING DNAT rules.
- *  3. Outbound NAT      — nat/POSTROUTING SNAT/MASQUERADE (incl. read-only
- *                          policy-NAT companions and the managed nav NAT).
+ * Outbound NAT is owned by the policies, in their order. nat/POSTROUTING
+ * rules are Advanced-only overrides: here only a line says they exist.
+ * No raw iptables lines anywhere in this view (preview is Advanced-only).
  */
 import { apiGet, apiPost, apiPatch, apiPut, apiDelete } from '../../api.js';
 import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml, formatBytes, formatDate } from '../../utils.js';
@@ -14,7 +15,7 @@ import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
 import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId,
-    pairKey, pairsOverlap, groupBySections, terminateSessions, shadowBadge } from './shared.js';
+    pairKey, pairsOverlap, groupBySections, terminateSessions, shadowBadge, natBadge } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
@@ -39,7 +40,6 @@ export async function render(container, _params = []) {
     container.innerHTML = `
         <div id="std-policy"></div>
         <div id="std-portfwd" class="mt-3"></div>
-        <div id="std-outnat" class="mt-3"></div>
     `;
 
     document.getElementById('btn-new-policy')?.addEventListener('click',
@@ -61,7 +61,6 @@ async function reload() {
     }
     renderPolicy();
     renderPortForward();
-    renderOutboundNat();
     // Fire-and-forget: rows render immediately with inert counter icons: the
     // hover popover attaches once this resolves (see populateCounterPopovers).
     // No polling/refresh button — this is the "on page load" auto-refresh.
@@ -179,10 +178,17 @@ function advancedMatchBadge(r) {
         <i class="ti ti-adjustments me-1"></i>${t('firewall.std.advancedMatchBadge')}</span>`;
 }
 
-function natCell(rule) {
-    return rule.policy_nat
-        ? `<span class="badge bg-green-lt"><i class="ti ti-arrows-exchange me-1"></i>${t('firewall.std.masquerade')}</span>`
-        : `<span class="text-muted">—</span>`;
+/** Line under the policies when Advanced holds nat/POSTROUTING rules: they
+ * are evaluated before the policies' NAT and can override it. */
+function advancedNatNotice() {
+    const n = rules.filter(r => r.table_name === 'nat' && r.chain === 'POSTROUTING' && !isAutoRow(r)).length;
+    if (!n) return '';
+    return `
+        <div class="px-3 py-2 border-top d-flex align-items-center small">
+            <i class="ti ti-adjustments-alt me-2 text-muted"></i>
+            <span class="text-muted">${escapeHtml(t('firewall.nat.advancedRules', { n }))}</span>
+            <a href="#firewall/advanced" class="ms-2">${t('firewall.hub.advanced')}</a>
+        </div>`;
 }
 
 /** Read-only block for the engine-generated FORWARD companions (a port
@@ -279,7 +285,7 @@ function renderPolicy() {
     if (!policies.length) {
         wrap.innerHTML = `<div class="card">${header}<div class="card-body">${
             emptyState('ti-arrow-guide', t('firewall.std.noPolicies'), t('firewall.std.noPoliciesHint'))
-        }</div>${autoBlock}${implicitDeny}</div>`;
+        }</div>${autoBlock}${implicitDeny}${advancedNatNotice()}</div>`;
         return;
     }
 
@@ -334,7 +340,7 @@ function renderPolicy() {
             </div>`;
     }
 
-    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${autoBlock}${implicitDeny}</div></div>`;
+    wrap.innerHTML = `<div class="card">${header}<div class="card-body p-0">${body}${autoBlock}${implicitDeny}${advancedNatNotice()}</div></div>`;
 
     bindRowActions(wrap, 'policy');
     if (canManage) {
@@ -353,7 +359,7 @@ function policyRow(r, canManage) {
                 <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
                 <td><span class="text-muted">${serviceLabel(r)}</span></td>
                 <td>${actionBadge(r.action)}</td>
-                <td>${natCell(r)}</td>
+                <td>${natBadge(r)}</td>
                 <td><span class="badge bg-azure-lt"><i class="ti ti-lock me-1"></i>${t('firewall.managedNat')}</span></td>
                 <td>${counterIcon(r)}</td>
                 <td></td>
@@ -370,7 +376,7 @@ function policyRow(r, canManage) {
             <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
             <td><span class="text-muted">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
             <td class="text-nowrap">${actionBadge(r.action)}${shadowBadge(r)}</td>
-            <td>${natCell(r)}</td>
+            <td>${natBadge(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
             <td>${counterIcon(r)}</td>
             <td>${enableToggle(r, canManage)}</td>
@@ -485,75 +491,7 @@ function renderPortForward() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Outbound NAT (nat/POSTROUTING) — incl. read-only policy-NAT companions
-// ---------------------------------------------------------------------------
-
-function renderOutboundNat() {
-    const wrap = document.getElementById('std-outnat');
-    const canManage = checkPermission('firewall.manage');
-
-    const list = rules
-        .filter(r => r.table_name === 'nat' && r.chain === 'POSTROUTING')
-        .sort((a, b) => a.order - b.order);
-
-    const header = `
-        <div class="card-header d-flex align-items-center">
-            <h3 class="card-title mb-0"><i class="ti ti-arrows-exchange me-2"></i>${t('firewall.std.outNatTitle')}</h3>
-            <span class="text-muted ms-2 small">${t('firewall.std.outNatHint')}</span>
-            ${canManage ? `<div class="ms-auto"><button class="btn btn-sm btn-outline-primary" id="btn-new-outnat">
-                <i class="ti ti-plus me-1"></i>${t('firewall.std.newOutNat')}</button></div>` : ''}
-        </div>`;
-
-    let inner;
-    if (!list.length) {
-        inner = `<div class="card-body">${emptyState('ti-arrows-exchange',
-            t('firewall.std.noOutNat'), t('firewall.std.noOutNatHint'))}</div>`;
-    } else {
-        inner = `
-            <div class="table-responsive">
-                <table class="table table-vcenter card-table mb-0">
-                    <thead><tr>
-                        <th style="width:42px"></th>
-                        <th>${t('firewall.std.colSource')}</th>
-                        <th>${t('firewall.std.colDest')}</th>
-                        <th>${t('firewall.std.colService')}</th>
-                        <th>${t('firewall.outInterface')}</th>
-                        <th>${t('firewall.action')}</th>
-                        <th style="width:34px"></th>
-                        <th>${t('firewall.std.colStatus')}</th>
-                        <th class="text-end"></th>
-                    </tr></thead>
-                    <tbody class="fw-sortable">
-                        ${list.map(r => {
-                            const locked = isAutoRow(r) || isManagedNat(r);
-                            const actionLocked = isLockedForMode(r, 'outnat');
-                            const draggable = canManage && !locked;
-                            return `
-                            <tr class="${r.enabled ? '' : 'opacity-50'} ${draggable ? 'fw-drag' : ''}" data-id="${escapeHtml(r.id)}" draggable="${draggable}">
-                                <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
-                                <td>${renderAddrCell(r.source, r.source_refs)}</td>
-                                <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
-                                <td><span class="text-muted">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
-                                <td>${r.out_interface ? `<code>${escapeHtml(r.out_interface)}</code>` : '<span class="text-muted">—</span>'}</td>
-                                <td>${actionBadge(r.action)} ${locked ? `<span class="badge bg-azure-lt ms-1"><i class="ti ti-lock me-1"></i>${t('firewall.autoRule')}</span>` : ''}</td>
-                                <td>${counterIcon(r)}</td>
-                                <td>${enableToggle(r, canManage)}</td>
-                                <td class="text-end">${(canManage && !locked) ? rowButtons(actionLocked) : ''}</td>
-                            </tr>`;
-                        }).join('')}
-                    </tbody>
-                </table>
-            </div>`;
-    }
-
-    wrap.innerHTML = `<div class="card">${header}${inner}</div>`;
-    document.getElementById('btn-new-outnat')?.addEventListener('click', () => edit('outnat', null));
-    bindRowActions(wrap, 'outnat');
-    if (canManage) wrap.querySelectorAll('.fw-sortable').forEach(setupDragDrop);
-}
-
-// ---------------------------------------------------------------------------
-// Row action wiring (edit / duplicate / delete) shared by all three tables
+// Row action wiring (edit / duplicate / delete) shared by both tables
 // ---------------------------------------------------------------------------
 
 function bindRowActions(wrap, mode) {
@@ -581,7 +519,7 @@ function bindRowActions(wrap, mode) {
     wrap.querySelectorAll('.fw-move').forEach(btn => btn.addEventListener('click', async (e) => {
         const r = ruleOf(e); if (!r) return;
         // Neighbour in the same list: the same interface group for policies,
-        // the same table/chain for port forwards and outbound NAT
+        // the same table/chain for port forwards
         const peers = rules
             .filter(x => !isAutoRow(x) && x.table_name === r.table_name && x.chain === r.chain
                 && (mode !== 'policy' || pairKey(x.in_interface, x.out_interface) === pairKey(r.in_interface, r.out_interface)))

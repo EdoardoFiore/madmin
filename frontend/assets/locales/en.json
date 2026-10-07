@@ -350,7 +350,6 @@
             "sectionOverlap": "This traffic can be decided first by: {groups}. Drag the groups to change which one evaluates first.",
             "sectionOverlapBadge": "after {n}",
             "anyAddr": "any",
-            "masquerade": "Masquerade",
             "policyTitle": "Firewall Policy",
             "policyHint": "Forward rules — how LAN clients navigate.",
             "noPolicies": "No forward policies",
@@ -367,11 +366,6 @@
             "internal": "Internal",
             "hairpinBadge": "Hairpin",
             "hairpinHint": "Hairpin NAT enabled: reachable from the LAN via the public IP.",
-            "outNatTitle": "Outbound NAT",
-            "outNatHint": "Masquerade / SNAT on outgoing traffic.",
-            "newOutNat": "New SNAT",
-            "noOutNat": "No outbound NAT rules",
-            "noOutNatHint": "Navigation NAT is owned by policies with NAT enabled.",
             "manageFromAdvanced": "Advanced action: manage from the Advanced view",
             "advancedMatchBadge": "Advanced",
             "advancedMatchHint": "This rule carries extra conditions (state, rate limit or logging) only visible in the Advanced view.",
@@ -396,7 +390,6 @@
             "newPrefix": "New",
             "policyTitle": "Policy",
             "portFwdTitle": "Port Forward",
-            "outNatTitle": "Outbound NAT",
             "name": "Name",
             "namePlaceholder": "Optional label",
             "addrPlaceholder": "type a CIDR + Enter, or pick →",
@@ -404,7 +397,7 @@
             "servicePreset": "Preset",
             "accept": "Accept",
             "deny": "Deny",
-            "natHint": "Masquerade out the outgoing interface",
+            "natHint": "NAT the outgoing traffic",
             "extPort": "External port",
             "intIp": "Internal IP",
             "intPort": "Internal port",
@@ -413,8 +406,6 @@
             "sourceRestrict": "Source (optional)",
             "hairpin": "Hairpin NAT",
             "hairpinHint": "Lets LAN clients reach this port forward via the public IP (NAT reflection).",
-            "toSource": "To source",
-            "outNatDestHint": "Empty = any. Restrict the NAT to traffic headed to these addresses.",
             "intIpRequired": "Internal IP is required",
             "extIp": "External IP (optional)",
             "extIpHint": "Empty = every IP on the interface. Set the public IP the forward binds to (useful with multiple WAN IPs).",
@@ -436,8 +427,7 @@
             "outIfaceHook": "Output interface (-o) is not valid in chain {chain}: only available in POSTROUTING, OUTPUT, FORWARD.",
             "natActionHook": "Action {action} is not valid in chain {chain}.",
             "tableChain": "Chain {chain} is not valid for table {table}.",
-            "ipv4Only": "Invalid IPv4 address",
-            "snatToSource": "SNAT requires a valid IPv4 address in \"Source address (SNAT)\"."
+            "ipv4Only": "Invalid IPv4 address"
         },
         "autoRule": "Auto",
         "autoRuleHint": "Auto-generated companion rule. It updates and is removed together with its owning rule.",
@@ -505,8 +495,8 @@
             "policy_nat": "NAT",
             "comment": "Comment"
         },
-        "policyNatLabel": "Outbound NAT (masquerade)",
-        "policyNatHint": "Automatically generates the paired POSTROUTING MASQUERADE for this policy",
+        "policyNatLabel": "Outbound NAT",
+        "policyNatHint": "Generates this policy's paired NAT in POSTROUTING (MASQUERADE or SNAT), in policy order",
         "terminateSessions": "Terminate sessions",
         "trace": {
             "title": "Trace packet",
@@ -535,10 +525,9 @@
         "preview": {
             "button": "iptables preview",
             "title": "iptables ruleset preview",
-            "intro": "The lines MADMIN loads with iptables-restore, generated from the current rules. Nothing is applied.",
+            "intro": "The lines MADMIN loads with iptables-restore, generated from the current rules and split by table. Nothing is applied.",
             "filter": "Filter lines (chain, port, rule id…)",
-            "ruleLines": "Generated iptables lines",
-            "noLines": "No lines: the rule is disabled or unusable."
+            "noLines": "No lines generated."
         },
         "shadow": {
             "shadowed": "Never reached (#{n})",
@@ -631,6 +620,24 @@
             "timeMinAgo": "{n} min ago",
             "timeHoursAgo": "{n} hours ago",
             "timeDaysAgo": "{n} days ago"
+        },
+        "nat": {
+            "ifaceAddr": "Outgoing interface address (automatic)",
+            "ifaceAddrShort": "Interface IP",
+            "addressesOf": "Addresses of {iface}",
+            "primary": "primary",
+            "secondary": "secondary",
+            "missingAddr": "{ip} (no longer on the interface)",
+            "customAddr": "Custom address…",
+            "sourceLabel": "Outgoing address",
+            "sourceHint": "NATed traffic leaves with this address. Secondary addresses are added to the interface from Network.",
+            "pickOutIface": "Pick the outgoing interface to use one of its addresses.",
+            "advancedHint": "Interface address = MASQUERADE. An address = SNAT to that IP, which must be configured on the machine.",
+            "ipNotLocal": "Address missing",
+            "ipNotLocalHint": "This address is no longer configured on the interface: NATed connections get no replies. Add it back from Network or pick another address.",
+            "snatHint": "NAT with this address (SNAT)",
+            "masqHint": "NAT with the outgoing interface address (MASQUERADE)",
+            "advancedRules": "Custom NAT rules in Advanced: {n}. They are evaluated before the policies' NAT."
         }
     },
     "network": {

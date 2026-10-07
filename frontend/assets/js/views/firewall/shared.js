@@ -89,14 +89,29 @@ export function counterRuleId(rule) {
 
 // Actions each Standard editor mode knows how to render/save. A rule whose
 // action falls outside its mode's set (e.g. a LOG policy, a REDIRECT port
-// forward, an ACCEPT/RETURN outbound-NAT exemption created from Advanced)
-// must never be opened for edit there: the mode's fixed action set would
-// silently coerce it into something else on save.
+// forward) must never be opened for edit there: the mode's fixed action set
+// would silently coerce it into something else on save. Outbound NAT has no
+// Standard mode: it belongs to the policies (nat/POSTROUTING rules are
+// Advanced-only overrides).
 export const STD_EDITABLE_ACTIONS = {
     policy: ['ACCEPT', 'DROP', 'REJECT'],
     portforward: ['DNAT'],
-    outnat: ['MASQUERADE', 'SNAT'],
 };
+
+/** NAT cell of a forward policy: none, the interface address, or a specific one. */
+export function natBadge(rule) {
+    if (!rule.policy_nat) return '<span class="text-muted">—</span>';
+    const warn = rule.nat_warning === 'ip_not_local'
+        ? `<span class="badge bg-red-lt ms-1" title="${escapeHtml(t('firewall.nat.ipNotLocalHint'))}">
+               <i class="ti ti-alert-triangle me-1"></i>${escapeHtml(t('firewall.nat.ipNotLocal'))}</span>`
+        : '';
+    if (rule.to_source) {
+        return `<span class="badge bg-green-lt" title="${escapeHtml(t('firewall.nat.snatHint'))}">
+            <i class="ti ti-arrows-exchange me-1"></i>${escapeHtml(rule.to_source)}</span>${warn}`;
+    }
+    return `<span class="badge bg-green-lt" title="${escapeHtml(t('firewall.nat.masqHint'))}">
+        <i class="ti ti-arrows-exchange me-1"></i>${escapeHtml(t('firewall.nat.ifaceAddrShort'))}</span>`;
+}
 
 /** True when a rule's action isn't one the given Standard editor mode can represent. */
 export function isLockedForMode(rule, mode) {

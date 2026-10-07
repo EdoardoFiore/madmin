@@ -68,17 +68,20 @@ class MachineFirewallRule(SQLModel, table=True):
         default=None, foreign_key="firewall_address_object.id"
     )
     to_destination_port: Optional[str] = Field(default=None, max_length=20)
-    to_source: Optional[str] = Field(default=None, max_length=50)       # SNAT
+    # nat/POSTROUTING SNAT: --to-source ip[-ip][:ports]. On a filter/FORWARD
+    # policy with policy_nat: the single IP its NAT companion uses (SNAT)
+    # instead of the interface address (MASQUERADE).
+    to_source: Optional[str] = Field(default=None, max_length=50)
     to_ports: Optional[str] = Field(default=None, max_length=50)        # REDIRECT/MASQUERADE
     log_prefix: Optional[str] = Field(default=None, max_length=50)      # LOG
     log_level: Optional[str] = Field(default=None, max_length=20)       # LOG
     reject_with: Optional[str] = Field(default=None, max_length=50)     # REJECT
     
     # Outbound NAT intent (forward policies only). When True on a filter/FORWARD
-    # rule, apply_rules auto-generates a paired POSTROUTING MASQUERADE companion
-    # (comment MADMIN_AUTO_NAT_<id>), mirroring the DNAT->FORWARD companion. This
-    # is how navigation masquerade is owned by the policy instead of a separate
-    # standalone POSTROUTING rule.
+    # rule, apply_rules auto-generates a paired POSTROUTING companion (comment
+    # MADMIN_AUTO_NAT_<id>): MASQUERADE, or SNAT toward to_source when set.
+    # Outbound NAT is owned by the policies, in their evaluation order;
+    # nat/POSTROUTING rules (Advanced) come first as explicit overrides.
     policy_nat: bool = Field(default=False)
 
     # Hairpin NAT (nat/PREROUTING DNAT rules only). When True, apply_rules
@@ -198,6 +201,36 @@ class RuleCounter(SQLModel, table=True):
 
 # --- Pydantic Schemas ---
 
+_TO_SOURCE_RE = re.compile(
+    r'(\d{1,3}(?:\.\d{1,3}){3})(?:-(\d{1,3}(?:\.\d{1,3}){3}))?(?::(\d{1,5})(?:-(\d{1,5}))?)?'
+)
+
+
+def parse_to_source(value: str):
+    """
+    SNAT --to-source grammar: ip[-ip][:port[-port]], IPv4 only, a range in
+    ascending order. Returns (first_ip, last_ip, port_from, port_to) with None
+    for absent parts, or None when the value is not valid.
+    """
+    m = _TO_SOURCE_RE.fullmatch(value) if value.isascii() else None
+    if not m:
+        return None
+    try:
+        first = ipaddress.IPv4Address(m.group(1))
+        last = ipaddress.IPv4Address(m.group(2)) if m.group(2) else None
+    except ValueError:
+        return None
+    if last is not None and last < first:
+        return None
+    p1 = int(m.group(3)) if m.group(3) else None
+    p2 = int(m.group(4)) if m.group(4) else None
+    if p1 is not None and not 1 <= p1 <= 65535:
+        return None
+    if p2 is not None and not p1 <= p2 <= 65535:
+        return None
+    return str(first), str(last) if last else None, p1, p2
+
+
 _STATES = {"NEW", "ESTABLISHED", "RELATED", "INVALID", "UNTRACKED"}
 _LOG_LEVELS = {"emerg", "alert", "crit", "error", "warning", "notice", "info", "debug",
                "0", "1", "2", "3", "4", "5", "6", "7"}
@@ -219,7 +252,7 @@ class _FirewallRuleValidators(SQLModel):
     trailing newline through).
     """
 
-    @field_validator('to_destination', 'to_source', mode='before', check_fields=False)
+    @field_validator('to_destination', mode='before', check_fields=False)
     @classmethod
     def validate_ip_port(cls, v):
         if v is None or v == "":
@@ -227,6 +260,15 @@ class _FirewallRuleValidators(SQLModel):
         if not re.fullmatch(r'[\d.:/-]+', str(v)):
             raise ValueError(f"Formato IP/porta non valido: {v}")
         return v
+
+    @field_validator('to_source', mode='before', check_fields=False)
+    @classmethod
+    def validate_to_source(cls, v):
+        if v is None or v == "":
+            return None
+        if not parse_to_source(str(v)):
+            raise ValueError(f"IP di uscita non valido: {v} (IPv4, range a-b, porta facoltativa :p o :p1-p2)")
+        return str(v)
 
     @field_validator('to_ports', mode='before', check_fields=False)
     @classmethod
@@ -501,6 +543,9 @@ class MachineFirewallRuleResponse(SQLModel):
     shadowed_by: Optional[str] = None
     shadowed_by_seq: Optional[int] = None
     shadow_kind: Optional[str] = None   # shadowed | duplicate | redundant
+    # policy NAT toward a specific IP that is no longer on the machine
+    # (removed from Network): the SNAT is still generated, replies can't return
+    nat_warning: Optional[str] = None   # ip_not_local
     created_at: datetime
     updated_at: datetime
 

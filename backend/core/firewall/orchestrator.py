@@ -145,6 +145,35 @@ def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
     }
 
 
+def policy_nat_target(rule) -> Tuple[str, Dict[str, Optional[str]]]:
+    """
+    Target of a forward policy's NAT companion: (action, extra build_rule_args).
+
+    No to_source: MASQUERADE, the address of the outgoing interface. With
+    to_source: SNAT toward that address of the machine (primary or secondary).
+    Shared by apply_rules, the synthetic auto-nat row of GET /rules and the
+    tracer, like policy_nat_fields.
+    """
+    if rule.to_source:
+        return "SNAT", {"to_source": rule.to_source}
+    return "MASQUERADE", {}
+
+
+def forward_groups(
+    forward_rules: List,
+    section_order: Optional[List[Tuple[str, str]]] = None,
+) -> Dict[Tuple[str, str], List]:
+    """
+    Forward rules by interface pair, in evaluation order: groups in
+    section_order (ForwardSection.position), rules in the order they come
+    (callers pass them sorted by `order`). Groups with no rule stay empty.
+    """
+    groups: Dict[Tuple[str, str], List] = {key: [] for key in (section_order or [])}
+    for rule in forward_rules:
+        groups.setdefault(section_key(rule), []).append(rule)
+    return groups
+
+
 def hairpin_masq_fields(rule, to_destination: Optional[str] = None) -> Dict[str, Optional[str]]:
     """
     Compute the POSTROUTING MASQUERADE match for a hairpin-NAT DNAT companion.
@@ -252,9 +281,7 @@ def _build_forward_layout(
     Returns (forward_lines, {subchain_name: [lines]}).
     """
     nat_marks = nat_marks or {}
-    groups: Dict[Tuple[str, str], List] = {key: [] for key in (section_order or [])}
-    for rule in forward_rules:
-        groups.setdefault(section_key(rule), []).append(rule)
+    groups = forward_groups(forward_rules, section_order)
 
     lines: List[str] = []
     subchains: Dict[str, List[str]] = {}
@@ -1311,7 +1338,12 @@ class FirewallOrchestrator:
         # never re-NAT or break an already-established connection; a stale
         # ctmark left on an old connection is inert (the nat table is never
         # re-consulted for it once a connection has a NAT decision).
-        nat_policies = [r for r in forward_rules if r.policy_nat]
+        # Enumerated in evaluation order (groups, then rules), so the NAT
+        # companions below read in the same order as the policies.
+        nat_policies = [
+            r for members in forward_groups(forward_rules, section_order).values()
+            for r in members if r.policy_nat
+        ]
         if len(nat_policies) > 255:
             logger.error(
                 f"{len(nat_policies)} policy-NAT rules exceed the 255-mark budget "
@@ -1355,13 +1387,17 @@ class FirewallOrchestrator:
         if auto_forward_lines:
             chain_rules["filter"][iptables.MADMIN_FORWARD_CHAIN].extend(auto_forward_lines)
 
-        # --- Auto-generate POSTROUTING MASQUERADE for policies with policy_nat ---
-        # A filter/FORWARD policy can own its outbound NAT (navigation masquerade).
+        # --- Auto-generate the POSTROUTING NAT of policies with policy_nat ---
+        # A filter/FORWARD policy owns its outbound NAT: MASQUERADE, or SNAT
+        # toward the address it names (policy_nat_target).
         # Scoped by conntrack mark (set by the CONNMARK companion emitted in
         # _build_forward_layout above), not by flow — this is what closes the
         # cross-policy masquerade leak the old flow-based match had: a packet
         # accepted by a *different*, non-NAT policy never carries this mark,
-        # no matter how much its match overlaps this policy's.
+        # no matter how much its match overlaps this policy's. So a connection
+        # is translated by the policy that accepted it, the first one in
+        # evaluation order. User nat/POSTROUTING rules (Advanced) were added
+        # above and decide first: they are the explicit exceptions.
         auto_nat_lines: List[str] = []
         for rule in nat_policies:
             mark = nat_marks.get(rule.id)
@@ -1375,16 +1411,21 @@ class FirewallOrchestrator:
                     "interface resolved — emitting MASQUERADE unscoped as a last resort."
                 )
             xmark = f"0x{mark:x}/0x{iptables.POLICY_NAT_MARK_MASK:x}"
-            auto_nat_lines.append(
-                " ".join(iptables.build_rule_args(
-                    chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,
-                    action="MASQUERADE",
-                    out_interface=out_if,
-                    connmark_match=xmark,
-                    comment=f"MADMIN_AUTO_NAT_{rule.id}",
-                    operation="-A",
-                ))
-            )
+            nat_action, nat_args = policy_nat_target(rule)
+            try:
+                auto_nat_lines.append(
+                    iptables.restore_line(iptables.build_rule_args(
+                        chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,
+                        action=nat_action,
+                        out_interface=out_if,
+                        connmark_match=xmark,
+                        comment=f"MADMIN_AUTO_NAT_{rule.id}",
+                        operation="-A",
+                        **nat_args,
+                    ))
+                )
+            except ValueError as e:
+                logger.error(f"NAT companion of policy {rule.id} skipped: {e}")
         if auto_nat_lines:
             chain_rules["nat"][iptables.MADMIN_POSTROUTING_NAT_CHAIN].extend(auto_nat_lines)
 

@@ -3,7 +3,8 @@
  *
  * Entry point for the #firewall route. Renders a view toggle (Standard /
  * Advanced) plus an Objects shortcut, and mounts the selected sub-view. The
- * default landing view is remembered per-user.
+ * default landing view is remembered per-user. The iptables preview is an
+ * Advanced-only tool: Standard never shows raw iptables lines.
  *
  *   #firewall            -> remembered default (standard|advanced)
  *   #firewall/standard   -> Standard (FortiGate-style) view
@@ -58,9 +59,10 @@ function toolbar(mode) {
                 <button type="button" class="btn btn-outline-secondary" id="fw-open-trace">
                     <i class="ti ti-route me-1"></i>${t('firewall.trace.title')}
                 </button>
+                ${mode === 'advanced' ? `
                 <button type="button" class="btn btn-outline-secondary" id="fw-open-preview">
                     <i class="ti ti-terminal-2 me-1"></i>${t('firewall.preview.button')}
-                </button>
+                </button>` : ''}
                 <a href="#firewall/objects" class="btn ${mode === 'objects' ? 'btn-primary' : 'btn-outline-secondary'}">
                     <i class="ti ti-address-book me-1"></i>${t('firewall.hub.objects')}
                 </a>
@@ -88,7 +90,8 @@ export async function render(container, params = []) {
         });
     });
 
-    container.querySelector('#fw-open-trace')?.addEventListener('click', async () => (await import('./tools.js')).openTracer());
+    container.querySelector('#fw-open-trace')?.addEventListener('click', async () =>
+        (await import('./tools.js')).openTracer({ advanced: mode === 'advanced' }));
     container.querySelector('#fw-open-preview')?.addEventListener('click', async () => (await import('./tools.js')).openPreview());
 
     const viewEl = container.querySelector('#fw-view');
