@@ -520,7 +520,14 @@
             "note_uncertain_dnat": "Un port forward potrebbe corrispondere ma dipende da oggetti non risolti: risultato da verificare.",
             "note_uncertain_rule": "Alcune regole dipendono da oggetti non risolti (FQDN senza risoluzione, liste geo assenti).",
             "note_no_topology": "Topologia di rete non disponibile: indica le interfacce per un risultato preciso.",
-            "ruleNotInView": "La regola #{seq} non è in questa vista (es. INPUT è in Advanced)."
+            "ruleNotInView": "La regola #{seq} non è in questa vista (es. INPUT è in Advanced).",
+            "leavesAs": "Esce come",
+            "viaPolicy": "NAT della policy",
+            "viaNatRule": "regola NAT di Advanced",
+            "snat_masquerade": "IP di {iface}",
+            "snat_poolRange": "un indirizzo del pool, sempre lo stesso per questo client",
+            "snat_unknown": "non determinabile (oggetti non risolti)",
+            "snat_none": "indirizzo originale, nessun NAT"
         },
         "preview": {
             "button": "Anteprima iptables",

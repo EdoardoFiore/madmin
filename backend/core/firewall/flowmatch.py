@@ -178,8 +178,9 @@ def match(rule: RuleView, flow: Flow, chain: str, topo: Topology) -> Optional[bo
         if not port_in_spec(dport, rule.port):
             return False
 
-    # FORWARD sees the packet after DNAT (destination = the real target)
-    dst = flow.reply_src if chain == "FORWARD" else flow.dst
+    # FORWARD and POSTROUTING see the packet after DNAT (destination = the real target)
+    after_dnat = chain in ("FORWARD", "POSTROUTING")
+    dst = flow.reply_src if after_dnat else flow.dst
     results = []
     for nets, ip in ((rule.src, flow.src), (rule.dst, dst)):
         if nets == "unknown":
@@ -187,9 +188,9 @@ def match(rule: RuleView, flow: Flow, chain: str, topo: Topology) -> Optional[bo
         else:
             results.append(_in_nets(ip, nets))
     in_dev = topo.dev_for(flow.src)
-    out_dev = topo.dev_for(dst) if chain == "FORWARD" else None
+    out_dev = topo.dev_for(dst) if after_dnat else None
     results.append(_iface_match(rule.in_interface, in_dev))
-    if chain == "FORWARD":
+    if after_dnat:
         results.append(_iface_match(rule.out_interface, out_dev))
     if any(r is False for r in results):
         return False

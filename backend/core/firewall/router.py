@@ -783,7 +783,7 @@ def _implicit_deny_response() -> MachineFirewallRuleResponse:
 
 
 async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses) -> None:
-    """Evaluation sequence and shadowed/duplicate rules, per filter chain."""
+    """Evaluation sequence and shadowed/duplicate rules, per filter chain and nat/POSTROUTING."""
     from . import shadow
 
     sections = (await session.execute(select(ForwardSection))).scalars().all()
@@ -791,16 +791,16 @@ async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses)
     by_id = {str(r.id): resp for r, resp in zip(rules, responses)}
     chains: dict = {}
     for r, resp in zip(rules, responses):
-        if r.table_name == "filter":
-            chains.setdefault(r.chain, []).append((r, resp))
-    for chain, items in chains.items():
+        if r.table_name == "filter" or (r.table_name == "nat" and r.chain == "POSTROUTING"):
+            chains.setdefault((r.table_name, r.chain), []).append((r, resp))
+    for (table, chain), items in chains.items():
         if chain == "FORWARD":
             items.sort(key=lambda it: (pos.get(section_key(it[0]), len(pos)), it[0].order))
         else:
             items.sort(key=lambda it: it[0].order)
         for i, (_, resp) in enumerate(items, start=1):
             resp.seq = i
-        for rid, info in shadow.analyze([resp for _, resp in items]).items():
+        for rid, info in shadow.analyze([resp for _, resp in items], nat=table == "nat").items():
             resp = by_id[rid]
             resp.shadowed_by = info["by"]
             resp.shadowed_by_seq = by_id[info["by"]].seq
@@ -1327,11 +1327,11 @@ class TraceRequest(SQLModel):
         return v
 
 
-async def _seq_map(session: AsyncSession, chain: str) -> dict:
+async def _seq_map(session: AsyncSession, chain: str, table: str = "filter") -> dict:
     """rule id -> 1-based position in evaluation order (as in GET /rules)."""
     rules = (await session.execute(
         select(MachineFirewallRule).where(
-            MachineFirewallRule.table_name == "filter", MachineFirewallRule.chain == chain,
+            MachineFirewallRule.table_name == table, MachineFirewallRule.chain == chain,
         )
     )).scalars().all()
     if chain == "FORWARD":
@@ -1341,6 +1341,66 @@ async def _seq_map(session: AsyncSession, chain: str) -> dict:
     else:
         rules.sort(key=lambda r: r.order)
     return {str(r.id): i for i, r in enumerate(rules, start=1)}
+
+
+async def _trace_snat(session: AsyncSession, flow, topo, decision: dict) -> dict:
+    """
+    The address a forwarded connection leaves with. The nat/POSTROUTING rules
+    of Advanced come first, in order (the first match decides); then the NAT
+    of the policy that accepted the connection (its connection mark).
+    kind: none | masquerade | snat | pool | netmap | unknown.
+    """
+    from .orchestrator import rule_nat_target
+    pools = {p.id: p for p in (await session.execute(select(NatPool))).scalars().all()}
+    out_dev = topo.dev_for(flow.reply_src)
+    try:
+        addrs = await asyncio.to_thread(natpool.interface_addresses)
+    except Exception:
+        addrs = {}
+
+    def describe(action, args, pool):
+        if action == "MASQUERADE":
+            ips = addrs.get(out_dev) or []
+            return {"kind": "masquerade", "ip": ips[0] if ips else None, "interface": out_dev}
+        if action == "NETMAP":
+            # NETMAP keeps the host part of the source
+            net = ipaddress.IPv4Network(args["netmap_to"])
+            host = int(ipaddress.IPv4Address(flow.src)) & int(net.hostmask)
+            return {"kind": "netmap", "ip": str(net.network_address + host), "pool": pool.name if pool else None}
+        return {"kind": "pool" if pool else "snat", "ip": args.get("to_source"),
+                "pool": pool.name if pool else None}
+
+    rows = {str(r.id): r for r in (await session.execute(
+        select(MachineFirewallRule).where(
+            MachineFirewallRule.table_name == "nat", MachineFirewallRule.chain == "POSTROUTING")
+    )).scalars().all()}
+    seq = await _seq_map(session, "POSTROUTING", table="nat")
+    for view in await _rule_views(session, "POSTROUTING", table="nat"):
+        m = flowmatch.match(view, flow, "POSTROUTING", topo)
+        if m is False:
+            continue
+        where = {"rule_id": view.id, "seq": seq.get(view.id), "advanced": True}
+        if m is None:
+            return {"kind": "unknown", **where}
+        rule = rows[view.id]
+        if rule.action in ("ACCEPT", "RETURN"):
+            return {"kind": "none", **where}
+        try:
+            action, args = rule_nat_target(rule, pools) or (rule.action, {"to_source": rule.to_source})
+        except ValueError:
+            return {"kind": "unknown", **where}
+        return {**describe(action, args, pools.get(rule.nat_pool_id)), **where}
+
+    policy_id = decision.get("rule_id")
+    policy = await session.get(MachineFirewallRule, uuid.UUID(policy_id)) if policy_id else None
+    if policy is not None and policy.policy_nat:
+        try:
+            action, args = policy_nat_target(policy, pools)
+        except ValueError:
+            return {"kind": "unknown", "rule_id": policy_id, "seq": decision.get("seq")}
+        return {**describe(action, args, pools.get(policy.nat_pool_id)),
+                "rule_id": policy_id, "seq": decision.get("seq")}
+    return {"kind": "none"}
 
 
 @router.post("/trace")
@@ -1356,6 +1416,8 @@ async def trace_packet(
     DNAT) rewrite the destination first, then INPUT (to this machine) or
     FORWARD. Interfaces not given are inferred from the routing table.
     Module chains (VPN, IPsec, DNS) run before MADMIN's and are not simulated.
+    A forwarded connection that is accepted also gets `snat`: the address it
+    leaves with (see _trace_snat).
     """
     import ipaddress
     try:
@@ -1422,11 +1484,15 @@ async def trace_packet(
             decision = {"auto": "implicit_deny", "action": "DROP"}
         else:
             decision = {"auto": "chain_policy", "action": "ACCEPT"}
+    snat = None
+    if chain == "FORWARD" and decision["action"] == "ACCEPT":
+        snat = await _trace_snat(session, flow, ttopo, decision)
     return {
         "chain": chain,
         "in_interface": ttopo.dev_for(data.source),
         "out_interface": ttopo.dev_for(reply_src) if chain == "FORWARD" else None,
-        "dnat": dnat, "steps": steps, "decision": decision, "notes": sorted(set(notes)),
+        "dnat": dnat, "steps": steps, "decision": decision, "snat": snat,
+        "notes": sorted(set(notes)),
     }
 
 

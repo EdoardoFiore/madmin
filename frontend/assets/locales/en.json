@@ -520,7 +520,14 @@
             "note_uncertain_dnat": "A port forward might match but depends on unresolved objects: check the result.",
             "note_uncertain_rule": "Some rules depend on unresolved objects (unresolved FQDN, missing geo lists).",
             "note_no_topology": "Network topology unavailable: set the interfaces for a precise result.",
-            "ruleNotInView": "Rule #{seq} is not in this view (e.g. INPUT lives in Advanced)."
+            "ruleNotInView": "Rule #{seq} is not in this view (e.g. INPUT lives in Advanced).",
+            "leavesAs": "Leaves as",
+            "viaPolicy": "policy NAT",
+            "viaNatRule": "Advanced NAT rule",
+            "snat_masquerade": "address of {iface}",
+            "snat_poolRange": "one address of the pool, always the same for this client",
+            "snat_unknown": "cannot be determined (unresolved objects)",
+            "snat_none": "original address, no NAT"
         },
         "preview": {
             "button": "iptables preview",

@@ -159,6 +159,8 @@ function traceResultHtml(res, advanced) {
             <dd class="col-8"><code>${escapeHtml(res.in_interface || '?')}</code>${res.out_interface ? ` → <code>${escapeHtml(res.out_interface)}</code>` : ''}</dd>
             ${res.dnat ? `<dt class="col-4">${t('firewall.trace.portForward')}</dt>
                 <dd class="col-8">${ruleLink(res.dnat.rule_id, '')} ${escapeHtml(res.dnat.action)} ${res.dnat.to ? `→ <code>${escapeHtml(res.dnat.to)}</code>` : ''}</dd>` : ''}
+            ${res.snat ? `<dt class="col-4">${t('firewall.trace.leavesAs')}</dt>
+                <dd class="col-8">${snatHtml(res.snat, ruleLink)}</dd>` : ''}
         </dl>
         ${res.steps.length ? `
         <div class="table-responsive">
@@ -168,6 +170,32 @@ function traceResultHtml(res, advanced) {
             </table>
         </div>` : ''}
         ${notes}`;
+}
+
+/**
+ * The address a forwarded connection leaves with (backend _trace_snat): the
+ * first Advanced nat/POSTROUTING rule that matches, else the NAT of the
+ * policy that accepted it.
+ */
+function snatHtml(s, ruleLink) {
+    const via = s.rule_id
+        ? ` <span class="text-muted">— ${escapeHtml(t(s.advanced ? 'firewall.trace.viaNatRule' : 'firewall.trace.viaPolicy'))}</span> ${ruleLink(s.rule_id, s.seq)}`
+        : '';
+    const ip = s.ip ? `<code>${escapeHtml(s.ip)}</code>` : '';
+    switch (s.kind) {
+        case 'masquerade':
+            return `${ip || `<span class="text-muted">?</span>`} <span class="text-muted">(${escapeHtml(t('firewall.trace.snat_masquerade', { iface: s.interface || '?' }))})</span>${via}`;
+        case 'snat':
+            return `${ip}${via}`;
+        case 'pool':
+            return `${ip} <span class="text-muted">(${escapeHtml(t('firewall.pools.badge', { name: s.pool }))}${s.ip && s.ip.includes('-') ? ', ' + escapeHtml(t('firewall.trace.snat_poolRange')) : ''})</span>${via}`;
+        case 'netmap':
+            return `${ip} <span class="text-muted">(${escapeHtml(t('firewall.pools.badge', { name: s.pool }))}, ${escapeHtml(t('firewall.pools.type_one_to_one'))})</span>${via}`;
+        case 'unknown':
+            return `<span class="text-warning">${escapeHtml(t('firewall.trace.snat_unknown'))}</span>${via}`;
+        default:
+            return `<span class="text-muted">${escapeHtml(t('firewall.trace.snat_none'))}</span>${via}`;
+    }
 }
 
 // ---------------------------------------------------------------------------

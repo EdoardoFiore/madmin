@@ -6,7 +6,9 @@ A rule is shadowed when an earlier enabled terminal rule of the same chain
 an ACCEPT added at the end of INPUT, below the final DROP: it looks active
 and is never reached. Conservative by design: anything that cannot be proven
 (different address objects, a rate-limited rule, partial state lists) is not
-reported. Only the filter table, where the first terminal match decides.
+reported. The filter table, where the first terminal match decides, and the
+nat/POSTROUTING rules of Advanced, where the first match decides the source
+address (every action there is terminal; ACCEPT and RETURN both mean "no NAT").
 """
 import ipaddress
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -14,6 +16,14 @@ from typing import Dict, Iterable, List, Optional, Sequence
 from .ports import parse_port_spec
 
 TERMINAL = {"ACCEPT", "DROP", "REJECT"}
+NAT_TERMINAL = {"ACCEPT", "RETURN", "MASQUERADE", "SNAT"}
+
+
+def nat_decision(rule) -> tuple:
+    """What a nat/POSTROUTING rule decides: no NAT, or NAT to which address."""
+    if rule.action in ("ACCEPT", "RETURN"):
+        return ("none",)
+    return (rule.action, getattr(rule, "to_source", None), getattr(rule, "nat_pool_id", None))
 
 
 def _iface_covers(a: Optional[str], b: Optional[str]) -> bool:
@@ -88,12 +98,15 @@ def covers(a, b) -> bool:
     )
 
 
-def analyze(ordered: Sequence) -> Dict[str, dict]:
+def analyze(ordered: Sequence, nat: bool = False) -> Dict[str, dict]:
     """
-    `ordered`: the rules of one filter chain in evaluation order (enabled and
-    disabled). Returns {rule_id: {"by": id, "kind": "shadowed"|"duplicate"|"redundant"}}
-    for every enabled rule an earlier enabled terminal rule makes useless.
+    `ordered`: the rules of one filter chain (or, with nat=True, of
+    nat/POSTROUTING) in evaluation order, enabled and disabled. Returns
+    {rule_id: {"by": id, "kind": "shadowed"|"duplicate"|"redundant"}} for every
+    enabled rule an earlier enabled terminal rule makes useless.
     """
+    terminal = NAT_TERMINAL if nat else TERMINAL
+    decision = nat_decision if nat else (lambda r: r.action)
     out: Dict[str, dict] = {}
     earlier: List = []
     for rule in ordered:
@@ -101,7 +114,7 @@ def analyze(ordered: Sequence) -> Dict[str, dict]:
             continue
         for prev in earlier:
             if covers(prev, rule):
-                if prev.action != rule.action:
+                if decision(prev) != decision(rule):
                     kind = "shadowed"       # the opposite decision is taken above
                 elif covers(rule, prev):
                     kind = "duplicate"
@@ -109,6 +122,6 @@ def analyze(ordered: Sequence) -> Dict[str, dict]:
                     kind = "redundant"      # same decision, already taken above
                 out[str(rule.id)] = {"by": str(prev.id), "kind": kind}
                 break
-        if rule.action in TERMINAL:
+        if rule.action in terminal:
             earlier.append(rule)
     return out
