@@ -20,7 +20,7 @@ import { apiGet, apiPost, apiPatch } from '../../api.js';
 import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
-import { loadInterfaces, interfaceSelect, natSourceOptions } from './interfaces.js';
+import { loadInterfaces, interfaceSelect, natSourceOptions, natSourceValue, natSourcePayload } from './interfaces.js';
 import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
@@ -55,7 +55,7 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
         isEdit,
         rule: isEdit ? rule : null,
         origAction: rule?.action || null,
-        objects: [], groups: [],
+        objects: [], groups: [], pools: [],
         activeField: null,
         panel: null,
         dirty: false,
@@ -69,12 +69,14 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
 
     await loadInterfaces();
     try {
-        const [objs, grps] = await Promise.all([
+        const [objs, grps, pools] = await Promise.all([
             apiGet('/firewall/addresses'),
             apiGet('/firewall/address-groups'),
+            mode === 'policy' ? apiGet('/firewall/nat-pools').catch(() => []) : [],
         ]);
         st.objects = objs || [];
         st.groups = grps || [];
+        st.pools = pools || [];
     } catch { st.objects = []; st.groups = []; }
 
     // Seed direction state from the rule being edited/duplicated.
@@ -278,7 +280,7 @@ function formFields(rule) {
     if (mode === 'policy') {
         const action = rule?.action || 'ACCEPT';
         const natOn = rule ? rule.policy_nat : true;
-        const natCurrent = rule?.to_source ? `ip:${rule.to_source}` : '';
+        const natCurrent = natSourceValue(rule);
         return `
             ${nameHtml(rule)}
             <div class="col-md-6">
@@ -310,7 +312,7 @@ function formFields(rule) {
             </div>
             <div class="col-md-6 offset-md-6 ${natOn ? '' : 'd-none'}" id="ed-natsrc-wrap">
                 <label class="form-label">${t('firewall.nat.sourceLabel')}</label>
-                <select class="form-select" id="ed-natsrc">${natSourceOptions(rule?.out_interface || '', natCurrent)}</select>
+                <select class="form-select" id="ed-natsrc">${natSourceOptions(rule?.out_interface || '', natCurrent, { pools: st.pools })}</select>
                 <small class="form-hint" id="ed-natsrc-hint">${natSourceHint(rule?.out_interface || '')}</small>
             </div>
             ${enabledHtml(rule)}`;
@@ -416,7 +418,7 @@ function bindForm() {
     container.querySelector('#ed-out')?.addEventListener('change', (e) => {
         const sel = container.querySelector('#ed-natsrc');
         if (!sel) return;
-        sel.innerHTML = natSourceOptions(e.target.value, sel.value);
+        sel.innerHTML = natSourceOptions(e.target.value, sel.value, { pools: st.pools });
         container.querySelector('#ed-natsrc-hint').textContent = natSourceHint(e.target.value);
     });
 
@@ -602,8 +604,9 @@ async function save() {
             // any other protocol is dead data (see backend port/protocol guard).
             port: (proto === 'tcp' || proto === 'udp') ? (container.querySelector('#ed-port').value || null) : null,
             policy_nat: natOn,
-            // '' = the outgoing interface's address (MASQUERADE), 'ip:x' = SNAT to x
-            to_source: natOn && natSrc.startsWith('ip:') ? natSrc.slice(3) : null,
+            // '' = the outgoing interface's address (MASQUERADE), 'ip:x' = SNAT
+            // to x, 'pool:id' = an IP pool
+            ...natSourcePayload(natOn ? natSrc : ''),
             enabled,
         };
     } else if (mode === 'portforward') {

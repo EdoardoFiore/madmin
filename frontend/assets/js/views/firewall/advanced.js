@@ -11,9 +11,10 @@ import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
 import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge, natBadge } from './shared.js';
-import { loadInterfaces, natSourceOptions } from './interfaces.js';
+import { loadInterfaces, natSourceOptions, natSourcePayload } from './interfaces.js';
 
 let rules = [];
+let natPools = [];  // GET /firewall/nat-pools, for the NAT address selects
 let sections = []; // forward groups in evaluation order (GET /firewall/sections)
 let editingRule = null;
 let currentTable = 'filter';
@@ -226,6 +227,7 @@ export async function render(container) {
                                         To Source
                                         <i class="ti ti-help text-muted" data-bs-toggle="tooltip" title="Source address to map to, e.g. 1.2.3.4"></i>
                                     </label>
+                                    <select class="form-select mb-2" id="rule-snat-pool"></select>
                                     <input type="text" class="form-control" id="rule-to-source" placeholder="1.2.3.4">
                                 </div>
                                 <div class="col-md-6 field-redirect" style="display:none">
@@ -683,6 +685,10 @@ function setupEventListeners() {
         updateIptablesPreview();
     });
     document.getElementById('rule-nat-custom')?.addEventListener('input', updateIptablesPreview);
+    document.getElementById('rule-snat-pool')?.addEventListener('change', (e) => {
+        document.getElementById('rule-to-source').classList.toggle('d-none', !!e.target.value);
+        updateIptablesPreview();
+    });
 
     // Action change - show/hide specific fields
     document.getElementById('rule-action')?.addEventListener('change', () => {
@@ -796,15 +802,43 @@ function fillNatSource(current) {
     const sel = document.getElementById('rule-nat-source');
     if (!sel) return;
     const outIf = document.getElementById('rule-out-interface')?.value.trim() || '';
-    sel.innerHTML = natSourceOptions(outIf, current ?? sel.value, { custom: true });
+    sel.innerHTML = natSourceOptions(outIf, current ?? sel.value, { custom: true, pools: natPools });
     document.getElementById('rule-nat-custom')?.classList.toggle('d-none', sel.value !== 'custom');
 }
 
-/** to_source of a filter/FORWARD policy with NAT, from the select (null = MASQUERADE). */
-function natSourceValue() {
+/** {to_source, nat_pool_id} of a filter/FORWARD policy with NAT (both null = MASQUERADE). */
+function policyNatPayload() {
     const v = document.getElementById('rule-nat-source')?.value || '';
-    if (v === 'custom') return document.getElementById('rule-nat-custom').value.trim() || null;
-    return v.startsWith('ip:') ? v.slice(3) : null;
+    if (v === 'custom') return { to_source: document.getElementById('rule-nat-custom').value.trim() || null, nat_pool_id: null };
+    return natSourcePayload(v);
+}
+
+/** {to_source, nat_pool_id} of an SNAT rule. */
+function snatPayload() {
+    const pool = document.getElementById('rule-snat-pool')?.value || '';
+    return pool ? { to_source: null, nat_pool_id: pool }
+        : { to_source: document.getElementById('rule-to-source').value.trim() || null, nat_pool_id: null };
+}
+
+/** SNAT rule (nat/POSTROUTING): a pool, or the typed address below it. */
+function fillSnatPool(current = '') {
+    const sel = document.getElementById('rule-snat-pool');
+    if (!sel) return;
+    sel.innerHTML = `<option value="">${escapeHtml(t('firewall.pools.snatTyped'))}</option>`
+        + natPools.map(p => `<option value="${escapeHtml(p.id)}" ${p.id === current ? 'selected' : ''}>${escapeHtml(
+            `${t('firewall.pools.badge', { name: p.name })} (${p.value})`)}</option>`).join('');
+    document.getElementById('rule-to-source').classList.toggle('d-none', !!sel.value);
+}
+
+/** Text of the NAT target in the live preview: the pool's range or the typed address. */
+function previewNatTarget(payload) {
+    if (payload.nat_pool_id) {
+        const p = natPools.find(x => x.id === payload.nat_pool_id);
+        if (!p) return ' -j SNAT --to-source <pool>';
+        return p.type === 'one_to_one' ? ` -j NETMAP --to ${p.value}`
+            : ` -j SNAT --to-source ${p.value}${p.value.includes('-') ? ' --persistent' : ''}`;
+    }
+    return payload.to_source ? ` -j SNAT --to-source ${payload.to_source}` : ' -j MASQUERADE';
 }
 
 /**
@@ -880,7 +914,11 @@ function updateIptablesPreview() {
 
     // Append action arguments
     if (action === 'DNAT' && toDest) cmd += ` --to-destination ${toDest}`;
-    if (action === 'SNAT' && toSource) cmd += ` --to-source ${toSource}`;
+    if (action === 'SNAT') {
+        const pool = document.getElementById('rule-snat-pool')?.value;
+        if (pool) cmd = cmd.replace(/ -j SNAT$/, '') + previewNatTarget({ nat_pool_id: pool });
+        else if (toSource) cmd += ` --to-source ${toSource}`;
+    }
     if (['REDIRECT', 'MASQUERADE'].includes(action) && toPorts) cmd += ` --to-ports ${toPorts}`;
     if (action === 'LOG') {
         if (logPrefix) cmd += ` --log-prefix "${logPrefix}"`;
@@ -891,9 +929,8 @@ function updateIptablesPreview() {
     // A policy with NAT also owns its POSTROUTING companion, scoped by the
     // connection mark the policy sets (see backend policy_nat_target)
     if (table === 'filter' && chain === 'FORWARD' && document.getElementById('rule-policy-nat')?.checked) {
-        const natSrc = natSourceValue();
         cmd += `\niptables -t nat -A POSTROUTING${outIface ? ` -o ${outIface}` : ''} -m connmark --mark <policy>`
-            + (natSrc ? ` -j SNAT --to-source ${natSrc}` : ' -j MASQUERADE');
+            + previewNatTarget(policyNatPayload());
     }
 
     preview.textContent = cmd;
@@ -904,9 +941,10 @@ function updateIptablesPreview() {
  */
 async function loadRules() {
     try {
-        [rules, sections] = await Promise.all([
+        [rules, sections, natPools] = await Promise.all([
             apiGet('/firewall/rules'),
             apiGet('/firewall/sections').catch(() => []),
+            apiGet('/firewall/nat-pools').catch(() => []),
         ]);
         renderRules();
     } catch (error) {
@@ -1199,7 +1237,9 @@ function renderCell(rule, column) {
                 return `<span class="badge bg-azure-lt"><i class="ti ti-box me-1"></i>${esc(rule.to_destination_object_name || rule.to_destination_object_id)}</span><code class="ms-1">${port}</code>`;
             }
             return rule.to_destination ? `<code>${esc(rule.to_destination)}</code>` : '-';
-        case 'to_source': return rule.to_source ? `<code>${esc(rule.to_source)}</code>` : '-';
+        case 'to_source':
+            if (rule.nat_pool_id) return `<span class="badge bg-green-lt"><i class="ti ti-world-share me-1"></i>${esc(rule.nat_pool_name || '?')}</span>`;
+            return rule.to_source ? `<code>${esc(rule.to_source)}</code>` : '-';
         case 'to_ports': return rule.to_ports ? `<code>${esc(rule.to_ports)}</code>` : '-';
         case 'log_prefix': return rule.log_prefix ? `<code>${esc(rule.log_prefix)}</code>` : '-';
         case 'limit_rate': return rule.limit_rate ? `${esc(rule.limit_rate)}${rule.limit_burst ? ` (burst: ${rule.limit_burst})` : ''}` : '-';
@@ -1454,9 +1494,11 @@ function openRuleModal(rule = null, isDuplicate = false) {
     document.getElementById('rule-enabled').checked = rule?.enabled !== false;
     document.getElementById('rule-policy-nat').checked = rule?.policy_nat || false;
     // A policy's NAT address: listed when on the interface, typed otherwise
-    const natAddr = (rule?.table_name === 'filter' && rule?.to_source) ? rule.to_source : '';
+    const isPolicy = rule?.table_name === 'filter';
+    const natAddr = (isPolicy && rule?.to_source) ? rule.to_source : '';
     document.getElementById('rule-nat-custom').value = natAddr;
-    fillNatSource(natAddr ? `ip:${natAddr}` : '');
+    fillNatSource(isPolicy && rule?.nat_pool_id ? `pool:${rule.nat_pool_id}` : (natAddr ? `ip:${natAddr}` : ''));
+    fillSnatPool(rule?.table_name === 'nat' ? (rule?.nat_pool_id || '') : '');
     togglePolicyNatField();
     document.getElementById('rule-comment').value = rule?.comment || '';
 
@@ -1522,9 +1564,10 @@ async function handleRuleSubmit(e) {
 
         // New fields
         to_destination: document.getElementById('rule-to-destination').value || null,
-        // SNAT target on nat rules, the NAT address on a policy; nothing elsewhere
-        to_source: action === 'SNAT' ? (document.getElementById('rule-to-source').value.trim() || null)
-            : policyNat ? natSourceValue() : null,
+        // SNAT target on nat rules (a pool or a typed address), the NAT
+        // address on a policy; nothing elsewhere
+        ...(action === 'SNAT' ? snatPayload()
+            : policyNat ? policyNatPayload() : { to_source: null, nat_pool_id: null }),
         to_ports: document.getElementById('rule-to-ports').value || null,
         log_prefix: document.getElementById('rule-log-prefix').value || null,
         log_level: document.getElementById('rule-log-level').value || null,

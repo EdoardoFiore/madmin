@@ -6,6 +6,7 @@ Handles chain creation, rule application, and command execution.
 Supports all standard iptables tables: filter, nat, mangle, raw.
 """
 import hashlib
+import ipaddress
 import subprocess
 import logging
 import os
@@ -407,7 +408,7 @@ _UNSET = object()
 
 
 def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UNSET,
-                          to_destination=_UNSET) -> str:
+                          to_destination=_UNSET, nat_target=None) -> str:
     """Convert a MachineFirewallRule to an iptables-restore format line (-A ...).
 
     `source`/`destination` may be overridden with an effective value (e.g. a
@@ -418,10 +419,13 @@ def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UN
     effective_to_destination) — a DNAT with to_destination_object_id set
     carries no literal to_destination column, so the caller must resolve and
     pass one for the rule to rewrite to anything at all.
+    `nat_target` (action, kwargs) replaces the rule's own action and
+    to_source: an SNAT rule that NATs through an IP pool (natpool.pool_target).
     """
+    nat_action, nat_args = nat_target or (rule.action, {"to_source": rule.to_source})
     args = build_rule_args(
         chain=madmin_chain,
-        action=rule.action,
+        action=nat_action,
         protocol=rule.protocol,
         source=rule.source if source is _UNSET else source,
         destination=rule.destination if destination is _UNSET else destination,
@@ -433,12 +437,12 @@ def rule_to_restore_line(madmin_chain: str, rule, source=_UNSET, destination=_UN
         limit_rate=rule.limit_rate,
         limit_burst=rule.limit_burst,
         to_destination=rule.to_destination if to_destination is _UNSET else to_destination,
-        to_source=rule.to_source,
         to_ports=rule.to_ports,
         log_prefix=rule.log_prefix,
         log_level=rule.log_level,
         reject_with=rule.reject_with,
-        operation="-A"
+        operation="-A",
+        **nat_args,
     )
     return restore_line(args)
 
@@ -913,6 +917,8 @@ def build_rule_args(
     reject_with: Optional[str] = None,
     connmark_match: Optional[str] = None,
     set_xmark: Optional[str] = None,
+    persistent: bool = False,
+    netmap_to: Optional[str] = None,
     operation: str = "-A"
 ) -> List[str]:
     """
@@ -938,6 +944,8 @@ def build_rule_args(
         reject_with: Reject type (e.g. icmp-port-unreachable)
         connmark_match: "-m connmark --mark <value>[/<mask>]" match (policy-NAT scoping)
         set_xmark: "--set-xmark <value>[/<mask>]" for action=CONNMARK
+        persistent: SNAT --persistent (a client keeps the same pool address)
+        netmap_to: NETMAP --to <cidr> (one-to-one pool)
         operation: -A (append), -I (insert), -D (delete)
 
     Returns:
@@ -1002,8 +1010,18 @@ def build_rule_args(
     if action == "DNAT" and to_destination:
         args.extend(["--to-destination", to_destination])
     
-    if action == "SNAT" and to_source:
+    if action == "SNAT":
+        # iptables-restore rejects a bare -j SNAT, and with it the whole ruleset
+        if not to_source:
+            raise ValueError("SNAT senza indirizzo di uscita")
         args.extend(["--to-source", to_source])
+        if persistent:
+            args.append("--persistent")
+
+    if action == "NETMAP":
+        if not netmap_to:
+            raise ValueError("NETMAP senza subnet di destinazione")
+        args.extend(["--to", str(ipaddress.IPv4Network(netmap_to, strict=True))])
         
     if action in ("REDIRECT", "MASQUERADE") and to_ports:
         args.extend(["--to-ports", to_ports])

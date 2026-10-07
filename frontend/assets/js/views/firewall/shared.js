@@ -105,6 +105,10 @@ export function natBadge(rule) {
         ? `<span class="badge bg-red-lt ms-1" title="${escapeHtml(t('firewall.nat.ipNotLocalHint'))}">
                <i class="ti ti-alert-triangle me-1"></i>${escapeHtml(t('firewall.nat.ipNotLocal'))}</span>`
         : '';
+    if (rule.nat_pool_id) {
+        return `<span class="badge bg-green-lt" title="${escapeHtml(t('firewall.pools.badgeHint'))}">
+            <i class="ti ti-world-share me-1"></i>${escapeHtml(t('firewall.pools.badge', { name: rule.nat_pool_name || '?' }))}</span>`;
+    }
     if (rule.to_source) {
         return `<span class="badge bg-green-lt" title="${escapeHtml(t('firewall.nat.snatHint'))}">
             <i class="ti ti-arrows-exchange me-1"></i>${escapeHtml(rule.to_source)}</span>${warn}`;

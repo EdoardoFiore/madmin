@@ -20,9 +20,9 @@ import json
 from .models import (
     MachineFirewallRule, ModuleChain,
     AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
-    RuleCounter, ForwardSection, RuleTrafficSample,
+    RuleCounter, ForwardSection, RuleTrafficSample, NatPool,
 )
-from . import iptables, addresses
+from . import iptables, addresses, natpool
 from core.concurrency import resource_lock, spawn_background
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 # apply_rules(). The FORWARD catch-all is no longer a DB rule: new policies are
 # always reachable by construction, FortiGate-style.
 IMPLICIT_DENY_COMMENT = "MADMIN_IMPLICIT_DENY"
+# INPUT drop of new connections to the /32s of ARP-answered IP pools
+NAT_POOL_GUARD_COMMENT = "MADMIN_NAT_POOL_GUARD"
 
 
 def effective_to_destination(rule, obj_value: Optional[str] = None) -> Optional[str]:
@@ -145,18 +147,35 @@ def policy_nat_fields(rule) -> Dict[str, Optional[str]]:
     }
 
 
-def policy_nat_target(rule) -> Tuple[str, Dict[str, Optional[str]]]:
+def policy_nat_target(rule, pools: Optional[Dict] = None) -> Tuple[str, Dict]:
     """
     Target of a forward policy's NAT companion: (action, extra build_rule_args).
 
-    No to_source: MASQUERADE, the address of the outgoing interface. With
-    to_source: SNAT toward that address of the machine (primary or secondary).
+    Nothing set: MASQUERADE, the address of the outgoing interface. to_source:
+    SNAT toward that address of the machine (primary or secondary). An IP
+    pool: SNAT over its range (--persistent) or NETMAP onto its subnet
+    (natpool.pool_target). pools: {pool id: NatPool}; a pool missing from it
+    raises ValueError, so the companion is skipped rather than silently
+    turned into a MASQUERADE.
     Shared by apply_rules, the synthetic auto-nat row of GET /rules and the
     tracer, like policy_nat_fields.
     """
+    pool_id = getattr(rule, "nat_pool_id", None)
+    if pool_id:
+        pool = (pools or {}).get(pool_id)
+        if pool is None:
+            raise ValueError(f"IP pool {pool_id} non trovato")
+        return natpool.pool_target(pool)
     if rule.to_source:
         return "SNAT", {"to_source": rule.to_source}
     return "MASQUERADE", {}
+
+
+def rule_nat_target(rule, pools: Optional[Dict]) -> Optional[Tuple[str, Dict]]:
+    """An SNAT rule (Advanced) that NATs through an IP pool: its pool target, else None."""
+    if getattr(rule, "nat_pool_id", None) and rule.table_name == "nat":
+        return policy_nat_target(rule, pools)
+    return None
 
 
 def forward_groups(
@@ -195,13 +214,16 @@ def hairpin_masq_fields(rule, to_destination: Optional[str] = None) -> Dict[str,
     }
 
 
-def _restore_line(madmin_chain: str, rule, eff_map: Dict, to_destination: Optional[str] = None) -> str:
+def _restore_line(madmin_chain: str, rule, eff_map: Dict, to_destination: Optional[str] = None,
+                  pools: Optional[Dict] = None) -> str:
     """Restore-format line for a rule, honoring resolved address-set tokens.
 
     to_destination: resolved DNAT target (see effective_to_destination),
     passed by apply_rules for DNAT rules with an object-based target; not
     used for any other rule (build_rule_args ignores it unless action=DNAT).
+    pools: {pool id: NatPool}, for SNAT rules that NAT through a pool.
     """
+    nat_target = rule_nat_target(rule, pools)
     eff = eff_map.get(rule.id)
     if eff:
         eff_src, eff_dst = eff
@@ -210,10 +232,12 @@ def _restore_line(madmin_chain: str, rule, eff_map: Dict, to_destination: Option
             source=eff_src if eff_src is not None else rule.source,
             destination=eff_dst if eff_dst is not None else rule.destination,
             to_destination=to_destination if to_destination is not None else rule.to_destination,
+            nat_target=nat_target,
         )
     return iptables.rule_to_restore_line(
         madmin_chain, rule,
         to_destination=to_destination if to_destination is not None else rule.to_destination,
+        nat_target=nat_target,
     )
 
 
@@ -723,6 +747,7 @@ class FirewallOrchestrator:
             ),
             to_destination_port=rule_data.get("to_destination_port"),
             to_source=rule_data.get("to_source"),
+            nat_pool_id=uuid.UUID(rule_data["nat_pool_id"]) if rule_data.get("nat_pool_id") else None,
             to_ports=rule_data.get("to_ports"),
             log_prefix=rule_data.get("log_prefix"),
             log_level=rule_data.get("log_level"),
@@ -774,7 +799,7 @@ class FirewallOrchestrator:
         for key, value in rule_data.items():
             # to_destination_object_id is a UUID column; the API layer only
             # ever hands this loop a plain str (see MachineFirewallRuleUpdate).
-            if key == "to_destination_object_id" and isinstance(value, str):
+            if key in ("to_destination_object_id", "nat_pool_id") and isinstance(value, str):
                 value = uuid.UUID(value)
             if hasattr(rule, key):
                 setattr(rule, key, value)
@@ -1220,6 +1245,12 @@ class FirewallOrchestrator:
             addresses.ensure_sets_exist(addr_plan)
             spawn_background(_sync_address_sets(addr_plan), "firewall-address-sync")
 
+        # IP pools: their /32s on the interfaces (ARP replies), before the
+        # rules that NAT through them are loaded
+        pools = {p.id: p for p in (await session.execute(select(NatPool))).scalars().all()}
+        if side_effects:
+            await asyncio.to_thread(natpool.reconcile, list(pools.values()))
+
         # DNAT targets that reference an address object resolve to a literal
         # ip[:port] here, once, for every consumer below (the DNAT restore
         # line itself, its FORWARD/INPUT/hairpin companions) — see
@@ -1234,7 +1265,7 @@ class FirewallOrchestrator:
         for rule in rules:
             chain = iptables.get_madmin_chain(rule.table_name, rule.chain) or iptables.MADMIN_FORWARD_CHAIN
             try:
-                _restore_line(chain, rule, eff_map, dnat_targets.get(rule.id))
+                _restore_line(chain, rule, eff_map, dnat_targets.get(rule.id), pools)
             except ValueError as e:
                 logger.error(f"Firewall rule {rule.id} skipped: {e}")
                 continue
@@ -1257,7 +1288,18 @@ class FirewallOrchestrator:
 
         # --- Inject auto-generated MADMIN_GW_PROTECT content ---
         protect_lines = iptables.build_gateway_protect_lines(topo["lan_interfaces"])
-        chain_rules["filter"][iptables.MADMIN_GW_PROTECT_CHAIN] = protect_lines
+        # The /32s of ARP-answered pools only receive replies to NATed
+        # traffic (translated back in PREROUTING, never seen here): a new
+        # connection to one would reach the machine's own services. This
+        # chain runs before every module INPUT chain.
+        guard_lines = []
+        for match in natpool.guard_matches(pools.values(), exclude=topo["local_ips"]):
+            dst = f"-m iprange --dst-range {match}" if "-" in match else f"-d {match}"
+            guard_lines.append(
+                f"-A {iptables.MADMIN_GW_PROTECT_CHAIN} {dst} -m conntrack --ctstate NEW"
+                f" -m comment --comment {NAT_POOL_GUARD_COMMENT} -j DROP"
+            )
+        chain_rules["filter"][iptables.MADMIN_GW_PROTECT_CHAIN] = guard_lines + protect_lines
 
         # MADMIN_GW_EXCEPTS starts empty (populated below by DB rules with chain=GW_EXCEPTIONS)
         chain_rules["filter"][iptables.MADMIN_GW_EXCEPTS_CHAIN] = []
@@ -1318,7 +1360,7 @@ class FirewallOrchestrator:
                 logger.error(f"Unknown chain {rule.chain} in table {rule.table_name} for rule {rule.id} — skipped")
                 continue
             chain_rules[rule.table_name][madmin_chain].append(
-                _restore_line(madmin_chain, rule, eff_map, dnat_targets.get(rule.id))
+                _restore_line(madmin_chain, rule, eff_map, dnat_targets.get(rule.id), pools)
             )
 
         # --- FORWARD layout: one subchain per interface pair, in section order ---
@@ -1411,8 +1453,8 @@ class FirewallOrchestrator:
                     "interface resolved — emitting MASQUERADE unscoped as a last resort."
                 )
             xmark = f"0x{mark:x}/0x{iptables.POLICY_NAT_MARK_MASK:x}"
-            nat_action, nat_args = policy_nat_target(rule)
             try:
+                nat_action, nat_args = policy_nat_target(rule, pools)
                 auto_nat_lines.append(
                     iptables.restore_line(iptables.build_rule_args(
                         chain=iptables.MADMIN_POSTROUTING_NAT_CHAIN,

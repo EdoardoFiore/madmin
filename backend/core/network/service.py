@@ -67,6 +67,11 @@ class NetworkService:
             
             # Get netplan configs for each interface
             netplan_configs = NetplanService.get_all_interface_configs()
+
+            # /32s MADMIN adds for the firewall's IP pools: not interface
+            # addresses the admin configured (listed apart, never in netplan)
+            from core.firewall.natpool import managed_ips
+            pool_ips = managed_ips()
             
             for iface_name, addrs in if_addrs.items():
                 # Skip virtual/tunnel interfaces
@@ -95,8 +100,11 @@ class NetworkService:
                 addr_info = []  # [{"address", "netmask"}, ...] — per-address netmask,
                                  # needed to compute subnets (iface_info["netmask"]
                                  # below only ever keeps the first address's).
+                nat_pool_ips = []
                 for addr in addrs:
-                    if addr.family.name == 'AF_INET':
+                    if addr.family.name == 'AF_INET' and addr.address in pool_ips:
+                        nat_pool_ips.append(addr.address)
+                    elif addr.family.name == 'AF_INET':
                         ipv4_list.append(addr.address)
                         addr_info.append({"address": addr.address, "netmask": addr.netmask})
                         if not iface_info["ipv4"]:
@@ -131,6 +139,7 @@ class NetworkService:
                 iface_info["addresses"] = ipv4_list
                 iface_info["secondary_ips"] = ipv4_list[1:]
                 iface_info["addr_info"] = addr_info
+                iface_info["nat_pool_ips"] = nat_pool_ips
 
                 interfaces.append(iface_info)
             

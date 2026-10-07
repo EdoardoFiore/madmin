@@ -72,11 +72,11 @@ function addressesOf(outIf) {
 /**
  * <option>s for the address a policy NATs to. Values: '' = the outgoing
  * interface's address (MASQUERADE), 'ip:<addr>' = that address of the
- * machine (SNAT), 'custom' = a typed address (Advanced only).
- * `current` is the saved value in the same encoding; an address no longer on
- * the interface stays selectable, marked as missing.
+ * machine (SNAT), 'pool:<id>' = an IP pool, 'custom' = a typed address
+ * (Advanced only). `current` is the saved value in the same encoding; an
+ * address no longer on the interface stays selectable, marked as missing.
  */
-export function natSourceOptions(outIf, current = '', { custom = false } = {}) {
+export function natSourceOptions(outIf, current = '', { custom = false, pools = [] } = {}) {
     const sel = (v) => (v === current ? 'selected' : '');
     let html = `<option value="" ${sel('')}>${escapeHtml(t('firewall.nat.ifaceAddr'))}</option>`;
     const addrs = addressesOf(outIf);
@@ -93,6 +93,25 @@ export function natSourceOptions(outIf, current = '', { custom = false } = {}) {
         const ip = current.slice(3);
         html += `<option value="${escapeHtml(current)}" selected>${escapeHtml(t('firewall.nat.missingAddr', { ip }))}</option>`;
     }
+    if (pools.length) {
+        html += `<optgroup label="${escapeHtml(t('firewall.pools.tab'))}">`;
+        html += pools.map(p => `<option value="pool:${escapeHtml(p.id)}" ${sel('pool:' + p.id)}>${escapeHtml(
+            `${p.name} (${p.value}, ${t(`firewall.pools.type_${p.type}`)})`)}</option>`).join('');
+        html += '</optgroup>';
+    }
     if (custom) html += `<option value="custom" ${sel('custom')}>${escapeHtml(t('firewall.nat.customAddr'))}</option>`;
     return html;
+}
+
+/** Saved NAT source of a rule, in natSourceOptions' encoding. */
+export function natSourceValue(rule) {
+    if (rule?.nat_pool_id) return `pool:${rule.nat_pool_id}`;
+    return rule?.to_source ? `ip:${rule.to_source}` : '';
+}
+
+/** {to_source, nat_pool_id} for a natSourceOptions value. */
+export function natSourcePayload(value) {
+    if (value.startsWith('pool:')) return { to_source: null, nat_pool_id: value.slice(5) };
+    if (value.startsWith('ip:')) return { to_source: value.slice(3), nat_pool_id: null };
+    return { to_source: null, nat_pool_id: null };
 }
