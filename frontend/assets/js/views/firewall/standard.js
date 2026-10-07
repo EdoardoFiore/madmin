@@ -80,6 +80,7 @@ async function loadCounters() {
         counters = new Map();
     }
     populateCounterPopovers();
+    (await import('./tools.js')).renderSparklines(containerEl);
 }
 
 /** Attach the hover popover to every counter icon currently in the DOM.
@@ -130,7 +131,8 @@ function counterIcon(r) {
     const cid = counterRuleId(r);
     if (!cid) return '';
     return `<span class="fw-counter text-muted text-nowrap" data-counter-id="${escapeHtml(cid)}" style="cursor:help">
-        <i class="ti ti-chart-histogram"></i><span class="fw-counter-text small ms-1"></span></span>`;
+        <i class="ti ti-chart-histogram"></i><span class="fw-counter-text small ms-1"></span>
+        <span class="fw-spark ms-1" data-rule-id="${escapeHtml(cid)}"></span></span>`;
 }
 
 /** Open the editor in-place, returning to this view on close. */

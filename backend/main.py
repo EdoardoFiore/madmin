@@ -347,6 +347,28 @@ async def lifespan(app: FastAPI):
                 logger.exception("Address refresh task error")
 
     address_task = asyncio.create_task(address_refresh_task())
+
+    # Per-rule traffic history (firewall sparklines): snapshot the kernel
+    # counters every 5 minutes, keep 7 days of samples
+    from core.firewall.models import RuleTrafficSample
+    from sqlalchemy import delete as sa_delete
+    from core.concurrency import spawn_background
+
+    async def traffic_sample_task():
+        while True:
+            try:
+                await asyncio.sleep(300)
+                async with async_session_maker() as session:
+                    await firewall_orchestrator.snapshot_counters(session)
+                    await session.execute(sa_delete(RuleTrafficSample).where(
+                        RuleTrafficSample.ts < datetime.utcnow() - timedelta(days=7)))
+                    await session.commit()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Firewall traffic sampling error")
+
+    traffic_task = spawn_background(traffic_sample_task(), "firewall-traffic-sampling")
     logger.info("Address dynamic refresh task started (daily at midnight)")
 
     logger.info("MADMIN ready!")
@@ -366,6 +388,7 @@ async def lifespan(app: FastAPI):
     backup_task.cancel()
     audit_task.cancel()
     address_task.cancel()
+    traffic_task.cancel()
     restore_task.cancel()
     try:
         await restore_task

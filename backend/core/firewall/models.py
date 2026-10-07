@@ -121,6 +121,22 @@ class ModuleChain(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class RuleTrafficSample(SQLModel, table=True):
+    """
+    Traffic of a rule over time, for the per-rule sparkline: one row per
+    counter snapshot that saw traffic (every 5 minutes and at each apply),
+    holding the delta since the previous one. No foreign key: rows of a
+    deleted rule simply age out with the retention (7 days).
+    """
+    __tablename__ = "firewall_rule_traffic"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    rule_id: uuid.UUID = Field(index=True)
+    ts: datetime = Field(default_factory=datetime.utcnow, index=True)
+    packets: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, default=0))
+    bytes: int = Field(default=0, sa_column=Column(BigInteger, nullable=False, default=0))
+
+
 class ForwardSection(SQLModel, table=True):
     """
     Evaluation order of the filter/FORWARD interface-pair groups.

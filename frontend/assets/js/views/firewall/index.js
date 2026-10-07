@@ -54,9 +54,17 @@ function toolbar(mode) {
                 ${seg('standard', 'layout-list', t('firewall.hub.standard'))}
                 ${seg('advanced', 'adjustments-alt', t('firewall.hub.advanced'))}
             </div>
-            <a href="#firewall/objects" class="btn ${mode === 'objects' ? 'btn-primary' : 'btn-outline-secondary'}">
-                <i class="ti ti-address-book me-1"></i>${t('firewall.hub.objects')}
-            </a>
+            <div class="btn-list">
+                <button type="button" class="btn btn-outline-secondary" id="fw-open-trace">
+                    <i class="ti ti-route me-1"></i>${t('firewall.trace.title')}
+                </button>
+                <button type="button" class="btn btn-outline-secondary" id="fw-open-preview">
+                    <i class="ti ti-terminal-2 me-1"></i>${t('firewall.preview.button')}
+                </button>
+                <a href="#firewall/objects" class="btn ${mode === 'objects' ? 'btn-primary' : 'btn-outline-secondary'}">
+                    <i class="ti ti-address-book me-1"></i>${t('firewall.hub.objects')}
+                </a>
+            </div>
         </div>`;
 }
 
@@ -79,6 +87,9 @@ export async function render(container, params = []) {
             window.location.hash = `#firewall/${e.target.value}`;
         });
     });
+
+    container.querySelector('#fw-open-trace')?.addEventListener('click', async () => (await import('./tools.js')).openTracer());
+    container.querySelector('#fw-open-preview')?.addEventListener('click', async () => (await import('./tools.js')).openPreview());
 
     const viewEl = container.querySelector('#fw-view');
     const rest = params.slice(1);

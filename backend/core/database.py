@@ -64,7 +64,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         # Import all models to ensure they're registered
         from core.auth.models import User, Permission, UserPermission, LoginAttempt
-        from core.firewall.models import MachineFirewallRule, ModuleChain, RuleCounter, ForwardSection
+        from core.firewall.models import MachineFirewallRule, ModuleChain, RuleCounter, ForwardSection, RuleTrafficSample
         from core.modules.models import InstalledModule
         from core.settings.models import SystemSettings, SMTPSettings, BackupSettings
         from core.audit.models import AuditLog

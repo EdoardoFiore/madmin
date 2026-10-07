@@ -1,8 +1,10 @@
 /**
- * MADMIN - Firewall full-page rule editor
+ * MADMIN - Firewall rule editor (side panel)
  *
- * FortiGate-style editor with a right "Select Entries" panel. Renders in-place
- * (replacing the Standard view) and returns via onClose. Three curated modes:
+ * FortiGate-style editor in a wide right-hand offcanvas over the rule list,
+ * with the "Select Entries" panel as its right column. Clicking outside or
+ * Esc closes it when nothing changed and asks for confirmation otherwise;
+ * onClose runs once it is gone. Three curated modes:
  *   policy      -> filter/FORWARD ACCEPT|DROP with optional NAT (policy_nat)
  *   portforward -> nat/PREROUTING DNAT
  *   outnat      -> nat/POSTROUTING MASQUERADE|SNAT
@@ -14,7 +16,7 @@
  */
 import { apiGet, apiPost, apiPatch } from '../../api.js';
 import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
-import { setPageActions, checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
+import { checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces, interfaceSelect } from './interfaces.js';
 import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions } from './shared.js';
@@ -37,9 +39,17 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
         onClose?.();
         return;
     }
+    if (st) return;   // one editor at a time
     const isEdit = !!rule && !duplicate;
+    const ocEl = document.createElement('div');
+    ocEl.className = 'offcanvas offcanvas-end fw-editor-oc';
+    ocEl.tabIndex = -1;
+    ocEl.setAttribute('aria-labelledby', 'fw-editor-title');
+    document.body.appendChild(ocEl);
     st = {
-        container, mode, onClose,
+        // container = the panel itself: every query below stays scoped to it
+        container: ocEl, listContainer: container, mode, onClose,
+        closing: false, oc: null,
         isEdit,
         rule: isEdit ? rule : null,
         origAction: rule?.action || null,
@@ -69,12 +79,53 @@ export async function openEditor({ container, mode, rule = null, duplicate = fal
     seedDirection('source', rule);
     seedDirection('destination', rule);
 
-    setPageActions(`
-        <button class="btn btn-link" id="ed-back"><i class="ti ti-arrow-left me-1"></i>${t('common.cancel')}</button>
-    `);
-    document.getElementById('ed-back')?.addEventListener('click', close);
-
     renderLayout(rule, duplicate);
+
+    st.oc = bootstrap.Offcanvas.getOrCreateInstance(ocEl, { backdrop: true, keyboard: true, scroll: false });
+    ocEl.addEventListener('hide.bs.offcanvas', onHide);
+    ocEl.addEventListener('hidden.bs.offcanvas', onHidden);
+    window.addEventListener('hashchange', onRouteChange);
+    st.oc.show();
+}
+
+/** Backdrop click, Esc, the header X: close only once unsaved changes are confirmed. */
+function onHide(e) {
+    if (!st || st.closing || !st.dirty) return;
+    e.preventDefault();
+    confirmUnsaved().then(ok => {
+        if (!st) return;
+        if (ok) {
+            st.closing = true;
+            st.oc.hide();
+        } else {
+            // the confirm returned focus to <body>: give it back so Esc works again
+            st.container.focus();
+        }
+    });
+}
+
+function onHidden() {
+    teardown(true);
+}
+
+/** The route changed (the navigation guard already confirmed): drop the panel silently. */
+function onRouteChange() {
+    if (!st) return;
+    st.skipCallback = true;
+    st.closing = true;
+    st.oc.hide();
+}
+
+function teardown(runCallback) {
+    const s = st;
+    if (!s) return;
+    st = null;
+    window.removeEventListener('beforeunload', onBeforeUnload);
+    window.removeEventListener('hashchange', onRouteChange);
+    clearNavigationGuard();
+    s.oc?.dispose();
+    s.container.remove();
+    if (runCallback && !s.skipCallback) s.onClose?.();
 }
 
 /** Tabler modal confirm for discarding unsaved rule data (replaces window.confirm). */
@@ -88,13 +139,11 @@ function confirmUnsaved() {
 }
 
 async function close() {
-    if (st?.dirty && !(await confirmUnsaved())) return;
-    const cb = st?.onClose;
-    st = null;
-    window.removeEventListener('beforeunload', onBeforeUnload);
-    clearNavigationGuard();
-    setPageActions('');
-    cb?.();
+    if (!st) return;
+    if (st.dirty && !(await confirmUnsaved())) return;
+    if (!st) return;
+    st.closing = true;
+    st.oc.hide();
 }
 
 function onBeforeUnload(e) {
@@ -130,28 +179,31 @@ function titleFor(mode, isEdit) {
 function renderLayout(rule, duplicate) {
     const { container, mode, isEdit } = st;
     container.innerHTML = `
-        <div class="card">
-            <div class="card-header d-flex align-items-center">
-                <h3 class="card-title">${titleFor(mode, isEdit)}</h3>
-                <button class="btn btn-outline-primary btn-sm ms-auto" id="ed-open-entries" type="button">
-                    <i class="ti ti-box me-1"></i>${t('firewall.entries.title')}
-                </button>
-            </div>
-            <div class="card-body">
-                <div id="ed-form" class="row g-3">${formFields(rule)}</div>
-            </div>
-            <div class="card-footer d-flex justify-content-end gap-2">
-                <button class="btn btn-link" id="ed-cancel">${t('common.cancel')}</button>
-                <button class="btn btn-primary" id="ed-save">${t('common.save')}</button>
+        <div class="offcanvas-header border-bottom">
+            <h3 class="offcanvas-title" id="fw-editor-title">${titleFor(mode, isEdit)}</h3>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="${escapeHtml(t('common.cancel'))}"></button>
+        </div>
+        <div class="offcanvas-body">
+            <div class="row g-4">
+                <div class="col-lg-7">
+                    <div id="ed-form" class="row g-3">${formFields(rule)}</div>
+                    ${isEdit ? `
+                    <details class="mt-4" id="ed-preview">
+                        <summary class="text-muted"><i class="ti ti-terminal-2 me-1"></i>${t('firewall.preview.ruleLines')}</summary>
+                        <pre class="mt-2 mb-0 small" id="ed-preview-lines">…</pre>
+                    </details>` : ''}
+                </div>
+                <div class="col-lg-5 fw-editor-entries">
+                    <div class="text-uppercase text-muted small fw-bold mb-2">
+                        <i class="ti ti-box me-1"></i>${t('firewall.entries.title')}
+                    </div>
+                    <div id="ed-entries"></div>
+                </div>
             </div>
         </div>
-        <div class="offcanvas offcanvas-end" tabindex="-1" id="ed-entries-oc"
-             data-bs-backdrop="false" data-bs-scroll="true" aria-labelledby="ed-entries-title" style="width:380px">
-            <div class="offcanvas-header">
-                <h5 class="offcanvas-title" id="ed-entries-title">${t('firewall.entries.title')}</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
-            </div>
-            <div class="offcanvas-body" id="ed-entries"></div>
+        <div class="border-top p-3 d-flex justify-content-end gap-2">
+            <button class="btn btn-link" id="ed-cancel">${t('common.cancel')}</button>
+            <button class="btn btn-primary" id="ed-save">${t('common.save')}</button>
         </div>`;
 
     bindForm();
@@ -359,8 +411,8 @@ function bindForm() {
     form?.addEventListener('input', markDirty);
     form?.addEventListener('change', markDirty);
 
-    // Open the entries panel (also opened when an address field is focused).
-    container.querySelector('#ed-open-entries')?.addEventListener('click', openEntries);
+    // iptables lines of the rule being edited, loaded when first opened
+    container.querySelector('#ed-preview')?.addEventListener('toggle', loadRulePreview, { once: true });
 
     // Service preset -> protocol/port
     container.querySelector('#ed-preset')?.addEventListener('change', (e) => {
@@ -420,13 +472,19 @@ function setActive(field) {
     st.container.querySelectorAll('.fw-addr-field').forEach(el =>
         el.classList.toggle('border-primary', el.dataset.field === field));
     st.panel?.render();
-    openEntries();
 }
 
-/** Show the right-side entries offcanvas (backdrop-less, form stays usable). */
-function openEntries() {
-    const el = st?.container.querySelector('#ed-entries-oc');
-    if (el) bootstrap.Offcanvas.getOrCreateInstance(el).show();
+async function loadRulePreview() {
+    const pre = st?.container.querySelector('#ed-preview-lines');
+    if (!pre || !st.rule) return;
+    try {
+        const res = await apiGet(`/firewall/preview?rule_id=${encodeURIComponent(st.rule.id)}`);
+        pre.textContent = res.lines.length
+            ? res.lines.map(l => `*${l.table}  ${l.line}`).join('\n')
+            : t('firewall.preview.noLines');
+    } catch (err) {
+        pre.textContent = t('common.errorPrefix') + err.message;
+    }
 }
 
 /** Hide the port field when the protocol carries no port (all / ICMP). Also
@@ -652,7 +710,8 @@ async function save() {
             showToast(t('firewall.ruleCreated'), 'success');
         }
         st.dirty = false;
-        close();
+        st.closing = true;
+        st.oc.hide();
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
         return;
@@ -661,7 +720,7 @@ async function save() {
     // A newly-active DROP/REJECT policy blocks new connections, but
     // already-established ones keep flowing until conntrack is flushed —
     // offer to do it now (confirmDialog mounts on document.body, independent
-    // of the editor container close() just tore down).
+    // of the editor panel being closed).
     if (mode === 'policy' && data.enabled && (data.action === 'DROP' || data.action === 'REJECT')) {
         await terminateSessions({ id: saved.id, action: data.action });
     }
