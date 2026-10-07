@@ -542,7 +542,8 @@
             "duplicate": "Duplicate of #{n}",
             "duplicateHint": "Identical to rule #{n}, which is evaluated first: it can be deleted.",
             "redundant": "Covered by #{n}",
-            "redundantHint": "Rule #{n}, above, already takes the same decision on all of this rule's traffic."
+            "redundantHint": "Rule #{n}, above, already takes the same decision on all of this rule's traffic.",
+            "shadowedNatHint": "Rule #{n}, higher up, already accepts all of this rule's traffic with a different NAT (or none): the NAT set here is never applied. Move this rule above #{n} or narrow #{n}."
         },
         "sessions": {
             "willClose": "{n} connections that the {action} rule now blocks will be closed (it is the first rule to evaluate them):",

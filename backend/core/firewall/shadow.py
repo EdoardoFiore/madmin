@@ -19,6 +19,13 @@ TERMINAL = {"ACCEPT", "DROP", "REJECT"}
 NAT_TERMINAL = {"ACCEPT", "RETURN", "MASQUERADE", "SNAT"}
 
 
+def policy_nat_key(rule) -> tuple:
+    """The NAT an accepting filter rule applies: none, the interface address, an address, a pool."""
+    if rule.action != "ACCEPT" or not getattr(rule, "policy_nat", False):
+        return ("none",)
+    return ("nat", getattr(rule, "to_source", None), getattr(rule, "nat_pool_id", None))
+
+
 def nat_decision(rule) -> tuple:
     """What a nat/POSTROUTING rule decides: no NAT, or NAT to which address."""
     if rule.action in ("ACCEPT", "RETURN"):
@@ -102,8 +109,11 @@ def analyze(ordered: Sequence, nat: bool = False) -> Dict[str, dict]:
     """
     `ordered`: the rules of one filter chain (or, with nat=True, of
     nat/POSTROUTING) in evaluation order, enabled and disabled. Returns
-    {rule_id: {"by": id, "kind": "shadowed"|"duplicate"|"redundant"}} for every
-    enabled rule an earlier enabled terminal rule makes useless.
+    {rule_id: {"by": id, "kind": "shadowed"|"shadowed_nat"|"duplicate"|"redundant"}}
+    for every enabled rule an earlier enabled terminal rule makes useless.
+    shadowed_nat: both accept, but the earlier one with another NAT (or none):
+    the NAT configured on this rule is never applied, since a connection is
+    NATed by the policy that accepted it.
     """
     terminal = NAT_TERMINAL if nat else TERMINAL
     decision = nat_decision if nat else (lambda r: r.action)
@@ -116,6 +126,8 @@ def analyze(ordered: Sequence, nat: bool = False) -> Dict[str, dict]:
             if covers(prev, rule):
                 if decision(prev) != decision(rule):
                     kind = "shadowed"       # the opposite decision is taken above
+                elif not nat and policy_nat_key(prev) != policy_nat_key(rule):
+                    kind = "shadowed_nat"   # accepted above, with a different NAT
                 elif covers(rule, prev):
                     kind = "duplicate"
                 else:
