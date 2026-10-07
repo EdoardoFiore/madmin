@@ -20,7 +20,7 @@ import json
 from .models import (
     MachineFirewallRule, ModuleChain,
     AddressObject, AddressGroup, AddressGroupMember, FirewallRuleAddress,
-    RuleCounter, ForwardSection,
+    RuleCounter, ForwardSection, RuleTrafficSample,
 )
 from . import iptables, addresses
 from core.concurrency import resource_lock, spawn_background
@@ -1112,13 +1112,65 @@ class FirewallOrchestrator:
         subchains) — no window where chains are empty and traffic is
         unprotected. Raises IptablesError on failure; the previous ruleset
         stays in place.
+        """
+        chain_rules, subchain_map, rules, topo = await self.build_ruleset(session, side_effects=True)
 
+        # --- Stale pair subchains (pairs no longer in use): flushed and deleted
+        #     in the same restore transaction ---
+        stale = sorted(set(await asyncio.to_thread(iptables.list_forward_subchains)) - set(subchain_map))
+
+        # --- Capture durable counters before the flush zeroes them ---
+        # restore_all() below is `-F` + `:chain - [0:0]` on every MADMIN chain,
+        # which resets kernel packet/byte counters. Snapshot first so the
+        # counts accumulated since the last apply aren't lost, and rebaseline
+        # so the next read's delta is computed from a freshly-flushed kernel.
+        # Best-effort: counter bookkeeping must never break a firewall apply.
+        try:
+            await self.snapshot_counters(session, zero_baseline=True)
+        except Exception as e:
+            logger.warning(f"snapshot_counters failed before apply (non-fatal): {e}")
+
+        # --- Apply atomically: single iptables-restore across all tables ---
+        try:
+            iptables.restore_all(chain_rules, delete_chains={"filter": stale})
+        except iptables.IptablesError:
+            logger.error("Atomic firewall restore failed; previous ruleset left in place")
+            raise
+
+        # --- Rebuild parent-chain jump order for INPUT ---
+        # Ensures MADMIN_GW_EXCEPTS → MADMIN_GW_PROTECT → MADMIN_INPUT are wired
+        # in the correct order even when no module chain is registered for INPUT.
+        await self.rebuild_chain_jumps(session, "INPUT", "filter")
+
+        logger.info(
+            f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
+            f" ({len(subchain_map)} forward subchains, gateway protect: {len(topo['lan_interfaces'])} LAN interfaces)"
+        )
+        # Persist rules + ipsets so the fail-closed boot guard can restore a
+        # self-consistent last-good ruleset after a reboot. Best-effort, off
+        # the event loop. (Dynamic geo/fqdn sets may still be filling in via
+        # sync_referenced; that's fine — madmin always rebuilds from the DB on
+        # the next startup, this snapshot only covers the boot window.)
+        spawn_background(_save_rules(), "firewall-save")
+
+        return True
+
+    async def build_ruleset(self, session: AsyncSession, side_effects: bool = True):
+        """
+        The complete MADMIN ruleset in restore format, exactly what an apply
+        loads: ({table: {chain: [lines]}}, {forward subchain: [lines]}, rules
+        used, topology).
+
+        side_effects=False (preview) changes nothing: no gateway ipsets
+        rebuilt, no address sets created or filled, and the forward section
+        sync runs in a savepoint that is rolled back.
         Also rebuilds MADMIN_GW_PROTECT from current network topology (ipset-based
         cross-gateway isolation) and MADMIN_GW_EXCEPTS from DB rules.
         """
         # --- Gateway protection: resolve topology and rebuild ipsets ---
         topo = await self._get_interface_topology()
-        await self._rebuild_gateway_ipsets(topo["lan_interfaces"])
+        if side_effects:
+            await self._rebuild_gateway_ipsets(topo["lan_interfaces"])
 
         # --- Get all enabled DB rules ordered by chain and order ---
         result = await session.execute(
@@ -1137,8 +1189,9 @@ class FirewallOrchestrator:
         #    path in a worker thread (network for fqdn/geo), so create/update
         #    returns immediately; the set matches nothing until it finishes.
         eff_map, addr_plan = await self._build_address_plan(session, rules)
-        addresses.ensure_sets_exist(addr_plan)
-        spawn_background(_sync_address_sets(addr_plan), "firewall-address-sync")
+        if side_effects:
+            addresses.ensure_sets_exist(addr_plan)
+            spawn_background(_sync_address_sets(addr_plan), "firewall-address-sync")
 
         # DNAT targets that reference an address object resolve to a literal
         # ip[:port] here, once, for every consumer below (the DNAT restore
@@ -1243,7 +1296,14 @@ class FirewallOrchestrator:
 
         # --- FORWARD layout: one subchain per interface pair, in section order ---
         forward_rules = [r for r in rules if r.table_name == "filter" and r.chain == "FORWARD"]
-        section_order = await self.sync_forward_sections(session)
+        if side_effects:
+            section_order = await self.sync_forward_sections(session)
+        else:
+            savepoint = await session.begin_nested()
+            try:
+                section_order = await self.sync_forward_sections(session)
+            finally:
+                await savepoint.rollback()
 
         # Conntrack marks for policy-NAT scoping: assigned by apply-order
         # enumeration on every apply. Netfilter decides a connection's NAT on
@@ -1433,45 +1493,7 @@ class FirewallOrchestrator:
             f" -m comment --comment {IMPLICIT_DENY_COMMENT} -j DROP"
         )
 
-        # --- Stale pair subchains (pairs no longer in use): flushed and deleted
-        #     in the same restore transaction ---
-        stale = sorted(set(await asyncio.to_thread(iptables.list_forward_subchains)) - set(subchain_map))
-
-        # --- Capture durable counters before the flush zeroes them ---
-        # restore_all() below is `-F` + `:chain - [0:0]` on every MADMIN chain,
-        # which resets kernel packet/byte counters. Snapshot first so the
-        # counts accumulated since the last apply aren't lost, and rebaseline
-        # so the next read's delta is computed from a freshly-flushed kernel.
-        # Best-effort: counter bookkeeping must never break a firewall apply.
-        try:
-            await self.snapshot_counters(session, zero_baseline=True)
-        except Exception as e:
-            logger.warning(f"snapshot_counters failed before apply (non-fatal): {e}")
-
-        # --- Apply atomically: single iptables-restore across all tables ---
-        try:
-            iptables.restore_all(chain_rules, delete_chains={"filter": stale})
-        except iptables.IptablesError:
-            logger.error("Atomic firewall restore failed; previous ruleset left in place")
-            raise
-
-        # --- Rebuild parent-chain jump order for INPUT ---
-        # Ensures MADMIN_GW_EXCEPTS → MADMIN_GW_PROTECT → MADMIN_INPUT are wired
-        # in the correct order even when no module chain is registered for INPUT.
-        await self.rebuild_chain_jumps(session, "INPUT", "filter")
-
-        logger.info(
-            f"Atomically applied {len(rules)} firewall rules across {len(chain_rules)} tables"
-            f" ({len(subchain_map)} forward subchains, gateway protect: {len(topo['lan_interfaces'])} LAN interfaces)"
-        )
-        # Persist rules + ipsets so the fail-closed boot guard can restore a
-        # self-consistent last-good ruleset after a reboot. Best-effort, off
-        # the event loop. (Dynamic geo/fqdn sets may still be filling in via
-        # sync_referenced; that's fine — madmin always rebuilds from the DB on
-        # the next startup, this snapshot only covers the boot window.)
-        spawn_background(_save_rules(), "firewall-save")
-
-        return True
+        return chain_rules, subchain_map, rules, topo
 
     async def snapshot_counters(self, session: AsyncSession, zero_baseline: bool = False) -> None:
         """
@@ -1548,6 +1570,7 @@ class FirewallOrchestrator:
             # hits since the previous snapshot doesn't look freshly active.
             if delta_p or delta_b:
                 counter.updated_at = now
+                session.add(RuleTrafficSample(rule_id=rule_id, ts=now, packets=delta_p, bytes=delta_b))
 
         if zero_baseline:
             # The imminent restore_all() flush is about to zero every kernel

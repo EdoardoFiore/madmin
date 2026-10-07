@@ -702,3 +702,26 @@ tr.fw-drop-below > td {
 .fw-pair-header[draggable="true"]:active {
     cursor: grabbing;
 }
+
+/* Firewall rule editor: wide side panel, form + "Select Entries" side by side */
+.fw-editor-oc.offcanvas-end {
+    width: min(1100px, 96vw);
+}
+@media (min-width: 992px) {
+    .fw-editor-oc .fw-editor-entries {
+        border-left: 1px solid var(--tblr-border-color);
+    }
+}
+.fw-editor-oc #ed-preview-lines {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* Packet tracer: the rule it points to, highlighted in the list */
+@keyframes fw-row-flash {
+    0%, 60% { background-color: color-mix(in oklab, var(--tblr-primary) 18%, transparent); }
+    100% { background-color: transparent; }
+}
+tr.fw-row-flash > td {
+    animation: fw-row-flash 2.5s ease-out;
+}

@@ -8,13 +8,14 @@ import logging
 import subprocess
 from typing import List, Optional
 import json
+import re
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import SQLModel
 import uuid
-from pydantic import ValidationError
+from pydantic import ValidationError, field_validator
 
 from core.database import get_session
 from core.http import get_client_ip
@@ -23,7 +24,7 @@ from core.auth.dependencies import require_permission, get_current_user
 from core.auth.models import User
 from sqlalchemy import select, delete
 from sqlalchemy.exc import IntegrityError
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .models import (
     MachineFirewallRule,
@@ -32,7 +33,7 @@ from .models import (
     MachineFirewallRuleResponse,
     RuleOrderUpdate,
     RuleCounter,
-    RuleCounterResponse,
+    RuleCounterResponse, RuleTrafficSample,
     ForwardSection, ForwardSectionResponse,
     ModuleChainResponse,
     RuleAddressRefResponse,
@@ -792,6 +793,40 @@ async def list_rules(
     return responses
 
 
+@router.get("/preview")
+async def preview_ruleset(
+    rule_id: Optional[str] = None,
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    The ruleset an apply would load, in iptables-restore format, without
+    changing anything. With rule_id: only the lines of that rule, its
+    companions included (DNAT FORWARD accept, hairpin, policy-NAT mark and
+    masquerade), all tagged with its id.
+    """
+    from .iptables import _RESTORE_TABLE_ORDER
+    chain_rules, subchains, _rules, _topo = await firewall_orchestrator.build_ruleset(session, side_effects=False)
+    chain_rules["filter"].update(subchains)
+    lines = []
+    for table in _RESTORE_TABLE_ORDER:
+        for chain, body in chain_rules.get(table, {}).items():
+            for line in body:
+                lines.append({"table": table, "chain": chain, "line": line})
+    if rule_id:
+        lines = [x for x in lines if rule_id in x["line"]]
+    text_parts = []
+    for table in _RESTORE_TABLE_ORDER:
+        chains = chain_rules.get(table, {})
+        if not chains:
+            continue
+        text_parts.append(f"*{table}")
+        text_parts.extend(f":{c} - [0:0]" for c in chains)
+        text_parts.extend(x["line"] for x in lines if x["table"] == table)
+        text_parts.append("COMMIT")
+    return {"lines": lines, "text": "\n".join(text_parts) + "\n"}
+
+
 @router.get("/sections", response_model=List[ForwardSectionResponse])
 async def list_forward_sections(
     current_user: User = Depends(require_permission("firewall.view")),
@@ -847,6 +882,31 @@ async def update_forward_section_order(
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok"}
+
+
+@router.get("/counters/history")
+async def get_rule_traffic_history(
+    hours: int = Query(24, ge=1, le=168),
+    buckets: int = Query(24, ge=4, le=96),
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Bytes per rule over the last `hours`, in `buckets` equal slots (oldest
+    first), for the sparklines. Rules without traffic in the window are left out.
+    """
+    since = datetime.utcnow() - timedelta(hours=hours)
+    rows = (await session.execute(
+        select(RuleTrafficSample.rule_id, RuleTrafficSample.ts, RuleTrafficSample.bytes)
+        .where(RuleTrafficSample.ts >= since)
+    )).all()
+    width = hours * 3600 / buckets
+    out: dict = {}
+    for rule_id, ts, nbytes in rows:
+        idx = min(buckets - 1, int((ts - since).total_seconds() // width))
+        series = out.setdefault(str(rule_id), [0] * buckets)
+        series[idx] += nbytes
+    return {"hours": hours, "buckets": buckets, "series": out}
 
 
 @router.get("/counters", response_model=List[RuleCounterResponse])
@@ -1047,9 +1107,9 @@ class FlushRequest(SQLModel):
     dry_run: bool = True
 
 
-async def _rule_views(session: AsyncSession, chain: str) -> List[flowmatch.RuleView]:
+async def _rule_views(session: AsyncSession, chain: str, table: str = "filter") -> List[flowmatch.RuleView]:
     """
-    Enabled filter rules of `chain` in evaluation order (FORWARD: groups in
+    Enabled rules of `table`/`chain` in evaluation order (filter FORWARD: groups in
     ForwardSection order, then rule order), with address refs resolved to
     networks. An FQDN object never resolved, or a country list not on disk,
     makes that side "unknown": the matcher then keeps the connection.
@@ -1060,12 +1120,12 @@ async def _rule_views(session: AsyncSession, chain: str) -> List[flowmatch.RuleV
 
     rules = (await session.execute(
         select(MachineFirewallRule).where(
-            MachineFirewallRule.table_name == "filter",
+            MachineFirewallRule.table_name == table,
             MachineFirewallRule.chain == chain,
             MachineFirewallRule.enabled == True,  # noqa: E712
         ).order_by(MachineFirewallRule.order)
     )).scalars().all()
-    if chain == "FORWARD":
+    if table == "filter" and chain == "FORWARD":
         sections = (await session.execute(select(ForwardSection))).scalars().all()
         pos = {(x.in_interface, x.out_interface): x.position for x in sections}
         rules = sorted(rules, key=lambda r: (pos.get(section_key(r), len(pos)), r.order))
@@ -1117,6 +1177,152 @@ async def _rule_views(session: AsyncSession, chain: str) -> List[flowmatch.RuleV
             src=src, dst=dst, state=r.state, limited=bool(r.limit_rate),
         ))
     return views
+
+
+class TraceRequest(SQLModel):
+    protocol: str = "tcp"            # tcp | udp | icmp | protocol number
+    source: str
+    destination: str
+    dport: Optional[int] = None
+    in_interface: Optional[str] = None
+    out_interface: Optional[str] = None
+
+    @field_validator("protocol")
+    @classmethod
+    def _proto(cls, v):
+        v = (v or "").lower()
+        if not re.fullmatch(r"tcp|udp|icmp|\d{1,3}", v):
+            raise ValueError("Protocollo non valido")
+        return v
+
+    @field_validator("source", "destination")
+    @classmethod
+    def _ip(cls, v):
+        import ipaddress
+        try:
+            return str(ipaddress.IPv4Address(v.strip()))
+        except ValueError:
+            raise ValueError(f"Indirizzo IPv4 non valido: {v}")
+
+    @field_validator("dport")
+    @classmethod
+    def _port(cls, v):
+        if v is not None and not 1 <= v <= 65535:
+            raise ValueError("Porta non valida")
+        return v
+
+    @field_validator("in_interface", "out_interface")
+    @classmethod
+    def _iface(cls, v):
+        if v in (None, ""):
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9._@-]{1,15}", v):
+            raise ValueError(f"Interfaccia non valida: {v}")
+        return v
+
+
+async def _seq_map(session: AsyncSession, chain: str) -> dict:
+    """rule id -> 1-based position in evaluation order (as in GET /rules)."""
+    from .orchestrator import section_key
+    rules = (await session.execute(
+        select(MachineFirewallRule).where(
+            MachineFirewallRule.table_name == "filter", MachineFirewallRule.chain == chain,
+        )
+    )).scalars().all()
+    if chain == "FORWARD":
+        sections = (await session.execute(select(ForwardSection))).scalars().all()
+        pos = {(x.in_interface, x.out_interface): x.position for x in sections}
+        rules.sort(key=lambda r: (pos.get(section_key(r), len(pos)), r.order))
+    else:
+        rules.sort(key=lambda r: r.order)
+    return {str(r.id): i for i, r in enumerate(rules, start=1)}
+
+
+@router.post("/trace")
+async def trace_packet(
+    data: TraceRequest,
+    current_user: User = Depends(require_permission("firewall.view")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Which rule decides a packet (the first one of a new connection)?
+
+    Simulates the MADMIN rules in engine order: port forwards (nat PREROUTING
+    DNAT) rewrite the destination first, then INPUT (to this machine) or
+    FORWARD. Interfaces not given are inferred from the routing table.
+    Module chains (VPN, IPsec, DNS) run before MADMIN's and are not simulated.
+    """
+    import ipaddress
+    try:
+        topo = await asyncio.to_thread(flowmatch.Topology.from_system) if not settings.mock_iptables else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        topo = None
+    routes = []
+    if data.in_interface:
+        routes.append((ipaddress.ip_network(f"{data.source}/32"), data.in_interface))
+    if topo is None:
+        topo = flowmatch.Topology([], set(), None)
+    notes = []
+
+    def flow_for(dst, reply_src):
+        return flowmatch.Flow(proto=data.protocol, src=data.source, dst=dst, sport=None,
+                              dport=data.dport, reply_src=reply_src)
+
+    # 1. Port forwards: first matching DNAT rewrites the destination
+    dnat = None
+    pre_topo = flowmatch.Topology(routes + topo.routes, topo.local_ips, topo.default_dev)
+    targets = await firewall_orchestrator.resolve_dnat_targets(
+        session, await firewall_orchestrator.get_enabled_dnat_rules(session))
+    for view in await _rule_views(session, "PREROUTING", table="nat"):
+        if view.action not in ("DNAT", "REDIRECT"):
+            continue
+        m = flowmatch.match(view, flow_for(data.destination, data.destination), "PREROUTING", pre_topo)
+        if m is None:
+            notes.append("uncertain_dnat")
+            break
+        if m:
+            to = targets.get(uuid.UUID(view.id)) if view.action == "DNAT" else None
+            dnat = {"rule_id": view.id, "action": view.action, "to": to}
+            break
+    # After a DNAT, FORWARD sees the internal target as destination
+    reply_src = dnat["to"].split(":")[0] if dnat and dnat.get("to") else data.destination
+
+    # 2. Chain: to this machine (not forwarded elsewhere) or through it
+    flow = flow_for(data.destination, reply_src)
+    if data.out_interface:
+        routes.append((ipaddress.ip_network(f"{reply_src}/32"), data.out_interface))
+    ttopo = flowmatch.Topology(routes + topo.routes, topo.local_ips, topo.default_dev)
+    # REDIRECT always delivers to this machine, whatever the original destination
+    chain = "INPUT" if dnat and dnat["action"] == "REDIRECT" else flowmatch.chain_of(flow, ttopo)
+    if not topo.local_ips:
+        notes.append("no_topology")
+
+    # 3. Rules in order: the first terminal match decides
+    seq = await _seq_map(session, chain)
+    steps = []
+    decision = None
+    for view in await _rule_views(session, chain):
+        m = flowmatch.match(view, flow, chain, ttopo)
+        steps.append({"rule_id": view.id, "seq": seq.get(view.id), "action": view.action,
+                      "result": "match" if m else ("unknown" if m is None else "no")})
+        if m is None and view.action in flowmatch.TERMINAL:
+            notes.append("uncertain_rule")
+        if m and view.action in flowmatch.TERMINAL and not view.limited:
+            decision = {"rule_id": view.id, "seq": seq.get(view.id), "action": view.action}
+            break
+    if decision is None:
+        if chain == "FORWARD" and dnat and dnat["action"] == "DNAT":
+            decision = {"auto": "dnat_companion", "action": "ACCEPT"}
+        elif chain == "FORWARD":
+            decision = {"auto": "implicit_deny", "action": "DROP"}
+        else:
+            decision = {"auto": "chain_policy", "action": "ACCEPT"}
+    return {
+        "chain": chain,
+        "in_interface": ttopo.dev_for(data.source),
+        "out_interface": ttopo.dev_for(reply_src) if chain == "FORWARD" else None,
+        "dnat": dnat, "steps": steps, "decision": decision, "notes": sorted(set(notes)),
+    }
 
 
 @router.post("/rules/{rule_id}/flush-conntrack")
