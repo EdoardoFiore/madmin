@@ -16,12 +16,13 @@
  * literal with no refs uses the rule's source/destination column; otherwise each
  * literal is materialised as an address object and everything goes through refs.
  */
-import { apiGet, apiPost, apiPatch } from '../../api.js';
+import { apiGet, apiPost, apiPatch, apiDelete } from '../../api.js';
 import { showToast, escapeHtml, confirmDialog } from '../../utils.js';
 import { checkPermission, setNavigationGuard, clearNavigationGuard } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces, interfaceSelect, cachedInterfaces, natSourceOptions, natSourceValue, natSourcePayload } from './interfaces.js';
-import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions, natChanged } from './shared.js';
+import { SERVICE_PRESETS, validateRuleConstraints, isLockedForMode, terminateSessions, closeRevokedSessions,
+    natChanged } from './shared.js';
 import { createEntriesPanel } from './entries-panel.js';
 
 let st = null;   // editor state
@@ -331,11 +332,16 @@ function formFields(rule) {
         // a DNAT rewrite target or a plain -d match on the companions.
         const intObjOptions = (st.objects || [])
             .filter(o => o.enabled && o.type === 'cidr' && o.value.endsWith('/32'));
+        // A new forward starts on the WAN: without an incoming interface or
+        // an external IP it would also rewrite the LAN's traffic to the Internet
+        const inIf = rule ? (rule.in_interface || '')
+            : (cachedInterfaces().find(i => i.default_route)?.name || '');
         return `
             ${nameHtml(rule)}
             <div class="col-md-6">
                 <label class="form-label">${t('firewall.inInterface')}</label>
-                ${interfaceSelect('ed-in', rule?.in_interface || '')}
+                ${interfaceSelect('ed-in', inIf)}
+                <small class="form-hint">${t('firewall.editor.pfScopeHint')}</small>
             </div>
             <div class="col-md-3">
                 <label class="form-label">${t('firewall.protocol')}</label>
@@ -575,27 +581,66 @@ function chip(c, inner) {
 // Save
 // ---------------------------------------------------------------------------
 
-/** Resolve a direction to { literal, refs[] }, creating objects for literals when needed. */
-async function resolveDirection(field) {
+/** Kind of a typed address: 'cidr' (an IP or IP/prefix), 'range' (a-b) or null. */
+function literalKind(value) {
+    const range = value.split('-');
+    if (range.length === 2) {
+        return IPV4_RE.test(range[0].trim()) && IPV4_RE.test(range[1].trim()) ? 'range' : null;
+    }
+    const [ip, prefix, extra] = value.split('/');
+    if (extra !== undefined || !IPV4_RE.test(ip)) return null;
+    if (prefix !== undefined && !(/^\d{1,2}$/.test(prefix) && Number(prefix) <= 32)) return null;
+    return 'cidr';
+}
+
+/** The first typed address that is not an IPv4 address, CIDR or range, or null. */
+function invalidLiteral() {
+    for (const field of ['source', 'destination']) {
+        const bad = st.fields[field].literals.find(v => !literalKind(v));
+        if (bad !== undefined) return bad;
+    }
+    return null;
+}
+
+/**
+ * Resolve a direction to { literal, refs[] }. A single IP/CIDR with no refs
+ * uses the rule's own column; anything else goes through address objects,
+ * reusing an enabled one with the same value or creating it. Objects created
+ * here are recorded in `created` so a failed save can remove them.
+ */
+async function resolveDirection(field, created) {
     const stf = st.fields[field];
     const refs = [...stf.refs].map(c => {
         const [k, id] = c.split(':');
         return k === 'obj' ? { object_id: id } : { group_id: id };
     });
-    if (refs.length === 0 && stf.literals.length <= 1) {
+    if (refs.length === 0 && stf.literals.length <= 1
+            && (!stf.literals.length || literalKind(stf.literals[0]) === 'cidr')) {
         return { literal: stf.literals[0] || null, refs: [] };
     }
-    // Materialise each literal as an address object (reuse by value when possible).
     for (const value of stf.literals) {
-        let obj = st.objects.find(o => o.value === value);
+        const type = literalKind(value);
+        // the backend stores a host as /32
+        const norm = type === 'cidr' && !value.includes('/') ? `${value}/32` : value;
+        let obj = st.objects.find(o => o.enabled && o.type === type && (o.value === value || o.value === norm));
         if (!obj) {
-            const type = value.includes('-') ? 'range' : 'cidr';
             obj = await apiPost('/firewall/addresses', { name: value, type, value });
             st.objects.push(obj);
+            created.push(obj);
         }
         refs.push({ object_id: obj.id });
     }
     return { literal: null, refs };
+}
+
+/** Remove the address objects a failed save created (best effort). */
+async function dropCreated(s, created) {
+    for (const obj of created) {
+        try {
+            await apiDelete(`/firewall/addresses/${obj.id}`);
+            s.objects = s.objects.filter(o => o.id !== obj.id);
+        } catch { /* left in place: visible under Objects */ }
+    }
 }
 
 async function save() {
@@ -662,24 +707,39 @@ async function save() {
             hairpin: container.querySelector('#ed-hairpin')?.checked || false,
             enabled,
         };
+        if (!plain.port) { showToast(t('firewall.editor.extPortRequired'), 'error'); return; }
+        // Neither an incoming interface nor an external IP: the DNAT would
+        // also take the LAN's own traffic to the Internet on that port
+        const dstField = st.fields.destination;
+        if (!plain.in_interface && !dstField.refs.size && !dstField.literals.length) {
+            showToast(t('firewall.editor.pfScopeRequired'), 'error');
+            return;
+        }
     }
 
     const constraintError = validateRuleConstraints(plain);
     if (constraintError) { showToast(constraintError, 'error'); return; }
+    const badLiteral = invalidLiteral();
+    if (badLiteral !== null) {
+        showToast(t('firewall.editor.invalidAddr', { value: badLiteral }), 'error');
+        return;
+    }
 
     // Phase 2: resolve address chips (may create address objects — only
     // reached once every other field has already passed validation). Every
     // mode carries both directions.
     let data;
+    const created = [];
     try {
-        const src = await resolveDirection('source');
-        const dst = await resolveDirection('destination');
+        const src = await resolveDirection('source', created);
+        const dst = await resolveDirection('destination', created);
         data = {
             ...plain,
             source: src.literal, source_refs: src.refs,
             destination: dst.literal, destination_refs: dst.refs,
         };
     } catch (err) {
+        await dropCreated(st0, created);
         showToast(t('common.errorPrefix') + err.message, 'error');
         return;
     }
@@ -698,10 +758,19 @@ async function save() {
         st.closing = true;
         st.oc.hide();
     } catch (err) {
+        // the rule was rejected: the objects made for its typed addresses go too
+        await dropCreated(st0, created);
         showToast(t('common.errorPrefix') + err.message, 'error');
         return;
     }
 
+    // An enabled ACCEPT policy disabled or narrowed: its open connections that
+    // no rule accepts any more keep flowing through ESTABLISHED — offer to
+    // close them (silent when there are none). Before the checks below, which
+    // look at the connections this policy still decides.
+    if (mode === 'policy' && st0.rule) {
+        await closeRevokedSessions(st0.rule);
+    }
     // A newly-active DROP/REJECT policy blocks new connections, but
     // already-established ones keep flowing until conntrack is flushed —
     // offer to do it now (confirmDialog mounts on document.body, independent

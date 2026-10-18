@@ -15,7 +15,8 @@ import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { loadInterfaces } from './interfaces.js';
 import { serviceLabel, isAutoRow, isManagedNat, isLockedForMode, hasAdvancedMatch, counterRuleId,
-    pairKey, pairsOverlap, groupBySections, terminateSessions, shadowBadge, natBadge } from './shared.js';
+    pairKey, pairsOverlap, groupBySections, terminateSessions, closeRevokedSessions, shadowBadge, natBadge,
+    portForwardWarnings } from './shared.js';
 import { openEditor } from './editor.js';
 
 let rules = [];
@@ -134,7 +135,7 @@ function counterIcon(r) {
         <span class="fw-spark ms-1" data-rule-id="${escapeHtml(cid)}"></span></span>`;
 }
 
-/** Open the editor in-place, returning to this view on close. */
+/** Open the editor side panel; the view re-renders when it closes. */
 function edit(mode, rule, duplicate = false) {
     openEditor({
         container: containerEl,
@@ -193,12 +194,11 @@ function advancedNatNotice() {
 
 /** Read-only block for the engine-generated FORWARD companions (a port
  * forward's ACCEPT toward the translated destination, plus the LAN-side
- * hairpin ACCEPT). apply_rules appends these AFTER every user policy and
- * before the implicit deny (orchestrator.apply_rules), which is why a user
- * DROP placed above can silently kill a port forward. Rendering them in that
- * exact position is what makes the ordering visible instead of surprising —
- * without it the Standard view reads as "policies, then deny" and the cause
- * of a dead forward is only findable in the Advanced view. */
+ * hairpin ACCEPT). build_ruleset appends these AFTER every user policy and
+ * before the implicit deny, so a user DROP placed above can kill a port
+ * forward. They are rendered in that exact position, and a companion a policy
+ * always blocks carries the shadow badge (its port forward the "blocked by #n"
+ * one, see router._annotate_blocked_forwards). */
 function renderAutoForward() {
     const list = rules.filter(r => r.table_name === 'filter' && r.chain === 'FORWARD'
         && isAutoRow(r) && r.id !== 'auto-implicit-deny');
@@ -242,7 +242,7 @@ function autoForwardRow(r, hint) {
             <td>${renderAddrCell(r.source, r.source_refs)}</td>
             <td>${renderAddrCell(r.destination, r.destination_refs)}</td>
             <td><span class="text-muted">${serviceLabel(r)}</span></td>
-            <td>${actionBadge(r.action)}</td>
+            <td class="text-nowrap">${actionBadge(r.action)}${shadowBadge(r)}</td>
             <td><span class="text-muted">${r.comment ? escapeHtml(r.comment) : '—'}</span></td>
             <td>${counterIcon(r)}</td>
         </tr>`;
@@ -472,7 +472,7 @@ function renderPortForward() {
                                 <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
-                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}</td>
+                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}${portForwardWarnings(r)}</td>
                                 <td>${internalTargetCell(r)} ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
                                 <td>${counterIcon(r)}</td>
                                 <td>${enableToggle(r, canManage)}</td>
@@ -507,6 +507,10 @@ function bindRowActions(wrap, mode) {
             // flushed — offer to do it now (only makes sense on enable).
             if (mode === 'policy' && enabled && ['DROP', 'REJECT'].includes(r.action)) {
                 await terminateSessions(r);
+            } else if (mode === 'policy' && !enabled) {
+                // A disabled ACCEPT stops new connections only: offer to close
+                // the open ones no other rule accepts any more
+                await closeRevokedSessions(r);
             }
         } catch (err) {
             e.target.checked = !enabled;
@@ -546,6 +550,7 @@ function bindRowActions(wrap, mode) {
             await apiDelete(`/firewall/rules/${r.id}`);
             showToast(t('firewall.ruleDeleted'), 'success');
             await reload();
+            if (mode === 'policy') await closeRevokedSessions(r);
         } catch (err) {
             showToast(t('common.errorPrefix') + err.message, 'error');
         }
@@ -628,12 +633,11 @@ function setupDragDrop(tbody) {
 }
 
 /**
- * Section (interface-pair group) reordering. Dropping a section renumbers ALL
- * forward policies flat — sections in the new visual order, rules keeping
- * their relative order within each section — so the engine's first-seen
- * grouping (and jump precedence in MADMIN_FORWARD) follows the UI exactly.
- * E.g. drag the "any → eth0" section below specific pairs to give those
- * precedence.
+ * Section (interface-pair group) reordering. Dropping a section sends the new
+ * group sequence to PUT /firewall/sections/order (ForwardSection.position):
+ * the MADMIN_FORWARD jumps follow it, rule order inside each group is left
+ * untouched. E.g. drag the "any → eth0" section below specific pairs to give
+ * those precedence.
  */
 function setupSectionDrag(wrap) {
     let dragged = null;

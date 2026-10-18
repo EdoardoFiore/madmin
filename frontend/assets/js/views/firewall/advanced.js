@@ -10,7 +10,7 @@ import { showToast, confirmDialog, actionBadge, emptyState, escapeHtml } from '.
 import { setPageActions, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 import { buildAddressPicker } from './addresses.js';
-import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, shadowBadge, natBadge,
+import { MANAGED_NAT_SENTINEL, validateRuleConstraints, groupBySections, terminateSessions, closeRevokedSessions, shadowBadge, natBadge, portForwardWarnings,
     natChanged } from './shared.js';
 import { loadInterfaces, natSourceOptions, natSourcePayload } from './interfaces.js';
 
@@ -1105,7 +1105,7 @@ function renderRuleRow(rule, orderedColumns) {
                 <td class="rule-order">
                     <span class="text-muted"><i class="ti ti-lock"></i></span>
                 </td>
-                <td>${actionBadge(rule.action)} <span class="badge bg-azure-lt" title="${t('firewall.autoRuleHint')}">${t('firewall.autoRule')}</span></td>
+                <td>${actionBadge(rule.action)} <span class="badge bg-azure-lt" title="${t('firewall.autoRuleHint')}">${t('firewall.autoRule')}</span>${shadowBadge(rule)}</td>
                 ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
                 <td class="rule-actions"></td>
             </tr>
@@ -1134,7 +1134,7 @@ function renderRuleRow(rule, orderedColumns) {
                     <span>${rule.seq ?? rule.order + 1}</span>
                 </div>
             </td>
-            <td class="text-nowrap">${actionBadge(rule.action)}${shadowBadge(rule)}</td>
+            <td class="text-nowrap">${actionBadge(rule.action)}${shadowBadge(rule)}${portForwardWarnings(rule)}</td>
             ${columns.map(col => `<td>${renderCell(rule, col)}</td>`).join('')}
             <td class="rule-actions">
                 ${canManage ? `
@@ -1601,6 +1601,9 @@ async function handleRuleSubmit(e) {
         showToast(t('common.errorPrefix') + error.message, 'error');
         return;
     }
+    // An enabled ACCEPT disabled or narrowed: offer to close the open
+    // connections no rule accepts any more (silent when there are none)
+    if (before) await closeRevokedSessions(before);
     // NAT is decided on a connection's first packet: open ones keep the old address
     if (before && data.enabled && data.action === 'ACCEPT' && table_name === 'filter' && chain === 'FORWARD'
             && natChanged(before, data)) {
@@ -1612,13 +1615,17 @@ async function handleRuleSubmit(e) {
  * Delete a rule
  */
 async function deleteRule(ruleId) {
+    const before = rules.find(r => r.id === ruleId);
     try {
         await apiDelete(`/firewall/rules/${ruleId}`);
         showToast(t('firewall.ruleDeleted'), 'success');
         await loadRules();
     } catch (error) {
         showToast(t('common.errorPrefix') + error.message, 'error');
+        return;
     }
+    // A deleted ACCEPT stops new connections only
+    await closeRevokedSessions(before);
 }
 
 

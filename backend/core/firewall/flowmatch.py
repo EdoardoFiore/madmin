@@ -250,6 +250,67 @@ def select_flows(
     return out
 
 
+def select_revoked(
+    flows: Iterable[Flow],
+    former: RuleView,
+    chain: str,
+    ordered: Sequence[RuleView],
+    topo: Topology,
+    protect_ips: Set[str],
+) -> Dict[str, list]:
+    """
+    After an ACCEPT rule was disabled, deleted or narrowed: the tracked
+    connections its former match covered that the rules as they are now would
+    no longer accept. They keep flowing only through the ESTABLISHED accept.
+
+    `former` = the rule's match before the change; `ordered` = the enabled
+    rules of `chain` now, in evaluation order. A connection is closed when the
+    first deciding rule is a DROP/REJECT, or when none decides in FORWARD (the
+    implicit deny). Kept: those another rule still accepts, those INPUT's
+    chain policy accepts, a DNATed connection nothing decides (the port
+    forward's own accept may take it), anything uncertain, and the requesting
+    client's connections.
+    """
+    out = {"close": [], "kept": [], "uncertain": [], "protected": []}
+    for flow in flows:
+        if chain_of(flow, topo) != chain:
+            continue
+        m = match(former, flow, chain, topo)
+        if m is None:
+            out["uncertain"].append(flow)
+        if m is not True:
+            continue
+        if flow.src in protect_ips or flow.dst in protect_ips or flow.reply_src in protect_ips:
+            out["protected"].append(flow)
+            continue
+        decision = None
+        for rule in ordered:
+            if rule.action not in TERMINAL:
+                continue
+            r = match(rule, flow, chain, topo)
+            if r is False:
+                continue
+            if r is None or (rule.action == "ACCEPT" and rule.limited):
+                decision = "uncertain"
+            else:
+                decision = rule.action
+            break
+        if decision is None:
+            if chain == "FORWARD" and not flow.dnat:
+                decision = "DROP"           # the implicit deny
+            elif chain == "FORWARD":
+                decision = "uncertain"      # the port forward's accept may take it
+            else:
+                decision = "ACCEPT"         # INPUT: chain policy
+        if decision == "ACCEPT":
+            out["kept"].append(flow)
+        elif decision == "uncertain":
+            out["uncertain"].append(flow)
+        else:
+            out["close"].append(flow)
+    return out
+
+
 def delete_flow(flow: Flow) -> bool:
     """Delete exactly one conntrack entry by its original tuple."""
     args = ["conntrack", "-D", "-f", "ipv4", "-s", flow.src, "-d", flow.dst]

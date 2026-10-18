@@ -382,7 +382,11 @@
             "counterTitle": "Traffico policy",
             "counterFirstUsed": "Primo utilizzo",
             "counterLastUsed": "Ultimo utilizzo",
-            "counterNone": "Nessun traffico registrato"
+            "counterNone": "Nessun traffico registrato",
+            "pfBlocked": "Bloccato da #{n}",
+            "pfBlockedHint": "La policy #{n} blocca tutto il traffico di questo port forwarding prima che venga accettato: il port forwarding non funziona. Spostarla, restringerla o aggiungere sopra una policy che accetti questo traffico.",
+            "pfUnscoped": "Senza interfaccia né IP esterno",
+            "pfUnscopedHint": "Senza interfaccia di ingresso né IP esterno questa regola intercetta anche il traffico dei client LAN verso Internet sulla stessa porta. Indicare l'interfaccia WAN o l'IP esterno."
         },
         "editor": {
             "anyInterface": "qualsiasi",
@@ -411,7 +415,11 @@
             "extIpHint": "Vuoto = tutti gli IP dell'interfaccia. Specifica l'IP pubblico a cui legare il forward (utile con più IP sulla WAN).",
             "unsavedBody": "Ci sono modifiche non salvate. Uscire senza salvare?",
             "unsavedTitle": "Modifiche non salvate",
-            "leaveAnyway": "Esci senza salvare"
+            "leaveAnyway": "Esci senza salvare",
+            "pfScopeHint": "Il traffico in arrivo da questa interfaccia viene inoltrato. Senza interfaccia serve l'IP esterno.",
+            "pfScopeRequired": "Indicare l'interfaccia di ingresso o l'IP esterno: senza, il port forwarding intercetterebbe anche il traffico dei client LAN verso Internet su quella porta.",
+            "extPortRequired": "Indicare la porta esterna.",
+            "invalidAddr": "Indirizzo non valido: {value}. Usare un IPv4, una subnet CIDR o un intervallo (es. 10.0.0.1-10.0.0.20)."
         },
         "entries": {
             "title": "Seleziona voci",
@@ -552,7 +560,10 @@
             "keptUncertain": "{n} connessioni restano attive: non è certo che questa regola le blocchi (oggetti non risolti o interfacce non determinabili).",
             "keptProtected": "{n} connessioni del tuo client restano attive.",
             "natTitle": "Applicare il nuovo NAT?",
-            "natWillClose": "Ci sono {n} connessioni aperte da questa policy: usano ancora il NAT precedente, perché il NAT si decide sul primo pacchetto. Chiuderle ora? I client le riapriranno con il nuovo indirizzo."
+            "natWillClose": "Ci sono {n} connessioni aperte da questa policy: usano ancora il NAT precedente, perché il NAT si decide sul primo pacchetto. Chiuderle ora? I client le riapriranno con il nuovo indirizzo.",
+            "revokedTitle": "Chiudere le connessioni non più consentite?",
+            "revokedWillClose": "{n} connessioni aperte erano consentite da questa regola e nessuna regola le accetta più: proseguono solo perché già stabilite. Chiuderle ora?",
+            "keptAccepted": "{n} restano aperte perché un'altra regola le accetta."
         },
         "terminateSessionsTitle": "Termina connessioni esistenti",
         "terminateSessionsDesc": "Verranno terminate immediatamente tutte le sessioni attive che corrispondono a questa regola {action}. Questa operazione è utile principalmente per regole appena create o riposizionate, per forzare il re-evaluation del traffico già stabilito.",

@@ -559,6 +559,14 @@ class MachineFirewallRuleResponse(SQLModel):
     # policy's traffic differently: the policy's NAT never applies
     nat_overridden_by: Optional[str] = None
     nat_overridden_by_seq: Optional[int] = None
+    # port forward (nat/PREROUTING DNAT|REDIRECT) with neither an incoming
+    # interface nor an external address: it also rewrites transit traffic.
+    # The API rejects new ones; a restored archive can still carry one.
+    pf_unscoped: bool = False
+    # port forward whose FORWARD accept (appended after every policy) is always
+    # decided first by this DROP/REJECT policy: the forward never works
+    forward_blocked_by: Optional[str] = None
+    forward_blocked_by_seq: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

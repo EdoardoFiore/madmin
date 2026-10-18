@@ -103,6 +103,23 @@ _DUP_CHECK_FIELDS = {
     "source", "destination", "source_refs", "destination_refs", "enabled",
 }
 
+# Fields the port-forward scope check depends on (enabled included: re-enabling
+# an unscoped legacy rule must not bring it back)
+_SCOPE_CHECK_FIELDS = {
+    "table_name", "chain", "action", "in_interface", "destination", "destination_refs", "enabled",
+}
+
+
+def port_forward_scoped(in_interface: Optional[str], destination: Optional[str],
+                        has_destination_refs: bool) -> bool:
+    """
+    A nat/PREROUTING DNAT|REDIRECT matches every packet entering the machine
+    on its port, forwarded ones included: with neither an incoming interface
+    nor an external address it rewrites the LAN clients' own traffic toward
+    the Internet (a 443 forward takes over their HTTPS browsing).
+    """
+    return bool(in_interface or destination or has_destination_refs)
+
 
 async def _validate_rule_payload(
     session: AsyncSession,
@@ -226,6 +243,17 @@ async def _validate_rule_payload(
         raise HTTPException(
             status_code=400,
             detail="hairpin è disponibile solo su regole DNAT in nat/PREROUTING con destinazione interna."
+        )
+
+    if (table == "nat" and chain == "PREROUTING" and action in ("DNAT", "REDIRECT")
+            and rule.get("enabled", True)
+            and (touched is None or _SCOPE_CHECK_FIELDS & touched)
+            and not port_forward_scoped(rule.get("in_interface"), rule.get("destination"), has_destination_refs)):
+        raise HTTPException(
+            status_code=400,
+            detail="Un port forwarding richiede l'interfaccia di ingresso o l'IP esterno: senza, "
+                   "intercetta anche il traffico in transito verso Internet su quella porta "
+                   "(es. la navigazione HTTPS dei client LAN)."
         )
 
     if (table == "nat" and chain == "PREROUTING" and action in ("DNAT", "REDIRECT")
@@ -835,6 +863,37 @@ async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses)
             resp.shadow_kind = info["kind"]
 
 
+def _annotate_blocked_forwards(responses) -> None:
+    """
+    The FORWARD accepts of the port forwards (and of their hairpin) come after
+    every policy: a DROP/REJECT policy matching all of a companion's traffic
+    decides it first and the forward never works. Flag the companion row and,
+    for the main companion, the port forward itself. Same conservative
+    coverage as the shadow analysis: an earlier ACCEPT covering it, or a
+    policy that only partly overlaps it, is not reported.
+    """
+    from . import shadow
+    policies = sorted(
+        (r for r in responses if r.table_name == "filter" and r.chain == "FORWARD"
+         and not r.auto_generated and r.enabled and r.seq is not None),
+        key=lambda r: r.seq,
+    )
+    by_id = {r.id: r for r in responses}
+    for comp in responses:
+        if not (comp.auto_generated and comp.chain == "FORWARD"
+                and comp.id.startswith(("auto-dnat-", "auto-hairpin-fwd-"))):
+            continue
+        for policy in policies:
+            if policy.action not in shadow.TERMINAL or not shadow.covers(policy, comp):
+                continue
+            if policy.action != "ACCEPT":
+                comp.shadowed_by, comp.shadowed_by_seq, comp.shadow_kind = policy.id, policy.seq, "shadowed"
+                owner = by_id.get(comp.id[-36:]) if comp.id.startswith("auto-dnat-") else None
+                if owner is not None:
+                    owner.forward_blocked_by, owner.forward_blocked_by_seq = policy.id, policy.seq
+            break
+
+
 def _policy_nat_decision(resp) -> tuple:
     """A policy's NAT in shadow.nat_decision's terms (comparable to an SNAT rule)."""
     if resp.to_source or resp.nat_pool_id:
@@ -921,6 +980,11 @@ async def list_rules(
             _auto_hairpin_forward_response(d, hairpin_fwd_targets.get(d.id)) for d in hairpin_fwd_rules
         )
         responses.append(_implicit_deny_response())
+        _annotate_blocked_forwards(responses)
+    for r, resp in zip(rules, responses):
+        if (r.table_name == "nat" and r.chain == "PREROUTING" and r.action in ("DNAT", "REDIRECT")
+                and not port_forward_scoped(r.in_interface, r.destination, bool(resp.destination_refs))):
+            resp.pf_unscoped = True
     # Surface auto-generated policy-NAT masquerade companions on the POSTROUTING (nat) chain
     if chain in (None, "POSTROUTING"):
         nat_policies = await firewall_orchestrator.get_enabled_policy_nat_rules(session)
@@ -1283,9 +1347,6 @@ async def _rule_views(session: AsyncSession, chain: str, table: str = "filter") 
     networks. An FQDN object never resolved, or a country list not on disk,
     makes that side "unknown": the matcher then keeps the connection.
     """
-    import ipaddress
-    from . import geoip
-
     rules = (await session.execute(
         select(MachineFirewallRule).where(
             MachineFirewallRule.table_name == table,
@@ -1301,6 +1362,31 @@ async def _rule_views(session: AsyncSession, chain: str, table: str = "filter") 
     refs = (await session.execute(
         select(FirewallRuleAddress).where(FirewallRuleAddress.rule_id.in_([r.id for r in rules]))
     )).scalars().all() if rules else []
+    side = await _address_side_resolver(session)
+
+    views = []
+    for r in rules:
+        try:
+            src = side(r.source, [x for x in refs if x.rule_id == r.id and x.direction == "source"])
+            dst = side(r.destination, [x for x in refs if x.rule_id == r.id and x.direction == "destination"])
+        except ValueError:
+            src = dst = "unknown"
+        views.append(flowmatch.RuleView(
+            id=str(r.id), action=r.action, protocol=r.protocol, port=r.port,
+            in_interface=r.in_interface, out_interface=r.out_interface,
+            src=src, dst=dst, state=r.state, limited=bool(r.limit_rate),
+        ))
+    return views
+
+
+async def _address_side_resolver(session: AsyncSession):
+    """
+    A function (literal, refs) -> the networks one side of a rule matches:
+    None = any, a list of networks, or "unknown" when an object cannot be
+    resolved (an FQDN never resolved, a country list not on disk). refs are
+    rows or dicts carrying object_id / group_id. Raises ValueError on a bad
+    literal.
+    """
     objects = {o.id: o for o in (await session.execute(select(AddressObject))).scalars().all()}
     members: dict = {}
     for m in (await session.execute(select(AddressGroupMember))).scalars().all():
@@ -1318,33 +1404,26 @@ async def _rule_views(session: AsyncSession, chain: str, table: str = "filter") 
             return None
         return [ipaddress.ip_network(e, strict=False) for e in entries]
 
-    def side(rule, direction):
-        rows = [x for x in refs if x.rule_id == rule.id and x.direction == direction]
-        if not rows:
-            literal = rule.source if direction == "source" else rule.destination
+    def ref_ids(ref):
+        get = ref.get if isinstance(ref, dict) else (lambda k: getattr(ref, k, None))
+        oid, gid = get("object_id"), get("group_id")
+        if oid:
+            return [_uuid(oid)]
+        return members.get(_uuid(gid), []) if gid else []
+
+    def side(literal, refs):
+        if not refs:
             return None if not literal else [ipaddress.ip_network(literal, strict=False)]
         nets = []
-        for x in rows:
-            ids = [x.object_id] if x.object_id else members.get(x.group_id, [])
-            for oid in ids:
+        for ref in refs:
+            for oid in ref_ids(ref):
                 n = obj_nets(objects.get(oid))
                 if n is None:
                     return "unknown"
                 nets.extend(n)
         return nets
 
-    views = []
-    for r in rules:
-        try:
-            src, dst = side(r, "source"), side(r, "destination")
-        except ValueError:
-            src = dst = "unknown"
-        views.append(flowmatch.RuleView(
-            id=str(r.id), action=r.action, protocol=r.protocol, port=r.port,
-            in_interface=r.in_interface, out_interface=r.out_interface,
-            src=src, dst=dst, state=r.state, limited=bool(r.limit_rate),
-        ))
-    return views
+    return side
 
 
 class TraceRequest(SQLModel):
@@ -1455,7 +1534,12 @@ async def _trace_snat(session: AsyncSession, flow, topo, decision: dict) -> dict
 
     policy_id = decision.get("rule_id")
     policy = await session.get(MachineFirewallRule, uuid.UUID(policy_id)) if policy_id else None
-    if policy is not None and policy.policy_nat:
+    if policy is not None and policy.policy_nat and policy.action == "ACCEPT":
+        # Without an outgoing interface the NAT companion carries -o <default
+        # route interface> (build_ruleset): traffic leaving elsewhere keeps
+        # its source
+        if not policy.out_interface and out_dev != topo.default_dev:
+            return {"kind": "none"}
         try:
             action, args = policy_nat_target(policy, pools)
         except ValueError:
@@ -1624,6 +1708,84 @@ async def flush_rule_conntrack(
 
 
 _FLUSH_MAX = 5000
+
+
+class RevokedSessionsRequest(SQLModel):
+    """The match an ACCEPT rule had before it was disabled, deleted or narrowed."""
+    chain: str
+    protocol: Optional[str] = None
+    port: Optional[str] = None
+    in_interface: Optional[str] = None
+    out_interface: Optional[str] = None
+    source: Optional[str] = None
+    destination: Optional[str] = None
+    source_refs: List[dict] = []
+    destination_refs: List[dict] = []
+    state: Optional[str] = None
+    dry_run: bool = True
+
+    @field_validator("chain")
+    @classmethod
+    def _chain(cls, v):
+        if v not in ("INPUT", "FORWARD"):
+            raise ValueError("Catena non valida: INPUT o FORWARD")
+        return v
+
+    @field_validator("port")
+    @classmethod
+    def _port_spec(cls, v):
+        if v:
+            from .ports import parse_port_spec
+            parse_port_spec(v)
+        return v
+
+
+@router.post("/sessions/revoked")
+async def close_revoked_sessions(
+    data: RevokedSessionsRequest,
+    request: Request,
+    current_user: User = Depends(require_permission("firewall.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Connections an ACCEPT rule let through that the rules as they are now no
+    longer accept (the rule was disabled, deleted or narrowed): they keep
+    flowing only because ESTABLISHED is accepted first. dry_run (default)
+    returns the preview; dry_run=false deletes exactly the listed entries.
+    See flowmatch.select_revoked for what is kept.
+    """
+    result = {"close": 0, "kept": 0, "uncertain": 0, "protected": 0, "samples": [], "deleted": 0}
+    if settings.mock_iptables:
+        return result
+    side = await _address_side_resolver(session)
+    try:
+        former = flowmatch.RuleView(
+            id="former", action="ACCEPT", protocol=data.protocol, port=data.port,
+            in_interface=data.in_interface, out_interface=data.out_interface,
+            src=side(data.source, data.source_refs), dst=side(data.destination, data.destination_refs),
+            state=data.state,
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Indirizzo non valido")
+    views = await _rule_views(session, data.chain)
+    try:
+        topo = await asyncio.to_thread(flowmatch.Topology.from_system)
+        flows = await asyncio.to_thread(flowmatch.list_flows)
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as e:
+        logger.warning(f"conntrack preview failed: {e}")
+        raise HTTPException(status_code=503, detail="Impossibile leggere le sessioni attive (conntrack)")
+
+    sel = flowmatch.select_revoked(flows, former, data.chain, views, topo, {get_client_ip(request)})
+    result.update({k: len(v) for k, v in sel.items()})
+    result["samples"] = [f.describe() for f in sel["close"][:10]]
+    if data.dry_run:
+        return result
+
+    to_close = sel["close"][:_FLUSH_MAX]
+    result["deleted"] = await asyncio.to_thread(lambda: sum(1 for f in to_close if flowmatch.delete_flow(f)))
+    logger.info(f"Closed {result['deleted']} sessions no longer accepted in {data.chain} "
+                f"(kept: {result['kept']} accepted by another rule, {result['uncertain']} uncertain)")
+    return result
 
 
 @router.put("/rules/order")

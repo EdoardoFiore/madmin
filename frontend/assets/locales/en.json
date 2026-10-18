@@ -382,7 +382,11 @@
             "counterTitle": "Policy traffic",
             "counterFirstUsed": "First used",
             "counterLastUsed": "Last used",
-            "counterNone": "No traffic recorded yet"
+            "counterNone": "No traffic recorded yet",
+            "pfBlocked": "Blocked by #{n}",
+            "pfBlockedHint": "Policy #{n} blocks all of this port forward's traffic before it is accepted: the port forward does not work. Move it, narrow it, or add a policy above it that accepts this traffic.",
+            "pfUnscoped": "No interface or external IP",
+            "pfUnscopedHint": "With neither an incoming interface nor an external IP this rule also intercepts the LAN clients' traffic to the Internet on the same port. Set the WAN interface or the external IP."
         },
         "editor": {
             "anyInterface": "any",
@@ -411,7 +415,11 @@
             "extIpHint": "Empty = every IP on the interface. Set the public IP the forward binds to (useful with multiple WAN IPs).",
             "unsavedBody": "You have unsaved changes. Leave without saving?",
             "unsavedTitle": "Unsaved changes",
-            "leaveAnyway": "Leave without saving"
+            "leaveAnyway": "Leave without saving",
+            "pfScopeHint": "Traffic arriving on this interface is forwarded. Without an interface the external IP is required.",
+            "pfScopeRequired": "Set the incoming interface or the external IP: without them the port forward would also intercept the LAN clients' traffic to the Internet on that port.",
+            "extPortRequired": "Set the external port.",
+            "invalidAddr": "Invalid address: {value}. Use an IPv4 address, a CIDR subnet or a range (e.g. 10.0.0.1-10.0.0.20)."
         },
         "entries": {
             "title": "Select Entries",
@@ -552,7 +560,10 @@
             "keptUncertain": "{n} connections stay up: it is not certain this rule blocks them (unresolved objects or undeterminable interfaces).",
             "keptProtected": "{n} connections of your own client stay up.",
             "natTitle": "Apply the new NAT?",
-            "natWillClose": "{n} connections opened by this policy still use the previous NAT, because NAT is decided on the first packet. Close them now? Clients will reopen them with the new address."
+            "natWillClose": "{n} connections opened by this policy still use the previous NAT, because NAT is decided on the first packet. Close them now? Clients will reopen them with the new address.",
+            "revokedTitle": "Close the connections no longer allowed?",
+            "revokedWillClose": "{n} open connections were allowed by this rule and no rule accepts them any more: they keep flowing only because they are established. Close them now?",
+            "keptAccepted": "{n} stay open because another rule accepts them."
         },
         "terminateSessionsTitle": "Terminate existing connections",
         "terminateSessionsDesc": "All active sessions matching this {action} rule will be immediately terminated. This is useful mainly for newly created or repositioned rules, to force re-evaluation of already established traffic.",

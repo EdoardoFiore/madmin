@@ -126,7 +126,7 @@ export function natBadge(rule) {
     }
     if (rule.nat_pool_id) {
         return `<span class="badge bg-green-lt" title="${escapeHtml(t('firewall.pools.badgeHint'))}">
-            <i class="ti ti-world-share me-1"></i>${escapeHtml(t('firewall.pools.badge', { name: rule.nat_pool_name || '?' }))}</span>`;
+            <i class="ti ti-world-share me-1"></i>${escapeHtml(t('firewall.pools.badge', { name: rule.nat_pool_name || '?' }))}</span>${warn}`;
     }
     if (rule.to_source) {
         return `<span class="badge bg-green-lt" title="${escapeHtml(t('firewall.nat.snatHint'))}">
@@ -220,31 +220,76 @@ export function groupBySections(policies, sections) {
 }
 
 // ---------------------------------------------------------------------------
-// Closing the sessions a DROP/REJECT rule would now stop
+// Closing the sessions a rule change leaves open (conntrack)
 // ---------------------------------------------------------------------------
 
 /**
- * Preview, confirm, close. The backend simulates the chain for every tracked
+ * After a DROP/REJECT is enabled, or a policy's NAT changed. Preview,
+ * confirm, close. The backend simulates the chain for every tracked
  * connection and only closes those this rule is the first to decide: anything
  * an earlier rule accepts, anything uncertain and the admin's own connections
  * stay up. Nothing is closed without the confirm showing what will be.
  */
 export async function terminateSessions(rule, { reason = 'block' } = {}) {
     const nat = reason === 'nat';   // a policy whose NAT changed: reopen its connections
+    await sessionsDialog({
+        url: `/firewall/rules/${rule.id}/flush-conntrack`,
+        body: {},
+        quiet: nat,
+        title: t(nat ? 'firewall.sessions.natTitle' : 'firewall.terminateSessionsTitle'),
+        message: (n) => nat ? t('firewall.sessions.natWillClose', { n })
+                            : t('firewall.sessions.willClose', { n, action: rule.action }),
+    });
+}
+
+/**
+ * After an enabled ACCEPT rule was disabled, deleted or narrowed: offer to
+ * close the connections its former match let through that the rules as they
+ * are now would no longer accept (they keep flowing through ESTABLISHED).
+ * `former` = the rule as it was before the change (GET /rules shape). Silent
+ * when there is nothing to close.
+ */
+export async function closeRevokedSessions(former) {
+    if (!former?.enabled || former.action !== 'ACCEPT' || former.table_name !== 'filter'
+            || !['INPUT', 'FORWARD'].includes(former.chain)) return;
+    const refs = (list) => (list || []).map(r => (r.object_id ? { object_id: r.object_id } : { group_id: r.group_id }));
+    await sessionsDialog({
+        url: '/firewall/sessions/revoked',
+        body: {
+            chain: former.chain,
+            protocol: former.protocol || null,
+            port: former.port || null,
+            in_interface: former.in_interface || null,
+            out_interface: former.out_interface || null,
+            source: former.source || null,
+            destination: former.destination || null,
+            source_refs: refs(former.source_refs),
+            destination_refs: refs(former.destination_refs),
+            state: former.state || null,
+        },
+        quiet: true,
+        title: t('firewall.sessions.revokedTitle'),
+        message: (n) => t('firewall.sessions.revokedWillClose', { n }),
+    });
+}
+
+/** Preview, confirm, close: shared by terminateSessions and closeRevokedSessions. */
+async function sessionsDialog({ url, body, quiet, title, message }) {
     let preview;
     try {
-        preview = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: true });
+        preview = await apiPost(url, { ...body, dry_run: true });
     } catch (err) {
         showToast(t('common.errorPrefix') + err.message, 'error');
         return;
     }
     const kept = [];
     if (preview.shadowed) kept.push(t('firewall.sessions.keptShadowed', { n: preview.shadowed }));
+    if (preview.kept) kept.push(t('firewall.sessions.keptAccepted', { n: preview.kept }));
     if (preview.uncertain) kept.push(t('firewall.sessions.keptUncertain', { n: preview.uncertain }));
     if (preview.protected) kept.push(t('firewall.sessions.keptProtected', { n: preview.protected }));
 
     if (!preview.close) {
-        if (!nat) showToast([t('firewall.noActiveSessions'), ...kept].join(' '), 'info');
+        if (!quiet) showToast([t('firewall.noActiveSessions'), ...kept].join(' '), 'info');
         return;
     }
     const rows = preview.samples.map(f => `
@@ -254,8 +299,7 @@ export async function terminateSessions(rule, { reason = 'block' } = {}) {
             <td><code>${escapeHtml(f.to || f.dst)}${f.dport ? ':' + escapeHtml(f.dport) : ''}</code></td>
         </tr>`).join('');
     const html = `
-        <p>${escapeHtml(nat ? t('firewall.sessions.natWillClose', { n: preview.close })
-                            : t('firewall.sessions.willClose', { n: preview.close, action: rule.action }))}</p>
+        <p>${escapeHtml(message(preview.close))}</p>
         <div class="table-responsive mb-2">
             <table class="table table-sm table-vcenter card-table">
                 <thead><tr><th>${escapeHtml(t('firewall.protocol'))}</th>
@@ -266,11 +310,10 @@ export async function terminateSessions(rule, { reason = 'block' } = {}) {
         ${preview.close > preview.samples.length
             ? `<div class="text-muted small mb-2">${escapeHtml(t('firewall.sessions.andMore', { n: preview.close - preview.samples.length }))}</div>` : ''}
         ${kept.map(k => `<div class="text-muted small"><i class="ti ti-shield-check me-1"></i>${escapeHtml(k)}</div>`).join('')}`;
-    const ok = await confirmDialog(t(nat ? 'firewall.sessions.natTitle' : 'firewall.terminateSessionsTitle'), html,
-                                   t('firewall.terminateBtn'), 'btn-warning', true, 'lg');
+    const ok = await confirmDialog(title, html, t('firewall.terminateBtn'), 'btn-warning', true, 'lg');
     if (!ok) return;
     try {
-        const res = await apiPost(`/firewall/rules/${rule.id}/flush-conntrack`, { dry_run: false });
+        const res = await apiPost(url, { ...body, dry_run: false });
         showToast(res.deleted === 1 ? t('firewall.sessionTerminated')
                                     : t('firewall.sessionsTerminated', { count: res.deleted }), 'success');
     } catch (err) {
@@ -296,4 +339,20 @@ export function shadowBadge(rule) {
     const [cls, icon, label, hint] = map[rule.shadow_kind] || map.shadowed;
     return `<span class="badge ${cls} ms-1" title="${escapeHtml(t(hint, { n }))}">
         <i class="ti ${icon} me-1"></i>${escapeHtml(t(label, { n }))}</span>`;
+}
+
+/** Port forward problems the backend detects: blocked by a policy above its
+ * FORWARD accept, or (an archive from before the check) no interface and no
+ * external IP, so it also rewrites the LAN's traffic to the Internet. */
+export function portForwardWarnings(r) {
+    let html = '';
+    if (r.forward_blocked_by_seq) {
+        html += `<span class="badge bg-red-lt ms-1" title="${escapeHtml(t('firewall.std.pfBlockedHint', { n: r.forward_blocked_by_seq }))}">
+            <i class="ti ti-ban me-1"></i>${escapeHtml(t('firewall.std.pfBlocked', { n: r.forward_blocked_by_seq }))}</span>`;
+    }
+    if (r.pf_unscoped) {
+        html += `<span class="badge bg-red-lt ms-1" title="${escapeHtml(t('firewall.std.pfUnscopedHint'))}">
+            <i class="ti ti-alert-triangle me-1"></i>${escapeHtml(t('firewall.std.pfUnscoped'))}</span>`;
+    }
+    return html;
 }
