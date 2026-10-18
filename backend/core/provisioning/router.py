@@ -118,6 +118,15 @@ async def enable_managed_lan(
     session.add(settings)
     await session.flush()
     await provisioning_service.reconcile(session)
+    # The reconcile may have created the managed navigation policy: load it now
+    # (it would otherwise wait for the next restart) and give its interface
+    # group its place, ahead of the broader "any -> WAN" one
+    from core.firewall.orchestrator import firewall_orchestrator
+    from core.firewall.iptables import IptablesError
+    try:
+        await firewall_orchestrator.apply_rules(session)
+    except IptablesError as e:
+        logger.error(f"Managed LAN: firewall apply failed, the navigation policy loads at the next restart: {e}")
     await session.commit()
     detected = provisioning_service.detect_managed_interface()
     settings = await provisioning_service.get_or_create_settings(session)

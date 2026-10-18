@@ -20,10 +20,13 @@ def build_default_protection_rules(wan: str, lan_ifaces: List[str]) -> List[Dict
     """
     Build the default protective ruleset.
 
-    - FORWARD: allow LAN -> WAN egress (with policy_nat: the navigation masquerade
+    - FORWARD: allow any -> WAN egress (with policy_nat: the navigation masquerade
       is owned by this policy — apply_rules emits the POSTROUTING MASQUERADE
-      companion). No catch-all DROP: apply_rules always appends the implicit
-      deny (MADMIN_IMPLICIT_DENY) as the last FORWARD rule.
+      companion). No incoming interface, so every LAN browses; disabling it
+      closes browsing for all of them except the managed LAN, whose own
+      iface -> WAN policy (provisioning) sits in a more specific group that is
+      evaluated first. No catch-all DROP: apply_rules always appends the
+      implicit deny (MADMIN_IMPLICIT_DENY) as the last FORWARD rule.
     - INPUT: allow the UI port on the WAN and loopback, drop everything else.
 
     The navigation NAT is no longer standalone POSTROUTING rules: the single
@@ -35,7 +38,7 @@ def build_default_protection_rules(wan: str, lan_ifaces: List[str]) -> List[Dict
     """
     rules: List[Dict] = [
         {"chain": "FORWARD", "action": "ACCEPT", "out_interface": wan,
-         "table_name": "filter", "policy_nat": True},
+         "table_name": "filter", "policy_nat": True, "comment": "Navigazione Internet LAN"},
         {"chain": "INPUT", "action": "ACCEPT", "protocol": "tcp", "port": UI_PORT,
          "in_interface": wan, "table_name": "filter"},
         {"chain": "INPUT", "action": "ACCEPT", "in_interface": "lo", "table_name": "filter"},
