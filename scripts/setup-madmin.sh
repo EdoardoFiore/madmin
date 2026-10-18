@@ -210,8 +210,8 @@ apt-get install -y nginx
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
 
-# Firewall
-apt-get install -y iptables iptables-persistent ipset conntrack
+# Firewall (tcpdump: traffic capture from the firewall page)
+apt-get install -y iptables iptables-persistent ipset conntrack tcpdump
 
 # Enable and start the cron daemon
 systemctl enable cron

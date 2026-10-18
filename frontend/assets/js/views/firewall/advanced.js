@@ -1144,6 +1144,9 @@ function renderRuleRow(rule, orderedColumns) {
                                 title="${t('firewall.terminateSessionsHint')}">
                             <i class="ti ti-plug-x"></i>
                         </button>` : ''}
+                        <button class="btn btn-ghost-secondary btn-capture" title="${t('firewall.capture.fromRule')}">
+                            <i class="ti ti-radar"></i>
+                        </button>
                         <button class="btn btn-ghost-secondary btn-duplicate" title="${t('common.copy')}">
                             <i class="ti ti-copy"></i>
                         </button>
@@ -1352,6 +1355,16 @@ function setupRowEvents(container) {
     });
 
     // Duplicate buttons
+    // Traffic capture prefilled with the rule's match
+    container.querySelectorAll('.btn-capture').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const rule = rules.find(r => r.id === e.target.closest('tr').dataset.id);
+            if (!rule) return;
+            const { openCapture, prefillFromRule } = await import('./capture.js');
+            openCapture({ prefill: prefillFromRule(rule) });
+        });
+    });
+
     container.querySelectorAll('.btn-duplicate').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const ruleId = e.target.closest('tr').dataset.id;

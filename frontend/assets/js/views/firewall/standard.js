@@ -408,6 +408,7 @@ function rowButtons(locked = false) {
                     <button class="dropdown-item fw-move" data-dir="-1"><i class="ti ti-arrow-up me-2"></i>${t('firewall.std.moveUp')}</button>
                     <button class="dropdown-item fw-move" data-dir="1"><i class="ti ti-arrow-down me-2"></i>${t('firewall.std.moveDown')}</button>
                     <div class="dropdown-divider"></div>
+                    <button class="dropdown-item fw-capture"><i class="ti ti-radar me-2"></i>${t('firewall.capture.fromRule')}</button>
                     <button class="dropdown-item fw-dup"><i class="ti ti-copy me-2"></i>${t('common.copy')}</button>
                     <button class="dropdown-item text-danger fw-del"><i class="ti ti-trash me-2"></i>${t('common.delete')}</button>
                 </div>
@@ -537,6 +538,11 @@ function bindRowActions(wrap, mode) {
         } catch (err) {
             showToast(t('common.errorPrefix') + err.message, 'error');
         }
+    }));
+    wrap.querySelectorAll('.fw-capture').forEach(btn => btn.addEventListener('click', async (e) => {
+        const r = ruleOf(e); if (!r) return;
+        const { openCapture, prefillFromRule } = await import('./capture.js');
+        openCapture({ prefill: prefillFromRule(r) });
     }));
     wrap.querySelectorAll('.fw-dup').forEach(btn => btn.addEventListener('click', (e) => {
         const r = ruleOf(e); if (r) edit(mode, r, true);

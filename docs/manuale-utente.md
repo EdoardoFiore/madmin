@@ -142,7 +142,7 @@ Il firewall gestisce le regole **iptables** della macchina. La pagina offre tre 
 | **Avanzata** | Tutte le tabelle e catene iptables, comprese le regole verso la macchina stessa (INPUT) e le regole NAT personalizzate |
 | **Oggetti** | Indirizzi, gruppi di indirizzi e IP Pool riutilizzabili nelle regole |
 
-La vista scelta tra Standard e Avanzata viene ricordata per l'utente. In entrambe è disponibile **Simula pacchetto**; in Avanzata anche **Anteprima iptables**.
+La vista scelta tra Standard e Avanzata viene ricordata per l'utente. In entrambe sono disponibili **Simula pacchetto** e **Cattura traffico**; in Avanzata anche **Anteprima iptables**.
 
 ### Come viene valutato il traffico
 
@@ -269,6 +269,37 @@ Indica quale regola decide una nuova connessione. Inserire protocollo, IP sorgen
 ### Anteprima iptables
 
 Solo in Avanzata: il ruleset che MADMIN carica con iptables-restore, diviso per tabella e filtrabile. Non applica nessuna modifica.
+
+### Cattura traffico
+
+Mostra a schermo, in tempo reale, i pacchetti che passano per un'interfaccia (tcpdump), per il troubleshooting. Si apre con il pulsante **Cattura traffico** in alto, nella vista Standard e in Avanzata, oppure dalla riga di una regola (menu **⋮** in Standard, icona radar in Avanzata) con i campi già compilati dalla regola. Richiede il permesso `firewall.manage`.
+
+> La cattura mostra il contenuto dei pacchetti: il traffico non cifrato, credenziali comprese, è leggibile. Ogni avvio viene registrato nell'audit log con interfaccia e filtri.
+
+**Filtri** (tutti in AND):
+
+| Campo | Descrizione |
+|-------|-------------|
+| **Interfaccia** | Una interfaccia (anche VPN, es. `wg0`, `tun0`) o *Tutte (any)* |
+| **Protocollo** | TCP, UDP, ICMP, ARP o tutti |
+| **Porta** | Porta sorgente o destinazione |
+| **Host / Sorgente / Destinazione** | Un indirizzo IPv4 in entrambe le direzioni, solo come mittente o solo come destinatario |
+| **Rete** (opzioni avanzate) | Una subnet CIDR |
+| **Filtro BPF aggiuntivo** (opzioni avanzate) | Espressione in sintassi tcpdump, es. `not port 22` o `icmp or arp`. Viene verificata prima di avviare |
+
+Opzioni avanzate: durata massima (default 60 s, massimo 600), pacchetti massimi (default 1000, massimo 100000), byte per pacchetto, indirizzi MAC (`-e`), dettagli (`-v`). **Escludi il traffico di questo pannello** è attivo di default: senza, catturando l'interfaccia da cui si accede al pannello si vedrebbe anche lo stream della cattura stessa.
+
+**Durante la cattura**
+- **Ferma** termina la cattura; **Pausa** congela lo schermo, mentre i pacchetti continuano ad arrivare e vengono mostrati alla ripresa.
+- Il campo sopra l'output mostra solo le righe che contengono il testo scritto; **Pulisci** svuota lo schermo.
+- La barra di stato mostra pacchetti, tempo trascorso, filtro applicato e, a fine cattura, il motivo (durata, numero di pacchetti, dimensione massima, fermata).
+- A schermo arrivano al massimo 200 righe al secondo: le altre vengono contate come *non mostrate* e restano nel file pcap.
+
+**A fine cattura**
+- **Scarica testo**: le righe ricevute, in un file di testo.
+- **Scarica pcap**: il file completo da aprire in Wireshark (massimo 50 MB). Resta disponibile per 30 minuti e viene eliminato a ogni riavvio del servizio.
+
+Ogni utente ha una cattura alla volta (avviarne un'altra chiude la precedente) e sulla macchina ne girano al massimo tre insieme. Chiudendo il pannello o cambiando pagina la cattura si ferma.
 
 ---
 
