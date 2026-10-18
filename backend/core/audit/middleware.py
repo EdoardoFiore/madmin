@@ -208,10 +208,12 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     # Read the body
                     body_bytes = await request.body()
 
-                    # Restore the body so the route handler can read it again!
-                    async def receive():
-                        return {"type": "http.request", "body": body_bytes}
-                    request._receive = receive
+                    # No need to put the body back: BaseHTTPMiddleware caches
+                    # what body() read and hands it to the route itself, then
+                    # passes on only http.disconnect. Replacing receive() with
+                    # one returning the body made every streaming response
+                    # fail ("Unexpected message received: http.request") when
+                    # it listened for the client leaving.
 
                     if body_bytes:
                         # Truncate if too large (> 50KB) to prevent blowing up DB
