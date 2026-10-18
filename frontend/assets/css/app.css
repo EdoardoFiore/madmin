@@ -725,3 +725,23 @@ tr.fw-drop-below > td {
 tr.fw-row-flash > td {
     animation: fw-row-flash 2.5s ease-out;
 }
+
+/* Traffic capture (tcpdump) */
+.fw-capture-oc.offcanvas-end {
+    width: min(1200px, 96vw);
+}
+.fw-capture-out {
+    min-height: 240px;
+    overflow: auto;
+    padding: .5rem .75rem;
+    font-family: var(--tblr-font-monospace);
+    font-size: .78rem;
+    line-height: 1.45;
+    white-space: pre;
+    background: var(--tblr-bg-surface-secondary);
+    border: 1px solid var(--tblr-border-color);
+    border-radius: var(--tblr-border-radius);
+}
+.fw-capture-search {
+    max-width: 320px;
+}

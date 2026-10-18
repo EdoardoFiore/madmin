@@ -10,8 +10,9 @@ const API_BASE = '/api';
 /**
  * Extract a human-readable message from a FastAPI error response body.
  * Handles both string detail (4xx generic) and array detail (422 Pydantic).
+ * Exported for callers that read the Response themselves (streams, downloads).
  */
-function _extractDetail(error) {
+export function _extractDetail(error) {
     const detail = error?.detail;
     if (!detail) return 'Request failed';
     if (Array.isArray(detail)) {

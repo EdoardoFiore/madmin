@@ -369,6 +369,23 @@ async def lifespan(app: FastAPI):
                 logger.exception("Firewall traffic sampling error")
 
     traffic_task = spawn_background(traffic_sample_task(), "firewall-traffic-sampling")
+
+    # Traffic captures: none survives a restart; the pcap of an ended one is
+    # removed once its download window is over
+    from core.firewall import capture as fw_capture
+    await asyncio.to_thread(fw_capture.purge_dir)
+
+    async def capture_cleanup_task():
+        while True:
+            try:
+                await asyncio.sleep(300)
+                fw_capture.cleanup_expired()   # on the loop: it edits the session registry
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Capture cleanup error")
+
+    capture_task = spawn_background(capture_cleanup_task(), "capture-cleanup")
     logger.info("Address dynamic refresh task started (daily at midnight)")
 
     # Start external syslog forwarder (audit log -> external collector).
@@ -396,7 +413,9 @@ async def lifespan(app: FastAPI):
     address_task.cancel()
     syslog_task.cancel()
     traffic_task.cancel()
+    capture_task.cancel()
     restore_task.cancel()
+    await fw_capture.stop_all()
     try:
         await restore_task
     except asyncio.CancelledError:
@@ -483,6 +502,7 @@ def create_app() -> FastAPI:
     # Register core routers
     from core.auth.router import router as auth_router
     from core.firewall.router import router as firewall_router
+    from core.firewall.capture_router import router as capture_router
     from core.modules.router import router as modules_router
     from core.settings.router import router as settings_router
     from core.files.router import router as files_router
@@ -496,6 +516,7 @@ def create_app() -> FastAPI:
     
     app.include_router(auth_router)
     app.include_router(firewall_router)
+    app.include_router(capture_router)
     app.include_router(modules_router)
     app.include_router(settings_router)
     app.include_router(files_router)

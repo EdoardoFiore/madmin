@@ -10,9 +10,12 @@
  *   #firewall/standard   -> Standard (FortiGate-style) view
  *   #firewall/advanced   -> Advanced (power-user) view
  *   #firewall/objects    -> Address objects & groups
+ *
+ * The traffic capture (tcpdump) opens from the toolbar in every mode, for
+ * firewall.manage.
  */
 import { apiPatch } from '../../api.js';
-import { getUser } from '../../app.js';
+import { getUser, checkPermission } from '../../app.js';
 import { t } from '../../i18n.js';
 
 const MODES = ['standard', 'advanced', 'objects'];
@@ -59,6 +62,10 @@ function toolbar(mode) {
                 <button type="button" class="btn btn-outline-secondary" id="fw-open-trace">
                     <i class="ti ti-route me-1"></i>${t('firewall.trace.title')}
                 </button>
+                ${checkPermission('firewall.manage') ? `
+                <button type="button" class="btn btn-outline-secondary" id="fw-open-capture">
+                    <i class="ti ti-radar me-1"></i>${t('firewall.capture.button')}
+                </button>` : ''}
                 ${mode === 'advanced' ? `
                 <button type="button" class="btn btn-outline-secondary" id="fw-open-preview">
                     <i class="ti ti-terminal-2 me-1"></i>${t('firewall.preview.button')}
@@ -92,6 +99,8 @@ export async function render(container, params = []) {
 
     container.querySelector('#fw-open-trace')?.addEventListener('click', async () =>
         (await import('./tools.js')).openTracer({ advanced: mode === 'advanced' }));
+    container.querySelector('#fw-open-capture')?.addEventListener('click', async () =>
+        (await import('./capture.js')).openCapture());
     container.querySelector('#fw-open-preview')?.addEventListener('click', async () => (await import('./tools.js')).openPreview());
 
     const viewEl = container.querySelector('#fw-view');
