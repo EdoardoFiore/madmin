@@ -37,7 +37,9 @@ Inserire username e password nella schermata di accesso e premere **Accedi**.
 
 ### Autenticazione a due fattori (2FA)
 
-Se l'account ha il 2FA attivo (o se è obbligatorio globalmente), dopo aver inserito le credenziali compare un secondo campo dove inserire il codice a 6 cifre generato dall'app di autenticazione (Google Authenticator, Authy o simili).
+Se l'account ha il 2FA attivo (o se è obbligatorio globalmente), dopo aver inserito le credenziali compare un secondo campo dove inserire il codice a 6 cifre generato dall'app di autenticazione (Google Authenticator, Authy o simili), oppure uno dei codici di backup (12 caratteri).
+
+Dopo troppi tentativi falliti l'accesso viene bloccato temporaneamente (per indirizzo e per utente).
 
 ---
 
@@ -69,7 +71,7 @@ Accessibile dal menu laterale. La sezione è divisa in due parti: il proprio pro
 Ogni utente può modificare le proprie impostazioni di sicurezza indipendentemente dai permessi:
 
 **Cambio password**
-- Inserire la password attuale, la nuova password (minimo 6 caratteri) e confermarla.
+- Inserire la password attuale, la nuova password e confermarla. La password deve avere almeno 8 caratteri, una lettera maiuscola, una cifra e un carattere speciale.
 - Premere **Salva Password**.
 
 **Configurazione 2FA**
@@ -90,7 +92,7 @@ La tabella mostra tutti gli utenti del sistema con stato, data di creazione e pe
 2. Compilare i campi:
    - **Username**: solo lettere, numeri, trattini e underscore (3–50 caratteri)
    - **Email**: indirizzo di posta opzionale
-   - **Password**: minimo 6 caratteri
+   - **Password**: almeno 8 caratteri, con una maiuscola, una cifra e un carattere speciale
    - **Attivo**: se disattivato, l'utente non può accedere
    - **Superuser**: accesso completo a tutte le funzioni senza restrizioni
    - **Forza 2FA**: obbliga questo utente ad attivare il 2FA al prossimo accesso
@@ -103,21 +105,23 @@ La tabella mostra tutti gli utenti del sistema con stato, data di creazione e pe
 |----------|-------------------|
 | `users.view` | Visualizzare la lista utenti |
 | `users.manage` | Creare, modificare, eliminare utenti |
+| `permissions.manage` | Assegnare i permessi agli utenti (richiede `users.manage`) |
 | `firewall.view` | Visualizzare le regole firewall |
-| `firewall.manage` | Aggiungere/modificare/eliminare regole |
+| `firewall.manage` | Aggiungere/modificare/eliminare regole, oggetti e IP Pool |
 | `network.view` | Visualizzare le interfacce di rete |
 | `network.manage` | Configurare le interfacce di rete |
-| `services.view` | Visualizzare lo stato dei servizi |
+| `settings.view` | Visualizzare personalizzazione, porta di gestione e certificato SSL |
+| `settings.manage` | Modificare personalizzazione, porta di gestione e certificato SSL |
+| `smtp.view` | Visualizzare la configurazione SMTP |
+| `smtp.manage` | Modificare la configurazione SMTP e inviare email di test |
+| `backup.view` | Visualizzare impostazioni, storico e archivi di backup |
+| `backup.manage` | Configurare i backup, esportare, scaricare ed eliminare archivi |
+| `backup.restore` | Importare/ripristinare un archivio (contiene utenti e hash delle password: equivale ad accesso da superuser) |
+| `cron.view` | Visualizzare le attività pianificate (modificarle è riservato ai superuser) |
 | `services.manage` | Avviare/fermare/riavviare i servizi |
-| `settings.view` | Visualizzare le impostazioni |
-| `settings.manage` | Modificare le impostazioni di sistema |
-| `backup.view` | Scaricare backup |
-| `backup.manage` | Creare, ripristinare, pianificare backup |
-| `cron.view` | Visualizzare le attività pianificate |
-| `cron.manage` | Aggiungere/modificare/eliminare attività |
-| `audit.view` | Visualizzare i log di audit |
-| `modules.view` | Visualizzare i moduli disponibili |
-| `modules.manage` | Attivare/disattivare i moduli |
+| `modules.view` | Visualizzare i moduli installati |
+| `modules.manage` | Attivare/disattivare e configurare i moduli |
+| `logs.view` | Visualizzare i log di audit e di sistema |
 
 Ogni modulo aggiunge i propri permessi (es. `wireguard.view`, `dhcp.manage`, ecc.).
 
@@ -130,73 +134,141 @@ Ogni modulo aggiunge i propri permessi (es. `wireguard.view`, `dhcp.manage`, ecc
 
 ## 4. Firewall
 
-Il firewall gestisce le regole **iptables** della macchina. Le regole sono organizzate per **tabella** e **catena**, come in iptables standard.
+Il firewall gestisce le regole **iptables** della macchina. La pagina offre tre viste, selezionabili in alto:
 
-### Tabelle e Catene
+| Vista | Per cosa |
+|-------|----------|
+| **Standard** | Uso quotidiano: regole di forward (come navigano e comunicano le reti collegate) e port forwarding, in stile FortiGate |
+| **Avanzata** | Tutte le tabelle e catene iptables, comprese le regole verso la macchina stessa (INPUT) e le regole NAT personalizzate |
+| **Oggetti** | Indirizzi, gruppi di indirizzi e IP Pool riutilizzabili nelle regole |
 
-| Tabella | Catene disponibili | Utilizzo tipico |
-|---------|-------------------|-----------------|
-| **Filter** | INPUT, OUTPUT, FORWARD | Bloccare o permettere il traffico |
-| **NAT** | PREROUTING, POSTROUTING | DNAT (port forwarding), SNAT, Masquerade |
-| **Mangle** | INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING | Modifica avanzata dei pacchetti |
-| **Raw** | PREROUTING, OUTPUT | Escludere traffico dal connection tracking |
+La vista scelta tra Standard e Avanzata viene ricordata per l'utente. In entrambe è disponibile **Simula pacchetto**; in Avanzata anche **Anteprima iptables**.
 
-Selezionare la tabella in alto, poi la catena desiderata tramite i tab.
+### Come viene valutato il traffico
 
-### Aggiungere una Regola
+- Le connessioni **già stabilite** sono sempre accettate per prime: una regola nuova o modificata vale solo per le connessioni nuove (vedi [Connessioni già aperte](#connessioni-già-aperte)).
+- Le catene dei **moduli** (WireGuard, OpenVPN, IPsec, DNS) vengono valutate prima delle regole del firewall.
+- **Forward** (traffico che attraversa la macchina): le regole sono raggruppate per coppia di interfacce *ingresso → uscita*. I gruppi vengono valutati nell'ordine in cui sono elencati, le regole di ogni gruppo dall'alto verso il basso: la prima che corrisponde decide. Seguono le **regole automatiche** dei port forward e infine il **Nega implicito**, che blocca tutto ciò che nessuna regola ha consentito.
+- **Ingresso** (traffico verso la macchina stessa, catena INPUT, gestita in Avanzata): prima le regole automatiche dei port forward che puntano alla macchina, poi le regole nell'ordine; l'ultima regola predefinita blocca tutto il resto.
 
-1. Selezionare tabella e catena.
-2. Premere **Aggiungi Regola**.
-3. Compilare i campi pertinenti (i campi non rilevanti possono essere lasciati vuoti):
+Il numero **#** accanto a ogni regola è la sua posizione reale nell'ordine di valutazione.
 
-**Campi comuni a tutte le tabelle:**
+### Vista Standard
 
-| Campo | Descrizione | Esempio |
-|-------|-------------|---------|
-| **Protocollo** | `tcp`, `udp`, `icmp`, `all` | `tcp` |
-| **Sorgente** | IP o rete di provenienza (CIDR) | `192.168.1.0/24` |
-| **Destinazione** | IP o rete di destinazione (CIDR) | `10.0.0.1` |
-| **Porta** | Porta singola o range | `80` oppure `8000:9000` |
-| **Commento** | Nota descrittiva interna | `Permetti HTTP da LAN` |
+#### Regole firewall (forward)
 
-**Campi aggiuntivi per tabella Filter:**
+Premere **Nuova regola** per aprire l'editor nel pannello laterale. Campi:
 
 | Campo | Descrizione |
 |-------|-------------|
-| **Stato** | Filtrare per stato connessione: `NEW`, `ESTABLISHED`, `RELATED`, `INVALID` |
-| **Interfaccia In** | Interfaccia di ingresso del traffico (es. `eth1`) |
-| **Interfaccia Out** | Interfaccia di uscita del traffico |
-| **Azione** | `ACCEPT`, `DROP`, `REJECT`, `LOG` |
+| **Nome** | Etichetta descrittiva (opzionale) |
+| **Interfaccia di ingresso / uscita** | Da dove arriva e da dove esce il traffico; *qualsiasi* se vuoto. Le due interfacce devono essere diverse |
+| **Sorgente / Destinazione** | Scrivere un IP, una subnet CIDR o un intervallo (`10.0.0.1-10.0.0.20`) e premere Invio, oppure cliccare il campo e scegliere oggetti e gruppi dal pannello **Seleziona voci** a destra (dove si possono anche creare). Vuoto = qualsiasi |
+| **Servizio** | Protocollo (tutti, TCP, UDP, ICMP), porta (singola, lista `80,443` o intervallo `8000:8080`) o un preset |
+| **Azione** | **Consenti** o **Nega** |
+| **NAT** | Solo con *Consenti*: il traffico esce con un indirizzo della macchina. Per una regola nuova si attiva da solo quando l'interfaccia di uscita è la WAN (rotta di default) |
+| **IP di uscita** | Con il NAT attivo: l'IP dell'interfaccia di uscita (automatico), un altro indirizzo configurato su quell'interfaccia, oppure un IP Pool |
+| **Regola attiva** | Una regola disattivata resta in elenco e mantiene il suo posto |
 
-**Campi aggiuntivi per tabella NAT:**
+Un indirizzo scritto a mano, se sono più di uno o è un intervallo, viene salvato come oggetto indirizzo (visibile in **Oggetti**).
 
-| Campo | Descrizione | Utilizzo |
-|-------|-------------|----------|
-| **To Destination** | IP:Porta di destinazione (DNAT) | Port forwarding in entrata |
-| **To Source** | IP sorgente da usare (SNAT) | Forzare uscita con IP specifico |
-| **To Ports** | Porta di destinazione da remappare | Cambiare porta durante il NAT |
-| **Azione** | `DNAT`, `SNAT`, `MASQUERADE`, `REDIRECT` | — |
+Se una regola con NAT non indica l'interfaccia di uscita, il NAT si applica solo al traffico che esce dalla rotta di default: la colonna NAT lo indica con *→ eth0*.
 
-**Azioni disponibili per tabella:**
+**Ordinare le regole**
+- Trascinare una riga per spostarla nel suo gruppo, oppure usare il menu **⋮ → Sposta su / Sposta giù**.
+- Trascinare l'intestazione di un gruppo per cambiare l'ordine dei gruppi. Il badge *valutato dopo N* indica che gruppi precedenti possono decidere lo stesso traffico (es. *eth1 → qualsiasi* prima di *eth1 → eth0*).
+
+**Badge sulle regole**
+
+| Badge | Significato |
+|-------|-------------|
+| *Mai raggiunta (#n)* | Una regola più in alto prende la decisione opposta su tutto il suo traffico: questa non ha effetto. Lo stesso badge compare se la regola più in alto accetta il traffico con un NAT diverso |
+| *Duplicata di #n* / *Già coperta da #n* | Una regola più in alto prende già la stessa decisione |
+| *Avanzata* | La regola ha condizioni visibili solo in Avanzata (stato, rate limit, log), conservate al salvataggio |
+| *IP assente* | L'IP di uscita del NAT non è più configurato sull'interfaccia: le risposte non tornano |
+| *NAT sostituito (#n Advanced)* | Una regola NAT personalizzata di Avanzata, valutata prima, natta diversamente questo traffico |
+
+Accanto a ogni regola sono mostrati il traffico totale e un grafico delle ultime 24 ore; passando sopra l'icona compaiono pacchetti e date di primo e ultimo utilizzo.
+
+In fondo all'elenco:
+- **Regole automatiche di forward**: create dal sistema per i port forward e per l'hairpin NAT, non modificabili. Una regola *Nega* più in alto che copre il loro traffico le rende inefficaci (badge *Mai raggiunta*).
+- **Nega implicito**: sempre ultimo.
+
+Le regole NAT personalizzate create in Avanzata non compaiono qui: una riga ne segnala la presenza.
+
+#### Port Forwarding
+
+Inoltra una porta esterna verso un host interno. Premere **Nuovo port forward**:
+
+| Campo | Descrizione |
+|-------|-------------|
+| **Interfaccia di ingresso** | Proposta la WAN. Obbligatoria se non si indica l'IP esterno |
+| **Protocollo / Porta esterna** | TCP o UDP; porta obbligatoria (singola, lista o intervallo) |
+| **IP esterno** | Opzionale con l'interfaccia indicata: lega il forward a uno specifico IP pubblico (utile con più IP sulla WAN) |
+| **IP interno / Porta interna** | Destinazione del traffico; porta interna vuota = stessa porta. In alternativa all'IP, un oggetto indirizzo host (CIDR /32) |
+| **Sorgente** | Limita il forward a determinati indirizzi di origine (opzionale) |
+| **NAT hairpin** | Permette ai client LAN di raggiungere il forward usando l'IP pubblico |
+
+Non è possibile salvare un port forward senza interfaccia di ingresso né IP esterno: intercetterebbe anche il traffico dei client LAN verso Internet su quella porta (es. un forward della 443 prenderebbe la loro navigazione HTTPS). Le porte usate dal pannello e dai servizi MADMIN non possono essere inoltrate.
+
+Il traffico inoltrato viene consentito automaticamente (regole automatiche di forward). Badge:
+- *Bloccato da #n*: la regola *Nega* #n blocca tutto il traffico del forward prima che venga accettato; spostarla, restringerla o aggiungere sopra una regola che lo consenta.
+- *Senza interfaccia né IP esterno*: forward ripristinato da una configurazione precedente a questo controllo; indicare l'interfaccia WAN o l'IP esterno.
+
+#### Connessioni già aperte
+
+Le connessioni stabilite continuano anche dopo una modifica delle regole. Dopo il salvataggio MADMIN propone di chiuderle quando:
+- si attiva una regola *Nega*: le connessioni che quella regola ora blocca;
+- si disattiva, elimina o restringe una regola *Consenti*: le connessioni che consentiva e che nessuna regola accetta più;
+- cambia il NAT di una regola: le sue connessioni, che altrimenti mantengono il vecchio indirizzo di uscita.
+
+Prima di chiudere viene mostrata un'anteprima. Restano sempre aperte le connessioni del proprio browser, quelle accettate da un'altra regola e quelle che dipendono da oggetti non risolti. Le catene dei moduli non sono simulate: controllare l'anteprima se la regola copre anche traffico VPN.
+
+### Vista Avanzata
+
+Mostra tutte le regole per **tabella** e **catena**, come in iptables:
+
+| Tabella | Catene | Utilizzo tipico |
+|---------|--------|-----------------|
+| **Filter** | INPUT, OUTPUT, FORWARD | Consentire o bloccare il traffico |
+| **NAT** | PREROUTING, POSTROUTING, OUTPUT | Port forwarding, SNAT, Masquerade, Redirect |
+| **Mangle** | PREROUTING, INPUT, FORWARD, OUTPUT, POSTROUTING | Modifica avanzata dei pacchetti |
+| **Raw** | PREROUTING, OUTPUT | Escludere traffico dal connection tracking |
+
+Oltre ai campi della vista Standard, l'editor offre: stato della connessione, rate limit, log (prefisso e livello), tipo di REJECT, To Ports (REDIRECT/MASQUERADE), SNAT verso un indirizzo o un IP Pool.
 
 | Tabella | Azioni |
 |---------|--------|
-| Filter | ACCEPT, DROP, REJECT, LOG |
-| NAT | DNAT, SNAT, MASQUERADE, REDIRECT, ACCEPT |
-| Mangle | MARK, TOS, TTL, ACCEPT |
-| Raw | NOTRACK, ACCEPT |
+| Filter | ACCEPT, DROP, REJECT, LOG, RETURN |
+| NAT | DNAT, SNAT, MASQUERADE, REDIRECT, ACCEPT, RETURN |
+| Mangle | MARK, TOS, TTL, ACCEPT, RETURN |
+| Raw | NOTRACK, ACCEPT, RETURN |
 
-### Ordinamento Regole
+- La catena **FORWARD** è raggruppata per coppia di interfacce come nella vista Standard.
+- Le regole automatiche (port forward, NAT delle regole, hairpin) compaiono con il lucchetto e il badge *Auto*.
+- Le regole **NAT/POSTROUTING** personalizzate vengono valutate prima del NAT delle regole di forward: servono per le eccezioni.
+- Le regole si riordinano trascinandole.
+- **Accesso Gateway**: quali reti LAN possono raggiungere gli indirizzi della macchina sulle altre interfacce.
+- **Esporta / Importa**: le regole in JSON, in aggiunta o in sostituzione di quelle esistenti. Le regole non valide vengono saltate e segnalate.
 
-Le regole vengono applicate **dall'alto verso il basso**: la prima che fa match determina l'esito. Trascina le righe con il cursore di trascinamento per riordinarle. L'ordine viene salvato automaticamente.
+### Oggetti
+
+- **Indirizzi**: CIDR (IP singolo o subnet), Intervallo, FQDN (risolto e aggiornato ogni notte), Paese (liste geo-IP, aggiornate ogni notte).
+- **Gruppi**: insiemi di indirizzi, usabili come un singolo oggetto.
+- **IP Pool**: indirizzi con cui le regole possono nattare il traffico in uscita.
+  - *Overload*: un IP o un intervallo (massimo 256 indirizzi); più client condividono gli indirizzi e ognuno esce sempre con lo stesso.
+  - *One-to-one*: una subnet CIDR grande quanto la sorgente della regola; ogni host esce con l'indirizzo corrispondente.
+  - *Rispondi ARP*: MADMIN aggiunge gli indirizzi all'interfaccia della loro subnet, così il router del provider li raggiunge; nessun servizio della macchina risponde su questi IP. Da disattivare se il provider instrada il blocco direttamente alla macchina. Non usare indirizzi assegnati ad altri dispositivi della stessa rete.
+
+Un oggetto modificato aggiorna subito tutte le regole che lo usano.
+
+### Simula pacchetto
+
+Indica quale regola decide una nuova connessione. Inserire protocollo, IP sorgente e destinazione, porta ed eventualmente le interfacce (altrimenti dedotte dalla tabella di routing). Il risultato mostra l'eventuale port forward applicato, la catena, ogni regola valutata con l'esito, la regola che decide e, per il traffico consentito in uscita, l'indirizzo con cui esce. Le catene dei moduli non sono simulate.
 
 ### Anteprima iptables
 
-La sezione **Anteprima** mostra la sintassi del comando `iptables` che verrà eseguito per la regola selezionata, utile per verifica.
-
-### Import/Export
-
-Le regole di una catena possono essere esportate in JSON e reimportate su un altro sistema tramite i pulsanti dedicati nell'intestazione.
+Solo in Avanzata: il ruleset che MADMIN carica con iptables-restore, diviso per tabella e filtrabile. Non applica nessuna modifica.
 
 ---
 
@@ -683,145 +755,116 @@ Configurazioni globali del portale. Alcune richiedono il permesso `settings.mana
 
 ### Backup
 
-- **Esporta backup**: scarica un archivio con la configurazione del sistema (database + file di configurazione)
-- **Importa backup**: ripristina una configurazione da un file di backup precedente
-- **Backup pianificati**: configura backup automatici giornalieri, settimanali o mensili con destinazione locale o remota (S3, FTP)
+- **Esporta backup**: scarica un archivio con la configurazione del sistema (utenti, firewall, impostazioni, dati e file dei moduli)
+- **Importa backup**: ripristina una configurazione da un archivio precedente, con anteprima di cosa verrà importato. È anche il modo per aggiornare MADMIN: esportare la configurazione, installare la nuova versione e importarla
+- **Backup pianificati**: backup automatici giornalieri o settimanali, conservati in locale e caricati su un server remoto **SFTP** o **FTPS**, con retention in giorni
+- **Passphrase di cifratura archivi**: se impostata (minimo 12 caratteri) gli archivi vengono cifrati; senza passphrase non si ripristinano, va conservata fuori dalla macchina
+- **Chiave del server SFTP**: registrata alla prima connessione; se il server ne presenta una diversa la connessione viene rifiutata
+
+Le password (SMTP, server remoto) e i segreti 2FA sono legati alla chiave dell'installazione: importando un archivio su una nuova installazione vanno reinseriti e il 2FA va riconfigurato.
 
 ### Sicurezza
 
 - **2FA obbligatoria globalmente**: se attivo, tutti gli utenti devono configurare il 2FA
 - **Durata token**: minuti di validità della sessione (predefinito: 720 = 12h)
+- **Porta di gestione**: la porta HTTPS del pannello. Al cambio, MADMIN mostra le regole firewall INPUT che aprono la porta attuale, le copia per la nuova porta prima di spostare il pannello e chiede cosa fare delle vecchie (disattivarle o lasciarle). Richiede anche il permesso `firewall.manage`
 
 ### Audit
 
 - **Retention log**: quanti giorni conservare i log di audit (i log più vecchi vengono eliminati automaticamente)
 
+### Syslog esterno
+
+Inoltra l'audit log a un server syslog (RFC 5424) via UDP, TCP o TLS: host, porta, facility, nome applicazione, quali eventi inoltrare (tutti, solo errori) e se includere le letture. Con TLS si può indicare il certificato CA e la verifica del server. **Invia test** manda un messaggio di prova. Modificare la destinazione richiede i permessi `settings.manage` e `logs.view`.
+
 ---
 
 ## 10. Configurazioni Comuni
 
-Questa sezione illustra come realizzare configurazioni tipiche usando il firewall del portale.
+Esempi tipici con il firewall del portale. Negli esempi `eth0` è la WAN e `eth1` la LAN.
 
 ---
 
-### 10.1 DNAT — Port Forwarding (traffico in entrata)
+### 10.1 Navigazione Internet della LAN
 
-**Scenario:** si vuole che le connessioni che arrivano sull'IP pubblico della macchina sulla porta 8080 vengano indirizzate a un server interno `192.168.1.10` sulla porta 80.
+**Scenario:** i dispositivi della rete `192.168.1.0/24` su `eth1` devono uscire su Internet con l'IP pubblico della macchina.
 
-**Dove configurarlo:** Tabella **NAT** → Catena **PREROUTING**
-
-**Impostazioni della regola:**
+**Dove:** vista **Standard** → **Nuova regola**
 
 | Campo | Valore |
 |-------|--------|
-| Protocollo | `tcp` |
-| Porta | `8080` |
-| Azione | `DNAT` |
-| To Destination | `192.168.1.10:80` |
+| Interfaccia di ingresso | `eth1` |
+| Interfaccia di uscita | `eth0` |
+| Sorgente | `192.168.1.0/24` (o vuoto) |
+| Azione | Consenti |
+| NAT | attivo (si attiva da solo scegliendo la WAN) |
+| IP di uscita | IP dell'interfaccia di uscita |
 
-**Effetto:** chi si connette all'IP del server sulla porta 8080 viene trasparentemente reindirizzato al server interno. Il chiamante non si accorge del reindirizzamento.
-
-> Per rendere funzionale il DNAT è spesso necessaria anche una regola in **Filter → FORWARD** che permetta il traffico verso `192.168.1.10:80`.
+Con l'IP dell'interfaccia il NAT segue automaticamente un eventuale cambio di IP pubblico (MASQUERADE).
 
 ---
 
-### 10.2 SNAT — Cambiare l'IP sorgente in uscita
+### 10.2 Port forwarding verso un server interno
 
-**Scenario A — IP specifico per una macchina interna:** si vuole che il traffico proveniente da `192.168.1.50` esca su internet con l'IP secondario `1.2.3.4` invece di quello principale.
+**Scenario:** le connessioni sull'IP pubblico alla porta 8080 devono arrivare al server interno `192.168.1.10` sulla porta 80.
 
-**Dove configurarlo:** Tabella **NAT** → Catena **POSTROUTING**
-
-**Impostazioni della regola:**
+**Dove:** vista **Standard** → **Port Forwarding** → **Nuovo port forward**
 
 | Campo | Valore |
 |-------|--------|
-| Protocollo | (lasciare vuoto = tutti) |
+| Interfaccia di ingresso | `eth0` |
+| Protocollo | TCP |
+| Porta esterna | `8080` |
+| IP interno | `192.168.1.10` |
+| Porta interna | `80` |
+
+Il traffico inoltrato viene consentito automaticamente. Attivare **NAT hairpin** se anche i client LAN devono usare l'IP pubblico. Se compare il badge *Bloccato da #n*, una regola *Nega* lo blocca.
+
+---
+
+### 10.3 Uscire con un IP pubblico specifico
+
+**Scenario A:** il server `192.168.1.50` deve uscire su Internet con l'IP secondario `1.2.3.4` invece di quello principale.
+
+1. Aggiungere `1.2.3.4` all'interfaccia `eth0` dalla sezione [Interfacce di Rete](#5-interfacce-di-rete).
+2. Vista **Standard** → **Nuova regola**, **sopra** la regola generica di navigazione:
+
+| Campo | Valore |
+|-------|--------|
+| Interfaccia di ingresso / uscita | `eth1` → `eth0` |
 | Sorgente | `192.168.1.50` |
-| Interfaccia Out | `eth0` |
-| Azione | `SNAT` |
-| To Source | `1.2.3.4` |
+| Azione | Consenti |
+| NAT | attivo |
+| IP di uscita | `1.2.3.4` |
 
-**Scenario B — IP specifico per una VPN:** si vuole che tutto il traffico proveniente dall'interfaccia WireGuard `wg0` esca con l'IP secondario `1.2.3.4`.
+Ogni connessione esce con il NAT della prima regola che la consente: se la regola generica fosse più in alto, questa riceverebbe il badge *Mai raggiunta*.
 
-| Campo | Valore |
-|-------|--------|
-| Interfaccia In | `wg0` |
-| Interfaccia Out | `eth0` |
-| Azione | `SNAT` |
-| To Source | `1.2.3.4` |
-
-> L'IP indicato in "To Source" deve essere già assegnato all'interfaccia WAN. Gli IP secondari aggiunti automaticamente sono visibili nella sezione [Interfacce di Rete](#5-interfacce-di-rete).
+**Scenario B:** una subnet deve uscire con un blocco di IP pubblici. Creare un **IP Pool** in **Oggetti** e sceglierlo come *IP di uscita* della regola.
 
 ---
 
-### 10.3 Masquerade — NAT dinamico per la LAN
+### 10.4 Bloccare un IP o una rete
 
-**Scenario:** i dispositivi della rete interna `192.168.1.0/24` devono uscire su internet usando l'IP pubblico del server (IP dinamico o comunque non fisso).
+**Traffico che attraversa la macchina** (es. impedire a `192.168.1.66` di uscire): vista **Standard**, regola con sorgente `192.168.1.66`, azione **Nega**, posizionata **sopra** le regole che la consentirebbero. Dopo il salvataggio MADMIN propone di chiudere le connessioni già aperte.
 
-**Dove configurarlo:** Tabella **NAT** → Catena **POSTROUTING**
-
-| Campo | Valore |
-|-------|--------|
-| Sorgente | `192.168.1.0/24` |
-| Interfaccia Out | `eth0` |
-| Azione | `MASQUERADE` |
-
-**Differenza tra MASQUERADE e SNAT:** MASQUERADE usa automaticamente l'IP corrente dell'interfaccia di uscita, utile se l'IP pubblico può cambiare. SNAT richiede di specificare l'IP esplicitamente ed è leggermente più performante se l'IP è fisso.
+**Traffico verso la macchina stessa** (es. bloccare `1.2.3.4` in ingresso): vista **Avanzata** → Filter → INPUT, regola con sorgente `1.2.3.4` e azione `DROP`, sopra le regole ACCEPT.
 
 ---
 
-### 10.4 Bloccare un IP o una Rete
+### 10.5 Aprire un servizio della macchina
 
-**Scenario:** bloccare tutto il traffico in ingresso proveniente dall'IP `1.2.3.4`.
+**Scenario:** consentire SSH (porta 22) dalla WAN verso la macchina.
 
-**Dove configurarlo:** Tabella **Filter** → Catena **INPUT**
-
-| Campo | Valore |
-|-------|--------|
-| Sorgente | `1.2.3.4` |
-| Azione | `DROP` |
-
-> Mettere questa regola **prima** di eventuali regole permissive più generiche, altrimenti non verrà applicata.
-
----
-
-### 10.5 Permettere solo porte specifiche in ingresso
-
-**Scenario:** permettere solo SSH (porta 22) e HTTPS (porta 443) dall'esterno, bloccare tutto il resto.
-
-**Dove configurarlo:** Tabella **Filter** → Catena **INPUT**
-
-Regola 1 — Permetti traffico già stabilito:
-
-| Campo | Valore |
-|-------|--------|
-| Stato | `ESTABLISHED,RELATED` |
-| Azione | `ACCEPT` |
-
-Regola 2 — Permetti SSH:
+**Dove:** vista **Avanzata** → Filter → INPUT
 
 | Campo | Valore |
 |-------|--------|
 | Protocollo | `tcp` |
 | Porta | `22` |
+| Interfaccia In | `eth0` |
 | Azione | `ACCEPT` |
 
-Regola 3 — Permetti HTTPS:
-
-| Campo | Valore |
-|-------|--------|
-| Protocollo | `tcp` |
-| Porta | `443` |
-| Azione | `ACCEPT` |
-
-Regola 4 — Blocca tutto il resto:
-
-| Campo | Valore |
-|-------|--------|
-| (nessun filtro) | — |
-| Azione | `DROP` |
-
-> L'ordine è fondamentale: la regola DROP deve essere l'ultima.
+La regola deve stare **sopra** la regola DROP finale della catena (altrimenti riceve il badge *Mai raggiunta*). Le connessioni già stabilite sono accettate automaticamente: non serve una regola ESTABLISHED. Le porte dei moduli VPN vengono aperte dai moduli stessi.
 
 ---
 
