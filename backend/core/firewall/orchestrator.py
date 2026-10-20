@@ -1072,7 +1072,14 @@ class FirewallOrchestrator:
                     set_name = addresses.rule_set_name(rid, direction)
                     leaf_names, seen = [], set()
                     for ra in valid:
-                        member_ids = [ra.object_id] if ra.object_id else group_members.get(ra.group_id, [])
+                        # A disabled group is empty, as when it is referenced alone
+                        # (sync_referenced); a disabled object's leaf set is empty too
+                        if ra.object_id:
+                            member_ids = [ra.object_id]
+                        elif group_objs[ra.group_id].enabled:
+                            member_ids = group_members.get(ra.group_id, [])
+                        else:
+                            member_ids = []
                         for mid in member_ids:
                             if mid in obj_by_id:
                                 nm = addresses.object_leaf_set_name(obj_by_id[mid].ref_key)

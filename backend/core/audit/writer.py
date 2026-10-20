@@ -57,9 +57,25 @@ class AuditWriter:
             async with async_session_maker() as session:
                 session.add_all(batch)
                 await session.commit()
+            return
         except Exception as e:
             # Never let audit logging take anything else down
             logger.error(f"Failed to persist {len(batch)} audit entries: {e}")
+        if len(batch) == 1:
+            return
+        # One bad entry must not take the others with it: retry one by one,
+        # so only the entry the database refuses is lost
+        lost = 0
+        for entry in batch:
+            try:
+                async with async_session_maker() as session:
+                    session.add(entry)
+                    await session.commit()
+            except Exception as e:
+                lost += 1
+                logger.error(f"Audit entry not persisted ({entry.method} {entry.path[:100]}): {e}")
+        if lost < len(batch):
+            logger.info(f"Audit batch retried one by one: {len(batch) - lost} saved, {lost} lost")
 
     async def flush(self) -> None:
         """Wait until every queued entry is written (shutdown, tests)."""

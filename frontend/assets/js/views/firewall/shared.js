@@ -136,10 +136,16 @@ export function natBadge(rule) {
         <i class="ti ti-arrows-exchange me-1"></i>${escapeHtml(t('firewall.nat.ifaceAddrShort'))}</span>`;
 }
 
-/** True when a rule's action isn't one the given Standard editor mode can represent. */
+/** True when a rule isn't one the given Standard editor mode can represent:
+ * an action outside its set, or (port forward) a match its form has no field
+ * for. The port forward form offers only TCP/UDP and requires the external
+ * port, so a DNAT on another protocol or on every port would be changed by a
+ * save (policies keep any protocol: the editor adds it to its select). */
 export function isLockedForMode(rule, mode) {
     const set = STD_EDITABLE_ACTIONS[mode];
-    return !!set && !set.includes(rule.action);
+    if (set && !set.includes(rule.action)) return true;
+    if (mode === 'portforward' && (!['tcp', 'udp'].includes(rule.protocol) || !rule.port)) return true;
+    return false;
 }
 
 /** True when a rule carries a match/behavior the Standard editor never shows

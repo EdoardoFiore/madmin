@@ -237,6 +237,14 @@ async def _validate_rule_payload(
             SimpleNamespace(to_destination_port=rule.get("to_destination_port")), obj_value
         )
 
+    # A DNAT rewrites to something: without a target iptables-restore rejects
+    # the whole ruleset. A disabled one may stay incomplete (it is never built).
+    if table == "nat" and action == "DNAT" and rule.get("enabled", True) and not effective_dest:
+        raise HTTPException(
+            status_code=400,
+            detail="Un DNAT richiede la destinazione interna (IP o oggetto indirizzo).",
+        )
+
     if rule.get("hairpin") and not (
         table == "nat" and chain == "PREROUTING" and action == "DNAT" and effective_dest
     ):
@@ -2041,7 +2049,27 @@ async def _set_group_members(session: AsyncSession, group_id, members) -> None:
         obj = await session.get(AddressObject, ouid)
         if not obj:
             raise HTTPException(status_code=400, detail=f"Oggetto indirizzo non trovato: {oid}")
+        if not obj.enabled:
+            # its set is empty: the group would silently not contain it
+            raise HTTPException(status_code=400, detail=f"Oggetto indirizzo disabilitato: {obj.name}")
         session.add(AddressGroupMember(group_id=group_id, member_object_id=ouid))
+
+
+async def _object_usage(session: AsyncSession, oid: uuid.UUID) -> Optional[str]:
+    """Where an address object is used ("usato in …"), or None when nowhere."""
+    if (await session.execute(
+        select(AddressGroupMember.id).where(AddressGroupMember.member_object_id == oid).limit(1)
+    )).first():
+        return "usato in un gruppo"
+    if (await session.execute(
+        select(FirewallRuleAddress.id).where(FirewallRuleAddress.object_id == oid).limit(1)
+    )).first():
+        return "usato in una regola"
+    if (await session.execute(
+        select(MachineFirewallRule.id).where(MachineFirewallRule.to_destination_object_id == oid).limit(1)
+    )).first():
+        return "usato come destinazione di un port forwarding"
+    return None
 
 
 # --- Address object endpoints ---
@@ -2106,9 +2134,31 @@ async def update_address_object(
     if not obj:
         raise HTTPException(status_code=404, detail="Oggetto non trovato")
     data = payload.model_dump(exclude_unset=True)
+    is_dnat_target = (await session.execute(
+        select(MachineFirewallRule.id)
+        .where(MachineFirewallRule.to_destination_object_id == obj.id)
+        .limit(1)
+    )).first() is not None
+    if data.get("enabled") is False and obj.enabled:
+        # A disabled object is an empty set: a DROP using it would stop
+        # blocking without any sign of it, a group would silently shrink
+        usage = await _object_usage(session, obj.id)
+        if usage:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Oggetto '{obj.name}' {usage}: non si può disattivare finché è in uso.",
+            )
     if "type" in data or "value" in data:
         new_type = data.get("type", obj.type)
-        obj.value = _validate_object_value(new_type, data.get("value", obj.value))
+        new_value = _validate_object_value(new_type, data.get("value", obj.value))
+        # A port forward rewrites to exactly one address (see _validate_dnat_target_object)
+        if is_dnat_target and (new_type != "cidr" or not new_value.endswith("/32")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Oggetto '{obj.name}' usato come destinazione di un port forwarding: "
+                       f"deve restare un CIDR /32 (host singolo).",
+            )
+        obj.value = new_value
         obj.type = new_type
         obj.resolved_ips = None
         obj.resolved_at = None
@@ -2137,12 +2187,7 @@ async def update_address_object(
     # matched via its ipset. resync_addresses only refreshes ipset membership
     # and would leave the DNAT rewriting to the now-stale value; a changed
     # value on a referenced object needs a full apply_rules().
-    is_dnat_target = value_changed and (await session.execute(
-        select(MachineFirewallRule.id)
-        .where(MachineFirewallRule.to_destination_object_id == obj.id)
-        .limit(1)
-    )).first() is not None
-    if is_dnat_target:
+    if is_dnat_target and value_changed:
         await firewall_orchestrator.apply_rules(session)
     else:
         await firewall_orchestrator.resync_addresses(session)
@@ -2219,25 +2264,10 @@ async def delete_address_object(
     obj = await session.get(AddressObject, oid)
     if not obj:
         raise HTTPException(status_code=404, detail="Oggetto non trovato")
-    in_group = await session.execute(
-        select(AddressGroupMember).where(AddressGroupMember.member_object_id == oid).limit(1)
-    )
-    if in_group.scalar_one_or_none():
+    usage = await _object_usage(session, oid)
+    if usage:
         raise HTTPException(status_code=409,
-            detail=f"Oggetto '{obj.name}' usato in un gruppo: rimuovilo prima dal gruppo.")
-    in_rule = await session.execute(
-        select(FirewallRuleAddress).where(FirewallRuleAddress.object_id == oid).limit(1)
-    )
-    if in_rule.scalar_one_or_none():
-        raise HTTPException(status_code=409,
-            detail=f"Oggetto '{obj.name}' usato in una regola: rimuovilo prima dalla regola.")
-    in_dnat_target = await session.execute(
-        select(MachineFirewallRule.id).where(MachineFirewallRule.to_destination_object_id == oid).limit(1)
-    )
-    if in_dnat_target.first():
-        raise HTTPException(status_code=409,
-            detail=f"Oggetto '{obj.name}' usato come destinazione di un port forwarding: "
-                   f"rimuovilo prima dalla regola.")
+            detail=f"Oggetto '{obj.name}' {usage}: rimuovilo prima da lì.")
     await session.delete(obj)
     await session.flush()
     await firewall_orchestrator.resync_addresses(session)
@@ -2312,6 +2342,15 @@ async def update_address_group(
         g.name = nm
     if "description" in data:
         g.description = data["description"]
+    if data.get("enabled") is False and g.enabled:
+        # A disabled group is an empty set: same reason as for objects
+        if (await session.execute(
+            select(FirewallRuleAddress.id).where(FirewallRuleAddress.group_id == g.id).limit(1)
+        )).first():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Gruppo '{g.name}' usato in una regola: non si può disattivare finché è in uso.",
+            )
     if "enabled" in data:
         g.enabled = data["enabled"]
     g.updated_at = datetime.utcnow()

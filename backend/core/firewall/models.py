@@ -304,9 +304,13 @@ class _FirewallRuleValidators(SQLModel):
     def validate_port(cls, v):
         if v is None or v == "":
             return None
-        # Single port, range "8000:8080", list "80,443,8000:8080" (see ports.py)
+        # Single port, range "8000:8080", list "80,443,8000:8080" (see ports.py).
+        # Spaces are dropped: "80, 443" is how people type a list.
+        v = "".join(str(v).split())
+        if not v:
+            return None
         parse_port_spec(v)
-        return str(v)
+        return v
 
     @field_validator('protocol', mode='before', check_fields=False)
     @classmethod
@@ -326,6 +330,10 @@ class _FirewallRuleValidators(SQLModel):
         # Linux interface name (IFNAMSIZ 15), optionally iptables' "+" wildcard
         if not re.fullmatch(r'[A-Za-z0-9._@-]{1,15}\+?', str(v)):
             raise ValueError(f"Interfaccia non valida: {v}")
+        # A valid name for the kernel, but an address typed in the wrong field:
+        # the rule would never match (the address goes in source/destination)
+        if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', str(v)):
+            raise ValueError(f"Interfaccia non valida: {v} è un indirizzo IP, indicare il nome (es. eth0)")
         return v
 
     @field_validator('state', mode='before', check_fields=False)

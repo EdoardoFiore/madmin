@@ -1007,7 +1007,11 @@ def build_rule_args(
     if action == "CONNMARK" and set_xmark:
         args.extend(["--set-xmark", set_xmark])
 
-    if action == "DNAT" and to_destination:
+    if action == "DNAT":
+        # iptables-restore rejects a bare -j DNAT, and with it the whole
+        # ruleset (a restored archive whose target object was not found)
+        if not to_destination:
+            raise ValueError("DNAT senza destinazione interna")
         args.extend(["--to-destination", to_destination])
     
     if action == "SNAT":

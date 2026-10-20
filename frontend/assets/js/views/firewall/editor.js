@@ -235,6 +235,10 @@ function serviceHtml(rule) {
     const port = rule?.port || '';
     const presets = SERVICE_PRESETS.map(p =>
         `<option value="${p.protocol}|${p.port}">${p.label} (${p.protocol.toUpperCase()}/${p.port})</option>`).join('');
+    // A protocol set from Advanced (gre, esp, 47…) stays selected: without its
+    // option the select would fall back to "all" and saving would widen the rule
+    const extraProto = proto && !['tcp', 'udp', 'icmp'].includes(proto)
+        ? `<option value="${escapeHtml(proto)}" selected>${escapeHtml(proto.toUpperCase())}</option>` : '';
     return `
         <div class="col-md-4">
             <label class="form-label">${t('firewall.protocol')}</label>
@@ -243,11 +247,12 @@ function serviceHtml(rule) {
                 <option value="tcp" ${proto === 'tcp' ? 'selected' : ''}>TCP</option>
                 <option value="udp" ${proto === 'udp' ? 'selected' : ''}>UDP</option>
                 <option value="icmp" ${proto === 'icmp' ? 'selected' : ''}>ICMP</option>
+                ${extraProto}
             </select>
         </div>
         <div class="col-md-4" id="ed-port-wrap">
             <label class="form-label">${t('firewall.port')}</label>
-            <input type="text" class="form-control" id="ed-port" value="${escapeHtml(port)}" placeholder="80, 443, 8000:8080">
+            <input type="text" class="form-control" id="ed-port" value="${escapeHtml(port)}" placeholder="80,443,8000:8080">
         </div>
         <div class="col-md-4">
             <label class="form-label">${t('firewall.editor.servicePreset')}</label>
@@ -330,8 +335,11 @@ function formFields(rule) {
         // Object targets are restricted to /32 cidr (a single host — see
         // backend effective_to_destination): a range or wider CIDR can't be
         // a DNAT rewrite target or a plain -d match on the companions.
+        // The saved target always stays listed: without its option the select
+        // would show "—" next to a disabled IP field and the save would fail
         const intObjOptions = (st.objects || [])
-            .filter(o => o.enabled && o.type === 'cidr' && o.value.endsWith('/32'));
+            .filter(o => (o.enabled && o.type === 'cidr' && o.value.endsWith('/32'))
+                || (hasIntObj && o.id === rule.to_destination_object_id));
         // A new forward starts on the WAN: without an incoming interface or
         // an external IP it would also rewrite the LAN's traffic to the Internet
         const inIf = rule ? (rule.in_interface || '')
@@ -491,14 +499,14 @@ function setActive(field) {
     st.panel?.render();
 }
 
-/** Hide the port field when the protocol carries no port (all / ICMP). Also
- * clears its value: the engine only emits --dport for tcp/udp, so a port left
- * behind in the hidden field would be saved and silently ignored. */
+/** Hide the port field when the protocol carries no port (anything but tcp/udp).
+ * Also clears its value: the engine only emits --dport for tcp/udp, so a port
+ * left behind in the hidden field would be saved and silently ignored. */
 function updatePortVisibility() {
     const wrap = st?.container.querySelector('#ed-port-wrap');
     if (!wrap) return;
     const proto = st.container.querySelector('#ed-proto')?.value || '';
-    const hidden = proto === '' || proto === 'icmp';
+    const hidden = proto !== 'tcp' && proto !== 'udp';
     wrap.classList.toggle('d-none', hidden);
     if (hidden) {
         const portInput = st.container.querySelector('#ed-port');

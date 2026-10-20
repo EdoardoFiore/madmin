@@ -17,6 +17,7 @@ import hashlib
 import logging
 import posixpath
 import socket
+import ssl
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -95,7 +96,10 @@ def _sftp(target: RemoteTarget):
 
 @contextmanager
 def _ftps(target: RemoteTarget):
-    ftp = FTP_TLS(timeout=IO_TIMEOUT)
+    # Without a context FTP_TLS accepts any certificate: anyone in the path
+    # would read the login and the archive. Verify the chain and the host name
+    # (FTP_TLS passes server_hostname on the control and the data channel).
+    ftp = FTP_TLS(timeout=IO_TIMEOUT, context=ssl.create_default_context())
     try:
         ftp.connect(target.host, target.port, timeout=CONNECT_TIMEOUT)
         ftp.login(target.username, target.password)  # AUTH TLS first

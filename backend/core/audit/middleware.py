@@ -335,13 +335,17 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 # Strip query params and download tokens from the stored path
                 clean_path = redact_path(path.split("?")[0])
 
+                # Clipped to the column sizes: anyone can send a 2 KB path to an
+                # existing route (401, logged), and one value too long fails
+                # the insert of the whole batch it is written with
+                clean_path = clean_path[:500]
                 audit_entry = AuditLog(
-                    username=username,
-                    method=method,
+                    username=str(username)[:100],
+                    method=method[:10],
                     path=clean_path,
                     status_code=status_code,
                     duration_ms=duration_ms,
-                    client_ip=client_ip,
+                    client_ip=client_ip[:45],
                     category=category,
                     request_body=body_text,
                     response_summary=response_summary,

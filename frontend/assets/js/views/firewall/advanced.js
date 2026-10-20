@@ -223,6 +223,22 @@ export async function render(container) {
                                     </label>
                                     <input type="text" class="form-control" id="rule-to-destination" placeholder="192.168.1.50:80">
                                 </div>
+                                <div class="col-md-6 field-dnat" style="display:none">
+                                    <label class="form-label">${t('firewall.editor.intObj')}</label>
+                                    <div class="input-group">
+                                        <select class="form-select" id="rule-to-destination-object"></select>
+                                        <input type="text" class="form-control" id="rule-to-destination-port"
+                                               style="max-width:110px" placeholder="${escapeHtml(t('firewall.editor.intPort'))}">
+                                    </div>
+                                    <small class="form-hint">${t('firewall.editor.intObjHint')}</small>
+                                </div>
+                                <div class="col-12 field-dnat" style="display:none">
+                                    <label class="form-check form-switch mb-0">
+                                        <input class="form-check-input" type="checkbox" id="rule-hairpin">
+                                        <span class="form-check-label">${t('firewall.editor.hairpin')}</span>
+                                    </label>
+                                    <small class="form-hint">${t('firewall.editor.hairpinHint')}</small>
+                                </div>
                                 <div class="col-md-6 field-snat" style="display:none">
                                     <label class="form-label">
                                         To Source
@@ -686,6 +702,22 @@ function setupEventListeners() {
         updateIptablesPreview();
     });
     document.getElementById('rule-nat-custom')?.addEventListener('input', updateIptablesPreview);
+    // DNAT target: a literal ip[:port] or an address object (+ optional port),
+    // never both (the object would win on the backend)
+    document.getElementById('rule-to-destination-object')?.addEventListener('change', () => {
+        if (document.getElementById('rule-to-destination-object').value) {
+            document.getElementById('rule-to-destination').value = '';
+        }
+        syncDnatTargetFields();
+        updateIptablesPreview();
+    });
+    document.getElementById('rule-to-destination')?.addEventListener('input', (e) => {
+        if (e.target.value) {
+            document.getElementById('rule-to-destination-object').value = '';
+            syncDnatTargetFields();
+        }
+    });
+    document.getElementById('rule-to-destination-port')?.addEventListener('input', updateIptablesPreview);
     document.getElementById('rule-snat-pool')?.addEventListener('change', (e) => {
         document.getElementById('rule-to-source').classList.toggle('d-none', !!e.target.value);
         updateIptablesPreview();
@@ -817,6 +849,54 @@ function policyNatPayload() {
     return natSourcePayload(v);
 }
 
+/**
+ * DNAT target object select: host objects (CIDR /32, the only kind a DNAT can
+ * rewrite to), plus the rule's saved one whatever its state, so it is never
+ * dropped by an edit.
+ */
+function fillDnatObject(current = '') {
+    const sel = document.getElementById('rule-to-destination-object');
+    if (!sel) return;
+    const opts = addressObjects.filter(o =>
+        (o.enabled && o.type === 'cidr' && o.value.endsWith('/32')) || o.id === current);
+    sel.innerHTML = '<option value="">—</option>' + opts.map(o =>
+        `<option value="${escapeHtml(o.id)}" ${o.id === current ? 'selected' : ''}>${escapeHtml(`${o.name} (${o.value})`)}</option>`
+    ).join('');
+    syncDnatTargetFields();
+}
+
+/** The object's port only with an object; the literal field off with one. */
+function syncDnatTargetFields() {
+    const withObj = !!document.getElementById('rule-to-destination-object')?.value;
+    const port = document.getElementById('rule-to-destination-port');
+    if (port) {
+        port.disabled = !withObj;
+        if (!withObj) port.value = '';
+    }
+    const literal = document.getElementById('rule-to-destination');
+    if (literal) literal.disabled = withObj;
+}
+
+/** {to_destination, to_destination_object_id, to_destination_port} of a DNAT; all null otherwise. */
+function dnatTargetPayload(action) {
+    if (action !== 'DNAT') {
+        return { to_destination: null, to_destination_object_id: null, to_destination_port: null };
+    }
+    const objId = document.getElementById('rule-to-destination-object')?.value || '';
+    if (objId) {
+        return {
+            to_destination: null,
+            to_destination_object_id: objId,
+            to_destination_port: document.getElementById('rule-to-destination-port').value.trim() || null,
+        };
+    }
+    return {
+        to_destination: document.getElementById('rule-to-destination').value.trim() || null,
+        to_destination_object_id: null,
+        to_destination_port: null,
+    };
+}
+
 /** {to_source, nat_pool_id} of an SNAT rule. */
 function snatPayload() {
     const pool = document.getElementById('rule-snat-pool')?.value || '';
@@ -917,7 +997,16 @@ function updateIptablesPreview() {
     cmd += ` -j ${action}`;
 
     // Append action arguments
-    if (action === 'DNAT' && toDest) cmd += ` --to-destination ${toDest}`;
+    if (action === 'DNAT') {
+        const objId = document.getElementById('rule-to-destination-object')?.value;
+        const obj = objId ? addressObjects.find(o => o.id === objId) : null;
+        if (obj) {
+            const objPort = document.getElementById('rule-to-destination-port')?.value.trim();
+            cmd += ` --to-destination ${obj.value.replace(/\/32$/, '')}${objPort ? ':' + objPort : ''}`;
+        } else if (toDest) {
+            cmd += ` --to-destination ${toDest}`;
+        }
+    }
     if (action === 'SNAT') {
         const pool = document.getElementById('rule-snat-pool')?.value;
         if (pool) cmd = cmd.replace(/ -j SNAT$/, '') + previewNatTarget({ nat_pool_id: pool });
@@ -1521,6 +1610,10 @@ function openRuleModal(rule = null, isDuplicate = false) {
 
     // New fields
     document.getElementById('rule-to-destination').value = rule?.to_destination || '';
+    fillDnatObject(rule?.to_destination_object_id || '');
+    document.getElementById('rule-to-destination-port').value =
+        rule?.to_destination_object_id ? (rule?.to_destination_port || '') : '';
+    document.getElementById('rule-hairpin').checked = !!rule?.hairpin;
     document.getElementById('rule-to-source').value = (rule?.table_name === 'nat' && rule?.to_source) || '';
     document.getElementById('rule-to-ports').value = rule?.to_ports || '';
     document.getElementById('rule-log-prefix').value = rule?.log_prefix || '';
@@ -1579,8 +1672,11 @@ async function handleRuleSubmit(e) {
         // from silently dropping the flag (previously omitted entirely).
         policy_nat: policyNat,
 
-        // New fields
-        to_destination: document.getElementById('rule-to-destination').value || null,
+        // DNAT target (literal or address object) and hairpin: sent on every
+        // save so an edit or a duplicate never drops them
+        ...dnatTargetPayload(action),
+        hairpin: action === 'DNAT' && chain === 'PREROUTING' && table_name === 'nat'
+            && document.getElementById('rule-hairpin').checked,
         // SNAT target on nat rules (a pool or a typed address), the NAT
         // address on a policy; nothing elsewhere
         ...(action === 'SNAT' ? snatPayload()

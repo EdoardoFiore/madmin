@@ -5,6 +5,7 @@ API endpoints for config export/import and backup management.
 """
 import os
 import logging
+import ssl
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
@@ -366,6 +367,13 @@ async def _remote_call(coro):
         raise HTTPException(status_code=400, detail=str(e))
     except HostKeyMismatch as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except ssl.SSLCertVerificationError as e:
+        logger.error(f"Remote backup: FTPS certificate rejected: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Server remoto: certificato TLS non valido ({e.verify_message}). "
+                   f"Il server FTPS deve presentare un certificato valido per il suo nome host.",
+        )
     except Exception as e:
         logger.error(f"Remote backup operation failed: {e}")
         raise HTTPException(status_code=502, detail=f"Server remoto: {e}")
