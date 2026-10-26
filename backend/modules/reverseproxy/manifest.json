@@ -2,7 +2,7 @@
     "id": "reverseproxy",
     "name": "Reverse Proxy",
     "version": "1.0.0",
-    "description": "Reverse proxy manager (nginx) con access list HTTP basic + IP allow/deny e certificati Let's Encrypt",
+    "description": "Reverse proxy manager (istanza nginx dedicata) con access list HTTP basic + IP allow/deny e certificati Let's Encrypt",
     "author": "MADMIN Team",
     "openapi_tag_description": "Reverse Proxy — gestione proxy host nginx, access list (auth + IP) e certificati Let's Encrypt.",
     "system_dependencies": {
@@ -20,7 +20,8 @@
     ],
     "install_hooks": {
         "post_install": "hooks/post_install.py",
-        "on_disable": "hooks/on_disable.py"
+        "on_disable": "hooks/on_disable.py",
+        "on_startup": "hooks/on_startup.py"
     },
     "backend_router": "router.py",
     "static_dir": "static",
@@ -41,6 +42,10 @@
         {
             "slug": "reverseproxy.certs",
             "description": "Emissione e revoca certificati Let's Encrypt"
+        },
+        {
+            "slug": "reverseproxy.logs",
+            "description": "Visualizza i log di accesso ed errore nginx (globali e per host)"
         }
     ],
     "menu": [
@@ -73,7 +78,7 @@
         "irrecoverable_files": [
             "/etc/letsencrypt/live/madmin-*",
             "/etc/letsencrypt/archive/madmin-*",
-            "/etc/nginx/madmin-revproxy/htpasswd/*"
+            "/etc/nginx-revproxy/htpasswd/*"
         ],
         "post_restore": "hooks/post_restore.py"
     },

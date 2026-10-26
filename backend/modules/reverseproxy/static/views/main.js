@@ -1,7 +1,7 @@
 /**
  * Reverse Proxy Module - Entry view
  *
- * Two tabs: Proxy Hosts and Access Lists. Loads module translations,
+ * Tabs: Proxy Hosts, Access Lists, SSL/TLS certificates and Logs. Loads module translations,
  * shows a banner if the module is blocked by a port conflict.
  */
 import { apiGet } from '/static/js/api.js';
@@ -12,6 +12,7 @@ import { t, loadModuleTranslations } from '/static/js/i18n.js';
 import { renderHostsTab } from './hostsList.js';
 import { renderAccessListsTab } from './accessLists.js';
 import { renderCertsTab } from './certsList.js';
+import { renderLogsTab } from './logsList.js';
 
 const MODULE_API = '/modules/reverseproxy';
 
@@ -23,10 +24,12 @@ export async function render(container, params) {
         manage: checkPermission('reverseproxy.manage'),
         accessLists: checkPermission('reverseproxy.access_lists'),
         certs: checkPermission('reverseproxy.certs'),
+        logs: checkPermission('reverseproxy.logs'),
     };
 
     const activeTab = params && params[0] === 'access-lists' ? 'access-lists'
         : params && params[0] === 'certs' ? 'certs'
+        : params && params[0] === 'logs' && perms.logs ? 'logs'
         : 'hosts';
 
     container.innerHTML = `
@@ -53,6 +56,13 @@ export async function render(container, params) {
                             <i class="ti ti-shield me-2"></i>${t('reverseproxy.tabCerts')}
                         </button>
                     </li>
+                    ${perms.logs ? `
+                    <li class="nav-item">
+                        <button type="button" class="nav-link ${activeTab === 'logs' ? 'active' : ''}"
+                                data-bs-toggle="tab" data-bs-target="#revproxy-pane-logs">
+                            <i class="ti ti-file-text me-2"></i>${t('reverseproxy.tabLogs')}
+                        </button>
+                    </li>` : ''}
                 </ul>
                 <div class="card-options">
                     <span id="revproxy-service-badge" class="badge bg-secondary-lt">…</span>
@@ -68,6 +78,10 @@ export async function render(container, params) {
                 <div class="tab-pane fade ${activeTab === 'certs' ? 'show active' : ''}" id="revproxy-pane-certs">
                     <div id="revproxy-certs-body">${loadingSpinner()}</div>
                 </div>
+                ${perms.logs ? `
+                <div class="tab-pane fade ${activeTab === 'logs' ? 'show active' : ''}" id="revproxy-pane-logs">
+                    <div id="revproxy-logs-body">${loadingSpinner()}</div>
+                </div>` : ''}
             </div>
         </div>
     `;
@@ -76,6 +90,9 @@ export async function render(container, params) {
     await renderHostsTab(document.getElementById('revproxy-hosts-body'), perms);
     await renderAccessListsTab(document.getElementById('revproxy-acls-body'), perms);
     await renderCertsTab(document.getElementById('revproxy-certs-body'), perms);
+    if (perms.logs) {
+        await renderLogsTab(document.getElementById('revproxy-logs-body'));
+    }
 
     // Sync route hash when user switches tab manually
     container.querySelectorAll('button[data-bs-toggle="tab"]').forEach(btn => {
@@ -85,6 +102,8 @@ export async function render(container, params) {
                 history.replaceState(null, '', '#reverseproxy/access-lists');
             } else if (target === '#revproxy-pane-certs') {
                 history.replaceState(null, '', '#reverseproxy/certs');
+            } else if (target === '#revproxy-pane-logs') {
+                history.replaceState(null, '', '#reverseproxy/logs');
             } else {
                 history.replaceState(null, '', '#reverseproxy');
             }

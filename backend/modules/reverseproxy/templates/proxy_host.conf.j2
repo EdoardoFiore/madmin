@@ -10,6 +10,9 @@ server {
     listen [::]:80;
     server_name {{ server_names }};
 
+    access_log {{ logs.access }};
+    error_log {{ logs.error }} warn;
+
     # ACME challenge always served over HTTP
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/madmin-acme;
@@ -26,6 +29,9 @@ server {
     listen 80;
     listen [::]:80;
     server_name {{ server_names }};
+
+    access_log {{ logs.access }};
+    error_log {{ logs.error }} warn;
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/madmin-acme;
@@ -44,6 +50,9 @@ server {
     listen 443 ssl{% if host.http2_support %} http2{% endif %};
     listen [::]:443 ssl{% if host.http2_support %} http2{% endif %};
     server_name {{ server_names }};
+
+    access_log {{ logs.access }};
+    error_log {{ logs.error }} warn;
 
     ssl_certificate {{ cert.cert_path }};
     ssl_certificate_key {{ cert.key_path }};
