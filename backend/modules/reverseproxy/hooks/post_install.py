@@ -9,7 +9,6 @@ Reverse Proxy Module - Post Install Hook
   instance.
 Note: firewall rules (80/443) are applied by router.py at import time.
 """
-import os
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,7 +39,8 @@ async def run():
     svc.clear_sentinel()
 
     # 3) Dedicated nginx instance: directories, nginx.conf, ACME vhost,
-    #    systemd unit (enabled at boot) and logrotate policy
+    #    systemd unit (enabled at boot), logrotate policy and certbot
+    #    deploy hook (reloads the instance after every renewal)
     try:
         svc.install_instance()
     except Exception as e:
@@ -57,20 +57,7 @@ async def run():
     #    every startup. post_install runs before register_module_chains() which
     #    would flush any rules added here, so rule setup belongs in the router.
 
-    # 6) Install certbot deploy-hook so the instance reloads after every renewal
-    try:
-        hook_dir = svc.RENEWAL_HOOK.parent
-        hook_dir.mkdir(parents=True, exist_ok=True)
-        svc.RENEWAL_HOOK.write_text(
-            "#!/bin/sh\n"
-            "# Installed by MADMIN reverseproxy module\n"
-            f"systemctl reload {unit}\n"
-        )
-        os.chmod(svc.RENEWAL_HOOK, 0o755)
-    except Exception as e:
-        logger.warning("Reverse Proxy post-install: cert renewal hook error: %s", e)
-
-    # 7) Render every DB-tracked vhost/ACL (re-enable case) and start the instance
+    # 6) Render every DB-tracked vhost/ACL (re-enable case) and start the instance
     async with async_session_maker() as session:
         ok, msg = await svc.sync_all(session)
     if not ok:

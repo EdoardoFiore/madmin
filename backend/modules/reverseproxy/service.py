@@ -396,9 +396,20 @@ def _write_if_changed(path: Path, content: str) -> bool:
     return True
 
 
+def render_renewal_hook() -> str:
+    return (
+        "#!/bin/sh\n"
+        "# Installed by MADMIN reverseproxy module\n"
+        f"systemctl reload {SERVICE_NAME}.service\n"
+    )
+
+
 def install_instance() -> None:
-    """Create directories, main config, systemd unit and logrotate policy for
-    the dedicated instance and enable it at boot. Idempotent; does not start it."""
+    """Create directories, main config, systemd unit, logrotate policy and
+    certbot deploy hook for the dedicated instance and enable it at boot.
+    Idempotent; does not start it. Runs on every startup too, so installs
+    upgraded from the shared layout get their renewal hook repointed from the
+    system nginx to the instance."""
     for d in (NGINX_DIR, SITES_DIR, SNIPPETS_DIR, HTPASSWD_DIR,
               NGINX_LOG_DIR, NGINX_TEMP_DIR, ACME_WEBROOT, SENTINEL_DIR):
         d.mkdir(parents=True, exist_ok=True)
@@ -412,6 +423,9 @@ def install_instance() -> None:
     if _write_if_changed(SYSTEMD_UNIT, _jinja.get_template("nginx-revproxy.service.j2").render(**ctx)):
         _systemctl("daemon-reload")
     _systemctl("enable", f"{SERVICE_NAME}.service")
+
+    _write_if_changed(RENEWAL_HOOK, render_renewal_hook())
+    os.chmod(RENEWAL_HOOK, 0o755)
 
 
 def uninstall_instance() -> None:

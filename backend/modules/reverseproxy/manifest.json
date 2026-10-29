@@ -1,7 +1,7 @@
 {
     "id": "reverseproxy",
     "name": "Reverse Proxy",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Reverse proxy manager (istanza nginx dedicata) con access list HTTP basic + IP allow/deny e certificati Let's Encrypt",
     "author": "MADMIN Team",
     "openapi_tag_description": "Reverse Proxy — gestione proxy host nginx, access list (auth + IP) e certificati Let's Encrypt.",
