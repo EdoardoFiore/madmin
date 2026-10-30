@@ -1,0 +1,42 @@
+# Managed by MADMIN reverseproxy module - main config of the dedicated
+# reverse proxy instance ({{ service }}.service). The MADMIN dashboard runs on
+# the system nginx (/etc/nginx), so an error here cannot lock you out of it.
+# DO NOT EDIT MANUALLY: changes will be overwritten on next apply.
+
+user www-data;
+worker_processes auto;
+pid {{ pid_file }};
+error_log {{ log_dir }}/error.log;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    sendfile on;
+    tcp_nopush on;
+    types_hash_max_size 2048;
+    server_names_hash_bucket_size 128;
+    server_tokens off;
+
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    # Requests that match no proxy host (catch-all, unknown domains)
+    access_log {{ log_dir }}/access.log;
+
+    gzip on;
+
+    # Own temp paths: never shared with the system nginx
+    client_body_temp_path {{ temp_dir }}/body;
+    proxy_temp_path {{ temp_dir }}/proxy;
+    fastcgi_temp_path {{ temp_dir }}/fastcgi;
+    uwsgi_temp_path {{ temp_dir }}/uwsgi;
+    scgi_temp_path {{ temp_dir }}/scgi;
+
+    include {{ sites_dir }}/*.conf;
+}

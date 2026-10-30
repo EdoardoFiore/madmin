@@ -693,13 +693,25 @@ Azioni disponibili: **Rinnova** (rilancia certbot) e **Revoca**.
 
 ---
 
+#### Log
+
+Il tab **Log** (permesso `reverseproxy.logs`) mostra i log di accesso e di errore, filtrabili per virtualhost:
+
+- **Virtual host**: ogni proxy host ha i propri file di log. La voce *Reverse proxy — generale* contiene le richieste che non corrispondono a nessun host (domini sconosciuti, accesso diretto via IP, catch-all ACME) e gli errori dell'istanza nginx.
+- **File**: il file corrente o uno degli archivi ruotati da logrotate (`.1`, `.2.gz`, …, conservati 14 giorni).
+- **Filtri**: ricerca testuale, codice di risposta (2xx/3xx/4xx/5xx, solo log di accesso) e numero di righe (fino a 2000, dalla più recente).
+- **Aggiornamento automatico** ogni 10 secondi sul file corrente.
+
+---
+
 #### Come funziona internamente
 
-- nginx viene configurato con file in `/etc/nginx/madmin-revproxy/`.
-- Ogni Proxy Host genera un file `madmin-proxy-{id}.conf` in `/etc/nginx/sites-available/` con symlink in `sites-enabled/`.
-- Un vhost catch-all (`madmin-acme.conf`) serve le challenge ACME HTTP-01 su porta 80 per tutti i domini, anche prima che il certificato esista.
-- Le liste di accesso generano file htpasswd in `/etc/nginx/madmin-revproxy/htpasswd/` e snippet di configurazione in `/etc/nginx/madmin-revproxy/snippets/`.
-- Dopo ogni modifica nginx viene ricaricato automaticamente (`systemctl reload nginx`).
+- Il reverse proxy gira su un'**istanza nginx dedicata** (`nginx-revproxy.service`), separata dall'nginx che serve la dashboard MADMIN sulla porta 7443: un errore nella configurazione di un proxy host non può togliere l'accesso alla dashboard.
+- La configurazione dell'istanza è in `/etc/nginx-revproxy/`: `nginx.conf`, un file `sites/madmin-proxy-{id}.conf` per ogni Proxy Host abilitato e il vhost catch-all `sites/madmin-acme.conf`, che serve le challenge ACME HTTP-01 su porta 80 per tutti i domini, anche prima che il certificato esista.
+- Le liste di accesso generano file htpasswd in `/etc/nginx-revproxy/htpasswd/` e snippet di configurazione in `/etc/nginx-revproxy/snippets/`.
+- I log sono in `/var/log/nginx-revproxy/` (`madmin-proxy-{id}.access.log` / `.error.log` per host, `access.log` / `error.log` generali), ruotati da `/etc/logrotate.d/nginx-revproxy`.
+- Dopo ogni modifica la configurazione viene verificata (`nginx -t -c /etc/nginx-revproxy/nginx.conf`) e l'istanza ricaricata (`systemctl reload nginx-revproxy`); se la verifica fallisce i file precedenti vengono ripristinati. All'avvio di MADMIN i file vengono riallineati al database.
+- Installazioni precedenti, con i vhost nell'nginx di sistema, vengono migrate automaticamente all'avvio.
 
 ---
 

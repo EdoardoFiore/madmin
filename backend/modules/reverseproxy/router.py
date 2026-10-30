@@ -1,14 +1,14 @@
 """
 Reverse Proxy Module - API Router
 
-CRUD for hosts and access lists, certificate issuance, preflight check
-and nginx service status.
+CRUD for hosts and access lists, certificate issuance, preflight check,
+nginx service status and access/error log viewing.
 """
 import asyncio
 import logging
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Path as FastapiPath
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
@@ -160,7 +160,7 @@ async def service_status(
     _user: User = Depends(require_permission("reverseproxy.view")),
 ):
     blocked, reason = svc.is_blocked()
-    status = SystemdService.get_status("nginx")
+    status = SystemdService.get_status(svc.SERVICE_NAME)
     return {**status, "blocked": blocked, "block_reason": reason}
 
 
@@ -689,3 +689,66 @@ async def delete_access_list(
     for h in affected_hosts:
         await svc.apply_host(db, h.id)
     return {"ok": True}
+
+
+# ============================================================================
+# Logs
+# ============================================================================
+
+def _log_source(source: str) -> str:
+    """Accept only "global" or a UUID, so the source never reaches a path raw."""
+    if source == svc.GLOBAL_LOG_SOURCE:
+        return source
+    try:
+        return str(uuid.UUID(source))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Sorgente log non valida")
+
+
+@router.get("/logs/sources")
+async def list_log_sources(
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("reverseproxy.logs")),
+):
+    """Selectable log sources: nginx global logs plus one entry per proxy host."""
+    result = await db.execute(
+        select(RevproxyHost).options(selectinload(RevproxyHost.domains))
+    )
+    hosts = sorted(result.scalars().all(), key=lambda h: h.name.lower())
+    return [{"id": svc.GLOBAL_LOG_SOURCE, "name": None, "domains": [], "enabled": True}] + [
+        {
+            "id": str(h.id),
+            "name": h.name,
+            "domains": [d.domain for d in h.domains],
+            "enabled": h.enabled,
+        }
+        for h in hosts
+    ]
+
+
+@router.get("/logs/{source}/{kind}/files")
+async def list_log_files(
+    source: str,
+    kind: str = FastapiPath(..., pattern="^(access|error)$"),
+    _user: User = Depends(require_permission("reverseproxy.logs")),
+):
+    base = svc.log_base_path(_log_source(source), kind)
+    return await asyncio.to_thread(svc.list_log_files, base)
+
+
+@router.get("/logs/{source}/{kind}")
+async def read_log(
+    source: str,
+    kind: str = FastapiPath(..., pattern="^(access|error)$"),
+    file: int = Query(0, ge=0, le=999),
+    lines: int = Query(500, ge=1, le=svc.MAX_LOG_LINES),
+    search: str = Query("", max_length=200),
+    status: Optional[int] = Query(None, ge=1, le=5),
+    _user: User = Depends(require_permission("reverseproxy.logs")),
+):
+    """Last `lines` entries of a log file (0 = current, N = Nth rotated archive)."""
+    base = svc.log_base_path(_log_source(source), kind)
+    return await asyncio.to_thread(
+        svc.read_log, base, kind, file, lines, search.strip(),
+        status if kind == "access" else None,
+    )

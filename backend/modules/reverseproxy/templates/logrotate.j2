@@ -1,0 +1,14 @@
+# Managed by MADMIN reverseproxy module
+{{ log_dir }}/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        [ -s {{ pid_file }} ] && kill -USR1 "$(cat {{ pid_file }})" || true
+    endscript
+}

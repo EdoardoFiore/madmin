@@ -1,17 +1,20 @@
 """
 Reverse Proxy Module - Service Layer
 
-Renders nginx configs from DB state, writes them to disk under madmin-* prefix,
+Renders nginx configs from DB state into a dedicated nginx instance
+(nginx-revproxy.service, separate from the dashboard nginx),
 manages access lists (htpasswd + IP rules), and drives certbot for Let's Encrypt.
 """
 import asyncio
 import os
-import shutil
 import re
+import gzip
+import shutil
 import subprocess
 import logging
 import ipaddress
 from pathlib import Path
+from collections import deque
 from datetime import datetime
 from typing import List, Optional, Tuple, Dict, Any
 
@@ -32,18 +35,30 @@ from core.fsutil import atomic_write
 logger = logging.getLogger(__name__)
 
 # --- Paths ---
-NGINX_SITES_AVAILABLE = Path("/etc/nginx/sites-available")
-NGINX_SITES_ENABLED = Path("/etc/nginx/sites-enabled")
-MADMIN_REVPROXY_DIR = Path("/etc/nginx/madmin-revproxy")
-HTPASSWD_DIR = MADMIN_REVPROXY_DIR / "htpasswd"
-SNIPPETS_DIR = MADMIN_REVPROXY_DIR / "snippets"
+# The module runs its own nginx instance, separate from the one serving the
+# MADMIN dashboard: a broken proxy config can never take the admin UI down.
+SERVICE_NAME = "nginx-revproxy"
+NGINX_BIN = "/usr/sbin/nginx"
+NGINX_DIR = Path("/etc/nginx-revproxy")
+NGINX_CONF = NGINX_DIR / "nginx.conf"
+SITES_DIR = NGINX_DIR / "sites"
+HTPASSWD_DIR = NGINX_DIR / "htpasswd"
+SNIPPETS_DIR = NGINX_DIR / "snippets"
+NGINX_LOG_DIR = Path("/var/log/nginx-revproxy")
+NGINX_TEMP_DIR = Path("/var/lib/nginx-revproxy")
+NGINX_PID_FILE = Path("/run/nginx-revproxy.pid")
+SYSTEMD_UNIT = Path(f"/etc/systemd/system/{SERVICE_NAME}.service")
+LOGROTATE_FILE = Path(f"/etc/logrotate.d/{SERVICE_NAME}")
 ACME_WEBROOT = Path("/var/www/madmin-acme")
 SENTINEL_DIR = Path("/etc/madmin/reverseproxy")
 SENTINEL_FILE = SENTINEL_DIR / ".disabled-due-to-conflict"
 LETSENCRYPT_LIVE = Path("/etc/letsencrypt/live")
 RENEWAL_HOOK = Path("/etc/letsencrypt/renewal-hooks/deploy/madmin-revproxy-reload.sh")
 
-FILE_PREFIX = "madmin-"
+# Layout used before the dedicated instance: vhosts lived in the dashboard nginx
+LEGACY_SITES_DIRS = (Path("/etc/nginx/sites-enabled"), Path("/etc/nginx/sites-available"))
+LEGACY_REVPROXY_DIR = Path("/etc/nginx/madmin-revproxy")
+
 PROXY_FILE_PREFIX = "madmin-proxy-"
 ACME_FILE = "madmin-acme.conf"
 
@@ -170,7 +185,9 @@ async def _check_dnat_conflicts(session: AsyncSession) -> List[str]:
 
 
 def _check_nginx_conflicts() -> List[str]:
-    """Parse `nginx -T` to find non-madmin listen 80/443 directives."""
+    """Parse `nginx -T` of the system nginx (the one serving the MADMIN
+    dashboard) for listen 80/443 directives: those ports belong to the
+    dedicated reverse proxy instance."""
     conflicts: List[str] = []
     try:
         result = subprocess.run(
@@ -191,9 +208,9 @@ def _check_nginx_conflicts() -> List[str]:
         if m:
             current_file = m.group(1)
             continue
-        # Skip files managed by this module
+        # Skip files of the legacy layout: migrate_legacy_layout() removes them
         fname = Path(current_file).name
-        if fname.startswith(FILE_PREFIX):
+        if fname.startswith(PROXY_FILE_PREFIX) or fname == ACME_FILE:
             continue
         if "/madmin-revproxy/" in current_file:
             continue
@@ -209,8 +226,28 @@ def _check_nginx_conflicts() -> List[str]:
     return conflicts
 
 
+def _instance_pids() -> set:
+    """PIDs of the dedicated nginx instance (master + its workers)."""
+    try:
+        master = int(NGINX_PID_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return set()
+    pids = {master}
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            # /proc/<pid>/stat: "pid (comm) state ppid ..."
+            ppid = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        if ppid == master:
+            pids.add(int(proc.name))
+    return pids
+
+
 def _check_listening_processes() -> List[str]:
-    """Warning-level: non-nginx processes bound to 80/443."""
+    """Warning-level: processes other than the dedicated instance bound to 80/443."""
     warnings: List[str] = []
     try:
         result = subprocess.run(
@@ -220,6 +257,7 @@ def _check_listening_processes() -> List[str]:
         return warnings
     if result.returncode != 0:
         return warnings
+    own = _instance_pids()
     for line in result.stdout.splitlines():
         parts = line.split()
         if len(parts) < 5:
@@ -232,9 +270,10 @@ def _check_listening_processes() -> List[str]:
         if port not in (80, 443):
             continue
         users = " ".join(parts[5:]) if len(parts) > 5 else ""
-        if "nginx" in users:
+        pids = {int(x) for x in re.findall(r"pid=(\d+)", users)}
+        if pids and pids <= own:
             continue
-        warnings.append(f"Processo non-nginx in ascolto su porta {port}: {users or '?'}")
+        warnings.append(f"Processo in ascolto su porta {port}: {users or '?'}")
     return warnings
 
 
@@ -245,11 +284,12 @@ async def preflight_check(session: AsyncSession) -> Dict[str, Any]:
     for d in await _check_dnat_conflicts(session):
         conflicts.append({"type": "firewall_dnat", "detail": d})
 
-    for d in _check_nginx_conflicts():
+    for d in await asyncio.to_thread(_check_nginx_conflicts):
         conflicts.append({"type": "nginx_listen", "detail": d})
 
     warnings = [
-        {"type": "process_listen", "detail": d} for d in _check_listening_processes()
+        {"type": "process_listen", "detail": d}
+        for d in await asyncio.to_thread(_check_listening_processes)
     ]
     return {"ok": len(conflicts) == 0, "conflicts": conflicts, "warnings": warnings}
 
@@ -307,6 +347,7 @@ def render_host_vhost(
             else None
         ),
         proxy_block=proxy_block,
+        logs={k: str(host_log_path(host.id, k)) for k in LOG_TYPES},
     )
 
 
@@ -320,14 +361,148 @@ def render_acme_vhost() -> str:
     return _jinja.get_template("acme_challenge.conf.j2").render()
 
 
+def _instance_context() -> Dict[str, str]:
+    return {
+        "service": SERVICE_NAME,
+        "nginx_bin": NGINX_BIN,
+        "conf": str(NGINX_CONF),
+        "sites_dir": str(SITES_DIR),
+        "log_dir": str(NGINX_LOG_DIR),
+        "temp_dir": str(NGINX_TEMP_DIR),
+        "pid_file": str(NGINX_PID_FILE),
+    }
+
+
+def render_nginx_conf() -> str:
+    return _jinja.get_template("nginx.conf.j2").render(**_instance_context())
+
+
 # ============================================================================
-# nginx control
+# Dedicated nginx instance (systemd unit, main config, log rotation)
+# ============================================================================
+
+def _systemctl(*args: str, timeout: int = 30) -> Tuple[bool, str]:
+    """Blocking: from async code call it through asyncio.to_thread."""
+    try:
+        r = subprocess.run(
+            ["systemctl", *args], capture_output=True, text=True, timeout=timeout
+        )
+        return r.returncode == 0, (r.stderr or r.stdout).strip()
+    except subprocess.TimeoutExpired:
+        return False, f"systemctl {' '.join(args)}: timeout"
+    except Exception as e:
+        return False, str(e)
+
+
+def _write_if_changed(path: Path, content: str, mode: Optional[int] = None) -> bool:
+    if path.exists() and path.read_text() == content:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, content, mode=mode)
+    return True
+
+
+def _restrict_to_nginx(path: Path, mode: int) -> None:
+    """Password hashes: root and nginx's group (the workers run as www-data) only."""
+    os.chmod(path, mode)
+    try:
+        shutil.chown(path, group="www-data")
+    except (LookupError, OSError, AttributeError):
+        pass
+
+
+def render_renewal_hook() -> str:
+    return (
+        "#!/bin/sh\n"
+        "# Installed by MADMIN reverseproxy module\n"
+        f"systemctl reload {SERVICE_NAME}.service\n"
+    )
+
+
+def install_instance() -> None:
+    """Create directories, main config, systemd unit, logrotate policy and
+    certbot deploy hook for the dedicated instance and enable it at boot.
+    Idempotent; does not start it. Runs on every startup too, so installs
+    upgraded from the shared layout get their renewal hook repointed from the
+    system nginx to the instance. Blocking (systemctl): call it from a thread."""
+    for d in (NGINX_DIR, SITES_DIR, SNIPPETS_DIR, HTPASSWD_DIR,
+              NGINX_LOG_DIR, NGINX_TEMP_DIR, ACME_WEBROOT, SENTINEL_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+    _restrict_to_nginx(HTPASSWD_DIR, 0o750)
+
+    _write_if_changed(NGINX_CONF, render_nginx_conf())
+    _write_if_changed(SITES_DIR / ACME_FILE, render_acme_vhost())
+
+    ctx = _instance_context()
+    _write_if_changed(LOGROTATE_FILE, _jinja.get_template("logrotate.j2").render(**ctx))
+    if _write_if_changed(SYSTEMD_UNIT, _jinja.get_template("nginx-revproxy.service.j2").render(**ctx)):
+        _systemctl("daemon-reload")
+    _systemctl("enable", f"{SERVICE_NAME}.service")
+
+    _write_if_changed(RENEWAL_HOOK, render_renewal_hook(), mode=0o755)
+    os.chmod(RENEWAL_HOOK, 0o755)
+
+
+def uninstall_instance() -> None:
+    """Stop and remove the dedicated instance. Logs are kept for logrotate.
+    Blocking (systemctl): call it from a thread."""
+    _systemctl("disable", "--now", f"{SERVICE_NAME}.service", timeout=60)
+    for f in (SYSTEMD_UNIT, LOGROTATE_FILE):
+        try:
+            f.unlink()
+        except FileNotFoundError:
+            pass
+    _systemctl("daemon-reload")
+    shutil.rmtree(NGINX_DIR, ignore_errors=True)
+    shutil.rmtree(NGINX_TEMP_DIR, ignore_errors=True)
+
+
+def migrate_legacy_layout() -> bool:
+    """Remove vhosts/snippets left in the system nginx by the pre-instance
+    layout and reload it so ports 80/443 are freed. Returns True if anything
+    was removed. Configs are regenerated from the DB by sync_all().
+    Blocking (nginx -t, systemctl): call it from a thread."""
+    removed = False
+    for d in LEGACY_SITES_DIRS:
+        if not d.exists():
+            continue
+        for f in d.iterdir():
+            if f.name.startswith(PROXY_FILE_PREFIX) or f.name == ACME_FILE:
+                try:
+                    f.unlink()
+                    removed = True
+                except OSError as e:
+                    logger.warning("Legacy cleanup: cannot remove %s: %s", f, e)
+    if LEGACY_REVPROXY_DIR.exists():
+        shutil.rmtree(LEGACY_REVPROXY_DIR, ignore_errors=True)
+        removed = True
+
+    if removed:
+        try:
+            r = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                _systemctl("reload", "nginx")
+            else:
+                logger.warning("Legacy cleanup: system nginx -t failed: %s", r.stderr.strip())
+        except Exception as e:
+            logger.warning("Legacy cleanup: system nginx reload error: %s", e)
+    return removed
+
+
+def is_active() -> bool:
+    ok, _ = _systemctl("is-active", "--quiet", f"{SERVICE_NAME}.service")
+    return ok
+
+
+# ============================================================================
+# nginx control (dedicated instance only)
 # ============================================================================
 
 def nginx_test() -> Tuple[bool, str]:
     try:
         r = subprocess.run(
-            ["nginx", "-t"], capture_output=True, text=True, timeout=10
+            [NGINX_BIN, "-t", "-c", str(NGINX_CONF)],
+            capture_output=True, text=True, timeout=10,
         )
         if r.returncode == 0:
             return True, r.stderr.strip() or "ok"
@@ -337,27 +512,24 @@ def nginx_test() -> Tuple[bool, str]:
 
 
 def nginx_reload() -> Tuple[bool, str]:
+    """Test the config, then reload the instance (or start it if it is down).
+    Blocking: from async code call it through asyncio.to_thread."""
     ok, msg = nginx_test()
     if not ok:
         return False, f"nginx -t failed: {msg}"
-    try:
-        r = subprocess.run(
-            ["systemctl", "reload", "nginx"], capture_output=True, text=True, timeout=15
-        )
-        if r.returncode == 0:
-            return True, "reloaded"
-        return False, (r.stderr or r.stdout).strip()
-    except Exception as e:
-        return False, str(e)
+    action = "reload" if is_active() else "start"
+    ok, msg = _systemctl(action, f"{SERVICE_NAME}.service", timeout=60)
+    if ok:
+        return True, "reloaded" if action == "reload" else "started"
+    return False, msg
 
 
 # ============================================================================
 # Host apply / remove
 # ============================================================================
 
-def _host_conf_paths(host_id) -> Tuple[Path, Path]:
-    fname = f"{PROXY_FILE_PREFIX}{host_id}.conf"
-    return NGINX_SITES_AVAILABLE / fname, NGINX_SITES_ENABLED / fname
+def _host_conf_path(host_id) -> Path:
+    return SITES_DIR / f"{PROXY_FILE_PREFIX}{host_id}.conf"
 
 
 async def _load_host_full(session: AsyncSession, host_id) -> Optional[RevproxyHost]:
@@ -392,8 +564,6 @@ async def apply_host(session: AsyncSession, host_id) -> Tuple[bool, str]:
     if host is None:
         return False, "Host non trovato"
 
-    avail, enabled = _host_conf_paths(host.id)
-
     if not host.enabled:
         # Treat disabled as remove
         return await remove_host(host.id)
@@ -401,21 +571,15 @@ async def apply_host(session: AsyncSession, host_id) -> Tuple[bool, str]:
     acl = await _load_acl_full(session, host.access_list_id)
     config = render_host_vhost(host, host.domains, acl, host.certificate)
 
-    NGINX_SITES_AVAILABLE.mkdir(parents=True, exist_ok=True)
-    NGINX_SITES_ENABLED.mkdir(parents=True, exist_ok=True)
+    path = _host_conf_path(host.id)
+    SITES_DIR.mkdir(parents=True, exist_ok=True)
 
     # Snapshot the current on-disk vhost so a config that fails `nginx -t`
     # (e.g. an invalid custom_nginx_config snippet) can be reverted without
     # taking a previously-working host offline.
-    prev_config = avail.read_text() if avail.exists() else None
+    prev_config = path.read_text() if path.exists() else None
 
-    atomic_write(avail, config)
-
-    if not enabled.exists():
-        try:
-            enabled.symlink_to(avail)
-        except FileExistsError:
-            pass
+    atomic_write(path, config)
 
     ok, msg = await asyncio.to_thread(nginx_reload)
     if not ok:
@@ -424,24 +588,101 @@ async def apply_host(session: AsyncSession, host_id) -> Tuple[bool, str]:
         # on-disk file to its previous good content so it doesn't poison the next
         # reload; if this host had no previous config, remove it entirely.
         if prev_config is not None:
-            atomic_write(avail, prev_config)
+            atomic_write(path, prev_config)
         else:
-            for p in (enabled, avail):
-                try:
-                    p.unlink()
-                except FileNotFoundError:
-                    pass
+            path.unlink(missing_ok=True)
         return False, f"nginx reload fallito: {msg}"
     return True, "applied"
 
 
+async def sync_all(session: AsyncSession) -> Tuple[bool, str]:
+    """Bring every managed file of the instance in line with the DB, then
+    reload once (or start the instance if it is down).
+
+    Writes main config, ACME vhost, enabled host vhosts, ACL snippets and
+    htpasswd files; removes vhosts/snippets/htpasswd no longer in the DB. If
+    `nginx -t` rejects the result, every touched file is restored.
+    """
+    desired: Dict[Path, str] = {
+        NGINX_CONF: render_nginx_conf(),
+        SITES_DIR / ACME_FILE: render_acme_vhost(),
+    }
+
+    acls = (await session.execute(
+        select(RevproxyAccessList).options(
+            selectinload(RevproxyAccessList.auths),
+            selectinload(RevproxyAccessList.rules),
+        )
+    )).scalars().all()
+    acl_by_id = {acl.id: acl for acl in acls}
+    for acl in acls:
+        desired[_acl_snippet_path(acl.id)] = render_access_list_snippet(acl)
+        desired[_htpasswd_path(acl.id)] = _htpasswd_content(
+            [(a.username, a.password_hash) for a in acl.auths]
+        )
+
+    hosts = (await session.execute(
+        select(RevproxyHost)
+        .where(RevproxyHost.enabled == True)  # noqa: E712
+        .options(
+            selectinload(RevproxyHost.domains),
+            selectinload(RevproxyHost.certificate),
+        )
+    )).scalars().all()
+    for host in hosts:
+        acl = acl_by_id.get(host.access_list_id)
+        desired[_host_conf_path(host.id)] = render_host_vhost(
+            host, host.domains, acl, host.certificate
+        )
+
+    return await asyncio.to_thread(_sync_files, desired)
+
+
+def _write_managed(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent == HTPASSWD_DIR:
+        atomic_write(path, content, mode=0o640)
+        _restrict_to_nginx(path, 0o640)
+    else:
+        atomic_write(path, content)
+
+
+def _sync_files(desired: Dict[Path, str]) -> Tuple[bool, str]:
+    """File side of sync_all(): write/remove, reload, roll back on failure."""
+    managed = [f for f in SITES_DIR.glob(f"{PROXY_FILE_PREFIX}*.conf")]
+    managed += list(SNIPPETS_DIR.glob("acl-*.conf"))
+    managed += [f for f in HTPASSWD_DIR.iterdir() if f.is_file()] if HTPASSWD_DIR.exists() else []
+
+    previous: Dict[Path, Optional[str]] = {}
+    for path in managed:
+        if path not in desired:
+            previous[path] = path.read_text()
+            path.unlink()
+    for path, content in desired.items():
+        current = path.read_text() if path.exists() else None
+        if current != content:
+            previous[path] = current
+            _write_managed(path, content)
+        elif path.parent == HTPASSWD_DIR:
+            # Files written 0644 by the earlier layout get tightened too
+            _restrict_to_nginx(path, 0o640)
+
+    if not previous and is_active():
+        return True, "up to date"
+
+    ok, msg = nginx_reload()
+    if not ok:
+        for path, content in previous.items():
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                _write_managed(path, content)
+        return False, f"nginx reload fallito: {msg}"
+    return True, f"{len(previous)} file aggiornati, {msg}"
+
+
 async def remove_host(host_id) -> Tuple[bool, str]:
-    avail, enabled = _host_conf_paths(host_id)
-    for p in (enabled, avail):
-        try:
-            p.unlink()
-        except FileNotFoundError:
-            pass
+    _host_conf_path(host_id).unlink(missing_ok=True)
     ok, msg = await asyncio.to_thread(nginx_reload)
     if not ok:
         return False, f"nginx reload fallito: {msg}"
@@ -460,18 +701,16 @@ def _htpasswd_path(acl_id) -> Path:
     return HTPASSWD_DIR / f"{acl_id}"
 
 
+def _htpasswd_content(users: List[Tuple[str, str]]) -> str:
+    # A row that did not come through the API must not add lines either
+    lines = [f"{u}:{h}" for u, h in users if not any(c in u + h for c in ":\r\n")]
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def write_htpasswd(acl_id, users: List[Tuple[str, str]]) -> None:
     """Write the htpasswd file. `users` = [(username, bcrypt_hash), ...]."""
     HTPASSWD_DIR.mkdir(parents=True, exist_ok=True)
-    path = _htpasswd_path(acl_id)
-    # A row that did not come through the API must not add lines either
-    lines = [f"{u}:{h}" for u, h in users if not any(c in u + h for c in ":\r\n")]
-    atomic_write(path, "\n".join(lines) + ("\n" if lines else ""), mode=0o640)
-    # Hashes: root and nginx's group only (it was world-readable)
-    try:
-        shutil.chown(path, group="www-data")
-    except (LookupError, OSError, AttributeError):
-        pass
+    _write_managed(_htpasswd_path(acl_id), _htpasswd_content(users))
 
 
 def hash_password(plain: str) -> str:
@@ -616,6 +855,175 @@ def _read_cert_expiry(cert_path: Path) -> Optional[datetime]:
             return cert.not_valid_after  # cryptography < 42
     except Exception:
         return None
+
+
+# ============================================================================
+# Logs (per-host files + nginx global logs, including logrotate archives)
+# ============================================================================
+
+LOG_TYPES = ("access", "error")
+GLOBAL_LOG_SOURCE = "global"
+MAX_LOG_LINES = 2000
+_TAIL_BLOCK = 64 * 1024
+
+# nginx `combined` format
+_ACCESS_RE = re.compile(
+    r'^(?P<ip>\S+) \S+ (?P<user>\S+) \[(?P<time>[^\]]+)\] '
+    r'"(?P<request>(?:[^"\\]|\\.)*)" (?P<status>\d{3}) (?P<bytes>\d+|-)'
+    r'(?: "(?P<referer>(?:[^"\\]|\\.)*)" "(?P<agent>(?:[^"\\]|\\.)*)")?'
+)
+_ERROR_RE = re.compile(
+    r'^(?P<time>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] '
+    r'\d+#\d+: (?:\*\d+ )?(?P<message>.*)$'
+)
+_ERROR_CLIENT_RE = re.compile(r'client: ([^,]+)')
+_ERROR_HOST_RE = re.compile(r'host: "([^"]*)"')
+
+
+def host_log_path(host_id, kind: str) -> Path:
+    return NGINX_LOG_DIR / f"{PROXY_FILE_PREFIX}{host_id}.{kind}.log"
+
+
+def log_base_path(source: str, kind: str) -> Path:
+    """Current log file for a source ("global" or a host UUID, already validated)."""
+    if source == GLOBAL_LOG_SOURCE:
+        return NGINX_LOG_DIR / f"{kind}.log"
+    return host_log_path(source, kind)
+
+
+def _rotated_path(base: Path, index: int) -> Optional[Path]:
+    """logrotate naming: base, base.1, base.2.gz, ... (delaycompress)."""
+    if index == 0:
+        return base
+    for candidate in (Path(f"{base}.{index}"), Path(f"{base}.{index}.gz")):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def list_log_files(base: Path) -> List[Dict[str, Any]]:
+    """Current file plus every rotated archive, newest first."""
+    pattern = re.compile(rf"^{re.escape(base.name)}(?:\.(\d+)(\.gz)?)?$")
+    files = []
+    if base.parent.exists():
+        for f in base.parent.iterdir():
+            m = pattern.match(f.name)
+            if not m or not f.is_file():
+                continue
+            st = f.stat()
+            files.append({
+                "index": int(m.group(1) or 0),
+                "name": f.name,
+                "compressed": bool(m.group(2)),
+                "size": st.st_size,
+                "modified": datetime.fromtimestamp(st.st_mtime),
+            })
+    return sorted(files, key=lambda x: x["index"])
+
+
+def _parse_access_line(line: str) -> Dict[str, Any]:
+    m = _ACCESS_RE.match(line)
+    if not m:
+        return {"raw": line}
+    parts = m.group("request").split(" ", 2)
+    method, path, protocol = parts if len(parts) == 3 else ("", m.group("request"), "")
+    try:
+        time = datetime.strptime(m.group("time"), "%d/%b/%Y:%H:%M:%S %z").strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        time = m.group("time")
+    return {
+        "raw": line,
+        "time": time,
+        "ip": m.group("ip"),
+        "user": None if m.group("user") == "-" else m.group("user"),
+        "method": method,
+        "path": path,
+        "protocol": protocol,
+        "status": int(m.group("status")),
+        "bytes": 0 if m.group("bytes") == "-" else int(m.group("bytes")),
+        "referer": None if m.group("referer") in (None, "-") else m.group("referer"),
+        "agent": m.group("agent"),
+    }
+
+
+def _parse_error_line(line: str) -> Dict[str, Any]:
+    m = _ERROR_RE.match(line)
+    if not m:
+        return {"raw": line}
+    message = m.group("message")
+    client = _ERROR_CLIENT_RE.search(message)
+    host = _ERROR_HOST_RE.search(message)
+    return {
+        "raw": line,
+        "time": m.group("time").replace("/", "-"),
+        "level": m.group("level"),
+        "message": message,
+        "client": client.group(1) if client else None,
+        "host": host.group(1) if host else None,
+    }
+
+
+def _tail_lines(path: Path, count: int) -> List[str]:
+    """Last `count` lines of an uncompressed file without reading all of it."""
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        data = b""
+        while pos > 0 and data.count(b"\n") <= count:
+            step = min(_TAIL_BLOCK, pos)
+            pos -= step
+            f.seek(pos)
+            data = f.read(step) + data
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    return lines[-count:]
+
+
+def read_log(
+    base: Path,
+    kind: str,
+    index: int = 0,
+    lines: int = 500,
+    search: str = "",
+    status_class: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Return the last `lines` matching entries of a log file, newest first.
+
+    Filters (`search`, case-insensitive substring; `status_class`, 2..5 for
+    access logs) are applied before the limit, so a filtered read scans the
+    whole file. Blocking: call from a worker thread.
+    """
+    path = _rotated_path(base, index)
+    if path is None or not path.exists():
+        return {"file": None, "exists": False, "entries": [], "truncated": False}
+
+    parse = _parse_access_line if kind == "access" else _parse_error_line
+    needle = search.lower()
+    filtered = bool(needle) or status_class is not None
+    compressed = path.suffix == ".gz"
+
+    if not filtered and not compressed:
+        raw = _tail_lines(path, lines + 1)
+        truncated = len(raw) > lines
+        entries = [parse(l) for l in raw[-lines:] if l]
+    else:
+        window: deque = deque(maxlen=lines)
+        matched = 0
+        opener = gzip.open if compressed else open
+        with opener(path, "rt", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or (needle and needle not in line.lower()):
+                    continue
+                entry = parse(line)
+                if status_class is not None and entry.get("status", 0) // 100 != status_class:
+                    continue
+                window.append(entry)
+                matched += 1
+        entries = list(window)
+        truncated = matched > lines
+
+    entries.reverse()
+    return {"file": path.name, "exists": True, "entries": entries, "truncated": truncated}
 
 
 # ============================================================================

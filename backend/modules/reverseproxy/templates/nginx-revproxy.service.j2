@@ -1,0 +1,22 @@
+# Managed by MADMIN reverseproxy module
+[Unit]
+Description=MADMIN reverse proxy (dedicated nginx instance)
+Documentation=man:nginx(8)
+After=network-online.target remote-fs.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+PIDFile={{ pid_file }}
+ExecStartPre={{ nginx_bin }} -t -q -c {{ conf }}
+ExecStart={{ nginx_bin }} -c {{ conf }}
+ExecReload={{ nginx_bin }} -t -q -c {{ conf }}
+ExecReload={{ nginx_bin }} -c {{ conf }} -s reload
+ExecStop=-/sbin/start-stop-daemon --quiet --stop --retry QUIT/5 --pidfile {{ pid_file }}
+TimeoutStopSec=5
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
