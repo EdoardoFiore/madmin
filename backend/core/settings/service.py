@@ -25,9 +25,23 @@ NGINX_PUBLIC_CONF_PATH = "/etc/nginx/sites-available/madmin-public.conf"
 NGINX_PUBLIC_CONF_ENABLED = "/etc/nginx/sites-enabled/madmin-public.conf"
 NGINX_SECURITY_HEADERS = "/etc/nginx/snippets/madmin-security-headers.conf"
 
-# Porte staticamente riservate (non usabili come porta admin o download pubblico)
-# 443 è escluso deliberatamente: è un'alternativa valida per il download pubblico
-RESERVED_PORTS = {22, 53, 80, 500, 4500, 5432, 8000}
+# Porte fisse dei servizi dei moduli (DNS, reverse proxy HTTP, IPsec), non usabili
+# come porta admin o download pubblico. 443 è escluso deliberatamente: è
+# un'alternativa valida per il download pubblico. SSH, database e backend non
+# sono qui: si leggono dalla configurazione reale (reserved_ports).
+FIXED_RESERVED_PORTS = {53, 80, 500, 4500}
+
+
+def reserved_ports(ssh_ports=(), extra_reserved_ports: set = None) -> set:
+    """Ports neither the management port nor the public download may take:
+    the fixed ones, the localhost services (backend, PostgreSQL from
+    DATABASE_URL), the given SSH ports and the caller's extras (VPN instances)."""
+    from core.firewall.protected_ports import localhost_ports
+    ports = set(FIXED_RESERVED_PORTS)
+    ports.update(p for _proto, p, _name in localhost_ports())
+    ports.update(ssh_ports)
+    ports.update(extra_reserved_ports or ())
+    return ports
 
 SSL_DIR = Path(settings.data_dir) / "ssl"
 
@@ -51,11 +65,11 @@ class NetworkService:
         )
 
     def validate_new_port(self, new_port: int, extra_reserved_ports: set = None) -> None:
-        """Raise ValueError when the port cannot be the management port."""
+        """Raise ValueError when the port cannot be the management port.
+        `extra_reserved_ports` comes from the router and includes the SSH ports."""
         if not 1 <= new_port <= 65535:
             raise ValueError("Invalid port (1-65535)")
-        all_reserved = RESERVED_PORTS | (extra_reserved_ports or set())
-        if new_port in all_reserved:
+        if new_port in reserved_ports(extra_reserved_ports=extra_reserved_ports):
             raise ValueError(f"Port {new_port} is already in use by another service")
 
     async def update_port(self, new_port: int, extra_reserved_ports: set = None) -> bool:
@@ -140,8 +154,8 @@ class NetworkService:
         if not (1 <= port <= 65535):
             raise ValueError("Invalid port (1-65535)")
 
-        all_reserved = RESERVED_PORTS | (extra_reserved_ports or set())
-        if port in all_reserved:
+        from core.system.ssh import ssh_ports
+        if port in reserved_ports(await ssh_ports(), extra_reserved_ports):
             raise ValueError(f"Port {port} is already in use by another service")
 
         admin_port = await self._get_current_port()

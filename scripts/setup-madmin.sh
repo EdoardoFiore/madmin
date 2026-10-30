@@ -162,6 +162,9 @@ validate_admin_credentials
 trap reenable_unattended_upgrades EXIT
 
 # --- Configuration variables ---
+# SSH is moved off 22 so the common ports stay free for port forwarding to
+# internal hosts (the firewall guard protects whatever port sshd really uses).
+MADMIN_SSH_PORT=22123
 INSTALL_DIR="/opt/madmin"
 DB_NAME="madmin"
 DB_USER="madmin"
@@ -735,6 +738,105 @@ if [ "$PROVISION_LAN" = "true" ]; then
     systemctl restart madmin.service
 fi
 
+# --- SSH port ---
+# Last step on purpose: everything above is done even if this fails, and a
+# failure puts the previous configuration back. Sessions already open survive
+# the restart (ssh.service has KillMode=process, logged-in sessions live in
+# their own scope) and the firewall keeps accepting them (ESTABLISHED).
+SSH_DROPIN=/etc/ssh/sshd_config.d/10-madmin-port.conf
+SSH_MAIN_CONF=/etc/ssh/sshd_config
+SSH_PORT_RESULT="unchanged"   # changed | already | absent | busy | failed
+
+# With socket activation /run/sshd exists only while ssh.service runs (nobody
+# connected yet: console install), and without it `sshd -t`/`-T` fail with
+# "Missing privilege separation directory" even on a valid configuration
+ensure_sshd_rundir() {
+    mkdir -p -m 0755 /run/sshd
+}
+
+sshd_ports() {
+    ensure_sshd_rundir
+    /usr/sbin/sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }' | sort -un | tr '\n' ' ' | sed 's/ $//'
+}
+
+port_listening() {
+    ss -ltnH "sport = :$1" 2>/dev/null | grep -q .
+}
+
+# Ubuntu 24.04 starts sshd from ssh.socket, whose listening ports are generated
+# from sshd_config: restarting ssh.service alone keeps listening on the old port
+# (LP: #2069041). Older layouts run ssh.service directly.
+reload_sshd() {
+    if systemctl is-enabled --quiet ssh.socket 2>/dev/null || systemctl is-active --quiet ssh.socket 2>/dev/null; then
+        systemctl daemon-reload && timeout 60 systemctl restart ssh.socket
+    else
+        timeout 60 systemctl restart ssh.service
+    fi
+}
+
+wait_listening() {
+    for _ in $(seq 1 10); do
+        port_listening "$1" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+configure_ssh_port() {
+    local port=$MADMIN_SSH_PORT backup=""
+
+    if [ ! -x /usr/sbin/sshd ]; then
+        SSH_PORT_RESULT="absent"
+        log_info "OpenSSH server not installed: nothing to move."
+        return 0
+    fi
+    if [ "$(sshd_ports)" = "$port" ]; then
+        SSH_PORT_RESULT="already"
+        log_info "SSH already on port $port."
+        return 0
+    fi
+    if port_listening "$port" && ! sshd_ports | grep -qw "$port"; then
+        SSH_PORT_RESULT="busy"
+        log_warning "Port $port is used by another service: SSH left on $(sshd_ports)."
+        return 0
+    fi
+
+    # Port lines add up across sshd_config and its drop-ins: an active one in
+    # the main file would keep 22 open next to the new port
+    if grep -Eq '^[[:space:]]*Port[[:space:]]' "$SSH_MAIN_CONF"; then
+        backup="$SSH_MAIN_CONF.madmin-bak"
+        cp -p "$SSH_MAIN_CONF" "$backup"
+        sed -i -E 's/^([[:space:]]*Port[[:space:]])/#\1/' "$SSH_MAIN_CONF"
+    fi
+    mkdir -p "$(dirname "$SSH_DROPIN")"
+    printf '# Managed by MADMIN (setup-madmin.sh): SSH off 22, free for port forwarding\nPort %s\n' "$port" > "$SSH_DROPIN"
+    chmod 644 "$SSH_DROPIN"
+
+    ensure_sshd_rundir
+    if /usr/sbin/sshd -t && reload_sshd && wait_listening "$port"; then
+        SSH_PORT_RESULT="changed"
+        log_success "SSH moved to port $port."
+        local others
+        others=$(sshd_ports | tr ' ' '\n' | grep -vx "$port" | tr '\n' ' ' | sed 's/ $//')
+        if [ -n "$others" ]; then
+            log_warning "sshd also listens on: $others (Port lines in another sshd_config.d file)."
+        elif port_listening 22; then
+            log_warning "Something still listens on port 22 (an ssh.socket override?): check 'ss -ltnp'."
+        fi
+        return 0
+    fi
+
+    log_error "Could not move SSH to port $port: previous configuration restored."
+    rm -f "$SSH_DROPIN"
+    [ -n "$backup" ] && mv -f "$backup" "$SSH_MAIN_CONF"
+    reload_sshd || log_error "sshd restart failed: check 'systemctl status ssh' from the console."
+    SSH_PORT_RESULT="failed"
+    return 0
+}
+
+log_info "Moving SSH to port $MADMIN_SSH_PORT..."
+configure_ssh_port
+
 # --- Completed ---
 echo ""
 log_success "=========================================="
@@ -752,6 +854,29 @@ echo "  Name:     $DB_NAME"
 echo "  User:     $DB_USER"
 echo "  Password: in $INSTALL_DIR/backend/.env (root only)"
 echo ""
+
+# SSH: always spelled out, the port is not the one the operator connected on
+if [ "$SSH_PORT_RESULT" != "absent" ]; then
+    SSH_NOW="$(sshd_ports)"
+    SSH_NOW="${SSH_NOW:-22}"
+    echo "SSH:"
+    case "$SSH_PORT_RESULT" in
+        changed|already)
+            echo "  Port: $MADMIN_SSH_PORT (no longer 22: port 22 stays free for port forwarding)" ;;
+        busy)
+            echo "  Port: $SSH_NOW (NOT moved: port $MADMIN_SSH_PORT is used by another service)" ;;
+        *)
+            echo "  Port: $SSH_NOW (NOT moved to $MADMIN_SSH_PORT: see the error above)" ;;
+    esac
+    echo ""
+    log_warning "The MADMIN firewall does NOT accept new SSH connections: this session stays"
+    log_warning "open, but once it is closed SSH answers only after you open the port from the"
+    log_warning "dashboard (Firewall > Advanced > Filter > INPUT: ACCEPT tcp $SSH_NOW,"
+    log_warning "above the final DROP rule). Otherwise the server is reachable only from its console."
+    log_warning "On a cloud VM open the port in the provider's security group / firewall as well."
+    echo "  Connect with: ssh -p ${SSH_NOW%% *} <user>@$PUBLIC_IP"
+    echo ""
+fi
 
 # Auto-provisioning options actually enabled by flags
 if [ "$FORCE_PW_CHANGE" = "true" ] || [ "$PROVISION_LAN" = "true" ] || [ "$PROTECT_WAN" = "true" ]; then

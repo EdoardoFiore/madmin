@@ -209,7 +209,7 @@ Inoltra una porta esterna verso un host interno. Premere **Nuovo port forward**:
 | **Sorgente** | Limita il forward a determinati indirizzi di origine (opzionale) |
 | **NAT hairpin** | Permette ai client LAN di raggiungere il forward usando l'IP pubblico |
 
-Non è possibile salvare un port forward senza interfaccia di ingresso né IP esterno: intercetterebbe anche il traffico dei client LAN verso Internet su quella porta (es. un forward della 443 prenderebbe la loro navigazione HTTPS). Le porte usate dal pannello e dai servizi MADMIN non possono essere inoltrate.
+Non è possibile salvare un port forward senza interfaccia di ingresso né IP esterno: intercetterebbe anche il traffico dei client LAN verso Internet su quella porta (es. un forward della 443 prenderebbe la loro navigazione HTTPS). Le porte usate dal pannello, da SSH (22123 dopo l'installazione) e dai servizi MADMIN non possono essere inoltrate; la 22 invece è libera e può essere inoltrata a un server interno.
 
 Il traffico inoltrato viene consentito automaticamente (regole automatiche di forward). Badge:
 - *Bloccato da #n*: la regola *Nega* #n blocca tutto il traffico del forward prima che venga accettato; spostarla, restringerla o aggiungere sopra una regola che lo consenta.
@@ -896,14 +896,14 @@ Ogni connessione esce con il NAT della prima regola che la consente: se la regol
 
 ### 10.5 Aprire un servizio della macchina
 
-**Scenario:** consentire SSH (porta 22) dalla WAN verso la macchina.
+**Scenario:** consentire SSH dalla WAN verso la macchina. L'installazione sposta SSH sulla porta **22123** (la 22 resta libera per un port forwarding verso un server interno) e il firewall di default non la apre: senza questa regola SSH risponde solo alle sessioni già aperte.
 
 **Dove:** vista **Avanzata** → Filter → INPUT
 
 | Campo | Valore |
 |-------|--------|
 | Protocollo | `tcp` |
-| Porta | `22` |
+| Porta | `22123` |
 | Interfaccia In | `eth0` |
 | Azione | `ACCEPT` |
 

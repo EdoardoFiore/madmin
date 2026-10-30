@@ -452,7 +452,9 @@ async def get_network_settings(
 
 
 async def _reserved_ports(session: AsyncSession) -> set:
+    from core.system.ssh import ssh_ports
     extra_reserved = await _get_vpn_ports_in_use(session)
+    extra_reserved.update(await ssh_ports())
     smtp_result = await session.execute(select(SMTPSettings).where(SMTPSettings.id == 1))
     smtp = smtp_result.scalar_one_or_none()
     if smtp and smtp.public_download_url:

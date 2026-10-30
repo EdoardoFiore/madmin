@@ -213,10 +213,39 @@ State set by these flags is persisted in the database and applied/reconciled on 
 6. `madmin.service` systemd unit — enabled and started
 7. Module apt/pip dependencies from each `manifest.json`
 8. Default firewall ruleset applied (LAN isolation, WAN-only dashboard access) — interfaces detected dynamically (WAN = default route, LAN = other physical NICs)
+9. **SSH moved to port `22123`** (last step, see below)
+
+### SSH port: 22123
+
+MADMIN turns the machine into a gateway, and a gateway that keeps its own services on the
+common ports cannot forward those ports to internal hosts. The installer therefore moves the
+OpenSSH server from **22 to 22123** (drop-in `/etc/ssh/sshd_config.d/10-madmin-port.conf`; an
+active `Port` line in `sshd_config` is commented out, since `Port` lines add up). Port 22 is
+then free for a port forward to an internal server, while the firewall refuses any
+DNAT/REDIRECT on the port sshd really listens on (read from `sshd -T`, so a port changed by
+hand later is protected too).
+
+- **The session you install from is not closed**: sshd restarts without dropping open
+  sessions, and the firewall keeps accepting established connections.
+- **New SSH connections are refused by the default firewall** (only the dashboard port is
+  open). Before closing the installer session, open the port from the dashboard:
+  *Firewall → Advanced → Filter → INPUT*, `ACCEPT tcp 22123` (optionally limited to an
+  interface or source), above the final `DROP`. Otherwise the server is reachable only from
+  its console.
+- On a **cloud VM**, open 22123 in the provider's security group / firewall as well.
+- Connect with `ssh -p 22123 <user>@<server>`.
+- If 22123 is already taken by another service, or sshd rejects the new configuration, SSH
+  stays where it was and the previous configuration is restored. The end-of-install summary
+  always states the port SSH is on.
+
+On Ubuntu 24.04 sshd is started by `ssh.socket`, whose ports are generated from
+`sshd_config`: to change the port again by hand, edit the drop-in, then
+`sshd -t && systemctl daemon-reload && systemctl restart ssh.socket`.
 
 ### Post-Install Access
 - **URL**: `https://<your-server-ip>:7443`
 - **Credentials**: as specified via `-u` / `-p` during installation
+- **SSH**: port `22123`, closed by the default firewall (see above)
 
 > **Security**: Enable 2FA for admin accounts. Review firewall default rules before exposing to production networks.
 
@@ -275,6 +304,7 @@ journalctl -u madmin --since "1 hour ago"
 - [ ] Review and rotate `SECRET_KEY` in `.env`
 - [ ] Confirm `DEBUG=false` in `.env` (disables Swagger UI in production)
 - [ ] Review default firewall rules (auto-applied on install via `POST /api/firewall/apply-defaults`)
+- [ ] If SSH is needed, open port `22123` in INPUT, limited to the admin networks
 - [ ] Restrict `ALLOWED_ORIGINS` if not using wildcard
 - [ ] Replace self-signed TLS certificate with a trusted CA cert in Nginx config
 - [ ] Ensure `/opt/madmin/backend/.env` is `chmod 600`

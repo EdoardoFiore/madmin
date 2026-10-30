@@ -4,8 +4,8 @@ MADMIN Firewall — Protected Port Guard
 Prevents DNAT/REDIRECT rules that would compromise MADMIN integrity:
 
   Guard A — public-listener hijack: a DNAT/REDIRECT whose matched --dport equals a
-            port a live MADMIN service listens on (UI/management, public-download link,
-            or an active module instance) would intercept that traffic in PREROUTING
+            port a live MADMIN service listens on (UI/management, SSH, public-download
+            link, or an active module instance) would intercept that traffic in PREROUTING
             before it reaches the local listener → lockout / hijack.
 
   Guard B — loopback-destination exposure: a DNAT to a loopback/self address (or a
@@ -33,7 +33,7 @@ ProtectedPort = Tuple[str, int, str]
 _LOOPBACK_LITERALS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "::", ""}
 
 # Backend uvicorn port — hardcoded in main.py / systemd, bound to 127.0.0.1.
-_BACKEND_PORT = 8000
+BACKEND_PORT = 8000
 
 
 # --------------------------------------------------------------------------- #
@@ -123,9 +123,9 @@ def is_loopback_host(value: Optional[str]) -> bool:
 # --------------------------------------------------------------------------- #
 # Protected port sets
 # --------------------------------------------------------------------------- #
-def _localhost_ports() -> List[ProtectedPort]:
+def localhost_ports() -> List[ProtectedPort]:
     """Localhost-only services that Guard B must keep unreachable via NAT."""
-    ports: List[ProtectedPort] = [("tcp", _BACKEND_PORT, "backend MADMIN (uvicorn)")]
+    ports: List[ProtectedPort] = [("tcp", BACKEND_PORT, "backend MADMIN (uvicorn)")]
     try:
         from urllib.parse import urlparse
         parsed = urlparse(get_settings().database_url)
@@ -154,6 +154,15 @@ async def get_protected_ports(session: AsyncSession) -> List[ProtectedPort]:
     except Exception as e:
         logger.warning("protected_ports: management port lookup failed: %s", e)
         protected.append(("tcp", int(defaults.UI_PORT), "pannello di amministrazione MADMIN"))
+
+    # SSH, wherever sshd actually listens (the installer moves it off 22, so a
+    # forward of 22 to an internal host is allowed and the real port is not)
+    try:
+        from core.system.ssh import ssh_ports
+        for p in await ssh_ports():
+            protected.append(("tcp", p, "SSH"))
+    except Exception as e:
+        logger.warning("protected_ports: SSH port lookup failed: %s", e)
 
     # Public-download link port (optional, from SMTP settings).
     try:
@@ -223,7 +232,7 @@ async def validate_protected_port_collision(
 
     if act == "REDIRECT" and ch == "PREROUTING":
         target = to_ports if not spec_is_any(to_ports) else port
-        for proto_l, port_l, name_l in _localhost_ports():
+        for proto_l, port_l, name_l in localhost_ports():
             if not _proto_matches(protocol, proto_l):
                 continue
             if spec_is_any(target) or spec_contains_port(target, port_l):
