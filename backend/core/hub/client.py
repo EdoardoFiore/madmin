@@ -1,0 +1,353 @@
+"""
+Hub agent: the outbound control connection of this instance to its hub.
+
+One background task (started from the lifespan) keeps a WSS connection with
+mutual TLS to <hub>/agent/ws. Nothing listens on the instance: the hub reaches
+it only through this connection, and through the per-connection tunnels the
+agent opens on request (tunnel.py).
+
+A session is three tasks (reader, writer, heartbeat); when any of them ends
+the others are cancelled and the agent reconnects with an exponential backoff
+(1 s to 60 s, jittered so a hub restart is not hit by every instance at once).
+Close code 4401 means the hub revoked this instance: the agent stops and waits
+for a new enrollment instead of retrying forever.
+
+Commands are deduplicated by id and their results cached: the hub re-sends
+the commands it has no result for after a reconnect, and gets the cached
+result instead of a second execution.
+
+Without an enrollment (DATA_DIR/hub/state.json) the task only watches that
+file, so `python -m core.hub enroll` takes effect without a restart. With a
+registration waiting for approval (pending.json) it polls the hub every
+minute until the request is approved, rejected or expired.
+"""
+import asyncio
+import json
+import logging
+import random
+import time
+from collections import OrderedDict
+from datetime import datetime, timezone
+from typing import Optional
+from urllib.parse import urlsplit
+
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+
+from config import MADMIN_VERSION
+from core.concurrency import spawn_background
+
+from . import commands, identity as ident, protocol
+from .identity import HubIdentity, HubIdentityError
+from .inventory import collect_facts, collect_stats, facts_digest
+
+logger = logging.getLogger("madmin.hub")
+
+HEARTBEAT_INTERVAL = 60
+FACTS_INTERVAL = 300          # facts re-read (sent only when changed)
+RENEW_CHECK_INTERVAL = 6 * 3600
+STATE_POLL_INTERVAL = 30
+BACKOFF_MAX = 60
+_RESULT_CACHE = 500
+_PERSISTED_RESULTS = 50
+_HANDSHAKE_TIMEOUT = 15
+
+
+class _Revoked(Exception):
+    pass
+
+
+class HubAgent:
+    def __init__(self) -> None:
+        self.identity: Optional[HubIdentity] = None
+        self.connected = False
+        self._outbox: Optional[asyncio.Queue] = None
+        self._results: "OrderedDict[str, dict]" = OrderedDict()
+        self._running: set = set()
+        self._state_mtime: tuple = ()
+        self._last_renew_check = 0.0
+        self._facts_digest: Optional[str] = None
+
+    # --- Status file (read by `python -m core.hub status`) ---
+
+    def _write_status(self, error: Optional[str] = None) -> None:
+        try:
+            ident.write_private("status.json", json.dumps({
+                "connected": self.connected,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "error": error,
+            }).encode())
+        except OSError:
+            pass
+
+    # --- Main loop ---
+
+    async def run(self) -> None:
+        await asyncio.to_thread(self._load_persisted_results)
+        backoff = 1.0
+        failing = False
+        while True:
+            try:
+                self._state_mtime = await asyncio.to_thread(ident.state_mtime)
+                identity = await asyncio.to_thread(ident.load_identity)
+            except HubIdentityError as e:
+                logger.error("Hub identity unreadable: %s", e)
+                identity = None
+            if identity is None or identity.revoked:
+                self.identity = None
+                interval = await self._poll_pending()
+                if interval == 0:
+                    continue  # approved: identity saved, connect now
+                await self._wait_state_change(timeout=interval)
+                continue
+            self.identity = identity
+
+            await self._maybe_renew(identity)
+            started = time.monotonic()
+            error = None
+            try:
+                await self._session(identity)
+            except asyncio.CancelledError:
+                raise
+            except _Revoked:
+                logger.error(
+                    "Hub: this instance was revoked by the hub. The agent stays stopped "
+                    "until a new enrollment (python -m core.hub enroll)."
+                )
+                await asyncio.to_thread(ident.mark_revoked)
+                await asyncio.to_thread(self._write_status, "revocata dalla hub")
+                continue
+            except InvalidStatus as e:
+                error = f"handshake rifiutato (HTTP {e.response.status_code})"
+            except (OSError, ConnectionClosed, asyncio.TimeoutError, protocol.ProtocolError,
+                    HubIdentityError) as e:
+                error = f"{type(e).__name__}: {e}"
+            except Exception as e:
+                logger.exception("Hub agent session error")
+                error = f"{type(e).__name__}: {e}"
+
+            if time.monotonic() - started > 60:
+                # The session was up: a new streak of failures starts here
+                backoff = 1.0
+                failing = False
+            if error:
+                # The first failure of a streak is a warning, the retries are debug
+                (logger.debug if failing else logger.warning)("Hub: connection lost/failed: %s", error)
+                failing = True
+                await asyncio.to_thread(self._write_status, error)
+            delay = backoff * random.uniform(0.5, 1.0)
+            backoff = min(BACKOFF_MAX, backoff * 2)
+            await self._wait_state_change(timeout=delay)
+
+    async def _poll_pending(self) -> Optional[float]:
+        """
+        A registration waiting for approval: check it. Returns 0 once
+        approved, the seconds to the next check while pending, None when there
+        is nothing to wait for (only a CLI change wakes the agent then).
+        """
+        pending = await asyncio.to_thread(ident.load_pending)
+        if not pending or pending.get("status") != "pending":
+            return None
+        from .enroll import poll_registration
+        try:
+            status = await poll_registration()
+        except Exception as e:
+            logger.debug("Hub: registration check failed: %s", e)
+            return BACKOFF_MAX
+        if status == "approved":
+            logger.info("Hub: registration approved, connecting")
+            return 0
+        if status in ("rejected", "expired"):
+            logger.error("Hub: registration %s by the hub. Register again with "
+                         "python -m core.hub register --url ...", status)
+            await asyncio.to_thread(self._write_status, f"registrazione {status}")
+            return None
+        return max(30, int(pending.get("poll_interval") or 60))
+
+    async def _wait_state_change(self, timeout: Optional[float] = None) -> None:
+        """Sleep `timeout` seconds (forever if None), returning early when the
+        enrollment state file changes."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            step = STATE_POLL_INTERVAL if deadline is None else min(STATE_POLL_INTERVAL, deadline - time.monotonic())
+            if step <= 0:
+                return
+            await asyncio.sleep(step)
+            if await asyncio.to_thread(ident.state_mtime) != self._state_mtime:
+                return
+
+    async def _maybe_renew(self, identity: HubIdentity) -> None:
+        if time.monotonic() - self._last_renew_check < RENEW_CHECK_INTERVAL and self._last_renew_check:
+            return
+        self._last_renew_check = time.monotonic()
+        from .enroll import renew, renewal_due
+        try:
+            if await asyncio.to_thread(identity.cert_expired):
+                logger.error("Hub: client certificate expired, a new enrollment is required")
+                return
+            if await asyncio.to_thread(renewal_due, identity):
+                await renew(identity)
+        except Exception as e:
+            logger.warning("Hub: certificate renewal failed (retried later): %s", e)
+            self._last_renew_check = time.monotonic() - RENEW_CHECK_INTERVAL + 600
+
+    # --- Session ---
+
+    async def _session(self, identity: HubIdentity) -> None:
+        ssl_ctx = await asyncio.to_thread(identity.ssl_context)
+        try:
+            async with connect(
+                identity.ws_url,
+                ssl=ssl_ctx,
+                open_timeout=_HANDSHAKE_TIMEOUT,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5,
+                max_size=protocol.MAX_FRAME,
+                user_agent_header=f"madmin-agent/{MADMIN_VERSION}",
+            ) as ws:
+                await self._handshake(ws, identity)
+                await self._serve(ws, identity)
+        except ConnectionClosed as e:
+            if e.rcvd is not None and e.rcvd.code == protocol.CLOSE_REVOKED:
+                raise _Revoked()
+            raise
+
+    async def _handshake(self, ws, identity: HubIdentity) -> None:
+        facts = await collect_facts()
+        await ws.send(protocol.frame(protocol.HELLO, {
+            "protocol": protocol.PROTOCOL_VERSION,
+            "instance_id": identity.instance_id,
+            "capabilities": commands.capabilities(),
+            "facts": facts,
+        }))
+        msg = protocol.parse(await asyncio.wait_for(ws.recv(), _HANDSHAKE_TIMEOUT))
+        if msg["type"] != protocol.HELLO_ACK:
+            raise protocol.ProtocolError(f"expected hello_ack, got {msg['type']}")
+        self._facts_digest = facts_digest(facts)
+
+    async def _serve(self, ws, identity: HubIdentity) -> None:
+        outbox: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        self._outbox = outbox
+        self.connected = True
+        await asyncio.to_thread(self._write_status)
+        logger.info("Hub: connected to %s as %s", identity.hub_url, identity.instance_id)
+        hub_host = urlsplit(identity.hub_url).hostname or ""
+        tasks = [
+            asyncio.create_task(self._reader(ws, hub_host), name="hub-reader"),
+            asyncio.create_task(self._writer(ws, outbox), name="hub-writer"),
+            asyncio.create_task(self._heartbeat(outbox, identity), name="hub-heartbeat"),
+        ]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                t.result()  # re-raise what ended the session
+        finally:
+            self.connected = False
+            self._outbox = None
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.to_thread(self._write_status)
+        if ws.close_code == protocol.CLOSE_REVOKED:
+            raise _Revoked()
+
+    async def _reader(self, ws, hub_host: str) -> None:
+        async for raw in ws:
+            try:
+                msg = protocol.parse(raw)
+            except protocol.ProtocolError as e:
+                await ws.close(protocol.CLOSE_PROTOCOL, str(e)[:100])
+                raise
+            if msg["type"] == protocol.CMD:
+                self._dispatch(msg["id"], msg["payload"], hub_host)
+            else:
+                logger.debug("Hub: ignored frame %s", msg["type"])
+
+    async def _writer(self, ws, outbox: asyncio.Queue) -> None:
+        while True:
+            await ws.send(await outbox.get())
+
+    async def _heartbeat(self, outbox: asyncio.Queue, identity: HubIdentity) -> None:
+        last_facts = time.monotonic()
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            payload = {"stats": await collect_stats()}
+            if time.monotonic() - last_facts >= FACTS_INTERVAL:
+                last_facts = time.monotonic()
+                facts = await collect_facts()
+                digest = facts_digest(facts)
+                if digest != self._facts_digest:
+                    self._facts_digest = digest
+                    payload["facts"] = facts
+            self._send(protocol.frame(protocol.HEARTBEAT, payload))
+            # Unenrolled / re-enrolled from the CLI: end this session
+            if await asyncio.to_thread(ident.state_mtime) != self._state_mtime:
+                return
+            await self._maybe_renew(identity)
+
+    # --- Commands ---
+
+    def _load_persisted_results(self) -> None:
+        raw = ident.read_file("results.json")
+        if not raw:
+            return
+        try:
+            for cmd_id, result in json.loads(raw):
+                self._results[cmd_id] = result
+        except (ValueError, TypeError):
+            pass
+
+    def _persist_result(self, cmd_id: str, result: dict) -> None:
+        raw = ident.read_file("results.json")
+        try:
+            kept = json.loads(raw) if raw else []
+        except ValueError:
+            kept = []
+        kept = [e for e in kept if e[0] != cmd_id][-(_PERSISTED_RESULTS - 1):] + [[cmd_id, result]]
+        ident.write_private("results.json", json.dumps(kept).encode())
+
+    def _send(self, text: str) -> bool:
+        outbox = self._outbox
+        if outbox is None:
+            return False
+        try:
+            outbox.put_nowait(text)
+            return True
+        except asyncio.QueueFull:
+            logger.warning("Hub: outbox full, frame dropped")
+            return False
+
+    def send_event(self, name: str, data: Optional[dict] = None) -> bool:
+        return self._send(protocol.frame(protocol.EVENT, {"name": name, "data": data or {}}))
+
+    def _dispatch(self, cmd_id: str, payload: dict, hub_host: str) -> None:
+        if cmd_id in self._results:
+            self._send(protocol.frame(protocol.CMD_RESULT, self._results[cmd_id], cmd_id))
+            return
+        if cmd_id in self._running:
+            return  # re-sent while still running: the result follows
+        self._running.add(cmd_id)
+        spawn_background(self._run_command(cmd_id, payload, hub_host), f"hub-cmd-{cmd_id[:8]}")
+
+    async def _run_command(self, cmd_id: str, payload: dict, hub_host: str) -> None:
+        try:
+            result = await commands.execute(cmd_id, payload, hub_host)
+        finally:
+            self._running.discard(cmd_id)
+        self._results[cmd_id] = result
+        while len(self._results) > _RESULT_CACHE:
+            self._results.popitem(last=False)
+        if commands.persists_result(payload.get("name")):
+            await asyncio.to_thread(self._persist_result, cmd_id, result)
+        # Sent on the current session; if there is none, the hub re-sends the
+        # command after the reconnect and gets the cached result
+        self._send(protocol.frame(protocol.CMD_RESULT, result, cmd_id))
+
+
+hub_agent = HubAgent()
+
+
+def load_command_handlers() -> None:
+    """Register the commands implemented by the other modules of the package."""
+    from . import backups, licenses, support, tunnel  # noqa: F401

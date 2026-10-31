@@ -6,7 +6,7 @@ API endpoints for authentication and user management.
 import json
 import asyncio
 from typing import List, Optional, Dict
-from datetime import timedelta
+from datetime import datetime, timedelta
 import uuid
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -309,6 +309,51 @@ async def login(
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
     )
 
+    return Token(access_token=access_token)
+
+
+class HubTicketRequest(BaseModel):
+    ticket: str
+
+
+@router.post("/token/hub-ticket", response_model=Token)
+async def hub_ticket_login(
+    request: Request,
+    body: HubTicketRequest,
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Session for a hub support account, from the one-time ticket the hub
+    operator received (core/hub/support.py). The only way such an account can
+    log in; the token never outlives the support session.
+    """
+    from core.hub.support import redeem_ticket
+
+    client_ip = get_client_ip(request)
+    login_rate_limiter.begin_attempt(client_ip)
+
+    user_id = redeem_ticket(body.ticket)
+    user = await service.get_user_by_id(session, user_id) if user_id else None
+    now = datetime.utcnow()
+    if (not user or not user.is_hub_support or not user.is_active
+            or user.expires_at is None or user.expires_at <= now):
+        await login_rate_limiter.record_failure(session, client_ip)
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ticket non valido o scaduto",
+        )
+    await login_rate_limiter.record_success(session, client_ip)
+    await service.update_last_login(session, user)
+    await session.commit()
+
+    access_token = service.create_access_token(
+        data={"sub": user.username, "user_id": str(user.id), "via": "hub"},
+        expires_delta=min(
+            user.expires_at - now,
+            timedelta(minutes=settings.access_token_expire_minutes),
+        ),
+    )
     return Token(access_token=access_token)
 
 

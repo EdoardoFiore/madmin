@@ -100,7 +100,7 @@ def _reserve_export_name() -> Tuple[str, str]:
         return name, path
 
 
-async def export_config(session: AsyncSession) -> str:
+async def export_config(session: AsyncSession, passphrase: Optional[str] = None) -> str:
     """
     Export full configuration as a portable tar.gz archive.
     
@@ -112,6 +112,10 @@ async def export_config(session: AsyncSession) -> str:
     - modules/{id}/data.json (module DB data)
     - modules/{id}/files/ (irrecoverable filesystem files)
     
+    passphrase: encrypts the archive with this instead of the configured
+    backup passphrase (hub backups use the per-instance passphrase agreed at
+    enrollment).
+
     Returns path to created archive.
     """
     export_name, export_path = _reserve_export_name()
@@ -196,7 +200,7 @@ async def export_config(session: AsyncSession) -> str:
             tar.add(export_path, arcname=export_name)
         os.chmod(archive_path, 0o600)
 
-        passphrase = await _archive_passphrase(session)
+        passphrase = passphrase or await _archive_passphrase(session)
         if passphrase:
             encrypted_path = archive_path[:-len(PLAIN_SUFFIX)] + ENCRYPTED_SUFFIX
             await asyncio.to_thread(encrypt_file, archive_path, encrypted_path, passphrase)
@@ -898,7 +902,9 @@ async def _export_users(session: AsyncSession) -> List[dict]:
     """Export all users with their permissions."""
     from core.auth.models import User, UserPermission
     
-    result = await session.execute(select(User))
+    # Temporary hub support accounts are bound to a live hub session: a
+    # restore must never bring one back
+    result = await session.execute(select(User).where(User.is_hub_support == False))  # noqa: E712
     users = result.scalars().all()
     
     users_data = []

@@ -99,6 +99,11 @@ class ModuleDashboardWidget(SQLModel):
     permission: Optional[str] = None  # Permission required to see this widget
 
 
+class ModuleLicense(SQLModel):
+    """License a module needs (issued by the MADMIN Hub, core/hub/licenses.py)."""
+    feature: str
+
+
 class ModuleManifest(SQLModel):
     """
     Module manifest schema (manifest.json).
@@ -157,6 +162,9 @@ class ModuleManifest(SQLModel):
 
     # OpenAPI tag description (shown in Swagger UI under the module tag)
     openapi_tag_description: Optional[str] = None
+
+    # Activated and loaded only with a valid hub license for this feature
+    license: Optional[ModuleLicense] = None
 
 
 

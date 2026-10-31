@@ -204,7 +204,7 @@ async def authenticate_user(session: AsyncSession, username: str, password: str)
     hashed = user.hashed_password if user else _dummy_hash()
     if not await asyncio.to_thread(verify_password, password, hashed) or not user:
         return None
-    if not user.is_active:
+    if not user.is_active or user.is_hub_support:
         return None
 
     return user
@@ -220,21 +220,28 @@ async def get_user_by_id(session: AsyncSession, user_id: uuid.UUID) -> Optional[
     return result.scalar_one_or_none()
 
 
-async def get_user_by_username(session: AsyncSession, username: str) -> Optional[User]:
-    """Get a user by username, including permissions."""
-    result = await session.execute(
+async def get_user_by_username(
+    session: AsyncSession, username: str, include_hub_support: bool = False
+) -> Optional[User]:
+    """Get a user by username, including permissions. Hub support accounts
+    are not visible to user management unless asked for."""
+    query = (
         select(User)
         .options(selectinload(User.permissions))
         .where(User.username == username)
     )
+    if not include_hub_support:
+        query = query.where(User.is_hub_support == False)  # noqa: E712
+    result = await session.execute(query)
     return result.scalar_one_or_none()
 
 
 async def get_all_users(session: AsyncSession) -> List[User]:
-    """Get all users with their permissions."""
+    """Get all users with their permissions (hub support accounts excluded)."""
     result = await session.execute(
         select(User)
         .options(selectinload(User.permissions))
+        .where(User.is_hub_support == False)  # noqa: E712
         .order_by(User.username)
     )
     return result.scalars().all()
@@ -255,7 +262,7 @@ async def create_user(session: AsyncSession, user_data: UserCreate) -> User:
     if not ok:
         raise ValueError(msg)
 
-    existing = await get_user_by_username(session, user_data.username)
+    existing = await get_user_by_username(session, user_data.username, include_hub_support=True)
     if existing:
         raise ValueError(f"Username '{user_data.username}' already exists")
 

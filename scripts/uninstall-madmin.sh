@@ -186,6 +186,15 @@ rm -f /etc/sysctl.d/99-madmin.conf
 sysctl --system >/dev/null 2>&1 || true
 log_success "sysctl drop-in removed."
 
+# MADMIN Hub support SSH (core/hub/sshd.py). The hub is not told: a reinstall
+# (the upgrade path) re-enrolls with a re-enroll token and keeps the identity.
+if [ -f /etc/ssh/sshd_config.d/20-madmin-hub.conf ]; then
+    log_info "Removing MADMIN Hub SSH configuration..."
+    rm -f /etc/ssh/sshd_config.d/20-madmin-hub.conf /etc/ssh/madmin_hub_ca.pub
+    rm -rf /etc/ssh/madmin_principals
+    systemctl try-reload-or-restart ssh.service >/dev/null 2>&1 || true
+fi
+
 # --- Step 6: Remove the install directory ---
 log_info "Step 6/7: Removing $INSTALL_DIR..."
 rm -rf "$INSTALL_DIR"

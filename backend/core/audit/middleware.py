@@ -43,6 +43,7 @@ SENSITIVE_KEY_PATTERNS = [
     "ta_key",
     "tls_auth",
     "cert_data",
+    "ticket",        # one-time hub support login ticket
 ]
 
 # Matched on the whole key: as substrings they would mask unrelated fields

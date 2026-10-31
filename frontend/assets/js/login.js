@@ -91,8 +91,28 @@ document.getElementById('copyright-year').textContent = new Date().getFullYear()
 
 // --- Login flow ---
 
-// Check if already logged in
-if (localStorage.getItem('madmin_token')) {
+// Hub support session: the hub operator opens login.html#hub-ticket=<ticket>
+// (the fragment never reaches the server logs). The one-time ticket is
+// exchanged for a session that replaces any token already stored here.
+const _hubTicket = new URLSearchParams(window.location.hash.slice(1)).get('hub-ticket');
+if (_hubTicket) {
+    history.replaceState(null, '', window.location.pathname);
+    fetch('/api/auth/token/hub-ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket: _hubTicket }),
+    }).then(async (resp) => {
+        if (!resp.ok) throw new Error();
+        const data = await resp.json();
+        localStorage.setItem('madmin_token', data.access_token);
+        window.location.href = '/';
+    }).catch(() => {
+        localStorage.removeItem('madmin_token');
+        // Runs after the page script: showError and its elements exist by now
+        showError('Ticket di supporto non valido o scaduto');
+    });
+} else if (localStorage.getItem('madmin_token')) {
+    // Check if already logged in
     window.location.href = '/';
 }
 
