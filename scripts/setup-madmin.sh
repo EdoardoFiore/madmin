@@ -91,6 +91,17 @@ FORCE_PW_CHANGE="false"   # opt-in: used by install automations (e.g. madmin-hub
 PROVISION_LAN="false"     # opt-in: auto-provisions a managed LAN (interface + DHCP + NAT)
 PROVISION_LAN_IFACES=""   # optional: comma-separated interfaces to lock (first = managed LAN)
 PROTECT_WAN="false"       # opt-in: makes WAN (eth0) editing read-only via UI/API
+# MADMIN Hub enrollment token (one line, from the hub's "Enrollment" page).
+# Prefer --hub-token-file or the environment: --hub-token stays visible in the
+# process list and in the shell history.
+HUB_TOKEN="${MADMIN_HUB_TOKEN:-}"
+HUB_TOKEN_FILE=""
+# Without a token: the hub URL only. The instance asks to be enrolled and an
+# operator approves it on the hub (also long after the install). The CA
+# fingerprint is optional but recommended: without it the hub CA is trusted
+# on first contact.
+HUB_URL="${MADMIN_HUB_URL:-}"
+HUB_CA_SHA256="${MADMIN_HUB_CA_SHA256:-}"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -104,6 +115,10 @@ while [[ "$#" -gt 0 ]]; do
             if [[ -n "$2" && "$2" != -* ]]; then PROVISION_LAN_IFACES="$2"; shift; fi
             ;;
         -w|--protect-wan) PROTECT_WAN="true" ;;
+        --hub-token) HUB_TOKEN="$2"; shift ;;
+        --hub-token-file) HUB_TOKEN_FILE="$2"; shift ;;
+        --hub-url) HUB_URL="$2"; shift ;;
+        --hub-ca-sha256) HUB_CA_SHA256="$2"; shift ;;
     esac
     shift
 done
@@ -838,6 +853,42 @@ configure_ssh_port() {
     return 0
 }
 
+# MADMIN Hub enrollment (opt-in). Done from the CLI as root, never over HTTP:
+# the private key is generated here; a token (immediate) pins the hub CA, the
+# hub URL alone (--hub-url) makes a request to approve on the hub. A failure
+# does not fail the install: it can be repeated with the same command.
+HUB_RESULT="none"
+if [ -n "$HUB_TOKEN_FILE" ] && [ -z "$HUB_TOKEN" ]; then
+    if [ -r "$HUB_TOKEN_FILE" ]; then
+        HUB_TOKEN="$(tr -d '[:space:]' < "$HUB_TOKEN_FILE")"
+    else
+        log_warning "Hub token file not readable: $HUB_TOKEN_FILE"
+    fi
+fi
+if [ -n "$HUB_TOKEN" ]; then
+    log_info "Enrolling this instance to the MADMIN Hub..."
+    if (cd $INSTALL_DIR/backend && MADMIN_HUB_TOKEN="$HUB_TOKEN" $INSTALL_DIR/venv/bin/python -m core.hub enroll); then
+        HUB_RESULT="enrolled"
+        log_success "Instance enrolled to the MADMIN Hub."
+    else
+        HUB_RESULT="failed"
+        log_warning "Hub enrollment failed. Retry with:"
+        log_warning "  cd $INSTALL_DIR/backend && sudo MADMIN_HUB_TOKEN='<token>' $INSTALL_DIR/venv/bin/python -m core.hub enroll"
+    fi
+    unset HUB_TOKEN MADMIN_HUB_TOKEN
+elif [ -n "$HUB_URL" ]; then
+    log_info "Requesting enrollment to the MADMIN Hub (approval on the hub)..."
+    if (cd $INSTALL_DIR/backend && MADMIN_HUB_URL="$HUB_URL" MADMIN_HUB_CA_SHA256="$HUB_CA_SHA256" \
+            $INSTALL_DIR/venv/bin/python -m core.hub register); then
+        HUB_RESULT="pending"
+        log_success "Enrollment requested: approve it on the hub (Enrollment > In attesa)."
+    else
+        HUB_RESULT="failed"
+        log_warning "Hub registration failed. Retry with:"
+        log_warning "  cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.hub register --url $HUB_URL"
+    fi
+fi
+
 log_info "Moving SSH to port $MADMIN_SSH_PORT..."
 configure_ssh_port
 
@@ -890,6 +941,12 @@ if [ "$FORCE_PW_CHANGE" = "true" ] || [ "$PROVISION_LAN" = "true" ] || [ "$PROTE
     [ "$PROTECT_WAN" = "true" ]    && echo "  - WAN edit protection (eth0 config read-only)"
     echo ""
 fi
+
+case "$HUB_RESULT" in
+    enrolled) echo "MADMIN Hub: enrolled (status: cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.hub status)"; echo "" ;;
+    pending)  echo "MADMIN Hub: waiting for approval on the hub (connects by itself once approved)"; echo "" ;;
+    failed)   echo "MADMIN Hub: enrollment FAILED (see the warning above)"; echo "" ;;
+esac
 
 # Password reminder: only meaningful when a change is not already forced
 if [ "$FORCE_PW_CHANGE" = "true" ]; then

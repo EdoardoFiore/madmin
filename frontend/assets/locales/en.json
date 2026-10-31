@@ -879,6 +879,8 @@
         "deactivateAndRemove": "Deactivate and remove data",
         "deactivateModule": "Deactivate module",
         "activateModule": "Activate module",
+        "licenseRequired": "License required",
+        "licenseRequiredHint": "This module needs an active license: contact support",
         "loadingDoc": "Loading documentation...",
         "docTab": "Documentation",
         "infoTab": "Info",

@@ -879,6 +879,8 @@
         "deactivateAndRemove": "Disattiva e rimuovi dati",
         "deactivateModule": "Disattiva modulo",
         "activateModule": "Attiva modulo",
+        "licenseRequired": "Licenza richiesta",
+        "licenseRequiredHint": "Questo modulo richiede una licenza attiva: contatta il supporto",
         "loadingDoc": "Caricamento documentazione...",
         "docTab": "Documentazione",
         "infoTab": "Info",

@@ -410,6 +410,14 @@ async def lifespan(app: FastAPI):
     syslog_task = spawn_background(syslog_forwarder.run(), "syslog-forwarder")
     logger.info("Syslog forwarder task started")
 
+    # MADMIN Hub agent (idle until the instance is enrolled) and the expiry of
+    # hub support accesses
+    from core.hub.client import hub_agent, load_command_handlers
+    from core.hub.support import sweeper as hub_support_sweeper
+    load_command_handlers()
+    hub_task = spawn_background(hub_agent.run(), "hub-agent")
+    hub_sweeper_task = spawn_background(hub_support_sweeper(), "hub-support-sweeper")
+
     logger.info("MADMIN ready!")
     sdnotify.notify("READY=1")
     
@@ -428,6 +436,8 @@ async def lifespan(app: FastAPI):
     audit_task.cancel()
     address_task.cancel()
     syslog_task.cancel()
+    hub_task.cancel()
+    hub_sweeper_task.cancel()
     traffic_task.cancel()
     capture_task.cancel()
     restore_task.cancel()
@@ -456,6 +466,11 @@ async def lifespan(app: FastAPI):
         await syslog_task
     except asyncio.CancelledError:
         pass
+    for task in (hub_task, hub_sweeper_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     # Write the audit entries still queued
     from core.audit.writer import audit_writer

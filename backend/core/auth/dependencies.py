@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
+from datetime import datetime
 
 from core.database import get_session
 from .models import User, TokenData
@@ -51,6 +52,8 @@ async def _resolve_user_from_payload(
     if user is None:
         raise credentials_exception
     if not service.token_is_current(payload, user):
+        raise credentials_exception
+    if user.expires_at is not None and user.expires_at <= datetime.utcnow():
         raise credentials_exception
     if not user.is_active:
         raise HTTPException(

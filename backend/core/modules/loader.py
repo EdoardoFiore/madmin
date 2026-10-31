@@ -68,6 +68,14 @@ class ModuleLoader:
         self.loaded_modules: Dict[str, Dict[str, Any]] = {}
         self.modules_dir = Path(settings.modules_dir)
     
+    @staticmethod
+    async def _license_missing(manifest: ModuleManifest) -> bool:
+        """True if the module needs a hub license that is not valid now."""
+        if manifest.license is None:
+            return False
+        from core.hub.licenses import is_licensed
+        return not await asyncio.to_thread(is_licensed, manifest.license.feature)
+
     def _parse_manifest(self, manifest_path: Path) -> Optional[ModuleManifest]:
         """Parse and validate a module's manifest.json."""
         try:
@@ -475,6 +483,13 @@ class ModuleLoader:
             if not db_module:
                 logger.info(f"Skipping non-active module: {module_id}")
                 continue
+
+            # License expired or revoked: not loaded, but left active (its data
+            # stays; deactivating would drop the tables)
+            manifest = self._parse_manifest(self.modules_dir / module_id / "manifest.json")
+            if manifest and await self._license_missing(manifest):
+                logger.warning(f"Skipping module without a valid license: {module_id}")
+                continue
             
             if await self.load_module(app, session, module_id):
                 loaded_count += 1
@@ -670,6 +685,8 @@ class ModuleLoader:
         manifest = self._parse_manifest(manifest_path)
         if not manifest:
             return {"success": False, "error": f"Manifest del modulo '{module_id}' non valido o corrotto"}
+        if await self._license_missing(manifest):
+            return {"success": False, "error": f"Il modulo '{module_id}' richiede una licenza valida"}
         
         try:
             # Check if already active
@@ -987,7 +1004,9 @@ class ModuleLoader:
                 "system_dependencies": {
                     "apt": manifest.system_dependencies.apt,
                     "pip": manifest.system_dependencies.pip
-                }
+                },
+                "license_required": manifest.license is not None,
+                "licensed": not await self._license_missing(manifest),
             })
         
         return available

@@ -81,6 +81,12 @@ class User(SQLModel, table=True):
     # clean up, nothing to "unrevoke", and a new login is never affected.
     tokens_valid_after: Optional[datetime] = Field(default=None)
 
+    # Temporary support account opened by the MADMIN Hub (core/hub/support.py):
+    # hidden from user management and backups, no password login (only a
+    # one-time ticket), removed when it expires
+    is_hub_support: bool = Field(default=False)
+    expires_at: Optional[datetime] = Field(default=None)  # None = permanent account
+
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: Optional[datetime] = Field(default=None)

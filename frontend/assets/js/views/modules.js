@@ -150,6 +150,10 @@ function getActionButton(mod) {
         return `<button class="btn btn-sm btn-outline-danger" ${actionAttrs('_confirmDeactivate', mod.id, mod.name)}>
             <i class="ti ti-player-stop me-1"></i>${t('modules.deactivate')}
         </button>`;
+    } else if (mod.license_required && !mod.licensed) {
+        return `<button class="btn btn-sm btn-outline-secondary" disabled title="${escapeHtml(t('modules.licenseRequiredHint'))}">
+            <i class="ti ti-lock me-1"></i>${t('modules.licenseRequired')}
+        </button>`;
     } else {
         return `<button class="btn btn-sm btn-primary" ${actionAttrs('_confirmActivate', mod.id, mod.name)}>
             <i class="ti ti-player-play me-1"></i>${t('modules.activate')}
@@ -336,6 +340,10 @@ window._openModuleDetail = async (moduleId) => {
             ${mod.enabled
                 ? `<button class="btn btn-danger" ${actionAttrs('_detailDeactivate', mod.id, mod.name)}>
                     <i class="ti ti-player-stop me-1"></i>${t('modules.deactivateModule')}
+                </button>`
+                : (mod.license_required && !mod.licensed)
+                ? `<button class="btn btn-outline-secondary" disabled title="${escapeHtml(t('modules.licenseRequiredHint'))}">
+                    <i class="ti ti-lock me-1"></i>${t('modules.licenseRequired')}
                 </button>`
                 : `<button class="btn btn-primary" ${actionAttrs('_detailActivate', mod.id, mod.name)}>
                     <i class="ti ti-player-play me-1"></i>${t('modules.activateModule')}
