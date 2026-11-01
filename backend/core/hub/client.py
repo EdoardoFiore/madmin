@@ -360,4 +360,4 @@ hub_agent = HubAgent()
 
 def load_command_handlers() -> None:
     """Register the commands implemented by the other modules of the package."""
-    from . import backups, licenses, support, tunnel  # noqa: F401
+    from . import backups, licenses, stats, support, tunnel  # noqa: F401
