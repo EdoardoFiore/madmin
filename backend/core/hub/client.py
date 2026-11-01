@@ -9,8 +9,9 @@ agent opens on request (tunnel.py).
 A session is three tasks (reader, writer, heartbeat); when any of them ends
 the others are cancelled and the agent reconnects with an exponential backoff
 (1 s to 60 s, jittered so a hub restart is not hit by every instance at once).
-Close code 4401 means the hub revoked this instance: the agent stops and waits
-for a new enrollment instead of retrying forever.
+Close code 4401 means the hub revoked this instance: the agent removes the
+support access the hub opened, stops and waits for a new enrollment instead
+of retrying forever.
 
 Commands are deduplicated by id and their results cached: the hub re-sends
 the commands it has no result for after a reconnect, and gets the cached
@@ -116,6 +117,15 @@ class HubAgent:
                 )
                 await asyncio.to_thread(ident.mark_revoked)
                 await asyncio.to_thread(self._write_status, "revocata dalla hub")
+                # Support access opened by the hub goes now, not at its expiry:
+                # hidden accounts, SSH grant and the sshd CA/drop-in (a new
+                # enrollment installs them again at the next grant)
+                try:
+                    from .support import cleanup_all
+                    await cleanup_all()
+                    logger.info("Hub: support access removed after the revocation")
+                except Exception:
+                    logger.exception("Hub: support access not removed after the revocation")
                 continue
             except InvalidStatus as e:
                 error = f"handshake rifiutato (HTTP {e.response.status_code})"
