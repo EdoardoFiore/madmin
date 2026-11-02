@@ -181,6 +181,10 @@ log_info "Step 1/7: Installing system dependencies..."
 
 disable_unattended_upgrades
 wait_for_apt
+# A dpkg run cut short (unattended-upgrades stopped mid-upgrade, a previous
+# installer interrupted) makes every apt-get install fail until it is completed.
+# No-op when nothing is pending.
+DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold --configure -a
 apt-get update
 
 # Base utilities (needed on Ubuntu Minimal where they are not preinstalled)
