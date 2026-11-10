@@ -3,7 +3,7 @@
 
 {% if acl.auths %}
 auth_basic "Restricted - {{ acl.name }}";
-auth_basic_user_file /etc/nginx/madmin-revproxy/htpasswd/{{ acl.id }};
+auth_basic_user_file {{ htpasswd }};
 {% endif %}
 
 {% if acl.rules %}
