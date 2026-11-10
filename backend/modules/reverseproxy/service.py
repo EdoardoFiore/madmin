@@ -336,7 +336,9 @@ def render_host_vhost(
     }
 
     proxy_block = _jinja.get_template("proxy_block.conf.j2").render(
-        host=host_view, acl=_serialize_acl(acl)
+        host=host_view,
+        acl=_serialize_acl(acl),
+        acl_snippet=str(_acl_snippet_path(acl.id)) if acl else None,
     )
     return _jinja.get_template("proxy_host.conf.j2").render(
         host=host_view,
@@ -353,7 +355,8 @@ def render_host_vhost(
 
 def render_access_list_snippet(acl: RevproxyAccessList) -> str:
     return _jinja.get_template("access_list.conf.j2").render(
-        acl=_serialize_acl(acl)
+        acl=_serialize_acl(acl),
+        htpasswd=str(_htpasswd_path(acl.id)),
     )
 
 
