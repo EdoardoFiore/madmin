@@ -55,7 +55,7 @@ from .models import (
 )
 from .orchestrator import (
     firewall_orchestrator, dnat_forward_fields, policy_nat_fields, policy_nat_target, hairpin_masq_fields,
-    redirect_input_fields, dnat_input_fields, effective_to_destination, section_key,
+    redirect_input_fields, dnat_input_fields, effective_to_destination, section_key, RULE_ORDER,
     IMPLICIT_DENY_COMMENT,
 )
 from .iptables import IptablesError
@@ -92,7 +92,9 @@ _TABLE_CHAINS = {
 _TABLE_ACTIONS = {
     "filter": ("ACCEPT", "DROP", "REJECT", "LOG", "RETURN"),
     "nat": ("SNAT", "DNAT", "MASQUERADE", "REDIRECT", "ACCEPT", "RETURN"),
-    "mangle": ("MARK", "TOS", "TTL", "ACCEPT", "RETURN"),
+    # No MARK/TOS/TTL: the rule model has no field for their value and
+    # iptables-restore rejects them without one (see build_rule_args)
+    "mangle": ("ACCEPT", "RETURN"),
     "raw": ("NOTRACK", "ACCEPT", "RETURN"),
 }
 
@@ -847,7 +849,7 @@ def _implicit_deny_response() -> MachineFirewallRuleResponse:
 
 
 async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses) -> None:
-    """Evaluation sequence and shadowed/duplicate rules, per filter chain and nat/POSTROUTING."""
+    """Evaluation sequence and shadowed/duplicate rules, per filter chain, nat/POSTROUTING and nat/PREROUTING."""
     from . import shadow
 
     sections = (await session.execute(select(ForwardSection))).scalars().all()
@@ -855,7 +857,7 @@ async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses)
     by_id = {str(r.id): resp for r, resp in zip(rules, responses)}
     chains: dict = {}
     for r, resp in zip(rules, responses):
-        if r.table_name == "filter" or (r.table_name == "nat" and r.chain == "POSTROUTING"):
+        if r.table_name == "filter" or (r.table_name == "nat" and r.chain in ("POSTROUTING", "PREROUTING")):
             chains.setdefault((r.table_name, r.chain), []).append((r, resp))
     for (table, chain), items in chains.items():
         if chain == "FORWARD":
@@ -864,7 +866,8 @@ async def _annotate_sequence_and_shadow(session: AsyncSession, rules, responses)
             items.sort(key=lambda it: it[0].order)
         for i, (_, resp) in enumerate(items, start=1):
             resp.seq = i
-        for rid, info in shadow.analyze([resp for _, resp in items], nat=table == "nat").items():
+        for rid, info in shadow.analyze([resp for _, resp in items], nat=table == "nat",
+                                        prerouting=table == "nat" and chain == "PREROUTING").items():
             resp = by_id[rid]
             resp.shadowed_by = info["by"]
             resp.shadowed_by_seq = by_id[info["by"]].seq
@@ -1360,7 +1363,7 @@ async def _rule_views(session: AsyncSession, chain: str, table: str = "filter") 
             MachineFirewallRule.table_name == table,
             MachineFirewallRule.chain == chain,
             MachineFirewallRule.enabled == True,  # noqa: E712
-        ).order_by(MachineFirewallRule.order)
+        ).order_by(*RULE_ORDER)
     )).scalars().all()
     if table == "filter" and chain == "FORWARD":
         sections = (await session.execute(select(ForwardSection))).scalars().all()
@@ -1481,7 +1484,7 @@ async def _seq_map(session: AsyncSession, chain: str, table: str = "filter") -> 
     rules = (await session.execute(
         select(MachineFirewallRule).where(
             MachineFirewallRule.table_name == table, MachineFirewallRule.chain == chain,
-        )
+        ).order_by(*RULE_ORDER)
     )).scalars().all()
     if chain == "FORWARD":
         sections = (await session.execute(select(ForwardSection))).scalars().all()
@@ -1594,14 +1597,21 @@ async def trace_packet(
     pre_topo = flowmatch.Topology(routes + topo.routes, topo.local_ips, topo.default_dev)
     targets = await firewall_orchestrator.resolve_dnat_targets(
         session, await firewall_orchestrator.get_enabled_dnat_rules(session))
+    # An exception of Advanced (ACCEPT/RETURN) matched first ends the chain
+    # without a rewrite: the port forwards below it never see the packet
+    nat_exception = None
+    pre_seq = await _seq_map(session, "PREROUTING", table="nat")
     for view in await _rule_views(session, "PREROUTING", table="nat"):
-        if view.action not in ("DNAT", "REDIRECT"):
+        if view.action not in ("DNAT", "REDIRECT", "ACCEPT", "RETURN"):
             continue
         m = flowmatch.match(view, flow_for(data.destination, data.destination), "PREROUTING", pre_topo)
         if m is None:
             notes.append("uncertain_dnat")
             break
         if m:
+            if view.action in ("ACCEPT", "RETURN"):
+                nat_exception = {"rule_id": view.id, "seq": pre_seq.get(view.id), "action": view.action}
+                break
             to = targets.get(uuid.UUID(view.id)) if view.action == "DNAT" else None
             dnat = {"rule_id": view.id, "action": view.action, "to": to}
             break
@@ -1645,7 +1655,7 @@ async def trace_packet(
         "chain": chain,
         "in_interface": ttopo.dev_for(data.source),
         "out_interface": ttopo.dev_for(reply_src) if chain == "FORWARD" else None,
-        "dnat": dnat, "steps": steps, "decision": decision, "snat": snat,
+        "dnat": dnat, "nat_exception": nat_exception, "steps": steps, "decision": decision, "snat": snat,
         "notes": sorted(set(notes)),
     }
 
@@ -1847,31 +1857,16 @@ async def reorder_single_rule(
         if not rule:
             raise HTTPException(status_code=404, detail="Rule not found")
         
-        old_order = rule.order
-        new_order = data.new_order
-        
-        # Get all rules in the same chain/table
-        chain_rules = await session.execute(
-            select(MachineFirewallRule)
-            .where(MachineFirewallRule.chain == rule.chain)
-            .where(MachineFirewallRule.table_name == rule.table_name)
-            .order_by(MachineFirewallRule.order)
-        )
-        all_rules = list(chain_rules.scalars().all())
-        
-        # Shift rules
-        if new_order < old_order:
-            # Moving up
-            for r in all_rules:
-                if r.id != rule.id and r.order >= new_order and r.order < old_order:
-                    r.order += 1
-        else:
-            # Moving down
-            for r in all_rules:
-                if r.id != rule.id and r.order > old_order and r.order <= new_order:
-                    r.order -= 1
-        
-        rule.order = new_order
+        # Move within the chain's list in evaluation order, then renumber it
+        # 0..n-1. The old in-place shift assumed contiguous, unique positions:
+        # with a tie (an archive, older versions) it produced more ties and
+        # the move landed somewhere else than the view showed.
+        all_rules = await firewall_orchestrator.chain_rules_ordered(session, rule.table_name, rule.chain)
+        all_rules = [r for r in all_rules if r.id != rule.id]
+        new_order = max(0, min(data.new_order, len(all_rules)))
+        all_rules.insert(new_order, rule)
+        for i, r in enumerate(all_rules):
+            r.order = i
         await session.flush()
 
         # Re-apply rules BEFORE committing: if the kernel rejects the new
@@ -2673,7 +2668,18 @@ async def import_rules(
                 )
                 await _validate_rule_refs(session, rule_data.source_refs, rule_data.destination_refs)
 
-                await firewall_orchestrator.create_rule(session, rule_data.model_dump())
+                # One savepoint per rule: create_rule flushes the row and then
+                # applies. A rule the kernel rejects must leave with its
+                # savepoint, or it stays in the session, fails every later
+                # apply and the final commit saves it anyway: DB and kernel
+                # diverge and every later change answers 400.
+                savepoint = await session.begin_nested()
+                try:
+                    await firewall_orchestrator.create_rule(session, rule_data.model_dump())
+                except Exception:
+                    await savepoint.rollback()
+                    raise
+                await savepoint.commit()
                 applied_count += 1
 
             except HTTPException as e:

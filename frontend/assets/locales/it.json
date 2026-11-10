@@ -386,7 +386,10 @@
             "pfBlocked": "Bloccato da #{n}",
             "pfBlockedHint": "La policy #{n} blocca tutto il traffico di questo port forwarding prima che venga accettato: il port forwarding non funziona. Spostarla, restringerla o aggiungere sopra una policy che accetti questo traffico.",
             "pfUnscoped": "Senza interfaccia né IP esterno",
-            "pfUnscopedHint": "Senza interfaccia di ingresso né IP esterno questa regola intercetta anche il traffico dei client LAN verso Internet sulla stessa porta. Indicare l'interfaccia WAN o l'IP esterno."
+            "pfUnscopedHint": "Senza interfaccia di ingresso né IP esterno questa regola intercetta anche il traffico dei client LAN verso Internet sulla stessa porta. Indicare l'interfaccia WAN o l'IP esterno.",
+            "pfShadowed": "Mai applicato",
+            "pfShadowedHint": "Una regola precedente in nat/PREROUTING ({name}) decide prima questo traffico: questo port forwarding non riscrive mai la destinazione.",
+            "pfShadowedAdvanced": "una regola di Advanced (#{n})"
         },
         "editor": {
             "anyInterface": "qualsiasi",
@@ -535,7 +538,8 @@
             "snat_masquerade": "IP di {iface}",
             "snat_poolRange": "un indirizzo del pool, sempre lo stesso per questo client",
             "snat_unknown": "non determinabile (oggetti non risolti)",
-            "snat_none": "indirizzo originale, nessun NAT"
+            "snat_none": "indirizzo originale, nessun NAT",
+            "natException": "nessuno: la regola NAT {rule} di Advanced lo esclude prima dei port forward"
         },
         "preview": {
             "button": "Anteprima iptables",

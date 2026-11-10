@@ -386,7 +386,10 @@
             "pfBlocked": "Blocked by #{n}",
             "pfBlockedHint": "Policy #{n} blocks all of this port forward's traffic before it is accepted: the port forward does not work. Move it, narrow it, or add a policy above it that accepts this traffic.",
             "pfUnscoped": "No interface or external IP",
-            "pfUnscopedHint": "With neither an incoming interface nor an external IP this rule also intercepts the LAN clients' traffic to the Internet on the same port. Set the WAN interface or the external IP."
+            "pfUnscopedHint": "With neither an incoming interface nor an external IP this rule also intercepts the LAN clients' traffic to the Internet on the same port. Set the WAN interface or the external IP.",
+            "pfShadowed": "Never applied",
+            "pfShadowedHint": "An earlier nat/PREROUTING rule ({name}) decides this traffic first: this port forward never rewrites the destination.",
+            "pfShadowedAdvanced": "an Advanced rule (#{n})"
         },
         "editor": {
             "anyInterface": "any",
@@ -535,7 +538,8 @@
             "snat_masquerade": "address of {iface}",
             "snat_poolRange": "one address of the pool, always the same for this client",
             "snat_unknown": "cannot be determined (unresolved objects)",
-            "snat_none": "original address, no NAT"
+            "snat_none": "original address, no NAT",
+            "natException": "none: Advanced NAT rule {rule} exempts it before the port forwards"
         },
         "preview": {
             "button": "iptables preview",
