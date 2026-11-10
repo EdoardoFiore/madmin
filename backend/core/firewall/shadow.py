@@ -6,9 +6,12 @@ A rule is shadowed when an earlier enabled terminal rule of the same chain
 an ACCEPT added at the end of INPUT, below the final DROP: it looks active
 and is never reached. Conservative by design: anything that cannot be proven
 (different address objects, a rate-limited rule, partial state lists) is not
-reported. The filter table, where the first terminal match decides, and the
+reported. The filter table, where the first terminal match decides, the
 nat/POSTROUTING rules of Advanced, where the first match decides the source
-address (every action there is terminal; ACCEPT and RETURN both mean "no NAT").
+address (every action there is terminal; ACCEPT and RETURN both mean "no NAT"),
+and nat/PREROUTING, where the first match decides the destination: a port
+forward below an exception (ACCEPT/RETURN, Advanced only) or below a wider
+DNAT never rewrites anything.
 """
 import ipaddress
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -17,6 +20,7 @@ from .ports import parse_port_spec
 
 TERMINAL = {"ACCEPT", "DROP", "REJECT"}
 NAT_TERMINAL = {"ACCEPT", "RETURN", "MASQUERADE", "SNAT"}
+PREROUTING_TERMINAL = {"ACCEPT", "RETURN", "DNAT", "REDIRECT"}
 
 
 def policy_nat_key(rule) -> tuple:
@@ -31,6 +35,16 @@ def nat_decision(rule) -> tuple:
     if rule.action in ("ACCEPT", "RETURN"):
         return ("none",)
     return (rule.action, getattr(rule, "to_source", None), getattr(rule, "nat_pool_id", None))
+
+
+def dnat_decision(rule) -> tuple:
+    """What a nat/PREROUTING rule decides: no rewrite, or rewrite to which target."""
+    if rule.action in ("ACCEPT", "RETURN"):
+        return ("none",)
+    if rule.action == "REDIRECT":
+        return ("REDIRECT", getattr(rule, "to_ports", None))
+    return ("DNAT", getattr(rule, "to_destination", None),
+            getattr(rule, "to_destination_object_id", None), getattr(rule, "to_destination_port", None))
 
 
 def _iface_covers(a: Optional[str], b: Optional[str]) -> bool:
@@ -105,18 +119,24 @@ def covers(a, b) -> bool:
     )
 
 
-def analyze(ordered: Sequence, nat: bool = False) -> Dict[str, dict]:
+def analyze(ordered: Sequence, nat: bool = False, prerouting: bool = False) -> Dict[str, dict]:
     """
     `ordered`: the rules of one filter chain (or, with nat=True, of
-    nat/POSTROUTING) in evaluation order, enabled and disabled. Returns
+    nat/POSTROUTING; with prerouting=True, of nat/PREROUTING) in evaluation
+    order, enabled and disabled. Returns
     {rule_id: {"by": id, "kind": "shadowed"|"shadowed_nat"|"duplicate"|"redundant"}}
     for every enabled rule an earlier enabled terminal rule makes useless.
     shadowed_nat: both accept, but the earlier one with another NAT (or none):
     the NAT configured on this rule is never applied, since a connection is
     NATed by the policy that accepted it.
     """
-    terminal = NAT_TERMINAL if nat else TERMINAL
-    decision = nat_decision if nat else (lambda r: r.action)
+    if prerouting:
+        nat = True
+        terminal, decision = PREROUTING_TERMINAL, dnat_decision
+    elif nat:
+        terminal, decision = NAT_TERMINAL, nat_decision
+    else:
+        terminal, decision = TERMINAL, (lambda r: r.action)
     out: Dict[str, dict] = {}
     earlier: List = []
     for rule in ordered:

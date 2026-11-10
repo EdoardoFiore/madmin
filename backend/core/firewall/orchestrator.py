@@ -12,7 +12,7 @@ import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, or_
+from sqlalchemy import select, update, delete, or_, func
 import uuid
 
 import json
@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 IMPLICIT_DENY_COMMENT = "MADMIN_IMPLICIT_DENY"
 # INPUT drop of new connections to the /32s of ARP-answered IP pools
 NAT_POOL_GUARD_COMMENT = "MADMIN_NAT_POOL_GUARD"
+# Evaluation order of the rules of a chain. `order` alone can tie (positions
+# restored from an archive, or left by older versions): creation time and id
+# make every query — engine, listings, shadow analysis, reorder — agree.
+RULE_ORDER = (MachineFirewallRule.order, MachineFirewallRule.created_at, MachineFirewallRule.id)
 
 
 def effective_to_destination(rule, obj_value: Optional[str] = None) -> Optional[str]:
@@ -522,10 +526,7 @@ class FirewallOrchestrator:
         chain: Optional[str] = None
     ) -> List[MachineFirewallRule]:
         """Get all firewall rules, optionally filtered by chain."""
-        query = select(MachineFirewallRule).order_by(
-            MachineFirewallRule.chain,
-            MachineFirewallRule.order
-        )
+        query = select(MachineFirewallRule).order_by(MachineFirewallRule.chain, *RULE_ORDER)
         
         if chain:
             query = query.where(MachineFirewallRule.chain == chain)
@@ -574,7 +575,7 @@ class FirewallOrchestrator:
                 MachineFirewallRule.to_destination.is_not(None),
                 MachineFirewallRule.to_destination_object_id.is_not(None),
             ))
-            .order_by(MachineFirewallRule.order)
+            .order_by(*RULE_ORDER)
         )
         return result.scalars().all()
 
@@ -589,7 +590,7 @@ class FirewallOrchestrator:
             .where(MachineFirewallRule.chain == "FORWARD")
             .where(MachineFirewallRule.policy_nat == True)
             .where(MachineFirewallRule.enabled == True)
-            .order_by(MachineFirewallRule.order)
+            .order_by(*RULE_ORDER)
         )
         return result.scalars().all()
 
@@ -608,7 +609,7 @@ class FirewallOrchestrator:
                 MachineFirewallRule.to_destination.is_not(None),
                 MachineFirewallRule.to_destination_object_id.is_not(None),
             ))
-            .order_by(MachineFirewallRule.order)
+            .order_by(*RULE_ORDER)
         )
         return result.scalars().all()
 
@@ -627,7 +628,7 @@ class FirewallOrchestrator:
             .where(MachineFirewallRule.chain == "PREROUTING")
             .where(MachineFirewallRule.action == "REDIRECT")
             .where(MachineFirewallRule.enabled == True)
-            .order_by(MachineFirewallRule.order)
+            .order_by(*RULE_ORDER)
         )
         redirect_rules = list(redirect_result.scalars().all())
 
@@ -640,7 +641,7 @@ class FirewallOrchestrator:
                 MachineFirewallRule.to_destination.is_not(None),
                 MachineFirewallRule.to_destination_object_id.is_not(None),
             ))
-            .order_by(MachineFirewallRule.order)
+            .order_by(*RULE_ORDER)
         )
         dnat_candidates = list(dnat_result.scalars().all())
         dnat_targets = await self.resolve_dnat_targets(session, dnat_candidates)
@@ -793,10 +794,16 @@ class FirewallOrchestrator:
         rule = await self.get_rule_by_id(session, rule_id)
         if not rule:
             return None
-        
+
+        old_place = (rule.table_name, rule.chain)
+        old_pair = section_key(rule)
+
         # Update fields (source_refs/destination_refs are not model columns and
-        # are handled separately below)
+        # are handled separately below). `order` is never taken from the
+        # payload: positions change only through the reorder endpoints.
         for key, value in rule_data.items():
+            if key == "order":
+                continue
             # to_destination_object_id is a UUID column; the API layer only
             # ever hands this loop a plain str (see MachineFirewallRuleUpdate).
             if key in ("to_destination_object_id", "nat_pool_id") and isinstance(value, str):
@@ -804,9 +811,31 @@ class FirewallOrchestrator:
             if hasattr(rule, key):
                 setattr(rule, key, value)
 
+        # A rule that changes chain (or table), or a forward policy that
+        # changes interface pair, lands in a new list: it goes to its end, as
+        # a new rule would. Keeping the old `order` collided with a rule of
+        # the new chain (duplicate positions, ambiguous evaluation order) and
+        # put a moved policy at an arbitrary place inside its new group,
+        # possibly above or below a DROP the admin never looked at.
+        new_place = (rule.table_name, rule.chain)
+        moved = new_place != old_place or (
+            new_place == ("filter", "FORWARD") and section_key(rule) != old_pair
+        )
+        if moved:
+            last = (await session.execute(
+                select(func.max(MachineFirewallRule.order))
+                .where(MachineFirewallRule.table_name == rule.table_name)
+                .where(MachineFirewallRule.chain == rule.chain)
+                .where(MachineFirewallRule.id != rule.id)
+            )).scalar()
+            rule.order = (last if last is not None else -1) + 1
+
         rule.updated_at = datetime.utcnow()
         session.add(rule)
         await session.flush()
+        if moved:
+            await self.renumber_chain(session, *old_place)
+            await self.renumber_chain(session, *new_place)
 
         # Object/group references: replace when explicitly provided
         if "source_refs" in rule_data:
@@ -849,21 +878,38 @@ class FirewallOrchestrator:
         await session.flush()
 
         # Reorder remaining rules in the same (table, chain)
+        await self.renumber_chain(session, table_name, chain)
+
+        # Apply rules
+        return await self.apply_rules(session)
+        
+    async def chain_rules_ordered(
+        self, session: AsyncSession, table_name: str, chain: str
+    ) -> List[MachineFirewallRule]:
+        """
+        The rules of one (table, chain) in position order. Ties (positions
+        restored from an archive, or left by older versions) are broken by
+        creation time and id, the same way every evaluation-order query does,
+        so the engine, the views and a reorder never disagree on them.
+        """
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.chain == chain)
             .where(MachineFirewallRule.table_name == table_name)
-            .order_by(MachineFirewallRule.order)
+            .order_by(*RULE_ORDER)
         )
-        rules = result.scalars().all()
-        
+        return list(result.scalars().all())
+
+    async def renumber_chain(self, session: AsyncSession, table_name: str, chain: str) -> List[MachineFirewallRule]:
+        """Make the positions of one (table, chain) contiguous (0..n-1), keeping their order."""
+        rules = await self.chain_rules_ordered(session, table_name, chain)
         for i, r in enumerate(rules):
-            r.order = i
-            session.add(r)
-        
-        # Apply rules
-        return await self.apply_rules(session)
-        
+            if r.order != i:
+                r.order = i
+                session.add(r)
+        await session.flush()
+        return rules
+
     async def delete_all_rules(self, session: AsyncSession) -> bool:
         """
         Delete ALL firewall rules.
@@ -1111,7 +1157,7 @@ class FirewallOrchestrator:
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.table_name == "filter", MachineFirewallRule.chain == "FORWARD")
-            .order_by(MachineFirewallRule.order)
+            .order_by(*RULE_ORDER)
         )
         used: List[Tuple[str, str]] = []
         for rule in result.scalars().all():
@@ -1235,7 +1281,7 @@ class FirewallOrchestrator:
         result = await session.execute(
             select(MachineFirewallRule)
             .where(MachineFirewallRule.enabled == True)
-            .order_by(MachineFirewallRule.chain, MachineFirewallRule.order)
+            .order_by(MachineFirewallRule.chain, *RULE_ORDER)
         )
         rules = result.scalars().all()
 

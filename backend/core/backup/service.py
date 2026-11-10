@@ -951,8 +951,9 @@ async def _export_firewall_rules(session: AsyncSession) -> List[dict]:
     )
     from core.firewall.router import _dnat_obj_names_map, _pool_names_map
 
+    from core.firewall.orchestrator import RULE_ORDER
     result = await session.execute(
-        select(MachineFirewallRule).order_by(MachineFirewallRule.order)
+        select(MachineFirewallRule).order_by(MachineFirewallRule.chain, *RULE_ORDER)
     )
     rules = result.scalars().all()
 
@@ -1462,6 +1463,8 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
 
     warnings: List[str] = []
     count = 0
+    # (table, chain) -> [(archive order, file index, rule)]: renumbered below
+    placed: Dict[tuple, list] = {}
     # to_destination_object is exported by name and is not a model column — it is
     # resolved to to_destination_object_id below, after the address catalog import.
     exclude_fields = {
@@ -1515,6 +1518,11 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
 
         session.add(rule)
         await session.flush()
+        try:
+            archived_order = int(rule_dict.get("order") or 0)
+        except (TypeError, ValueError):
+            archived_order = 0
+        placed.setdefault((rule.table_name, rule.chain), []).append((archived_order, idx, rule))
         for direction in ("source", "destination"):
             resolved = await _resolve_imported_refs(
                 session, rule_dict.get(f"{direction}_refs"),
@@ -1530,6 +1538,15 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
                         rule_id=rule.id, direction=direction,
                         group_id=uuid.UUID(ref["group_id"]), order=i))
         count += 1
+
+    # Contiguous positions per chain, in the archive's order (file order breaks
+    # ties): an archive can carry duplicate or sparse values, and every reorder
+    # and evaluation-order query expects 0..n-1 without ties.
+    for items in placed.values():
+        items.sort(key=lambda it: (it[0], it[1]))
+        for i, (_, _, rule) in enumerate(items):
+            rule.order = i
+    await session.flush()
 
     return count, warnings
 

@@ -1002,6 +1002,12 @@ def build_rule_args(
         safe_comment = re.sub(r'[^a-zA-Z0-9_\-\. ]', '', comment)[:255]
         args.extend(["-m", "comment", "--comment", safe_comment])
     
+    # Targets that need a value the rule model cannot carry: iptables-restore
+    # rejects them bare, and with them the whole ruleset (rows from before the
+    # API refused them, or from an archive, are skipped on their own instead)
+    if action in ("MARK", "TOS", "TTL"):
+        raise ValueError(f"azione {action} senza valore (non supportata)")
+
     args.extend(["-j", action])
 
     if action == "CONNMARK" and set_xmark:

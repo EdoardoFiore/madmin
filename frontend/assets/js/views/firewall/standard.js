@@ -179,6 +179,20 @@ function advancedMatchBadge(r) {
         <i class="ti ti-adjustments me-1"></i>${t('firewall.std.advancedMatchBadge')}</span>`;
 }
 
+/** A port forward an earlier nat/PREROUTING rule always decides first
+ * (backend shadow analysis, prerouting): an exception of Advanced
+ * (ACCEPT/RETURN, not listed here) or a wider port forward above it. */
+function pfShadowBadge(r) {
+    if (!r.shadow_kind) return '';
+    const by = rules.find(x => x.id === r.shadowed_by);
+    const listed = by && ['DNAT', 'REDIRECT'].includes(by.action);
+    const name = listed
+        ? (by.comment || `${(by.protocol || '').toUpperCase()}/${by.port || '*'}`)
+        : t('firewall.std.pfShadowedAdvanced', { n: r.shadowed_by_seq ?? '?' });
+    return `<span class="badge bg-red-lt ms-1" title="${escapeHtml(t('firewall.std.pfShadowedHint', { name }))}">
+        <i class="ti ti-eye-off me-1"></i>${escapeHtml(t('firewall.std.pfShadowed'))}</span>`;
+}
+
 /** Line under the policies when Advanced holds nat/POSTROUTING rules: they
  * are evaluated before the policies' NAT and can override it. */
 function advancedNatNotice() {
@@ -473,7 +487,7 @@ function renderPortForward() {
                                 <td>${draggable ? '<i class="ti ti-grip-vertical fw-handle text-muted" style="cursor:grab"></i>' : ''}</td>
                                 <td>${r.comment ? escapeHtml(r.comment) : '<span class="text-muted">—</span>'}</td>
                                 <td>${r.in_interface ? `<code>${escapeHtml(r.in_interface)}</code>` : `<span class="text-muted">${t('firewall.editor.anyInterface')}</span>`}</td>
-                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}${portForwardWarnings(r)}</td>
+                                <td>${renderAddrCell(r.destination, r.destination_refs)} <span class="badge bg-blue-lt ms-1">${serviceLabel(r)}</span>${advancedMatchBadge(r)}${portForwardWarnings(r)}${pfShadowBadge(r)}</td>
                                 <td>${internalTargetCell(r)} ${r.hairpin ? `<span class="badge bg-purple-lt ms-1" title="${escapeHtml(t('firewall.std.hairpinHint'))}"><i class="ti ti-repeat me-1"></i>${t('firewall.std.hairpinBadge')}</span>` : ''}</td>
                                 <td>${counterIcon(r)}</td>
                                 <td>${enableToggle(r, canManage)}</td>
@@ -523,11 +537,15 @@ function bindRowActions(wrap, mode) {
     }));
     wrap.querySelectorAll('.fw-move').forEach(btn => btn.addEventListener('click', async (e) => {
         const r = ruleOf(e); if (!r) return;
-        // Neighbour in the same list: the same interface group for policies,
-        // the same table/chain for port forwards
+        // Neighbour in the same list as shown: the same interface group for
+        // policies, the port forwards (DNAT/REDIRECT) for port forwards. Rows
+        // this view does not list (an Advanced nat/PREROUTING exception) are
+        // never the neighbour: swapping with one moved nothing visible while
+        // changing what the forward does.
         const peers = rules
             .filter(x => !isAutoRow(x) && x.table_name === r.table_name && x.chain === r.chain
-                && (mode !== 'policy' || pairKey(x.in_interface, x.out_interface) === pairKey(r.in_interface, r.out_interface)))
+                && (mode !== 'policy' || pairKey(x.in_interface, x.out_interface) === pairKey(r.in_interface, r.out_interface))
+                && (mode !== 'portforward' || ['DNAT', 'REDIRECT'].includes(x.action)))
             .sort((a, b) => a.order - b.order);
         const other = peers[peers.findIndex(x => x.id === r.id) + parseInt(btn.dataset.dir)];
         if (!other) return;

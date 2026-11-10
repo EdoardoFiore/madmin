@@ -159,6 +159,8 @@ function traceResultHtml(res, advanced) {
             <dd class="col-8"><code>${escapeHtml(res.in_interface || '?')}</code>${res.out_interface ? ` → <code>${escapeHtml(res.out_interface)}</code>` : ''}</dd>
             ${res.dnat ? `<dt class="col-4">${t('firewall.trace.portForward')}</dt>
                 <dd class="col-8">${ruleLink(res.dnat.rule_id, '')} ${escapeHtml(res.dnat.action)} ${res.dnat.to ? `→ <code>${escapeHtml(res.dnat.to)}</code>` : ''}</dd>` : ''}
+            ${res.nat_exception ? `<dt class="col-4">${t('firewall.trace.portForward')}</dt>
+                <dd class="col-8">${escapeHtml(t('firewall.trace.natException', { rule: '§' })).replace('§', ruleLink(res.nat_exception.rule_id, res.nat_exception.seq))}</dd>` : ''}
             ${res.snat ? `<dt class="col-4">${t('firewall.trace.leavesAs')}</dt>
                 <dd class="col-8">${snatHtml(res.snat, ruleLink)}</dd>` : ''}
         </dl>

@@ -62,13 +62,37 @@ const TABLES = {
     raw: { label: 'Raw', chains: ['PREROUTING', 'OUTPUT'], icon: 'bolt' }
 };
 
-// Actions available per table
+// Actions available per table, mirrors the backend _TABLE_ACTIONS. No
+// MARK/TOS/TTL: the rule model has no field for their value, and iptables
+// rejects them without one.
 const TABLE_ACTIONS = {
-    filter: ['ACCEPT', 'DROP', 'REJECT', 'LOG'],
-    nat: ['SNAT', 'DNAT', 'MASQUERADE', 'REDIRECT', 'ACCEPT'],
-    mangle: ['MARK', 'TOS', 'TTL', 'ACCEPT'],
-    raw: ['NOTRACK', 'ACCEPT']
+    filter: ['ACCEPT', 'DROP', 'REJECT', 'LOG', 'RETURN'],
+    nat: ['SNAT', 'DNAT', 'MASQUERADE', 'REDIRECT', 'ACCEPT', 'RETURN'],
+    mangle: ['ACCEPT', 'RETURN'],
+    raw: ['NOTRACK', 'ACCEPT', 'RETURN']
 };
+
+/**
+ * Select `value` in a <select>, adding it as an option when the list lacks
+ * it. A value the backend accepts but the modal does not list (a protocol
+ * like esp/gre, state INVALID, reject-with set through the API, an import or
+ * a restore) would otherwise read back as '' and the save would drop it:
+ * "esp" would become every protocol, "DROP state INVALID" a DROP of everything.
+ */
+function setSelectValue(id, value) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.querySelectorAll('option[data-preserved]').forEach(o => o.remove());
+    const v = value || '';
+    if (v && ![...sel.options].some(o => o.value === v)) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        opt.dataset.preserved = '1';
+        sel.appendChild(opt);
+    }
+    sel.value = v;
+}
 
 /**
  * Render the firewall view
@@ -265,6 +289,7 @@ export async function render(container) {
                                     <label class="form-label">Log Level</label>
                                     <select class="form-select" id="rule-log-level">
                                         <option value="">Default</option>
+                                        <option value="emerg">Emerg</option>
                                         <option value="alert">Alert</option>
                                         <option value="crit">Crit</option>
                                         <option value="error">Error</option>
@@ -288,6 +313,7 @@ export async function render(container) {
                                         <option value="icmp-net-prohibited">icmp-net-prohibited</option>
                                         <option value="icmp-host-prohibited">icmp-host-prohibited</option>
                                         <option value="icmp-admin-prohibited">icmp-admin-prohibited</option>
+                                        <option value="tcp-reset">tcp-reset</option>
                                     </select>
                                 </div>
                                 <div class="col-md-6">
@@ -299,6 +325,7 @@ export async function render(container) {
                                         <option value="RELATED">RELATED</option>
                                         <option value="ESTABLISHED,RELATED">ESTABLISHED,RELATED</option>
                                         <option value="NEW,ESTABLISHED,RELATED">NEW,ESTABLISHED,RELATED</option>
+                                        <option value="INVALID">INVALID</option>
                                     </select>
                                 </div>
                                 <div class="col-md-4">
@@ -1587,14 +1614,14 @@ function openRuleModal(rule = null, isDuplicate = false) {
 
     // Reset form fields
     document.getElementById('rule-chain').value = rule?.chain || currentChain;
-    document.getElementById('rule-action').value = rule?.action || TABLE_ACTIONS[tableSelect.value][0];
-    document.getElementById('rule-protocol').value = rule?.protocol || '';
+    setSelectValue('rule-action', rule?.action || TABLE_ACTIONS[tableSelect.value][0]);
+    setSelectValue('rule-protocol', rule?.protocol || '');
     document.getElementById('rule-port').value = rule?.port || '';
     setDirectionFromRule('source', rule);
     setDirectionFromRule('destination', rule);
     document.getElementById('rule-in-interface').value = rule?.in_interface || '';
     document.getElementById('rule-out-interface').value = rule?.out_interface || '';
-    document.getElementById('rule-state').value = rule?.state || '';
+    setSelectValue('rule-state', rule?.state || '');
     document.getElementById('rule-limit-rate').value = rule?.limit_rate || '';
     document.getElementById('rule-limit-burst').value = rule?.limit_burst || '';
     document.getElementById('rule-enabled').checked = rule?.enabled !== false;
@@ -1617,8 +1644,8 @@ function openRuleModal(rule = null, isDuplicate = false) {
     document.getElementById('rule-to-source').value = (rule?.table_name === 'nat' && rule?.to_source) || '';
     document.getElementById('rule-to-ports').value = rule?.to_ports || '';
     document.getElementById('rule-log-prefix').value = rule?.log_prefix || '';
-    document.getElementById('rule-log-level').value = rule?.log_level || '';
-    document.getElementById('rule-reject-with').value = rule?.reject_with || '';
+    setSelectValue('rule-log-level', rule?.log_level || '');
+    setSelectValue('rule-reject-with', rule?.reject_with || '');
 
     // Trigger visibility update (handles action-specific fields and drop info banner)
     toggleActionFields();
