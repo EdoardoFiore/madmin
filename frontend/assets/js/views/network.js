@@ -42,7 +42,7 @@ export async function render(container) {
                         </h3>
                         <div class="card-actions">
                             ${canManage ? `
-                            <button class="btn btn-outline-warning me-2" id="btn-apply-netplan" title="${t('network.applyNetplan')}">
+                            <button class="btn btn-outline-warning me-2" id="btn-apply-netplan" title="${t('network.applyNetplanHint')}">
                                 <i class="ti ti-check me-1"></i>${t('network.applyNetplan')}
                             </button>
                             ` : ''}

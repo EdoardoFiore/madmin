@@ -725,7 +725,10 @@ class ModuleLoader:
             logger.info(f"Activated module: {module_id} v{manifest.version}")
             return {
                 "success": True,
-                "message": f"Modulo {manifest.name} attivato. Riavvio richiesto."
+                "message": f"Modulo {manifest.name} attivato.",
+                # Router and static files are mounted at startup: the UI offers
+                # the "Refresh MADMIN" action (Settings > System management)
+                "restart_required": True,
             }
         
         except Exception as e:
@@ -887,7 +890,7 @@ class ModuleLoader:
             logger.info(f"Fully deactivated module: {module_id}")
             
             message = (
-                f"Modulo {module_name} disattivato e dati rimossi. Riavvio richiesto. "
+                f"Modulo {module_name} disattivato e dati rimossi. "
                 f"Configurazione precedente salvata in {os.path.basename(safety_archive)}."
             )
             if errors:
@@ -899,6 +902,7 @@ class ModuleLoader:
                 "message": message,
                 "warnings": errors if errors else None,
                 "backup": os.path.basename(safety_archive),
+                "restart_required": True,
             }
         
         except Exception as e:

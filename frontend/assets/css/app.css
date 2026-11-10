@@ -726,6 +726,15 @@ tr.fw-row-flash > td {
     animation: fw-row-flash 2.5s ease-out;
 }
 
+/* Settings: card reached from a toast link (#settings/system) */
+@keyframes settings-card-flash {
+    0%, 60% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--tblr-primary) 45%, transparent); }
+    100% { box-shadow: 0 0 0 3px transparent; }
+}
+.settings-card-flash {
+    animation: settings-card-flash 2.5s ease-out;
+}
+
 /* Traffic capture (tcpdump) */
 .fw-capture-oc.offcanvas-end {
     width: min(1200px, 96vw);
