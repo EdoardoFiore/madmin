@@ -58,6 +58,7 @@ class ChainPriorityUpdate(BaseModel):
 class ChainPriorityUpdateResponse(BaseModel):
     status: str
     message: str
+    restart_required: bool = False
 
 
 # ============== MODULE MANAGEMENT ==============
@@ -265,5 +266,6 @@ async def update_chain_priorities(
     
     await session.commit()
     
-    return {"status": "ok", "message": "Priorità aggiornate. Riavvio richiesto."}
+    # Chain jumps are rebuilt at startup: the UI offers "Refresh MADMIN"
+    return {"status": "ok", "message": "Priorità aggiornate.", "restart_required": True}
 

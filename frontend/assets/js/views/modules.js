@@ -170,6 +170,22 @@ registerActions({
     _detailDeactivate: (...a) => { _hideDetailModal(); window._confirmDeactivate(...a); },
 });
 
+/**
+ * Success toast for changes that take effect after a "Refresh MADMIN"
+ * (module routers and firewall chain jumps are set up at startup).
+ * The link to the refresh button is offered only to who can press it.
+ */
+function showRefreshRequiredToast(message) {
+    const text = `${message} ${t('settings.refreshRequired')}`;
+    if (!checkPermission('services.manage')) {
+        showToast(text, 'success', 8000);
+        return;
+    }
+    showToast(text, 'success', 10000, {
+        action: { label: t('settings.goToRefresh'), href: '#settings/system' }
+    });
+}
+
 window._confirmActivate = async (moduleId, moduleName) => {
     const message = t('modules.activateConfirmMsg', { name: `<strong>${escapeHtml(moduleName)}</strong>` });
 
@@ -191,7 +207,9 @@ window._confirmActivate = async (moduleId, moduleName) => {
 
     try {
         const result = await apiPost(`/modules/${moduleId}/activate`);
-        showToast(result.message || t('modules.moduleActivated'), 'success');
+        const message = result.message || t('modules.moduleActivated');
+        if (result.restart_required) showRefreshRequiredToast(message);
+        else showToast(message, 'success');
         if (result.warnings && result.warnings.length > 0) {
             showToast(t('modules.warnings', { warnings: result.warnings.join('; ') }), 'warning');
         }
@@ -239,7 +257,9 @@ window._confirmDeactivate = async (moduleId, moduleName) => {
 
     try {
         const result = await apiPost(`/modules/${moduleId}/deactivate`);
-        showToast(result.message || t('modules.moduleDeactivated'), 'success');
+        const message = result.message || t('modules.moduleDeactivated');
+        if (result.restart_required) showRefreshRequiredToast(message);
+        else showToast(message, 'success');
         if (result.warnings && result.warnings.length > 0) {
             showToast(t('modules.warnings', { warnings: result.warnings.join('; ') }), 'warning');
         }
@@ -535,8 +555,9 @@ function renderFirewallPriority() {
                             item.querySelector('small').textContent = newPriority;
                         });
                         try {
-                            await apiPut('/modules/chains/priority', { chains });
-                            showToast(t('modules.priorityUpdated'), 'success');
+                            const result = await apiPut('/modules/chains/priority', { chains });
+                            if (result?.restart_required) showRefreshRequiredToast(t('modules.priorityUpdated'));
+                            else showToast(t('modules.priorityUpdated'), 'success');
                         } catch (e) {
                             showToast(e.message, 'error');
                             await loadModuleChains();

@@ -11,8 +11,11 @@ import { t, getLang } from './i18n.js';
  * @param {string} message - Message to display
  * @param {string} type - 'success', 'error', 'warning', 'info'
  * @param {number} duration - Duration in ms (default 3000)
+ * @param {object} [options]
+ * @param {{label: string, href: string}} [options.action] - Link shown under the
+ *        message (an in-app hash route); clicking it closes the toast
  */
-export function showToast(message, type = 'info', duration = 3000) {
+export function showToast(message, type = 'info', duration = 3000, { action } = {}) {
     const container = document.getElementById('toast-container');
     if (!container) return;
 
@@ -38,7 +41,12 @@ export function showToast(message, type = 'info', duration = 3000) {
                 <strong class="me-auto">${titles[type]}</strong>
                 <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
             </div>
-            <div class="toast-body">${escapeHtml(message)}</div>
+            <div class="toast-body">${escapeHtml(message)}${action ? `
+                <div class="mt-2">
+                    <a href="${escapeHtml(action.href)}" class="toast-action fw-semibold">
+                        ${escapeHtml(action.label)}<i class="ti ti-arrow-right ms-1"></i>
+                    </a>
+                </div>` : ''}</div>
         </div>
     `;
 
@@ -46,6 +54,7 @@ export function showToast(message, type = 'info', duration = 3000) {
 
     const toastEl = document.getElementById(toastId);
     const toast = new bootstrap.Toast(toastEl, { delay: duration });
+    toastEl.querySelector('.toast-action')?.addEventListener('click', () => toast.hide());
     toast.show();
 
     // Clean up after hide

@@ -11,7 +11,7 @@ import { actionAttrs, registerActions } from '../utils.js';
 /**
  * Render the settings view
  */
-export async function render(container) {
+export async function render(container, params = []) {
     // Each card on this page is governed by its own subsystem permission: a user
     // granted only SMTP must not see backup controls, and vice versa.
     const canViewSettings = checkPermission('settings.view');
@@ -577,20 +577,20 @@ export async function render(container) {
             <!-- System Management -->
             ${canManageServices ? `
             <div class="col-12">
-                <div class="card">
+                <div class="card" id="settings-system-card">
                     <div class="card-header">
                         <h3 class="card-title"><i class="ti ti-server me-2"></i>${t('settings.systemManagement')}</h3>
                     </div>
                     <div class="card-body">
                         <div class="row g-3 align-items-center">
                             <div class="col-md-8">
-                                <h4 class="mb-1">${t('settings.restartMadmin')}</h4>
-                                <p class="text-muted mb-0">${t('settings.restartService')}</p>
+                                <h4 class="mb-1">${t('settings.refreshMadmin')}</h4>
+                                <p class="text-muted mb-0">${t('settings.refreshDescription')}</p>
                             </div>
                             <div class="col-md-4 text-end">
                                 ${canManageServices ? `
                                 <button class="btn btn-warning" id="btn-restart-madmin">
-                                    <i class="ti ti-refresh me-1"></i>${t('settings.restartMadmin')}
+                                    <i class="ti ti-refresh me-1"></i>${t('settings.refreshMadmin')}
                                 </button>
                                 ` : `<span class="text-muted">${t('settings.insufficientPerms')}</span>`}
                             </div>
@@ -644,6 +644,16 @@ export async function render(container) {
 
     await loadSettings();
     setupEventListeners();
+
+    // #settings/system: opened from the "refresh required" toasts
+    if (params?.[0] === 'system') {
+        const card = document.getElementById('settings-system-card');
+        if (card) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.classList.add('settings-card-flash');
+            card.addEventListener('animationend', () => card.classList.remove('settings-card-flash'), { once: true });
+        }
+    }
 }
 
 /**
@@ -1193,29 +1203,29 @@ function setupEventListeners() {
         } catch (e) { showToast(e.message, 'error'); }
     });
 
-    // Restart MADMIN service
+    // Refresh MADMIN: restarts madmin.service (a few seconds), then reloads the page
     document.getElementById('btn-restart-madmin')?.addEventListener('click', async () => {
         const confirmed = await confirmDialog(
-            t('settings.restartMadmin'),
-            t('settings.restartConfirm'),
-            t('settings.restartMadmin'),
+            t('settings.refreshMadmin'),
+            t('settings.refreshConfirm'),
+            t('settings.refreshMadmin'),
             'btn-warning'
         );
         if (!confirmed) return;
 
         const btn = document.getElementById('btn-restart-madmin');
         const originalText = btn.innerHTML;
-        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.portChanging')}`;
+        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${t('settings.refreshing')}`;
         btn.disabled = true;
 
         try {
             await apiPost('/services/madmin.service/restart', {});
-            showToast(t('settings.serviceRestarted'), 'success');
+            showToast(t('settings.refreshDone'), 'success', 5000);
             setTimeout(() => {
                 location.reload();
             }, 5000);
         } catch (e) {
-            showToast(t('settings.restartError', { error: e.message }), 'error');
+            showToast(t('settings.refreshError', { error: e.message }), 'error');
             btn.innerHTML = originalText;
             btn.disabled = false;
         }
