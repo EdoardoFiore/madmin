@@ -568,6 +568,8 @@ def cmd_install(args) -> None:
     except Exception as e:
         log(f"FAILED, rolling back: {e}")
         rollback_to(from_release, read_json(JOURNAL).get("snapshot"), str(e))
+        if link_target(CURRENT) != rid:
+            shutil.rmtree(target, ignore_errors=True)
         os.close(fd)
         sys.exit(1)
 
@@ -623,6 +625,8 @@ def recover() -> None:
         return
     log(f"interrupted update at {step}: rolling back to {j.get('from_release')}")
     rollback_to(j.get("from_release"), j.get("snapshot"), f"interrupted at {step}")
+    if j.get("release_id") and link_target(CURRENT) != j["release_id"]:
+        shutil.rmtree(os.path.join(RELEASES, j["release_id"]), ignore_errors=True)
 
 
 def cmd_recover(args) -> None:
