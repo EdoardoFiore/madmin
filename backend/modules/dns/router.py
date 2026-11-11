@@ -6,10 +6,11 @@ FastAPI endpoints for DNS server management.
 import asyncio
 import json
 import logging
+import re
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from sqlalchemy.orm import selectinload
@@ -23,7 +24,7 @@ from .models import (
     DnsZone, DnsZoneCreate, DnsZoneRead, DnsZoneUpdate,
     DnsRecord, DnsRecordCreate, DnsRecordRead, DnsRecordUpdate,
 )
-from .service import dns_service
+from .service import dns_service, VALID_RECORD_TYPES
 from core.network.service import NetworkService
 
 logger = logging.getLogger(__name__)
@@ -592,8 +593,26 @@ async def delete_record(
 # ============================================================
 
 class DnsTestRequest(BaseModel):
+    # Both are dig arguments: a leading '-', '+' or '@' would be read as an
+    # option (-f <file>, -k <file>) or a server, run as root
     domain: str
     record_type: str = "A"
+
+    @field_validator("domain")
+    @classmethod
+    def _domain(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,252}", v):
+            raise ValueError("Nome DNS non valido")
+        return v
+
+    @field_validator("record_type")
+    @classmethod
+    def _record_type(cls, v: str) -> str:
+        v = (v or "").strip().upper()
+        if v not in VALID_RECORD_TYPES | {"SOA"}:
+            raise ValueError(f"Tipo di record non valido: {v}")
+        return v
 
 
 @router.post("/test")
