@@ -102,6 +102,8 @@ class ManagerAgent:
         self.manager_features: set = set()
         # Trusted CAs as last reported (hello.state.ca, then ca.updated)
         self._reported_ca: Optional[list] = None
+        # Updater journal as last reported (hello.state.update, then update.status)
+        self._reported_update: Optional[dict] = None
 
     # --- Status file (read by `python -m core.manager status`) ---
 
@@ -304,7 +306,21 @@ class ManagerAgent:
             state["licenses"] = await asyncio.to_thread(license_ids)
         except Exception as e:
             logger.warning("Manager: licenses not readable: %s", e)
+        from .update import update_state
+        update = await asyncio.to_thread(update_state)
+        if update is not None:
+            state["update"] = update
+        self._reported_update = update
         return state
+
+    async def _report_update(self) -> None:
+        """update.status when the updater's journal changed since the last
+        report (the update was confirmed and committed, or rolled back)."""
+        from .update import update_state
+        current = await asyncio.to_thread(update_state)
+        if current is not None and current != self._reported_update:
+            if self.send_event(protocol.EVENT_UPDATE_STATUS, current):
+                self._reported_update = current
 
     async def _report_ca(self) -> None:
         """ca.updated when the trusted CAs changed since the last report (a
@@ -341,6 +357,10 @@ class ManagerAgent:
         features = ack.get("features")
         self.manager_features = {str(f)[:50] for f in features[:200]} if isinstance(features, list) else set()
         self.config.update(protocol.clamp_config(ack.get("config")))
+        if isinstance(ack.get("update_confirm"), str):
+            from .update import confirm
+            if await asyncio.to_thread(confirm, ack["update_confirm"]):
+                logger.info("Manager: update to %s confirmed", ack["update_confirm"])
         if ack.get("ca_bundle"):
             try:
                 added = await asyncio.to_thread(ident.accept_ca_bundle, str(ack["ca_bundle"]).encode())
@@ -412,6 +432,7 @@ class ManagerAgent:
                 return
             await self._maybe_renew(identity)
             await self._report_ca()
+            await self._report_update()
 
     # --- Commands ---
 
@@ -481,4 +502,4 @@ manager_agent = ManagerAgent()
 
 def load_command_handlers() -> None:
     """Register the commands implemented by the other modules of the package."""
-    from . import backups, licenses, relocate, stats, support, tunnel  # noqa: F401
+    from . import backups, licenses, relocate, stats, support, tunnel, update  # noqa: F401

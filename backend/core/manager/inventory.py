@@ -24,6 +24,13 @@ def _read(path: str) -> str:
         return ""
 
 
+def _os_id() -> str:
+    """ID-VERSION_ID, as release manifests list it (ubuntu-24.04)."""
+    info = {k: v.strip('"') for k, v in (line.split("=", 1) for line in
+                                          _read("/etc/os-release").splitlines() if "=" in line)}
+    return f"{info.get('ID', '')}-{info.get('VERSION_ID', '')}"
+
+
 def _os_name() -> str:
     for line in _read("/etc/os-release").splitlines():
         if line.startswith("PRETTY_NAME="):
@@ -55,6 +62,7 @@ def _system_facts() -> dict:
         "hostname": socket.gethostname(),
         "machine_id": _read("/etc/machine-id"),
         "os": _os_name(),
+        "os_id": _os_id(),
         "kernel": platform.release(),
         "boot_time": uptime.get("boot_time"),
         "interfaces": interfaces,
