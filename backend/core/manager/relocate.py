@@ -26,12 +26,6 @@ class RelocateArgs(CommandArgs):
     url: str = Field(max_length=255)
 
 
-def trusted_fingerprints() -> set:
-    pem = ident.read_file("ca.pem") or b""
-    return {hashlib.sha256(c.public_bytes(serialization.Encoding.DER)).hexdigest()
-            for c in x509.load_pem_x509_certificates(pem)} if pem else set()
-
-
 @command(protocol.CMD_MANAGER_RELOCATE, RelocateArgs, timeout=60)
 async def _relocate(args: RelocateArgs, ctx: CommandContext) -> dict:
     from .client import manager_agent
@@ -57,7 +51,7 @@ async def _relocate(args: RelocateArgs, ctx: CommandContext) -> dict:
     except ValueError:
         raise CommandError(f"{url} ha restituito una CA non valida")
     fps = {hashlib.sha256(c.public_bytes(serialization.Encoding.DER)).hexdigest() for c in served}
-    if not fps & trusted_fingerprints():
+    if not fps & set(ident.trusted_ca_fingerprints()):
         raise CommandError(f"{url} usa una CA diversa da quella di questo manager")
     identity.manager_url_next = url
     ident.save_state(identity)

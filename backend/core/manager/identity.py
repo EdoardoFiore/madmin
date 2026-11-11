@@ -9,7 +9,9 @@ Everything lives in DATA_DIR/manager/ (0700, files 0600):
     identity.pem  private key (ECDSA P-256) + client certificate (CN =
                   instance_id) in one file, so a renewal replaces both in a
                   single atomic rename and they can never mismatch
-    ca.pem        manager CA: the only trust anchor for every manager connection
+    ca.pem        manager CA(s): the only trust anchors for every manager connection.
+                  Usually one; during a CA rotation also the next one, accepted
+                  only when cross-signed by a CA already here (accept_ca_bundle)
     ssh_ca.pub    manager SSH user CA (support SSH access)
     license.pub   manager license signing key (Ed25519, raw base64)
     state.json    instance_id, manager_url (and manager_url_next while a move to
@@ -138,6 +140,78 @@ def ca_fingerprint(ca_pem: bytes) -> str:
     return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
 
 
+def _fp(cert: x509.Certificate) -> str:
+    return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+
+def trusted_cas() -> list:
+    pem = read_file("ca.pem")
+    return x509.load_pem_x509_certificates(pem) if pem else []
+
+
+def trusted_ca_fingerprints() -> list:
+    return sorted(_fp(c) for c in trusted_cas())
+
+
+def _is_ca(cert: x509.Certificate) -> bool:
+    try:
+        return cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+    except x509.ExtensionNotFound:
+        return False
+
+
+def _issued_by_any(cert: x509.Certificate, cas: list) -> bool:
+    for ca in cas:
+        try:
+            cert.verify_directly_issued_by(ca)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def accept_ca_bundle(bundle_pem: bytes) -> list:
+    """
+    CA rotation: the manager sends its next CA (self-signed) together with a
+    cross certificate for the same key and subject, issued by a CA trusted
+    here. Only such a CA is added: a manager cannot make the instance trust
+    a CA the current one did not vouch for. Expired CAs are dropped, never
+    the last valid one. Returns the fingerprints added.
+    """
+    try:
+        offered = x509.load_pem_x509_certificates(bundle_pem)
+    except ValueError:
+        raise ManagerIdentityError("Bundle CA non valido")
+    trusted = trusted_cas()
+    if not trusted:
+        raise ManagerIdentityError("ca.pem mancante")
+    now = datetime.now(timezone.utc)
+    known = {_fp(c) for c in trusted}
+    spki = serialization.PublicFormat.SubjectPublicKeyInfo
+    added = []
+    for root in offered:
+        if _fp(root) in known or root.issuer != root.subject or not _is_ca(root):
+            continue
+        if not _issued_by_any(root, [root]) or root.not_valid_after_utc <= now:
+            continue
+        key = root.public_key().public_bytes(serialization.Encoding.DER, spki)
+        vouched = any(
+            x is not root and x.subject == root.subject and _is_ca(x)
+            and x.public_key().public_bytes(serialization.Encoding.DER, spki) == key
+            and x.not_valid_before_utc <= now < x.not_valid_after_utc
+            and _issued_by_any(x, trusted)
+            for x in offered
+        )
+        if vouched:
+            trusted.append(root)
+            known.add(_fp(root))
+            added.append(_fp(root))
+    valid = [c for c in trusted if c.not_valid_after_utc > now]
+    if added or (valid and len(valid) < len(trusted)):
+        write_private("ca.pem", b"".join(c.public_bytes(serialization.Encoding.PEM) for c in (valid or trusted)))
+    return added
+
+
 # --- Keys and certificates ---
 
 def new_key_and_csr() -> tuple[bytes, bytes]:
@@ -171,17 +245,16 @@ def cert_validity(pem: bytes) -> tuple[datetime, datetime]:
 
 
 def check_issued_cert(cert_pem: bytes, key_pem: bytes, ca_pem: bytes) -> None:
-    """The certificate the manager returned is for our key and signed by its CA."""
+    """The certificate the manager returned is for our key and signed by one
+    of its CAs (ca_pem may hold several during a rotation)."""
     cert = x509.load_pem_x509_certificate(cert_pem)
-    ca = x509.load_pem_x509_certificate(ca_pem)
+    cas = x509.load_pem_x509_certificates(ca_pem)
     key = serialization.load_pem_private_key(key_pem, password=None)
     pub = serialization.PublicFormat.SubjectPublicKeyInfo
     if cert.public_key().public_bytes(serialization.Encoding.DER, pub) != \
             key.public_key().public_bytes(serialization.Encoding.DER, pub):
         raise ManagerIdentityError("Il certificato ricevuto non corrisponde alla chiave locale")
-    try:
-        cert.verify_directly_issued_by(ca)
-    except Exception:
+    if not _issued_by_any(cert, cas):
         raise ManagerIdentityError("Il certificato ricevuto non è firmato dalla CA del manager")
 
 

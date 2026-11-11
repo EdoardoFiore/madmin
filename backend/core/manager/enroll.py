@@ -203,7 +203,13 @@ async def renew(identity: ManagerIdentity) -> None:
         r = await client.post(f"{identity.manager_url}/agent/renew", json={"csr": csr_pem.decode()})
     if r.status_code != 200:
         raise ManagerIdentityError(f"Rinnovo certificato rifiutato: {_detail(r)}")
-    cert_pem = str(r.json().get("cert_pem", "")).encode()
+    data = r.json()
+    # During a CA rotation: the next CA first, the new certificate may be signed by it
+    if data.get("ca_bundle"):
+        added = ident.accept_ca_bundle(str(data["ca_bundle"]).encode())
+        if added:
+            logger.info("Manager: new CA trusted (%s)", ", ".join(fp[:16] for fp in added))
+    cert_pem = str(data.get("cert_pem", "")).encode()
     ident.check_issued_cert(cert_pem, key_pem, ident.read_file("ca.pem") or b"")
     ident.save_cert_and_key(cert_pem, key_pem)
     logger.info("Manager: client certificate renewed")

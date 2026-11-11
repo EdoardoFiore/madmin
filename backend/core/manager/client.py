@@ -288,6 +288,10 @@ class ManagerAgent:
         """hello.state: what the manager reconciles at each connection."""
         state: dict = {"commands": {"running": sorted(self._running), "finished": list(self._results)}}
         try:
+            state["ca"] = await asyncio.to_thread(ident.trusted_ca_fingerprints)
+        except Exception as e:
+            logger.warning("Manager: trusted CAs not readable: %s", e)
+        try:
             from .support import support_state
             state["support"] = await support_state()
         except Exception as e:
@@ -323,6 +327,13 @@ class ManagerAgent:
         features = ack.get("features")
         self.manager_features = {str(f)[:50] for f in features[:200]} if isinstance(features, list) else set()
         self.config.update(protocol.clamp_config(ack.get("config")))
+        if ack.get("ca_bundle"):
+            try:
+                added = await asyncio.to_thread(ident.accept_ca_bundle, str(ack["ca_bundle"]).encode())
+                if added:
+                    logger.info("Manager: new CA trusted (%s)", ", ".join(fp[:16] for fp in added))
+            except ManagerIdentityError as e:
+                logger.warning("Manager: CA bundle refused: %s", e)
         self._facts_digest = facts_digest(facts)
 
     async def _serve(self, ws, identity: ManagerIdentity) -> None:
