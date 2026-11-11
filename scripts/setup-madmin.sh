@@ -269,6 +269,16 @@ mkdir -p $INSTALL_DIR/data
 # Copy backend files
 cp -r "$PROJECT_DIR/backend/"* $INSTALL_DIR/backend/
 
+# What is installed (reported to the manager): the commit of the checkout,
+# "-dirty" when it has local changes. layout 0 = this flat layout.
+BUILD_ID="dev"
+if git -c safe.directory="$PROJECT_DIR" -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    BUILD_ID="$(git -c safe.directory="$PROJECT_DIR" -C "$PROJECT_DIR" rev-parse --short=12 HEAD)"
+    git -c safe.directory="$PROJECT_DIR" -C "$PROJECT_DIR" diff --quiet HEAD -- backend frontend 2>/dev/null || BUILD_ID="$BUILD_ID-dirty"
+fi
+MADMIN_VER="$(sed -n 's/^MADMIN_VERSION = "\(.*\)"/\1/p' "$PROJECT_DIR/backend/config.py")"
+printf '{"format": 1, "version": "%s", "build": "%s", "layout": 0}\n' "$MADMIN_VER" "$BUILD_ID" > $INSTALL_DIR/manifest.json
+
 # Deploy the fail-closed firewall boot guard script (run by its systemd unit).
 # Saving the ruleset (rules.v4 + ipsets.conf) is done in Python by madmin.
 mkdir -p $INSTALL_DIR/scripts

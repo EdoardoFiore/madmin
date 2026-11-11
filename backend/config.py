@@ -4,6 +4,8 @@ MADMIN Configuration Module
 Loads settings from environment variables with type validation.
 Uses Pydantic Settings for robust configuration management.
 """
+import json
+import os
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
 from typing import List
@@ -11,6 +13,28 @@ from functools import lru_cache
 
 # Versione MADMIN (usata per export/import config cross-versione)
 MADMIN_VERSION = "1.2.0"
+
+# Next to backend/: written by the installer (and, later, by the release
+# build). Without it (a development checkout) the build is "dev".
+_MANIFEST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "manifest.json")
+
+
+@lru_cache
+def build_info() -> dict:
+    """What this installation runs: version, build (git commit), release id
+    and on-disk layout revision (0 = flat /opt/madmin, no updater)."""
+    try:
+        with open(_MANIFEST) as f:
+            m = json.load(f)
+    except (OSError, ValueError):
+        m = {}
+    build = str(m.get("build") or "dev")[:40]
+    return {
+        "version": MADMIN_VERSION,
+        "build": build,
+        "release_id": f"{MADMIN_VERSION}+{build}",
+        "layout": int(m.get("layout") or 0),
+    }
 
 
 class Settings(BaseSettings):

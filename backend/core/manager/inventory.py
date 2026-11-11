@@ -11,7 +11,7 @@ import logging
 import platform
 import socket
 
-from config import MADMIN_VERSION
+from config import build_info
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,8 @@ def _system_facts() -> dict:
     ]
     uptime = SystemService.get_uptime()
     return {
-        "madmin_version": MADMIN_VERSION,
+        # version, build, release_id, layout
+        **build_info(),
         "hostname": socket.gethostname(),
         "machine_id": _read("/etc/machine-id"),
         "os": _os_name(),
