@@ -1080,8 +1080,9 @@ function setupEventListeners() {
             const pwd = document.getElementById('smtp-password').value;
             if (pwd) data.smtp_password = pwd;
 
-            await apiPatch('/settings/smtp', data);
+            const saved = await apiPatch('/settings/smtp', data);
             showToast(t('settings.smtpSaved'), 'success');
+            if (saved?.password_cleared) showToast(t('settings.smtpPasswordCleared'), 'warning');
         } catch (e) { showToast(e.message, 'error'); }
     });
 

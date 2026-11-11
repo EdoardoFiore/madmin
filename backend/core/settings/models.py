@@ -224,6 +224,11 @@ class SMTPSettingsUpdate(SQLModel):
     sender_name: Optional[str] = None
     public_download_url: Optional[str] = None
 
+    @field_validator('smtp_encryption', mode='before')
+    @classmethod
+    def _encryption(cls, v):
+        return v if v is None else validation.one_of(v, ("none", "tls", "ssl"), "smtp_encryption")
+
 
 class SMTPSettingsResponse(SQLModel):
     """Response schema for SMTP settings (excludes password)."""
@@ -235,6 +240,8 @@ class SMTPSettingsResponse(SQLModel):
     sender_name: str
     public_download_url: Optional[str]
     updated_at: datetime
+    # The stored password was dropped because the destination changed
+    password_cleared: bool = False
 
 
 class BackupSettingsUpdate(SQLModel):

@@ -1067,6 +1067,7 @@
         "faviconUploaded": "Favicon caricata e salvata",
         "uploadError": "Errore caricamento: {error}",
         "smtpSaved": "Impostazioni SMTP salvate",
+        "smtpPasswordCleared": "Server SMTP modificato: la password salvata è stata rimossa, reinseriscila",
         "backupSaved": "Impostazioni backup salvate",
         "portInvalid": "Porta non valida (1-65535)",
         "certRenewError": "Errore rinnovo: {error}",
