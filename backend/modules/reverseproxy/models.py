@@ -259,12 +259,32 @@ class RevproxyAccessListRead(SQLModel):
     hosts_count: int = 0
 
 
+# The name lands in the nginx snippet (a comment and the auth_basic realm):
+# a newline, quote, ';' or brace there would add directives of the caller's
+# choosing to the root-run proxy.
+_ACL_NAME_FORBIDDEN = re.compile(r'[\x00-\x1f\x7f"\'`\\;{}$#]')
+
+
+def _check_acl_name(v):
+    if v is None:
+        return v
+    v = v.strip()
+    if not v or len(v) > 100 or _ACL_NAME_FORBIDDEN.search(v):
+        raise ValueError("Nome non valido: max 100 caratteri, senza a capo, virgolette, \\ ; { } $ #")
+    return v
+
+
 class RevproxyAccessListCreate(SQLModel):
     name: str
     satisfy_any: bool = False
     pass_auth_to_upstream: bool = False
     auths: List[RevproxyAccessListAuthCreate] = []
     rules: List[RevproxyAccessListRuleCreate] = []
+
+    @field_validator('name')
+    @classmethod
+    def _name(cls, v: str) -> str:
+        return _check_acl_name(v)
 
 
 class RevproxyAccessListUpdate(SQLModel):
@@ -274,3 +294,8 @@ class RevproxyAccessListUpdate(SQLModel):
     # If provided, fully replaces existing rows
     auths: Optional[List[RevproxyAccessListAuthCreate]] = None
     rules: Optional[List[RevproxyAccessListRuleCreate]] = None
+
+    @field_validator('name')
+    @classmethod
+    def _name(cls, v: Optional[str]) -> Optional[str]:
+        return _check_acl_name(v)
