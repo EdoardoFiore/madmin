@@ -304,10 +304,31 @@ async def update_backup_settings(
     
     update_data = data.model_dump(exclude_unset=True)
 
-    # A different server is a different key: pin again at the next connection
-    if any(k in update_data and update_data[k] != getattr(settings, k)
-           for k in ("remote_host", "remote_port", "remote_protocol")):
-        settings.remote_host_key = None
+    def changed(*keys):
+        # None is skipped by the update below; "" and None both mean unset
+        return any(update_data.get(k) is not None
+                   and (update_data[k] or None) != (getattr(settings, k) or None)
+                   for k in keys)
+
+    # Where archives go, and whether they are encrypted, decides who can read
+    # them: an archive holds every password hash and the VPN/PKI keys, so
+    # this is backup.restore (root-equivalent), not backup.manage.
+    destination = ("remote_protocol", "remote_host", "remote_port", "remote_user")
+    if (changed(*destination) or update_data.get("remote_password")
+            or "encryption_passphrase" in update_data) \
+            and not current_user.has_permission("backup.restore"):
+        raise HTTPException(
+            status_code=403,
+            detail="Destinazione remota e passphrase richiedono il permesso backup.restore",
+        )
+
+    if changed(*destination):
+        # A different server is a different key: pin again at the next connection
+        if changed("remote_host", "remote_port", "remote_protocol"):
+            settings.remote_host_key = None
+        # The stored password belongs to the old server: never send it elsewhere
+        if not update_data.get("remote_password"):
+            settings.remote_password = None
 
     # Secrets are stored encrypted; "" clears the passphrase (no encryption)
     if "encryption_passphrase" in update_data:

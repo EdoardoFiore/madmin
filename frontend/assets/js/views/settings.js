@@ -437,18 +437,18 @@ export async function render(container, params = []) {
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remoteProtocol')}</label>
-                                <select class="form-select" id="backup-protocol" ${canManageBackup ? '' : 'disabled'}>
+                                <select class="form-select" id="backup-protocol" ${canRestoreBackup ? '' : 'disabled'}>
                                     <option value="sftp">SFTP</option>
                                     <option value="ftps">FTPS</option>
                                 </select>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remotePort')}</label>
-                                <input type="number" class="form-control" id="backup-port" ${canManageBackup ? '' : 'disabled'}>
+                                <input type="number" class="form-control" id="backup-port" ${canRestoreBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.remoteHost')}</label>
-                                <input type="text" class="form-control" id="backup-host" ${canManageBackup ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="backup-host" ${canRestoreBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label">${t('settings.remotePath')}</label>
@@ -456,17 +456,17 @@ export async function render(container, params = []) {
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remoteUser')}</label>
-                                <input type="text" class="form-control" id="backup-user" ${canManageBackup ? '' : 'disabled'}>
+                                <input type="text" class="form-control" id="backup-user" ${canRestoreBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label">${t('settings.remotePassword')}</label>
-                                <input type="password" class="form-control" id="backup-password" placeholder="••••••••" ${canManageBackup ? '' : 'disabled'}>
+                                <input type="password" class="form-control" id="backup-password" placeholder="••••••••" ${canRestoreBackup ? '' : 'disabled'}>
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">${t('settings.backupPassphrase')}</label>
-                                <input type="password" class="form-control" id="backup-passphrase" autocomplete="new-password" ${canManageBackup ? '' : 'disabled'}>
+                                <input type="password" class="form-control" id="backup-passphrase" autocomplete="new-password" ${canRestoreBackup ? '' : 'disabled'}>
                                 <small class="form-hint" id="backup-passphrase-hint"></small>
-                                ${canManageBackup ? `<label class="form-check mt-1 d-none" id="backup-passphrase-remove-wrap">
+                                ${canRestoreBackup ? `<label class="form-check mt-1 d-none" id="backup-passphrase-remove-wrap">
                                     <input type="checkbox" class="form-check-input" id="backup-passphrase-remove">
                                     <span class="form-check-label">${t('settings.backupPassphraseRemove')}</span>
                                 </label>` : ''}
@@ -475,7 +475,7 @@ export async function render(container, params = []) {
                                 <label class="form-label">${t('settings.backupHostKey')}</label>
                                 <div class="d-flex align-items-center gap-2">
                                     <code class="small text-break" id="backup-hostkey">—</code>
-                                    ${canManageBackup ? `<button type="button" class="btn btn-sm btn-outline-warning d-none" id="backup-hostkey-forget">${t('settings.backupHostKeyForget')}</button>` : ''}
+                                    ${canRestoreBackup ? `<button type="button" class="btn btn-sm btn-outline-warning d-none" id="backup-hostkey-forget">${t('settings.backupHostKeyForget')}</button>` : ''}
                                 </div>
                                 <small class="form-hint">${t('settings.backupHostKeyHint')}</small>
                             </div>
@@ -1487,9 +1487,9 @@ async function loadBackupHistory() {
                     <button class="btn btn-sm btn-ghost-warning" ${actionAttrs('restoreFromLocalBackup', backup.filename)} title="${t('settings.restore')}">
                         <i class="ti ti-refresh"></i>
                     </button>
-                    <button class="btn btn-sm btn-ghost-primary" ${actionAttrs('downloadLocalBackup', backup.filename)} title="${t('common.download')}">
+                    ${checkPermission('backup.restore') ? `<button class="btn btn-sm btn-ghost-primary" ${actionAttrs('downloadLocalBackup', backup.filename)} title="${t('common.download')}">
                         <i class="ti ti-download"></i>
-                    </button>
+                    </button>` : ''}
                     <button class="btn btn-sm btn-ghost-danger" ${actionAttrs('deleteBackup', backup.filename)} title="${t('common.delete')}">
                         <i class="ti ti-trash"></i>
                     </button>

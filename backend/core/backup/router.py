@@ -62,10 +62,15 @@ async def export_configuration(
     session: AsyncSession = Depends(get_session)
 ):
     """Export full configuration as tar.gz archive.
-    
+
     Without ?download=true: saves locally and returns JSON with filename.
     With ?download=true: returns the file for browser download.
+
+    Reading an archive needs backup.restore: it holds every user's password
+    hash and the VPN/PKI/TLS private keys, root-equivalent like restoring one.
     """
+    if download and not current_user.has_permission("backup.restore"):
+        raise HTTPException(status_code=403, detail="Scaricare un archivio richiede il permesso backup.restore")
     try:
         archive_path = await export_config(session)
         
@@ -314,9 +319,9 @@ async def get_backup_history(
 @router.get("/download/{filename}")
 async def download_backup(
     filename: str,
-    current_user: User = Depends(require_permission("backup.manage"))
+    current_user: User = Depends(require_permission("backup.restore"))
 ):
-    """Download a config export archive."""
+    """Download a config export archive (backup.restore: see export_configuration)."""
     safe_name = Path(filename).name
     if not is_archive_name(safe_name):
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -439,7 +444,7 @@ async def cleanup_remote_storage(
 
 @router.post("/remote/host-key/forget")
 async def forget_remote_host_key(
-    current_user: User = Depends(require_permission("backup.manage")),
+    current_user: User = Depends(require_permission("backup.restore")),
     session: AsyncSession = Depends(get_session)
 ):
     """
