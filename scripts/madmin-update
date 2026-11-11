@@ -374,7 +374,7 @@ def snapshot(update_id: str) -> str:
     return path
 
 
-def restore_snapshot(path: str) -> None:
+def restore_snapshot(path: str, stop: bool = True) -> None:
     """Database and files of a snapshot. The database is restored into a new
     one that replaces the current only once the restore succeeded; the files
     are unpacked beside etc/ and data/ and swapped in afterwards. Raises
@@ -382,7 +382,8 @@ def restore_snapshot(path: str) -> None:
     meta = read_json(os.path.join(path, "snapshot.json")) or {}
     db = meta.get("database") or database()
     name, staging = db["name"], f"{db['name']}_restore"
-    run(["systemctl", "stop", SERVICE], check=False, timeout=120)
+    if stop:
+        run(["systemctl", "stop", SERVICE], check=False, timeout=120)
     run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "--force", staging], timeout=300)
     run(["runuser", "-u", "postgres", "--", "createdb", "-O", db["user"], staging], timeout=300)
     # The dump is readable by root only: given on stdin, not by path
@@ -592,12 +593,14 @@ def rollback_to(release: str, snap, reason: str, start: bool = True) -> None:
     starts once it ends (starting it from here would wait for ourselves)."""
     detail = reason[:500]
     problems = []
-    run(["systemctl", "stop", SERVICE], check=False, timeout=120)
+    # At boot MADMIN is not running, and a stop would cancel its queued start
+    if start:
+        run(["systemctl", "stop", SERVICE], check=False, timeout=120)
     if release:
         set_link(CURRENT, release)
     if snap and os.path.isdir(snap):
         try:
-            restore_snapshot(snap)
+            restore_snapshot(snap, stop=start)
         except Exception as e:
             problems.append(f"snapshot not restored: {e}")
     run(["systemctl", "daemon-reload"], check=False)
