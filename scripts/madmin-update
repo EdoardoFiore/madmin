@@ -12,7 +12,8 @@ agent with systemd-run (so it survives the restart of MADMIN) or by root:
     madmin-update install FILE.release       update (snapshot, switch, health gate, rollback)
         [--deadline SECONDS] [--no-manager] [--command-id ID]
     madmin-update rollback                   back to the previous release (restores its snapshot)
-    madmin-update recover                    at boot: finish or undo an interrupted update
+    madmin-update recover [--boot]           finish or undo an interrupted update (--boot: from the
+                                             unit ordered before madmin.service, which starts it after)
     madmin-update status                     current/previous release and the last update
     madmin-update bootstrap --from-checkout DIR [--build ID]
                                              first install from a git checkout (setup-madmin.sh)
@@ -132,9 +133,12 @@ def journal(**changes) -> dict:
 
 
 def run(cmd, check=True, timeout=None, env=None, cwd=None, capture=False) -> subprocess.CompletedProcess:
-    r = subprocess.run(cmd, timeout=timeout, env=env, cwd=cwd, text=True,
-                       stdout=subprocess.PIPE if capture else None,
-                       stderr=subprocess.STDOUT if capture else None)
+    try:
+        r = subprocess.run(cmd, timeout=timeout, env=env, cwd=cwd, text=True,
+                           stdout=subprocess.PIPE if capture else None,
+                           stderr=subprocess.STDOUT if capture else None)
+    except subprocess.TimeoutExpired:
+        raise UpdateError(f"{' '.join(cmd[:3])}... did not finish within {timeout}s")
     if check and r.returncode != 0:
         out = (r.stdout or "").strip()[-500:] if capture else ""
         raise UpdateError(f"{' '.join(cmd[:3])}... exited with {r.returncode}{': ' + out if out else ''}")
@@ -581,9 +585,11 @@ def cmd_install(args) -> None:
     os.close(fd)
 
 
-def rollback_to(release: str, snap, reason: str) -> None:
+def rollback_to(release: str, snap, reason: str, start: bool = True) -> None:
     """Previous release, its snapshot, MADMIN started again. "failed" when any
-    part did not work (the instance then needs a look: rescue or console)."""
+    part did not work (the instance then needs a look: rescue or console).
+    start=False at boot: madmin.service is ordered after the recovery and
+    starts once it ends (starting it from here would wait for ourselves)."""
     detail = reason[:500]
     problems = []
     run(["systemctl", "stop", SERVICE], check=False, timeout=120)
@@ -595,11 +601,14 @@ def rollback_to(release: str, snap, reason: str) -> None:
         except Exception as e:
             problems.append(f"snapshot not restored: {e}")
     run(["systemctl", "daemon-reload"], check=False)
-    run(["systemctl", "start", SERVICE], check=False, timeout=600)
-    try:
-        health_gate(release or "", min(DEFAULT_DEADLINE, 180), need_manager=False)
-    except Exception as e:
-        problems.append(str(e))
+    if start:
+        try:
+            run(["systemctl", "start", SERVICE], check=False, timeout=600)
+            health_gate(release or "", min(DEFAULT_DEADLINE, 180), need_manager=False)
+        except Exception as e:
+            problems.append(str(e))
+    else:
+        detail += " (at boot: MADMIN starts after the recovery)"
     result = "failed" if problems else "rolled_back"
     if problems:
         detail += "; rollback: " + "; ".join(problems)[:400]
@@ -607,7 +616,7 @@ def rollback_to(release: str, snap, reason: str) -> None:
     log(f"{result}: {detail}")
 
 
-def recover() -> None:
+def recover(boot: bool = False) -> None:
     """An update interrupted (killed, reboot): undo what it changed."""
     j = read_json(JOURNAL) or {}
     if j.get("result") not in ("running", "verifying"):
@@ -624,7 +633,7 @@ def recover() -> None:
         journal(result="ok", detail="", finished_at=now_iso())
         return
     log(f"interrupted update at {step}: rolling back to {j.get('from_release')}")
-    rollback_to(j.get("from_release"), j.get("snapshot"), f"interrupted at {step}")
+    rollback_to(j.get("from_release"), j.get("snapshot"), f"interrupted at {step}", start=not boot)
     if j.get("release_id") and link_target(CURRENT) != j["release_id"]:
         shutil.rmtree(os.path.join(RELEASES, j["release_id"]), ignore_errors=True)
 
@@ -634,7 +643,7 @@ def cmd_recover(args) -> None:
         fd = lock()
     except UpdateError:
         return   # an update is running right now: it is not interrupted
-    recover()
+    recover(boot=args.boot)
     os.close(fd)
 
 
@@ -723,7 +732,8 @@ def main() -> None:
     i.add_argument("--command-id", default=None)
     r = sub.add_parser("rollback")
     r.add_argument("--keep-database", action="store_true")
-    sub.add_parser("recover")
+    rc = sub.add_parser("recover")
+    rc.add_argument("--boot", action="store_true", help="from madmin-update-recover.service: do not start MADMIN")
     sub.add_parser("status")
     sub.add_parser("rebuild-venv")
     b = sub.add_parser("bootstrap")

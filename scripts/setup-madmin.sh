@@ -553,7 +553,7 @@ Wants=postgresql.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 $INSTALL_DIR/updater/madmin-update recover
+ExecStart=/usr/bin/python3 $INSTALL_DIR/updater/madmin-update recover --boot
 TimeoutStartSec=1800
 
 [Install]
