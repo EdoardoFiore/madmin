@@ -46,8 +46,8 @@ if ! git -c safe.directory="$PROJECT_DIR" diff --quiet HEAD; then
 fi
 VERSION="$(sed -n 's/^MADMIN_VERSION = "\(.*\)"/\1/p' backend/config.py)"
 [ -n "$VERSION" ] || { echo "MADMIN_VERSION not found in backend/config.py" >&2; exit 1; }
-. /etc/os-release
-OS_ID="${ID}-${VERSION_ID}"
+# In a subshell: os-release defines VERSION too
+OS_ID="$(. /etc/os-release && echo "${ID}-${VERSION_ID}")"
 RELEASE_ID="$VERSION+$BUILD"
 
 WORK="$(mktemp -d)"
