@@ -8,6 +8,9 @@
 # =================================================================
 
 set -e
+# Directories and files are created with fixed modes whatever the caller's
+# umask: with 077, /opt/madmin would be unreadable by nginx (www-data)
+umask 022
 
 # --- Colors and logging ---
 log_info() { echo -e "\033[34m[INFO]\033[0m $1"; }
