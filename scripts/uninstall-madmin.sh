@@ -67,7 +67,8 @@ log_warning "This will REMOVE the MADMIN installation:"
 echo "  - systemd services: madmin.service, madmin-firewall-boot.service,"
 echo "    nginx-revproxy.service (reverse proxy module instance, if present)"
 echo "  - Nginx site: /etc/nginx/sites-available/madmin.conf"
-echo "  - reverse proxy instance config: /etc/nginx-revproxy (logs are kept)"
+echo "  - reverse proxy instance config: /etc/nginx-revproxy and its certbot"
+echo "    renewal hook (logs and certificates are kept)"
 echo "  - firewall persistence in /etc/iptables (rules.v4, ipsets.conf) and"
 echo "    the running ruleset will be FLUSHED and policies reset to ACCEPT"
 echo "  - sysctl drop-in: /etc/sysctl.d/99-madmin.conf"
@@ -101,6 +102,8 @@ done
 # Reverse proxy module: dedicated nginx instance (see modules/reverseproxy)
 rm -rf /etc/nginx-revproxy /var/lib/nginx-revproxy
 rm -f /etc/logrotate.d/nginx-revproxy
+# certbot deploy hook that reloads the instance (certificates are kept)
+rm -f /etc/letsencrypt/renewal-hooks/deploy/madmin-revproxy-reload.sh
 systemctl daemon-reload
 systemctl reset-failed 2>/dev/null || true
 log_success "Systemd services removed."
