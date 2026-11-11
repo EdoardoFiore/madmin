@@ -181,6 +181,23 @@ async def update_smtp_settings(
     old_download_url = settings.public_download_url
 
     update_data = data.model_dump(exclude_unset=True)
+
+    # The stored password belongs to the server it was entered for: a new
+    # host, port, encryption or username without a new password drops it,
+    # or smtp.manage could have the relay credential sent to its own server
+    def changed(key, nullable=False):
+        if key not in update_data or (update_data[key] is None and not nullable):
+            return False
+        return (update_data[key] or None) != (getattr(settings, key) or None)
+
+    password_cleared = False
+    if (settings.smtp_password and not update_data.get('smtp_password')
+            and (changed('smtp_host') or changed('smtp_port') or changed('smtp_encryption')
+                 or changed('smtp_username', nullable=True))):
+        settings.smtp_password = None
+        update_data.pop('smtp_password', None)
+        password_cleared = True
+
     if update_data.get('smtp_password'):
         update_data['smtp_password'] = encrypt_setting(update_data['smtp_password'])
     nullable_fields = {'public_download_url', 'smtp_username', 'smtp_password'}
@@ -217,7 +234,8 @@ async def update_smtp_settings(
         sender_email=settings.sender_email,
         sender_name=settings.sender_name,
         public_download_url=settings.public_download_url,
-        updated_at=settings.updated_at
+        updated_at=settings.updated_at,
+        password_cleared=password_cleared,
     )
 
 

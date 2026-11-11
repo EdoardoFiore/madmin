@@ -1073,6 +1073,7 @@
         "faviconUploaded": "Favicon uploaded and saved",
         "uploadError": "Upload error: {error}",
         "smtpSaved": "SMTP settings saved",
+        "smtpPasswordCleared": "SMTP server changed: the saved password was removed, enter it again",
         "backupSaved": "Backup settings saved",
         "portInvalid": "Invalid port (1-65535)",
         "certRenewError": "Renewal error: {error}",
