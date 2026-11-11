@@ -29,6 +29,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class _RedactDownloadTokens(logging.Filter):
+    """
+    uvicorn's access log writes every path to the journal, which logs.view
+    reads: mask the VPN config-download token (the credential itself).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        from core.audit.middleware import redact_text
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact_text(a) if isinstance(a, str) else a for a in record.args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactDownloadTokens())
+
 settings = get_settings()
 
 
