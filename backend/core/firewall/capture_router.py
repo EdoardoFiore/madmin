@@ -33,12 +33,13 @@ async def _panel_port() -> int:
     return port if port and port != 80 else int(UI_PORT)
 
 
-async def _prepare(spec: capture.CaptureSpec, request: Request) -> str:
+async def _prepare(spec: capture.CaptureSpec, request: Request, user: User) -> str:
     """The checked BPF expression for spec, or HTTP 400."""
-    if spec.interface not in capture.list_interfaces():
+    if spec.interface not in capture.list_interfaces(include_loopback=user.is_superuser):
         raise HTTPException(status_code=400, detail=f"Interfaccia non trovata: {spec.interface}")
     try:
-        expr = capture.build_filter(spec, await _panel_port(), get_client_ip(request))
+        expr = capture.build_filter(spec, await _panel_port(), get_client_ip(request),
+                                    exclude_loopback=not user.is_superuser)
         await capture.validate_filter(spec.interface, expr)
     except capture.CaptureError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -55,7 +56,7 @@ def _owned(capture_id: str, user: User) -> capture.CaptureSession:
 @router.get("/interfaces")
 async def capture_interfaces(current_user: User = Depends(require_permission("firewall.manage"))):
     """Interfaces a capture can listen on (VPN tunnels included), "any" first."""
-    return capture.list_interfaces()
+    return capture.list_interfaces(include_loopback=current_user.is_superuser)
 
 
 @router.post("/validate")
@@ -65,7 +66,7 @@ async def validate_capture(
     current_user: User = Depends(require_permission("firewall.manage")),
 ):
     """The filter the capture would use, checked by tcpdump; nothing captured."""
-    return {"filter": await _prepare(spec, request)}
+    return {"filter": await _prepare(spec, request, current_user)}
 
 
 @router.post("/stream")
@@ -80,7 +81,7 @@ async def stream_capture(
     count, size, stopped, replaced, client, shutdown, error; pcap: whether the
     file can be downloaded). Leaving the stream stops the capture.
     """
-    expr = await _prepare(spec, request)
+    expr = await _prepare(spec, request, current_user)
     try:
         sess = await capture.start(spec, expr, str(current_user.id), current_user.username)
     except capture.CaptureBusy as e:
