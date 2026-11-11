@@ -31,9 +31,9 @@ def _identity():
     from .client import manager_agent
     identity = manager_agent.identity
     if identity is None:
-        raise CommandError("istanza non registrata")
+        raise CommandError("istanza non registrata", protocol.ERR_PRECONDITION)
     if not identity.backup_passphrase:
-        raise CommandError("passphrase di backup assente: ripetere l'enrollment")
+        raise CommandError("passphrase di backup assente: ripetere l'enrollment", protocol.ERR_PRECONDITION)
     return identity
 
 

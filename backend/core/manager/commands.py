@@ -9,7 +9,12 @@ local administrator can always see what the manager did.
 
 Handlers are registered by the modules of this package (backups, support,
 licenses) when imported; capabilities() is what the agent advertises in its
-hello, and the manager offers only those.
+hello ({name: version}), and the manager offers only those. A command's
+version is bumped when its arguments or its result change: the manager keeps
+sending the older shape to agents that advertise an older version.
+
+A failure is {"ok": false, "error": {"code", "message"}} with a code from
+protocol.ERR_*: the manager acts on the code, the message is for the operator.
 """
 import asyncio
 import json
@@ -41,7 +46,13 @@ class NoArgs(CommandArgs):
 
 
 class CommandError(Exception):
-    """A failure whose message is meant for the manager operator."""
+    """A failure whose message is meant for the manager operator; `code` is
+    one of protocol.ERR_* (precondition: the instance is not in a state where
+    the command makes sense, busy: a limit is reached)."""
+
+    def __init__(self, message: str, code: str = protocol.ERR_FAILED):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -57,6 +68,7 @@ Handler = Callable[[Any, CommandContext], Awaitable[Optional[dict]]]
 @dataclass
 class _Command:
     name: str
+    version: int
     args: Type[CommandArgs]
     handler: Handler
     timeout: float
@@ -69,19 +81,20 @@ _semaphore: Optional[asyncio.Semaphore] = None
 
 
 def command(name: str, args: Type[CommandArgs] = NoArgs, timeout: float = 60,
-            audit: bool = True, persist_result: bool = False):
+            audit: bool = True, persist_result: bool = False, version: int = 1):
     """persist_result: the result survives a restart of MADMIN (commands that
-    restart it, or must never run twice for the same id)."""
+    restart it, or must never run twice for the same id). version: bumped when
+    the arguments or the result change."""
     def register(fn: Handler) -> Handler:
         if name in _registry:
             raise RuntimeError(f"manager command {name} registered twice")
-        _registry[name] = _Command(name, args, fn, timeout, audit, persist_result)
+        _registry[name] = _Command(name, version, args, fn, timeout, audit, persist_result)
         return fn
     return register
 
 
-def capabilities() -> list:
-    return sorted(_registry)
+def capabilities() -> Dict[str, int]:
+    return {name: cmd.version for name, cmd in sorted(_registry.items())}
 
 
 def persists_result(name) -> bool:
@@ -134,16 +147,17 @@ async def execute(cmd_id: str, payload: dict, manager_host: str) -> dict:
 
     exp = payload.get("exp")
     if isinstance(exp, (int, float)) and exp < time.time():
-        return {"ok": False, "error": "comando scaduto"}
+        return protocol.error_result(protocol.ERR_EXPIRED, "comando scaduto")
     cmd = _registry.get(name)
     if cmd is None:
-        return {"ok": False, "error": f"comando non supportato: {name!r}"}
+        return protocol.error_result(protocol.ERR_UNSUPPORTED, f"comando non supportato: {name!r}")
     if not isinstance(raw_args, dict):
-        return {"ok": False, "error": "argomenti non validi"}
+        return protocol.error_result(protocol.ERR_INVALID_ARGS, "argomenti non validi")
     try:
         args = cmd.args(**raw_args)
     except ValidationError as e:
-        return {"ok": False, "error": f"argomenti non validi: {e.errors(include_url=False)[:3]}"}
+        return protocol.error_result(protocol.ERR_INVALID_ARGS,
+                                     f"argomenti non validi: {e.errors(include_url=False)[:3]}")
 
     start = time.monotonic()
     error = None
@@ -152,17 +166,17 @@ async def execute(cmd_id: str, payload: dict, manager_host: str) -> dict:
         try:
             data = await asyncio.wait_for(cmd.handler(args, ctx), timeout=cmd.timeout)
         except asyncio.TimeoutError:
-            error = f"timeout dopo {int(cmd.timeout)}s"
+            error = (protocol.ERR_TIMEOUT, f"timeout dopo {int(cmd.timeout)}s")
         except CommandError as e:
-            error = str(e)
+            error = (e.code, str(e))
         except Exception as e:
             logger.exception("Manager command %s failed", name)
-            error = f"errore interno: {type(e).__name__}"
+            error = (protocol.ERR_INTERNAL, f"errore interno: {type(e).__name__}")
     duration_ms = int((time.monotonic() - start) * 1000)
     if cmd.audit:
-        _audit(ctx, name, error is None, duration_ms, raw_args, error)
+        _audit(ctx, name, error is None, duration_ms, raw_args, error and error[1])
     if error is not None:
-        return {"ok": False, "error": error}
+        return protocol.error_result(*error)
     return {"ok": True, "data": data or {}}
 
 

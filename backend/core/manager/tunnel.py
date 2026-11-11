@@ -41,14 +41,14 @@ async def _endpoint(target: str) -> tuple:
     from .support import ssh_grant_active, ui_session_active
     if target == "ui":
         if not await ui_session_active():
-            raise CommandError("nessuna sessione di supporto UI attiva")
+            raise CommandError("nessuna sessione di supporto UI attiva", protocol.ERR_PRECONDITION)
         return UI_ENDPOINT
     if not await asyncio.to_thread(ssh_grant_active):
-        raise CommandError("nessun accesso SSH di supporto attivo")
+        raise CommandError("nessun accesso SSH di supporto attivo", protocol.ERR_PRECONDITION)
     from core.system.ssh import ssh_ports
     ports = await ssh_ports()
     if not ports:
-        raise CommandError("OpenSSH server non installato")
+        raise CommandError("OpenSSH server non installato", protocol.ERR_PRECONDITION)
     return ("127.0.0.1", ports[0])
 
 
@@ -94,9 +94,9 @@ async def _tunnel_open(args: TunnelOpenArgs, ctx: CommandContext) -> dict:
 
     identity = manager_agent.identity
     if identity is None:
-        raise CommandError("istanza non registrata")
+        raise CommandError("istanza non registrata", protocol.ERR_PRECONDITION)
     if len(_tunnels) >= MAX_TUNNELS:
-        raise CommandError("troppi tunnel aperti")
+        raise CommandError("troppi tunnel aperti", protocol.ERR_BUSY)
     host, port = await _endpoint(args.target)
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 10)

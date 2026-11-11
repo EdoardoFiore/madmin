@@ -146,7 +146,7 @@ async def _install(args: LicenseInstallArgs, ctx: CommandContext) -> dict:
     identity = manager_agent.identity
     key = _public_key()
     if identity is None or key is None:
-        raise CommandError("istanza non registrata o chiave licenze assente")
+        raise CommandError("istanza non registrata o chiave licenze assente", protocol.ERR_PRECONDITION)
     try:
         payload = verify(args.token, identity.instance_id, key)
     except LicenseError as e:

@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 TICKET_TTL = 120
 SWEEP_INTERVAL = 60
-MAX_SUPPORT_MINUTES = 8 * 60
 
 # sha256(ticket) -> (user_id, monotonic expiry)
 _tickets: Dict[str, Tuple[uuid.UUID, float]] = {}
@@ -70,7 +69,7 @@ def _purge_tickets() -> None:
 # --- UI accounts ---
 
 class UiOpenArgs(CommandArgs):
-    minutes: int = Field(default=60, ge=5, le=MAX_SUPPORT_MINUTES)
+    minutes: int = Field(default=60, ge=protocol.SUPPORT_MINUTES_MIN, le=protocol.SUPPORT_MINUTES_MAX)
     # Ask a new ticket for an account already open (link lost, ticket expired)
     username: Optional[str] = Field(default=None, pattern=r"^mgr-[a-z0-9._-]{1,45}$")
 
@@ -86,7 +85,7 @@ async def _ui_open(args: UiOpenArgs, ctx: CommandContext) -> dict:
             user = (await session.execute(select(User).where(
                 User.username == args.username, User.is_manager_support == True))).scalar_one_or_none()  # noqa: E712
             if user is None or user.expires_at is None or user.expires_at <= datetime.utcnow():
-                raise CommandError("sessione di supporto non trovata o scaduta")
+                raise CommandError("sessione di supporto non trovata o scaduta", protocol.ERR_PRECONDITION)
         else:
             name = ctx.operator.lower().replace("@", ".")[:30]
             user = User(
@@ -145,7 +144,7 @@ async def _ui_close(args: UiCloseArgs, ctx: CommandContext) -> dict:
 # --- SSH grant ---
 
 class SshGrantArgs(CommandArgs):
-    minutes: int = Field(default=60, ge=5, le=MAX_SUPPORT_MINUTES)
+    minutes: int = Field(default=60, ge=protocol.SUPPORT_MINUTES_MIN, le=protocol.SUPPORT_MINUTES_MAX)
 
 
 def _grant_state() -> Optional[datetime]:
@@ -182,7 +181,7 @@ def _revoke_grant() -> None:
 async def _ssh_grant(args: SshGrantArgs, ctx: CommandContext) -> dict:
     from .client import manager_agent
     if manager_agent.identity is None:
-        raise CommandError("istanza non registrata")
+        raise CommandError("istanza non registrata", protocol.ERR_PRECONDITION)
     try:
         expires_at = await asyncio.to_thread(_grant, manager_agent.identity.instance_id, args.minutes)
     except RuntimeError as e:

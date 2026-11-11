@@ -17,6 +17,10 @@ Commands are deduplicated by id and their results cached: the manager re-sends
 the commands it has no result for after a reconnect, and gets the cached
 result instead of a second execution.
 
+The manager tunes the agent through hello_ack.config (heartbeat and facts
+intervals, longest backoff), each value clamped to protocol.CONFIG_LIMITS;
+frames, fields and config keys this agent does not know are ignored.
+
 Without an enrollment (DATA_DIR/manager/state.json) the task only watches that
 file, so `python -m core.manager enroll` takes effect without a restart. With a
 registration waiting for approval (pending.json) it polls the manager every
@@ -44,14 +48,14 @@ from .inventory import collect_facts, collect_stats, facts_digest
 
 logger = logging.getLogger("madmin.manager")
 
-HEARTBEAT_INTERVAL = 60
-FACTS_INTERVAL = 300          # facts re-read (sent only when changed)
 RENEW_CHECK_INTERVAL = 6 * 3600
 STATE_POLL_INTERVAL = 30
-BACKOFF_MAX = 60
 _RESULT_CACHE = 500
 _PERSISTED_RESULTS = 50
 _HANDSHAKE_TIMEOUT = 15
+
+# Abilities of this agent that are not commands (hello.features)
+FEATURES: list = []
 
 
 class _Revoked(Exception):
@@ -68,6 +72,10 @@ class ManagerAgent:
         self._state_mtime: tuple = ()
         self._last_renew_check = 0.0
         self._facts_digest: Optional[str] = None
+        # Set by the manager in hello_ack (kept across sessions, reset by a restart)
+        self.config = {key: default for key, (_, _, default) in protocol.CONFIG_LIMITS.items()}
+        self.revision = 0
+        self.manager_features: set = set()
 
     # --- Status file (read by `python -m core.manager status`) ---
 
@@ -146,7 +154,7 @@ class ManagerAgent:
                 failing = True
                 await asyncio.to_thread(self._write_status, error)
             delay = backoff * random.uniform(0.5, 1.0)
-            backoff = min(BACKOFF_MAX, backoff * 2)
+            backoff = min(self.config["backoff_max"], backoff * 2)
             await self._wait_state_change(timeout=delay)
 
     async def _poll_pending(self) -> Optional[float]:
@@ -163,7 +171,7 @@ class ManagerAgent:
             status = await poll_registration()
         except Exception as e:
             logger.debug("Manager: registration check failed: %s", e)
-            return BACKOFF_MAX
+            return self.config["backoff_max"]
         if status == "approved":
             logger.info("Manager: registration approved, connecting")
             return 0
@@ -227,13 +235,25 @@ class ManagerAgent:
         facts = await collect_facts()
         await ws.send(protocol.frame(protocol.HELLO, {
             "protocol": protocol.PROTOCOL_VERSION,
+            "revision_min": protocol.PROTOCOL_REVISION_MIN,
+            "revision_max": protocol.PROTOCOL_REVISION,
             "instance_id": identity.instance_id,
             "capabilities": commands.capabilities(),
+            "features": FEATURES,
             "facts": facts,
         }))
         msg = protocol.parse(await asyncio.wait_for(ws.recv(), _HANDSHAKE_TIMEOUT))
         if msg["type"] != protocol.HELLO_ACK:
             raise protocol.ProtocolError(f"expected hello_ack, got {msg['type']}")
+        ack = msg["payload"]
+        revision = ack.get("revision")
+        if not isinstance(revision, int) or not (
+                protocol.PROTOCOL_REVISION_MIN <= revision <= protocol.PROTOCOL_REVISION):
+            raise protocol.ProtocolError(f"revision {revision!r} chosen by the manager not spoken here")
+        self.revision = revision
+        features = ack.get("features")
+        self.manager_features = {str(f)[:50] for f in features[:200]} if isinstance(features, list) else set()
+        self.config.update(protocol.clamp_config(ack.get("config")))
         self._facts_digest = facts_digest(facts)
 
     async def _serve(self, ws, identity: ManagerIdentity) -> None:
@@ -272,6 +292,8 @@ class ManagerAgent:
             if msg["type"] == protocol.CMD:
                 self._dispatch(msg["id"], msg["payload"], manager_host)
             else:
+                # Unknown types are ignored: a newer manager may send frames
+                # this agent does not know
                 logger.debug("Manager: ignored frame %s", msg["type"])
 
     async def _writer(self, ws, outbox: asyncio.Queue) -> None:
@@ -281,9 +303,9 @@ class ManagerAgent:
     async def _heartbeat(self, outbox: asyncio.Queue, identity: ManagerIdentity) -> None:
         last_facts = time.monotonic()
         while True:
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            await asyncio.sleep(self.config["heartbeat_interval"])
             payload = {"stats": await collect_stats()}
-            if time.monotonic() - last_facts >= FACTS_INTERVAL:
+            if time.monotonic() - last_facts >= self.config["facts_interval"]:
                 last_facts = time.monotonic()
                 facts = await collect_facts()
                 digest = facts_digest(facts)
