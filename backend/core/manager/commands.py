@@ -15,13 +15,17 @@ sending the older shape to agents that advertise an older version.
 
 A failure is {"ok": false, "error": {"code", "message"}} with a code from
 protocol.ERR_*: the manager acts on the code, the message is for the operator.
+
+Long commands (progress=True) send cmd_progress {"state": "running"} when they
+start, and the handler may report its steps with ctx.report(); the manager then
+waits for the execution timeout instead of the delivery deadline (exp).
 """
 import asyncio
 import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Type
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -60,6 +64,17 @@ class CommandContext:
     cmd_id: str
     operator: str          # manager user that issued the command (sanitized)
     manager_host: str      # where the manager is, for the audit client_ip
+    # Sends a cmd_progress payload for this command (no-op outside a session)
+    progress: Callable[[dict], None] = field(default=lambda payload: None)
+
+    def report(self, step: str, percent: Optional[int] = None, message: str = "") -> None:
+        """What a long command is doing now (shown to the operator)."""
+        payload: Dict[str, Any] = {"state": "running", "step": step[:50]}
+        if percent is not None:
+            payload["percent"] = max(0, min(100, int(percent)))
+        if message:
+            payload["message"] = message[:200]
+        self.progress(payload)
 
 
 Handler = Callable[[Any, CommandContext], Awaitable[Optional[dict]]]
@@ -74,6 +89,7 @@ class _Command:
     timeout: float
     audit: bool
     persist_result: bool
+    progress: bool
 
 
 _registry: Dict[str, _Command] = {}
@@ -81,14 +97,17 @@ _semaphore: Optional[asyncio.Semaphore] = None
 
 
 def command(name: str, args: Type[CommandArgs] = NoArgs, timeout: float = 60,
-            audit: bool = True, persist_result: bool = False, version: int = 1):
-    """persist_result: the result survives a restart of MADMIN (commands that
+            audit: bool = True, persist_result: bool = False, version: int = 1,
+            progress: bool = False):
+    """timeout: the longest execution allowed (the manager may ask for less).
+    persist_result: the result survives a restart of MADMIN (commands that
     restart it, or must never run twice for the same id). version: bumped when
-    the arguments or the result change."""
+    the arguments or the result change. progress: a long command, which tells
+    the manager when it starts."""
     def register(fn: Handler) -> Handler:
         if name in _registry:
             raise RuntimeError(f"manager command {name} registered twice")
-        _registry[name] = _Command(name, version, args, fn, timeout, audit, persist_result)
+        _registry[name] = _Command(name, version, args, fn, timeout, audit, persist_result, progress)
         return fn
     return register
 
@@ -135,8 +154,10 @@ def _audit(ctx: CommandContext, name: str, ok: bool, duration_ms: int,
         logger.error("Manager command not audited: %s", e)
 
 
-async def execute(cmd_id: str, payload: dict, manager_host: str) -> dict:
-    """Run one cmd frame; returns the cmd_result payload (never raises)."""
+async def execute(cmd_id: str, payload: dict, manager_host: str,
+                  progress: Optional[Callable[[dict], None]] = None) -> dict:
+    """Run one cmd frame; returns the cmd_result payload (never raises).
+    progress sends a cmd_progress payload for this command."""
     global _semaphore
     if _semaphore is None:
         _semaphore = asyncio.Semaphore(MAX_CONCURRENT)
@@ -144,6 +165,8 @@ async def execute(cmd_id: str, payload: dict, manager_host: str) -> dict:
     name = payload.get("name")
     raw_args = payload.get("args") or {}
     ctx = CommandContext(cmd_id, sanitize_operator(payload.get("operator")), manager_host)
+    if progress is not None:
+        ctx.progress = progress
 
     exp = payload.get("exp")
     if isinstance(exp, (int, float)) and exp < time.time():
@@ -159,14 +182,22 @@ async def execute(cmd_id: str, payload: dict, manager_host: str) -> dict:
         return protocol.error_result(protocol.ERR_INVALID_ARGS,
                                      f"argomenti non validi: {e.errors(include_url=False)[:3]}")
 
+    # The manager may only lower the command's own limit
+    timeout = cmd.timeout
+    asked = payload.get("timeout")
+    if isinstance(asked, (int, float)) and not isinstance(asked, bool) and asked > 0:
+        timeout = min(timeout, float(asked))
+
     start = time.monotonic()
     error = None
     data = None
     async with _semaphore:
+        if cmd.progress:
+            ctx.progress({"state": "running"})
         try:
-            data = await asyncio.wait_for(cmd.handler(args, ctx), timeout=cmd.timeout)
+            data = await asyncio.wait_for(cmd.handler(args, ctx), timeout=timeout)
         except asyncio.TimeoutError:
-            error = (protocol.ERR_TIMEOUT, f"timeout dopo {int(cmd.timeout)}s")
+            error = (protocol.ERR_TIMEOUT, f"timeout dopo {int(timeout)}s")
         except CommandError as e:
             error = (e.code, str(e))
         except Exception as e:

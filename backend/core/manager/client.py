@@ -384,13 +384,17 @@ class ManagerAgent:
             self._send(protocol.frame(protocol.CMD_RESULT, self._results[cmd_id], cmd_id))
             return
         if cmd_id in self._running:
-            return  # re-sent while still running: the result follows
+            # Re-sent while still running (a reconnect): the result follows
+            self._send(protocol.frame(protocol.CMD_PROGRESS, {"state": "running"}, cmd_id))
+            return
         self._running.add(cmd_id)
         spawn_background(self._run_command(cmd_id, payload, manager_host), f"manager-cmd-{cmd_id[:8]}")
 
     async def _run_command(self, cmd_id: str, payload: dict, manager_host: str) -> None:
         try:
-            result = await commands.execute(cmd_id, payload, manager_host)
+            result = await commands.execute(
+                cmd_id, payload, manager_host,
+                progress=lambda data: self._send(protocol.frame(protocol.CMD_PROGRESS, data, cmd_id)))
         finally:
             self._running.discard(cmd_id)
         self._results[cmd_id] = result

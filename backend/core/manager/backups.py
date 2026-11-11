@@ -78,18 +78,20 @@ def _download(identity, backup_id: str, dest: str) -> None:
         raise CommandError("archivio scaricato corrotto (sha256 non corrispondente)")
 
 
-@command(protocol.CMD_BACKUP_RUN, NoArgs, timeout=1800)
+@command(protocol.CMD_BACKUP_RUN, NoArgs, timeout=1800, progress=True)
 async def _backup_run(args: NoArgs, ctx: CommandContext) -> dict:
     from core.backup.service import export_config
     from core.database import async_session_maker
 
     identity = _identity()
     async with resource_lock("manager-backup"):
+        ctx.report("export")
         async with async_session_maker() as session:
             path = await export_config(session, passphrase=identity.backup_passphrase)
         try:
             digest = await asyncio.to_thread(_sha256, path)
             size = os.path.getsize(path)
+            ctx.report("upload", message=f"{size} byte")
             stored = await asyncio.to_thread(_upload, identity, path, digest, ctx.cmd_id)
         finally:
             try:
@@ -105,7 +107,7 @@ class RestoreArgs(CommandArgs):
 
 # Persistent result: a restore ends with a restart of MADMIN, and a command
 # re-sent after it must not restore twice (see client.py)
-@command(protocol.CMD_BACKUP_RESTORE, RestoreArgs, timeout=1800, persist_result=True)
+@command(protocol.CMD_BACKUP_RESTORE, RestoreArgs, timeout=1800, persist_result=True, progress=True)
 async def _backup_restore(args: RestoreArgs, ctx: CommandContext) -> dict:
     from core.backup.service import ensure_imports_dir, import_config
     from core.database import async_session_maker
@@ -114,7 +116,9 @@ async def _backup_restore(args: RestoreArgs, ctx: CommandContext) -> dict:
     async with resource_lock("manager-backup"):
         dest = os.path.join(ensure_imports_dir(), f"manager-{uuid.uuid4().hex}.tar.gz.enc")
         try:
+            ctx.report("download")
             await asyncio.to_thread(_download, identity, args.backup_id, dest)
+            ctx.report("import")
             async with async_session_maker() as session:
                 result = await import_config(session, dest, identity.backup_passphrase)
         finally:
