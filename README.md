@@ -366,7 +366,7 @@ Swagger UI available at `/api/docs` when `DEBUG=true`.
 | `dhcp` | DHCP Server | 1.2.0 | ISC DHCP — multi-interface subnets, static reservations, active leases view |
 | `dns` | DNS Server | 1.2.0 | BIND9 — zone management, record editing, conditional forwarding |
 | `openvpn` | OpenVPN Manager | 1.4.0 | Multi-instance OpenVPN with PKI (easy-rsa), client/group management, per-group firewall, split tunnel |
-| `reverseproxy` | Reverse Proxy | 1.0.0 | Reverse proxy on a dedicated nginx instance (isolated from the dashboard) — multiple hosts, per-host access/error logs, Let's Encrypt SSL/TLS, HTTP basic auth, IP access lists, exploit blocking |
+| `reverseproxy` | Reverse Proxy | 1.1.0 | Reverse proxy on a dedicated nginx instance (isolated from the dashboard) — multiple hosts, per-host access/error logs, Let's Encrypt SSL/TLS, HTTP basic auth, IP access lists, exploit blocking |
 | `wireguard` | WireGuard VPN | 1.6.0 | Multi-instance WireGuard with QR code export, client/group management, per-group firewall, split tunnel |
 | `strongswan` | IPsec VPN Manager | 1.2.0 | strongSwan site-to-site IKEv2/IPsec with per-Child-SA firewall chains |
 
