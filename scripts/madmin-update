@@ -371,21 +371,52 @@ def snapshot(update_id: str) -> str:
 
 
 def restore_snapshot(path: str) -> None:
+    """Database and files of a snapshot. The database is restored into a new
+    one that replaces the current only once the restore succeeded; the files
+    are unpacked beside etc/ and data/ and swapped in afterwards. Raises
+    UpdateError, leaving what could not be restored as it was."""
     meta = read_json(os.path.join(path, "snapshot.json")) or {}
     db = meta.get("database") or database()
+    name, staging = db["name"], f"{db['name']}_restore"
     run(["systemctl", "stop", SERVICE], check=False, timeout=120)
-    run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "--force", db["name"]], timeout=300)
-    run(["runuser", "-u", "postgres", "--", "createdb", "-O", db["user"], db["name"]], timeout=300)
-    run(["runuser", "-u", "postgres", "--", "pg_restore", "--no-owner", f"--role={db['user']}",
-         "-d", db["name"], os.path.join(path, "db.dump")], timeout=1800, check=False)
+    run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "--force", staging], timeout=300)
+    run(["runuser", "-u", "postgres", "--", "createdb", "-O", db["user"], staging], timeout=300)
+    # The dump is readable by root only: given on stdin, not by path
+    with open(os.path.join(path, "db.dump"), "rb") as dump:
+        r = subprocess.run(["runuser", "-u", "postgres", "--", "pg_restore", "--no-owner", f"--role={db['user']}",
+                            "--exit-on-error", "-d", staging], stdin=dump, capture_output=True, timeout=1800)
+    if r.returncode != 0:
+        run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", staging], check=False, timeout=300)
+        raise UpdateError(f"pg_restore failed, database left as it was: {r.stderr.decode()[-300:]}")
+    run(["runuser", "-u", "postgres", "--", "dropdb", "--force", name], timeout=300)
+    run(["runuser", "-u", "postgres", "--", "psql", "-q", "-c", f'ALTER DATABASE "{staging}" RENAME TO "{name}"'],
+        timeout=120)
+
+    unpack_dir = os.path.join(ROOT, ".restore")
+    shutil.rmtree(unpack_dir, ignore_errors=True)
+    os.makedirs(unpack_dir, mode=0o700)
+    run(["tar", "-C", unpack_dir, "-xzf", os.path.join(path, "files.tar.gz")], timeout=1800)
     for d in ("etc", "data"):
-        shutil.rmtree(os.path.join(ROOT, d), ignore_errors=True)
-    run(["tar", "-C", ROOT, "-xzf", os.path.join(path, "files.tar.gz")], timeout=1800)
+        old = os.path.join(ROOT, f".{d}.old")
+        shutil.rmtree(old, ignore_errors=True)
+        if os.path.exists(os.path.join(ROOT, d)):
+            os.replace(os.path.join(ROOT, d), old)
+        os.replace(os.path.join(unpack_dir, d), os.path.join(ROOT, d))
+        shutil.rmtree(old, ignore_errors=True)
+    shutil.rmtree(unpack_dir, ignore_errors=True)
 
 
 def unit_active() -> bool:
     r = subprocess.run(["systemctl", "is-active", SERVICE], capture_output=True, text=True)
     return r.stdout.strip() == "active"
+
+
+def restarts() -> int:
+    r = subprocess.run(["systemctl", "show", "-p", "NRestarts", "--value", SERVICE], capture_output=True, text=True)
+    try:
+        return int(r.stdout.strip() or 0)
+    except ValueError:
+        return 0
 
 
 def healthy() -> bool:
@@ -406,7 +437,10 @@ def health_gate(release_id: str, deadline: float, need_manager: bool) -> None:
     deadline. The unit must stay active: a restart loop is a failure."""
     end = time.monotonic() + deadline
     stable_since = None
+    restarts0 = restarts()
     while time.monotonic() < end:
+        if restarts() - restarts0 >= 3:
+            raise UpdateError("service restarting in a loop (does not start)")
         ok = unit_active() and healthy()
         stable_since = (stable_since or time.monotonic()) if ok else None
         confirmed = not need_manager or _read(CONFIRM) == release_id
@@ -546,20 +580,27 @@ def cmd_install(args) -> None:
 
 
 def rollback_to(release: str, snap, reason: str) -> None:
+    """Previous release, its snapshot, MADMIN started again. "failed" when any
+    part did not work (the instance then needs a look: rescue or console)."""
     detail = reason[:500]
-    try:
-        run(["systemctl", "stop", SERVICE], check=False, timeout=120)
-        if release:
-            set_link(CURRENT, release)
-        if snap and os.path.isdir(snap):
+    problems = []
+    run(["systemctl", "stop", SERVICE], check=False, timeout=120)
+    if release:
+        set_link(CURRENT, release)
+    if snap and os.path.isdir(snap):
+        try:
             restore_snapshot(snap)
-        run(["systemctl", "daemon-reload"], check=False)
-        run(["systemctl", "start", SERVICE], check=False, timeout=600)
+        except Exception as e:
+            problems.append(f"snapshot not restored: {e}")
+    run(["systemctl", "daemon-reload"], check=False)
+    run(["systemctl", "start", SERVICE], check=False, timeout=600)
+    try:
         health_gate(release or "", min(DEFAULT_DEADLINE, 180), need_manager=False)
-        result = "rolled_back"
     except Exception as e:
-        result = "failed"
-        detail += f"; rollback: {e}"[:400]
+        problems.append(str(e))
+    result = "failed" if problems else "rolled_back"
+    if problems:
+        detail += "; rollback: " + "; ".join(problems)[:400]
     journal(result=result, detail=detail, log_tail=journal_tail(), finished_at=now_iso())
     log(f"{result}: {detail}")
 
