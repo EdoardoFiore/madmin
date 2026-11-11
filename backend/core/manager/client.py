@@ -19,6 +19,10 @@ Commands are deduplicated by id and their results cached: the manager re-sends
 the commands it has no result for after a reconnect, and gets the cached
 result instead of a second execution.
 
+Every hello carries the state the manager must not lose track of (open
+support access, installed licenses, running and finished commands): events
+are best effort, the manager reconciles with this state at each connection.
+
 The manager tunes the agent through hello_ack.config (heartbeat and facts
 intervals, longest backoff), each value clamped to protocol.CONFIG_LIMITS;
 frames, fields and config keys this agent does not know are ignored.
@@ -258,6 +262,21 @@ class ManagerAgent:
                 _check_close(e.rcvd.code, e.rcvd.reason)
             raise
 
+    async def _state(self) -> dict:
+        """hello.state: what the manager reconciles at each connection."""
+        state: dict = {"commands": {"running": sorted(self._running), "finished": list(self._results)}}
+        try:
+            from .support import support_state
+            state["support"] = await support_state()
+        except Exception as e:
+            logger.warning("Manager: support state not readable: %s", e)
+        try:
+            from .licenses import license_ids
+            state["licenses"] = await asyncio.to_thread(license_ids)
+        except Exception as e:
+            logger.warning("Manager: licenses not readable: %s", e)
+        return state
+
     async def _handshake(self, ws, identity: ManagerIdentity) -> None:
         facts = await collect_facts()
         await ws.send(protocol.frame(protocol.HELLO, {
@@ -268,6 +287,7 @@ class ManagerAgent:
             "capabilities": commands.capabilities(),
             "features": FEATURES,
             "facts": facts,
+            "state": await self._state(),
         }))
         msg = protocol.parse(await asyncio.wait_for(ws.recv(), _HANDSHAKE_TIMEOUT))
         if msg["type"] != protocol.HELLO_ACK:

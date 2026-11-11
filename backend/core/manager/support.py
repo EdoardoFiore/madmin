@@ -199,6 +199,24 @@ async def _ssh_revoke(args: CommandArgs, ctx: CommandContext) -> dict:
     return {}
 
 
+async def support_state() -> dict:
+    """Support access open here (hello.state.support): the manager closes the
+    sessions it still believes open."""
+    from core.auth.models import User
+    from core.database import async_session_maker
+
+    async with async_session_maker() as session:
+        users = (await session.execute(select(User.username).where(
+            User.is_manager_support == True, User.expires_at > datetime.utcnow()  # noqa: E712
+        ))).scalars().all()
+    expires = await asyncio.to_thread(_grant_state)
+    ssh_open = expires is not None and expires > datetime.now(timezone.utc)
+    return {
+        "ui": sorted(users),
+        "ssh": {"open": ssh_open, "expires_at": int(expires.timestamp()) if ssh_open else None},
+    }
+
+
 async def ui_session_active() -> bool:
     from core.auth.models import User
     from core.database import async_session_maker

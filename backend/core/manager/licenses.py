@@ -119,6 +119,12 @@ def _valid_licenses() -> Dict[str, dict]:
     return valid
 
 
+def license_ids() -> list:
+    """Ids of the licenses installed here and valid now (hello.state)."""
+    now = time.time()
+    return sorted(lid for lid, p in _valid_licenses().items() if _in_validity(p, now))
+
+
 def is_licensed(feature: str) -> bool:
     """True if a license for `feature` is valid now (blocking: file reads)."""
     now = time.time()
