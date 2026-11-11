@@ -100,6 +100,8 @@ class ManagerAgent:
         self.config = {key: default for key, (_, _, default) in protocol.CONFIG_LIMITS.items()}
         self.revision = 0
         self.manager_features: set = set()
+        # Trusted CAs as last reported (hello.state.ca, then ca.updated)
+        self._reported_ca: Optional[list] = None
 
     # --- Status file (read by `python -m core.manager status`) ---
 
@@ -289,6 +291,7 @@ class ManagerAgent:
         state: dict = {"commands": {"running": sorted(self._running), "finished": list(self._results)}}
         try:
             state["ca"] = await asyncio.to_thread(ident.trusted_ca_fingerprints)
+            self._reported_ca = state["ca"]
         except Exception as e:
             logger.warning("Manager: trusted CAs not readable: %s", e)
         try:
@@ -302,6 +305,17 @@ class ManagerAgent:
         except Exception as e:
             logger.warning("Manager: licenses not readable: %s", e)
         return state
+
+    async def _report_ca(self) -> None:
+        """ca.updated when the trusted CAs changed since the last report (a
+        bundle accepted after the hello, or at a certificate renewal)."""
+        try:
+            current = await asyncio.to_thread(ident.trusted_ca_fingerprints)
+        except Exception:
+            return
+        if self._reported_ca is not None and current != self._reported_ca:
+            if self.send_event(protocol.EVENT_CA_UPDATED, {"ca": current}):
+                self._reported_ca = current
 
     async def _handshake(self, ws, identity: ManagerIdentity) -> None:
         facts = await collect_facts()
@@ -342,6 +356,7 @@ class ManagerAgent:
         self.connected = True
         await asyncio.to_thread(self._write_status)
         logger.info("Manager: connected to %s as %s", identity.manager_url, identity.instance_id)
+        await self._report_ca()
         manager_host = urlsplit(identity.manager_url).hostname or ""
         tasks = [
             asyncio.create_task(self._reader(ws, manager_host), name="manager-reader"),
@@ -396,6 +411,7 @@ class ManagerAgent:
             if await asyncio.to_thread(ident.state_mtime) != self._state_mtime:
                 return
             await self._maybe_renew(identity)
+            await self._report_ca()
 
     # --- Commands ---
 
