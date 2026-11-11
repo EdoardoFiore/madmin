@@ -162,6 +162,21 @@ def _assert_can_manage_target(actor: User, target: User) -> None:
             detail=f"You cannot manage a user holding permissions you do not have: {', '.join(excess)}"
         )
 
+    # The module default policy is latent privilege: the next module activated
+    # grants it for real (_apply_module_defaults), to whoever controls the
+    # account by then. Count it, or a policy-bearing account with no grants yet
+    # passes the subset check above.
+    levels = {"none": 0, "view": 1, "manage": 2}
+    target_level = levels.get(target.module_default_level or "none", 0)
+    actor_level = levels.get(actor.module_default_level or "none", 0)
+    target_caps = target_level == 2 and target.module_default_capabilities
+    actor_caps = actor_level == 2 and actor.module_default_capabilities
+    if target_level > actor_level or (target_caps and not actor_caps):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot manage a user whose default permissions on future modules exceed yours"
+        )
+
 
 def _assert_self_edit_allowed(user: User, data: UserUpdate) -> None:
     """
@@ -1120,8 +1135,10 @@ async def can_edit_user(
         can_delete = False
 
     # A non-superuser cannot act on a more privileged account (see _assert_can_manage_target)
-    if user.id != current_user.id and not current_user.is_superuser:
-        if user.is_superuser or (user.effective_permission_slugs() - current_user.effective_permission_slugs()):
+    if user.id != current_user.id:
+        try:
+            _assert_can_manage_target(current_user, user)
+        except HTTPException:
             can_edit = False
             can_change_password = False
             can_delete = False
