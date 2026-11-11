@@ -242,11 +242,27 @@ class ManagerAgent:
 
     # --- Session ---
 
+    def _end_move(self, identity: ManagerIdentity, url: str, ok: bool) -> None:
+        """manager.relocate: keep the address that answered, or drop it."""
+        if ok:
+            identity.manager_url = url
+            logger.info("Manager: now connected through %s", url)
+        else:
+            logger.error("Manager: %s did not answer, staying on %s", url, identity.manager_url)
+        identity.manager_url_next = ""
+        ident.save_state(identity)
+        # Our own change: not a reason to end the session
+        self._state_mtime = ident.state_mtime()
+
     async def _session(self, identity: ManagerIdentity) -> None:
         ssl_ctx = await asyncio.to_thread(identity.ssl_context)
+        # A move being tried (manager.relocate) is one attempt: kept after a
+        # hello_ack from there, dropped on any failure before it
+        trying = identity.manager_url_next
+        settled = not trying
         try:
             async with connect(
-                identity.ws_url,
+                identity.ws_url_of(trying or identity.manager_url),
                 ssl=ssl_ctx,
                 open_timeout=_HANDSHAKE_TIMEOUT,
                 ping_interval=20,
@@ -256,11 +272,17 @@ class ManagerAgent:
                 user_agent_header=f"madmin-agent/{MADMIN_VERSION}",
             ) as ws:
                 await self._handshake(ws, identity)
+                if not settled:
+                    await asyncio.to_thread(self._end_move, identity, trying, True)
+                    settled = True
                 await self._serve(ws, identity)
         except ConnectionClosed as e:
             if e.rcvd is not None:
                 _check_close(e.rcvd.code, e.rcvd.reason)
             raise
+        finally:
+            if not settled:
+                await asyncio.to_thread(self._end_move, identity, trying, False)
 
     async def _state(self) -> dict:
         """hello.state: what the manager reconciles at each connection."""
@@ -432,4 +454,4 @@ manager_agent = ManagerAgent()
 
 def load_command_handlers() -> None:
     """Register the commands implemented by the other modules of the package."""
-    from . import backups, licenses, stats, support, tunnel  # noqa: F401
+    from . import backups, licenses, relocate, stats, support, tunnel  # noqa: F401

@@ -12,7 +12,8 @@ Everything lives in DATA_DIR/manager/ (0700, files 0600):
     ca.pem        manager CA: the only trust anchor for every manager connection
     ssh_ca.pub    manager SSH user CA (support SSH access)
     license.pub   manager license signing key (Ed25519, raw base64)
-    state.json    instance_id, manager_url, backup passphrase, revoked flag
+    state.json    instance_id, manager_url (and manager_url_next while a move to
+                  another address is being tried), backup passphrase, revoked flag
     pending.json / pending_key.pem
                   registration waiting for approval on the manager (no token):
                   request id and secret, and the key the certificate will be for
@@ -204,10 +205,17 @@ class ManagerIdentity:
     revoked: bool
     enrolled_at: str
     backup_passphrase: str
+    # Address being tried (manager.relocate): becomes manager_url after a
+    # successful hello there, is dropped otherwise
+    manager_url_next: str = ""
+
+    @staticmethod
+    def ws_url_of(manager_url: str) -> str:
+        return "wss://" + manager_url.split("://", 1)[1] + "/agent/ws"
 
     @property
     def ws_url(self) -> str:
-        return "wss://" + self.manager_url.split("://", 1)[1] + "/agent/ws"
+        return self.ws_url_of(self.manager_url)
 
     def ssl_context(self) -> ssl.SSLContext:
         """mTLS context: manager CA as the only anchor, our certificate as client."""
@@ -241,6 +249,7 @@ def load_identity() -> Optional[ManagerIdentity]:
             revoked=bool(s.get("revoked", False)),
             enrolled_at=s.get("enrolled_at", ""),
             backup_passphrase=s.get("backup_passphrase", ""),
+            manager_url_next=s.get("manager_url_next", ""),
         )
     except (ValueError, KeyError) as e:
         raise ManagerIdentityError(f"state.json non leggibile: {e}")
@@ -253,6 +262,7 @@ def save_state(identity: ManagerIdentity) -> None:
         "revoked": identity.revoked,
         "enrolled_at": identity.enrolled_at,
         "backup_passphrase": identity.backup_passphrase,
+        "manager_url_next": identity.manager_url_next,
     }, indent=2).encode())
 
 
