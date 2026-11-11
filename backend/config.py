@@ -10,7 +10,7 @@ from typing import List
 from functools import lru_cache
 
 # Versione MADMIN (usata per export/import config cross-versione)
-MADMIN_VERSION = "1.0.0"
+MADMIN_VERSION = "1.2.0"
 
 
 class Settings(BaseSettings):

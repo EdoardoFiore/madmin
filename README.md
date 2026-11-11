@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Frontend](https://img.shields.io/badge/frontend-Vanilla%20JS%20%2B%20Tabler-orange)
 ![Database](https://img.shields.io/badge/database-PostgreSQL%2015%2B-green)
-![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)
+![Version](https://img.shields.io/badge/version-1.2.0-brightgreen)
 
 ---
 
