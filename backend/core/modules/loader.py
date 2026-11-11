@@ -195,7 +195,8 @@ class ModuleLoader:
         Runs once per slug and user, the first time the module is registered.
         From then on they are ordinary grants an admin can revoke from the user
         editor; ModuleDefaultGrant keeps a deactivate/activate cycle from
-        granting them again.
+        granting a revoked one again (deactivation drops the marker of the
+        grants still held, so those come back).
         """
         from core.auth.models import User, UserPermission
         from core.modules.models import ModuleDefaultGrant
@@ -831,14 +832,24 @@ class ModuleLoader:
                 # PostgreSQL that aborts the transaction, taking the table drop
                 # below down with it.
                 from core.auth.models import UserPermission
+                from core.modules.models import ModuleDefaultGrant
+                from sqlalchemy import tuple_
 
+                module_slugs = select(Permission.slug).where(Permission.module_id == module_id)
                 async with session.begin_nested():
+                    # A default grant the user still holds comes back on the
+                    # next activation; one an admin revoked keeps its marker
+                    # and stays revoked.
                     await session.execute(
-                        delete(UserPermission).where(
-                            UserPermission.permission_slug.in_(
-                                select(Permission.slug).where(Permission.module_id == module_id)
+                        delete(ModuleDefaultGrant).where(
+                            tuple_(ModuleDefaultGrant.user_id, ModuleDefaultGrant.permission_slug).in_(
+                                select(UserPermission.user_id, UserPermission.permission_slug)
+                                .where(UserPermission.permission_slug.in_(module_slugs))
                             )
                         )
+                    )
+                    await session.execute(
+                        delete(UserPermission).where(UserPermission.permission_slug.in_(module_slugs))
                     )
                     await session.execute(
                         delete(Permission).where(Permission.module_id == module_id)
