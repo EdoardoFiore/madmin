@@ -9,14 +9,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def run():
+async def run(session):
     logger.info("Reverse Proxy post_restore: start")
 
     from modules.reverseproxy import service as svc
-    from core.database import async_session_maker
 
-    async with async_session_maker() as session:
-        ok, msg = await svc.sync_all(session)
+    # _execute_restore_hook passes the import's session, as to every module
+    ok, msg = await svc.sync_all(session)
     if not ok:
         logger.warning("Reverse Proxy post_restore: %s", msg)
 
