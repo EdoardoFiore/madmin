@@ -73,7 +73,7 @@ router = APIRouter(prefix="/api/firewall", tags=["Firewall"])
 # Hook (chain) in cui ciascun match/azione è valido per netfilter.
 # Denylist applicata DOPO la validazione table/chain/action: blocca solo le
 # combinazioni note-incompatibili, lasciando passare quelle non elencate.
-_IN_IFACE_VALID = {"PREROUTING", "INPUT", "FORWARD", "POSTROUTING"}
+_IN_IFACE_VALID = {"PREROUTING", "INPUT", "FORWARD"}
 _OUT_IFACE_VALID = {"POSTROUTING", "OUTPUT", "FORWARD"}
 _NAT_TARGET_HOOK = {
     "DNAT": {"PREROUTING", "OUTPUT"},
@@ -416,7 +416,7 @@ def _validate_rule_constraints(table: str, chain: str, action: str,
         raise HTTPException(
             status_code=400,
             detail=f"Interfaccia di ingresso (-i) non valida nella catena {chain}: "
-                   f"disponibile solo in PREROUTING, INPUT, FORWARD, POSTROUTING."
+                   f"disponibile solo in PREROUTING, INPUT, FORWARD."
         )
     if out_interface and chain not in _OUT_IFACE_VALID:
         raise HTTPException(

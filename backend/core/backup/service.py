@@ -1452,7 +1452,7 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
     from core.firewall.models import (
         MachineFirewallRule, FirewallRuleAddress, RuleCounter, AddressObject, NatPool,
     )
-    from core.firewall.router import _resolve_imported_refs
+    from core.firewall.router import _resolve_imported_refs, _IN_IFACE_VALID, _OUT_IFACE_VALID
 
     with open(firewall_file) as f:
         rules_data = json.load(f)
@@ -1489,6 +1489,17 @@ async def _import_firewall_rules(session: AsyncSession, firewall_file: str) -> t
                 f"Regola #{idx + 1}: DROP generico su FORWARD di una versione precedente "
                 f"disattivato (lo sostituisce il nega implicito, e bloccava i port forward)."
             )
+        # Older versions accepted -i in POSTROUTING/OUTPUT and -o in
+        # PREROUTING/INPUT: netfilter has no such match there, and one such
+        # line makes the atomic restore reject the whole ruleset.
+        for field, flag, valid in (("in_interface", "-i", _IN_IFACE_VALID),
+                                   ("out_interface", "-o", _OUT_IFACE_VALID)):
+            if clean_data.get(field) and clean_data.get("chain") not in valid:
+                warnings.append(
+                    f"Regola #{idx + 1}: interfaccia {flag} {clean_data[field]} rimossa, "
+                    f"non è valida nella catena {clean_data.get('chain')}."
+                )
+                clean_data[field] = None
         rule = MachineFirewallRule(**clean_data)
 
         # Re-point an object-based DNAT target at the freshly imported object of
