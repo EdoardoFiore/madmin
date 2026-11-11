@@ -194,6 +194,17 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 log_info "Installation directory: $INSTALL_DIR"
 log_info "Project directory: $PROJECT_DIR"
 
+# Updates are made by madmin-update (a release beside the running one), never
+# by running the installer again: it would replace SECRET_KEY and the
+# database password. A flat install from before the releases layout is
+# reinstalled (backup, uninstall, install, restore).
+if [ -e "$INSTALL_DIR/current" ] || [ -d "$INSTALL_DIR/backend" ]; then
+    log_error "MADMIN is already installed in $INSTALL_DIR."
+    log_error "  Update:    from the manager, or $INSTALL_DIR/updater/madmin-update install <file.release>"
+    log_error "  Reinstall: export a backup, run uninstall-madmin.sh, then this script, then restore."
+    exit 1
+fi
+
 # --- Step 1: System dependencies ---
 log_info "Step 1/7: Installing system dependencies..."
 
@@ -262,31 +273,32 @@ sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;
 
 log_success "PostgreSQL configured (DB: $DB_NAME, User: $DB_USER)"
 
-# --- Step 3: Backend deployment ---
-log_info "Step 3/7: Deploying backend..."
+# --- Step 3: Release deployment ---
+log_info "Step 3/7: Deploying MADMIN..."
 
-mkdir -p $INSTALL_DIR/backend
-mkdir -p $INSTALL_DIR/backend/modules
-mkdir -p $INSTALL_DIR/data
-
-# Copy backend files
-cp -r "$PROJECT_DIR/backend/"* $INSTALL_DIR/backend/
+# Layout 1: the code lives in releases/<id>, `current` points at the running
+# one; settings, data and the updater are outside any release, so
+# madmin-update can install the next release beside it and switch (or go
+# back) in one step.
+mkdir -p $INSTALL_DIR/releases $INSTALL_DIR/data $INSTALL_DIR/updater
+mkdir -p -m 700 $INSTALL_DIR/etc $INSTALL_DIR/state
+chmod 755 $INSTALL_DIR
 
 # What is installed (reported to the manager): the commit of the checkout,
-# "-dirty" when it has local changes. layout 0 = this flat layout.
+# "-dirty" when it has local changes
 BUILD_ID="dev"
 if git -c safe.directory="$PROJECT_DIR" -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     BUILD_ID="$(git -c safe.directory="$PROJECT_DIR" -C "$PROJECT_DIR" rev-parse --short=12 HEAD)"
-    git -c safe.directory="$PROJECT_DIR" -C "$PROJECT_DIR" diff --quiet HEAD -- backend frontend 2>/dev/null || BUILD_ID="$BUILD_ID-dirty"
+    git -c safe.directory="$PROJECT_DIR" -C "$PROJECT_DIR" diff --quiet HEAD -- backend frontend scripts 2>/dev/null || BUILD_ID="$BUILD_ID-dirty"
 fi
-MADMIN_VER="$(sed -n 's/^MADMIN_VERSION = "\(.*\)"/\1/p' "$PROJECT_DIR/backend/config.py")"
-printf '{"format": 1, "version": "%s", "build": "%s", "layout": 0}\n' "$MADMIN_VER" "$BUILD_ID" > $INSTALL_DIR/manifest.json
 
-# Deploy the fail-closed firewall boot guard script (run by its systemd unit).
-# Saving the ruleset (rules.v4 + ipsets.conf) is done in Python by madmin.
-mkdir -p $INSTALL_DIR/scripts
-cp "$SCRIPT_DIR/madmin-firewall-boot.sh" $INSTALL_DIR/scripts/
-chmod +x $INSTALL_DIR/scripts/*.sh
+# Code and venv (PyPI, pinned by requirements.lock, core and module
+# dependencies) in releases/<id>; the updater, its rescue and the release
+# keys in updater/. The same script installs every later release.
+log_info "Installing the release and its Python dependencies..."
+RELEASE_ID="$(python3 "$SCRIPT_DIR/madmin-update" bootstrap --from-checkout "$PROJECT_DIR" --build "$BUILD_ID" | tail -1)"
+log_success "Release $RELEASE_ID installed in $INSTALL_DIR/releases/"
+chmod +x $INSTALL_DIR/current/scripts/*.sh $INSTALL_DIR/current/scripts/madmin-* 2>/dev/null || true
 
 # Scripts that scheduled jobs are allowed to run. MADMIN only ever reads this
 # directory: an operator with shell access puts scripts here, which is what
@@ -303,50 +315,23 @@ and make them executable (chmod +x). Anything not executable is ignored.
 CRONREADME
 fi
 
-# Create virtual environment (skip if already functional)
-if [ ! -x "$INSTALL_DIR/venv/bin/python3" ]; then
-    log_info "Creating virtual environment..."
-    python3 -m venv $INSTALL_DIR/venv
-else
-    log_info "Virtual environment already exists, skipping creation."
-fi
-
-# Install dependencies
-log_info "Installing Python dependencies..."
-$INSTALL_DIR/venv/bin/pip install --upgrade pip
-# requirements.lock pins every package to a tested version: without it a fresh
-# install takes whatever is newest on PyPI and can break on an upstream release.
-$INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/backend/requirements.txt \
-    -c $INSTALL_DIR/backend/requirements.lock
-
-# Create .env file
-cat > $INSTALL_DIR/backend/.env << EOF
+# Settings, outside the release (read by config.py and by madmin-update)
+cat > $INSTALL_DIR/etc/madmin.env << EOF
 DATABASE_URL=postgresql+asyncpg://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME
 SECRET_KEY=$SECRET_KEY
 DEBUG=false
 ALLOWED_ORIGINS=*
 DATA_DIR=$INSTALL_DIR/data
-MODULES_DIR=$INSTALL_DIR/backend/modules
 MOCK_IPTABLES=false
 EOF
 
-chmod 600 $INSTALL_DIR/backend/.env
+chmod 600 $INSTALL_DIR/etc/madmin.env
 
-log_success "Backend deployed."
+log_success "MADMIN deployed."
 
-# --- Step 4: Frontend deployment ---
-log_info "Step 4/7: Deploying frontend..."
-
-mkdir -p $INSTALL_DIR/frontend
-
-# Copy frontend files
-cp -r "$PROJECT_DIR/frontend/"* $INSTALL_DIR/frontend/
-
-# Permissions
-chown -R www-data:www-data $INSTALL_DIR/frontend
-chmod -R 755 $INSTALL_DIR/frontend
-
-log_success "Frontend deployed."
+# --- Step 4: Frontend ---
+# Served by nginx from $INSTALL_DIR/current/frontend (part of the release)
+log_info "Step 4/7: Frontend in the release (nothing to copy)."
 
 # --- Step 5: Nginx configuration ---
 log_info "Step 5/7: Configuring Nginx..."
@@ -423,7 +408,7 @@ server {
     server_tokens off;
     include snippets/madmin-security-headers.conf;
 
-    root $INSTALL_DIR/frontend;
+    root $INSTALL_DIR/current/frontend;
     index index.html;
 
     # Module static files (served by FastAPI, mounted dynamically)
@@ -433,7 +418,7 @@ server {
 
     # Third-party libraries: the version is in the path, so they never change
     location /static/vendor {
-        alias $INSTALL_DIR/frontend/assets/vendor;
+        alias $INSTALL_DIR/current/frontend/assets/vendor;
         expires 1y;
         add_header Cache-Control "public, immutable";
         include snippets/madmin-security-headers.conf;
@@ -442,7 +427,7 @@ server {
     # Core static assets: same URL across upgrades, so the browser must
     # revalidate (ETag, 304) or it keeps running the previous release's JS
     location /static {
-        alias $INSTALL_DIR/frontend/assets;
+        alias $INSTALL_DIR/current/frontend/assets;
         add_header Cache-Control "no-cache";
         include snippets/madmin-security-headers.conf;
     }
@@ -526,12 +511,12 @@ WatchdogSec=120
 TimeoutStartSec=300
 TimeoutStopSec=30
 User=root
-WorkingDirectory=$INSTALL_DIR/backend
-Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+WorkingDirectory=$INSTALL_DIR/current/backend
+Environment="PATH=$INSTALL_DIR/current/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 # Exactly one worker: login limits, audit queue, locks, background tasks and
 # the module routers mounted at runtime all live in this process. Never add
 # --workers.
-ExecStart=$INSTALL_DIR/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=$INSTALL_DIR/current/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
@@ -557,10 +542,29 @@ sysctl -p /etc/sysctl.d/99-madmin.conf
 # loads consistently. Recovery if madmin never starts is via hypervisor console.
 cp "$SCRIPT_DIR/madmin-firewall-boot.service" /etc/systemd/system/
 
+# An update interrupted by a reboot (or a killed updater) is finished or
+# undone before MADMIN starts
+cat > /etc/systemd/system/madmin-update-recover.service << EOF
+[Unit]
+Description=MADMIN - finish or undo an interrupted update
+Before=madmin.service
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 $INSTALL_DIR/updater/madmin-update recover
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 # Don't start yet — install module dependencies first
 systemctl daemon-reload
 systemctl enable madmin.service
 systemctl enable madmin-firewall-boot.service
+systemctl enable madmin-update-recover.service
 
 log_success "Systemd service configured."
 
@@ -568,7 +572,7 @@ log_success "Systemd service configured."
 log_info "Step 7/7: Installing module dependencies..."
 
 MODULE_COUNT=0
-for manifest in $INSTALL_DIR/backend/modules/*/manifest.json; do
+for manifest in $INSTALL_DIR/current/backend/modules/*/manifest.json; do
     [ -f "$manifest" ] || continue
     MODULE_COUNT=$((MODULE_COUNT + 1))
 
@@ -594,24 +598,13 @@ print(' '.join(deps))
         fi
     fi
 
-    # pip dependencies
-    PIP_DEPS=$(python3 -c "
-import json
-m = json.load(open('$manifest'))
-deps = m.get('system_dependencies', {}).get('pip', [])
-print(' '.join(deps))
-" 2>/dev/null)
-
-    if [ -n "$PIP_DEPS" ]; then
-        log_info "  Installing pip packages: $PIP_DEPS"
-        $INSTALL_DIR/venv/bin/pip install $PIP_DEPS -c $INSTALL_DIR/backend/requirements.lock
-    fi
+    # pip dependencies: already in the release's venv (madmin-update bootstrap)
 
     log_success "  $MODULE_NAME — dependencies installed."
 done
 
 if [ $MODULE_COUNT -eq 0 ]; then
-    log_warning "No modules found in $INSTALL_DIR/backend/modules/"
+    log_warning "No modules found in $INSTALL_DIR/current/backend/modules/"
 else
     log_success "$MODULE_COUNT modules detected, dependencies installed (modules disabled by default)."
 fi
@@ -880,25 +873,25 @@ if [ -n "$MANAGER_TOKEN_FILE" ] && [ -z "$MANAGER_TOKEN" ]; then
 fi
 if [ -n "$MANAGER_TOKEN" ]; then
     log_info "Enrolling this instance to the MADMIN Manager..."
-    if (cd $INSTALL_DIR/backend && MADMIN_MANAGER_TOKEN="$MANAGER_TOKEN" $INSTALL_DIR/venv/bin/python -m core.manager enroll); then
+    if (cd $INSTALL_DIR/current/backend && MADMIN_MANAGER_TOKEN="$MANAGER_TOKEN" $INSTALL_DIR/current/venv/bin/python -m core.manager enroll); then
         MANAGER_RESULT="enrolled"
         log_success "Instance enrolled to the MADMIN Manager."
     else
         MANAGER_RESULT="failed"
         log_warning "Manager enrollment failed. Retry with:"
-        log_warning "  cd $INSTALL_DIR/backend && sudo MADMIN_MANAGER_TOKEN='<token>' $INSTALL_DIR/venv/bin/python -m core.manager enroll"
+        log_warning "  cd $INSTALL_DIR/current/backend && sudo MADMIN_MANAGER_TOKEN='<token>' $INSTALL_DIR/current/venv/bin/python -m core.manager enroll"
     fi
     unset MANAGER_TOKEN MADMIN_MANAGER_TOKEN
 elif [ -n "$MANAGER_URL" ]; then
     log_info "Requesting enrollment to the MADMIN Manager (approval on the manager)..."
-    if (cd $INSTALL_DIR/backend && MADMIN_MANAGER_URL="$MANAGER_URL" MADMIN_MANAGER_CA_SHA256="$MANAGER_CA_SHA256" \
-            $INSTALL_DIR/venv/bin/python -m core.manager register); then
+    if (cd $INSTALL_DIR/current/backend && MADMIN_MANAGER_URL="$MANAGER_URL" MADMIN_MANAGER_CA_SHA256="$MANAGER_CA_SHA256" \
+            $INSTALL_DIR/current/venv/bin/python -m core.manager register); then
         MANAGER_RESULT="pending"
         log_success "Enrollment requested: approve it on the manager (Enrollment > In attesa)."
     else
         MANAGER_RESULT="failed"
         log_warning "Manager registration failed. Retry with:"
-        log_warning "  cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.manager register --url $MANAGER_URL"
+        log_warning "  cd $INSTALL_DIR/current/backend && sudo $INSTALL_DIR/current/venv/bin/python -m core.manager register --url $MANAGER_URL"
     fi
 fi
 
@@ -920,7 +913,7 @@ echo ""
 echo "Database:"
 echo "  Name:     $DB_NAME"
 echo "  User:     $DB_USER"
-echo "  Password: in $INSTALL_DIR/backend/.env (root only)"
+echo "  Password: in $INSTALL_DIR/etc/madmin.env (root only)"
 echo ""
 
 # SSH: always spelled out, the port is not the one the operator connected on
@@ -956,7 +949,7 @@ if [ "$FORCE_PW_CHANGE" = "true" ] || [ "$PROVISION_LAN" = "true" ] || [ "$PROTE
 fi
 
 case "$MANAGER_RESULT" in
-    enrolled) echo "MADMIN Manager: enrolled (status: cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.manager status)"; echo "" ;;
+    enrolled) echo "MADMIN Manager: enrolled (status: cd $INSTALL_DIR/current/backend && sudo $INSTALL_DIR/current/venv/bin/python -m core.manager status)"; echo "" ;;
     pending)  echo "MADMIN Manager: waiting for approval on the manager (connects by itself once approved)"; echo "" ;;
     failed)   echo "MADMIN Manager: enrollment FAILED (see the warning above)"; echo "" ;;
 esac

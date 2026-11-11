@@ -1,0 +1,699 @@
+#!/usr/bin/python3
+"""
+MADMIN updater: installs a signed release next to the running one and
+switches to it, or goes back.
+
+Standard library only (plus openssl, systemctl and the PostgreSQL client
+tools): it must work when the release it replaces does not, and it runs
+from /opt/madmin/updater/, never from inside a release. Started by the
+agent with systemd-run (so it survives the restart of MADMIN) or by root:
+
+    madmin-update verify FILE.release        check signature and payload, print the manifest
+    madmin-update install FILE.release       update (snapshot, switch, health gate, rollback)
+        [--deadline SECONDS] [--no-manager] [--command-id ID]
+    madmin-update rollback                   back to the previous release (restores its snapshot)
+    madmin-update recover                    at boot: finish or undo an interrupted update
+    madmin-update status                     current/previous release and the last update
+    madmin-update bootstrap --from-checkout DIR [--build ID]
+                                             first install from a git checkout (setup-madmin.sh)
+    madmin-update rebuild-venv               the venv of the current release, for the OS now running
+
+Layout (layout 1):
+
+    /opt/madmin/releases/<id>/   backend/ frontend/ scripts/ venv/ manifest.json
+    /opt/madmin/current          -> releases/<id>   (what runs)
+    /opt/madmin/previous         -> releases/<id>   (what a rollback returns to)
+    /opt/madmin/etc/madmin.env   settings (DATABASE_URL, SECRET_KEY, ...)
+    /opt/madmin/data/            DATA_DIR, never inside a release
+    /opt/madmin/updater/         this file, madmin-rescue, keys/*.pem (release keys)
+    /opt/madmin/state/           update.json (journal), snapshots/, downloads/
+
+An update, every step written to the journal before it starts:
+
+    verify     signature of the manifest by a trusted key, then the payload hash;
+               OS, layout, min_from, no downgrade, no schema older than the DB's
+    unpack     releases/<id>/ (a payload member outside it is refused)
+    venv       from the release's wheels only (--no-index), apt packages it needs
+    preflight  the new code imports with the current settings (nothing changed yet)
+    snapshot   MADMIN stopped; pg_dump, etc/ and data/ copied to state/snapshots/
+    switch     current -> new, previous -> old (atomic symlink replace)
+    start      MADMIN started: migrations run at startup
+    verify     health gate within the deadline: unit active, /api/health 200, and,
+               when enrolled, the manager's confirmation (the agent writes the
+               release id it received in hello_ack to state/update-confirm)
+    commit     result ok; old releases and snapshots pruned; the updater, the
+               rescue and the keys replaced by the new release's, last
+
+Any failure after the snapshot rolls back: previous release, database and
+etc/ + data/ restored, MADMIN started again. Before the snapshot nothing has
+changed, the staged release is removed.
+"""
+import argparse
+import datetime as dt
+import fcntl
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+ROOT = "/opt/madmin"
+RELEASES = f"{ROOT}/releases"
+CURRENT = f"{ROOT}/current"
+PREVIOUS = f"{ROOT}/previous"
+ETC = f"{ROOT}/etc"
+ENV_FILE = f"{ETC}/madmin.env"
+DATA = f"{ROOT}/data"
+UPDATER = f"{ROOT}/updater"
+STATE = f"{ROOT}/state"
+JOURNAL = f"{STATE}/update.json"
+CONFIRM = f"{STATE}/update-confirm"
+SNAPSHOTS = f"{STATE}/snapshots"
+LOCK = f"{STATE}/update.lock"
+KEY_DIRS = (f"{UPDATER}/keys", "/etc/madmin/release-keys.d")
+SERVICE = "madmin.service"
+HEALTH_URL = "http://127.0.0.1:8000/api/health"
+LAYOUT = 1
+DEFAULT_DEADLINE = 300
+SNAPSHOT_DAYS = 7
+OUTER_MEMBERS = {"manifest.json", "manifest.json.sig", "payload.tar.gz"}
+
+# Journal steps, in order; a failure at or after "snapshot" rolls back
+STEPS = ("verify", "unpack", "venv", "preflight", "snapshot", "switch", "start", "health", "commit")
+
+
+class UpdateError(Exception):
+    pass
+
+
+# --- Output and journal ---
+
+def log(msg: str) -> None:
+    print(f"{dt.datetime.now():%H:%M:%S} {msg}", flush=True)
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_json(path: str, data: dict) -> None:
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def read_json(path: str):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def journal(**changes) -> dict:
+    """Update the journal (read by the agent: hello.state.update)."""
+    data = read_json(JOURNAL) or {}
+    data.update(changes)
+    data["updated_at"] = now_iso()
+    write_json(JOURNAL, data)
+    return data
+
+
+def run(cmd, check=True, timeout=None, env=None, cwd=None, capture=False) -> subprocess.CompletedProcess:
+    r = subprocess.run(cmd, timeout=timeout, env=env, cwd=cwd, text=True,
+                       stdout=subprocess.PIPE if capture else None,
+                       stderr=subprocess.STDOUT if capture else None)
+    if check and r.returncode != 0:
+        out = (r.stdout or "").strip()[-500:] if capture else ""
+        raise UpdateError(f"{' '.join(cmd[:3])}... exited with {r.returncode}{': ' + out if out else ''}")
+    return r
+
+
+# --- Versions, environment ---
+
+def semver(v: str) -> tuple:
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", v or "")
+    return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+
+def os_id() -> str:
+    info = {}
+    with open("/etc/os-release") as f:
+        for line in f:
+            if "=" in line:
+                k, v = line.rstrip("\n").split("=", 1)
+                info[k] = v.strip('"')
+    return f"{info.get('ID')}-{info.get('VERSION_ID')}"
+
+
+def load_env() -> dict:
+    env = {}
+    try:
+        with open(ENV_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    return env
+
+
+def database() -> dict:
+    """Name and owner of the MADMIN database, from DATABASE_URL."""
+    url = load_env().get("DATABASE_URL", "")
+    m = re.match(r"^[\w+]+://([^:@/]+)(?::[^@]*)?@[^/]+/([\w-]+)", url)
+    if not m:
+        raise UpdateError("DATABASE_URL not readable from etc/madmin.env")
+    return {"user": m.group(1), "name": m.group(2)}
+
+
+def psql(sql: str, db: str) -> str:
+    r = run(["runuser", "-u", "postgres", "--", "psql", "-At", "-d", db, "-c", sql], capture=True, check=False)
+    return (r.stdout or "").strip() if r.returncode == 0 else ""
+
+
+def installed_manifest(path: str = CURRENT):
+    return read_json(os.path.join(path, "manifest.json"))
+
+
+def release_dir(release_id: str) -> str:
+    if not re.fullmatch(r"[0-9A-Za-z.+_-]{1,80}", release_id or ""):
+        raise UpdateError(f"invalid release id {release_id!r}")
+    return os.path.join(RELEASES, release_id)
+
+
+def link_target(link: str):
+    try:
+        return os.path.basename(os.readlink(link))
+    except OSError:
+        return None
+
+
+def set_link(link: str, release_id: str) -> None:
+    tmp = f"{link}.new"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    os.symlink(f"releases/{release_id}", tmp)
+    os.replace(tmp, link)
+
+
+# --- Verification ---
+
+def trusted_keys() -> list:
+    keys = []
+    for d in KEY_DIRS:
+        keys += sorted(glob.glob(os.path.join(d, "*.pem")))
+    return keys
+
+
+def read_outer(path: str) -> dict:
+    """The three members of a .release, without extracting anything else."""
+    out = {}
+    with tarfile.open(path, "r:") as tar:
+        for member in tar.getmembers():
+            if member.name not in OUTER_MEMBERS or not member.isfile() or member.name in out:
+                raise UpdateError(f"unexpected member in the release file: {member.name!r}")
+            out[member.name] = member
+        missing = OUTER_MEMBERS - set(out)
+        if missing:
+            raise UpdateError(f"release file without {', '.join(sorted(missing))} (not signed?)")
+    return out
+
+
+def verify(path: str) -> dict:
+    """Signature of the manifest, then the payload hash. Returns the manifest."""
+    members = read_outer(path)
+    keys = trusted_keys()
+    if not keys:
+        raise UpdateError("no trusted release key (updater/keys, /etc/madmin/release-keys.d)")
+    with tempfile.TemporaryDirectory() as tmp, tarfile.open(path, "r:") as tar:
+        for name in ("manifest.json", "manifest.json.sig"):
+            if members[name].size > 1 << 20:
+                raise UpdateError(f"{name} too large")
+            with open(os.path.join(tmp, name), "wb") as f:
+                f.write(tar.extractfile(members[name]).read())
+        manifest_path = os.path.join(tmp, "manifest.json")
+        signer = None
+        for key in keys:
+            r = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", key, "-rawin",
+                                "-in", manifest_path, "-sigfile", os.path.join(tmp, "manifest.json.sig")],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if r.returncode == 0:
+                signer = os.path.basename(key)
+                break
+        if signer is None:
+            raise UpdateError("manifest not signed by a trusted release key")
+        manifest = read_json(manifest_path)
+        if not isinstance(manifest, dict) or manifest.get("format") != 1:
+            raise UpdateError("unsupported manifest format")
+        h = hashlib.sha256()
+        src = tar.extractfile(members["payload.tar.gz"])
+        for chunk in iter(lambda: src.read(1 << 20), b""):
+            h.update(chunk)
+        if h.hexdigest() != manifest.get("payload_sha256"):
+            raise UpdateError("payload does not match the signed manifest")
+    manifest["_signed_by"] = signer
+    return manifest
+
+
+def check_applicable(manifest: dict) -> None:
+    """OS, layout, upgrade path and database schema."""
+    if os_id() not in (manifest.get("os") or []):
+        raise UpdateError(f"release for {manifest.get('os')}, this is {os_id()}")
+    if manifest.get("layout") != LAYOUT:
+        raise UpdateError(f"release for layout {manifest.get('layout')}, this updater handles {LAYOUT}")
+    cur = installed_manifest() or {}
+    cur_v, new_v = cur.get("version", "0.0.0"), manifest.get("version", "0.0.0")
+    if semver(cur_v) < semver(manifest.get("min_from", "0.0.0")):
+        raise UpdateError(f"{cur_v} is older than {manifest.get('min_from')}: reinstall the instance")
+    if semver(new_v) < semver(cur_v) and cur_v not in (manifest.get("allow_downgrade_from") or []):
+        raise UpdateError(f"downgrade from {cur_v} to {new_v} not allowed by the release")
+    db = database()["name"]
+    rows = psql("SELECT component, version FROM schema_version", db)
+    schema = manifest.get("schema") or {}
+    for line in rows.splitlines():
+        component, _, version = line.partition("|")
+        have = int(schema.get("core", 0)) if component == "core" else \
+            int((schema.get("modules") or {}).get(component, 0))
+        if int(version or 0) > have:
+            raise UpdateError(f"the database ({component} {version}) is newer than the release ({have})")
+
+
+# --- Steps ---
+
+def free_bytes(path: str) -> int:
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize
+
+
+def unpack(path: str, manifest: dict) -> str:
+    target = release_dir(manifest["release_id"])
+    need = int(manifest.get("payload_size") or 0) * 4
+    if free_bytes(ROOT) < need:
+        raise UpdateError(f"not enough free space in {ROOT} ({need // (1 << 20)} MB needed)")
+    if os.path.exists(target):
+        if link_target(CURRENT) == manifest["release_id"]:
+            raise UpdateError("this release is already the current one")
+        shutil.rmtree(target)
+    os.makedirs(target, mode=0o755)
+    with tarfile.open(path, "r:") as outer:
+        payload = outer.extractfile(read_outer(path)["payload.tar.gz"])
+        with tarfile.open(fileobj=payload, mode="r:gz") as tar:
+            # "data" filter: no absolute paths, no "..", no links out, no devices
+            tar.extractall(target, filter="data")
+    manifest = {k: v for k, v in manifest.items() if not k.startswith("_")}
+    write_json(os.path.join(target, "manifest.json"), manifest)
+    os.chmod(target, 0o755)
+    return target
+
+
+def build_venv(target: str, manifest: dict) -> None:
+    wheels = os.path.join(target, "wheels", os_id())
+    if not os.path.isdir(wheels):
+        raise UpdateError(f"no wheels for {os_id()} in the release")
+    missing = [p for p in manifest.get("apt") or [] if not dpkg_installed(p)]
+    if missing:
+        log(f"apt: installing {' '.join(missing)}")
+        env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+        run(["apt-get", "install", "-y", "-o", "Dpkg::Options::=--force-confold", *missing], env=env, timeout=1800)
+    venv = os.path.join(target, "venv")
+    run(["python3", "-m", "venv", venv], timeout=300)
+    run([f"{venv}/bin/pip", "install", "-q", "--no-index", "--find-links", wheels,
+         "-r", os.path.join(target, "wheels", "requirements.txt"),
+         "-c", os.path.join(target, "backend", "requirements.lock")], timeout=1800)
+    shutil.rmtree(os.path.join(target, "wheels"), ignore_errors=True)
+
+
+def dpkg_installed(pkg: str) -> bool:
+    r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg], capture_output=True, text=True)
+    return r.returncode == 0 and "install ok installed" in r.stdout
+
+
+def preflight(target: str) -> None:
+    """The new code imports with the current settings (nothing changed yet)."""
+    env = dict(os.environ, **load_env())
+    run([f"{target}/venv/bin/python", "-c", "import main"], cwd=f"{target}/backend",
+        env=env, timeout=180, capture=True)
+
+
+def snapshot(update_id: str) -> str:
+    """MADMIN is stopped here. Database dump, etc/ and data/ (imports excluded)."""
+    path = os.path.join(SNAPSHOTS, update_id)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    db = database()
+    run(["systemctl", "stop", SERVICE], timeout=120)
+    dump = os.path.join(path, "db.dump")
+    with open(dump, "wb") as f:
+        os.fchmod(f.fileno(), 0o600)
+        r = subprocess.run(["runuser", "-u", "postgres", "--", "pg_dump", "-Fc", "-d", db["name"]],
+                           stdout=f, stderr=subprocess.PIPE, timeout=1800)
+    if r.returncode != 0:
+        raise UpdateError(f"pg_dump failed: {r.stderr.decode()[-300:]}")
+    run(["tar", "-C", ROOT, "--exclude=data/imports", "-czf", os.path.join(path, "files.tar.gz"), "etc", "data"],
+        timeout=1800)
+    write_json(os.path.join(path, "snapshot.json"), {"database": db, "created": now_iso(),
+                                                      "release": link_target(CURRENT)})
+    return path
+
+
+def restore_snapshot(path: str) -> None:
+    meta = read_json(os.path.join(path, "snapshot.json")) or {}
+    db = meta.get("database") or database()
+    run(["systemctl", "stop", SERVICE], check=False, timeout=120)
+    run(["runuser", "-u", "postgres", "--", "dropdb", "--if-exists", "--force", db["name"]], timeout=300)
+    run(["runuser", "-u", "postgres", "--", "createdb", "-O", db["user"], db["name"]], timeout=300)
+    run(["runuser", "-u", "postgres", "--", "pg_restore", "--no-owner", f"--role={db['user']}",
+         "-d", db["name"], os.path.join(path, "db.dump")], timeout=1800, check=False)
+    for d in ("etc", "data"):
+        shutil.rmtree(os.path.join(ROOT, d), ignore_errors=True)
+    run(["tar", "-C", ROOT, "-xzf", os.path.join(path, "files.tar.gz")], timeout=1800)
+
+
+def unit_active() -> bool:
+    r = subprocess.run(["systemctl", "is-active", SERVICE], capture_output=True, text=True)
+    return r.stdout.strip() == "active"
+
+
+def healthy() -> bool:
+    try:
+        with urllib.request.urlopen(HEALTH_URL, timeout=5) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def enrolled() -> bool:
+    state = read_json(f"{DATA}/manager/state.json")
+    return bool(state) and not state.get("revoked")
+
+
+def health_gate(release_id: str, deadline: float, need_manager: bool) -> None:
+    """Active, healthy and (when enrolled) confirmed by the manager, before the
+    deadline. The unit must stay active: a restart loop is a failure."""
+    end = time.monotonic() + deadline
+    stable_since = None
+    while time.monotonic() < end:
+        ok = unit_active() and healthy()
+        stable_since = (stable_since or time.monotonic()) if ok else None
+        confirmed = not need_manager or _read(CONFIRM) == release_id
+        if ok and confirmed and time.monotonic() - stable_since >= 20:
+            return
+        time.sleep(3)
+    what = []
+    if not unit_active():
+        what.append("service not active")
+    elif not healthy():
+        what.append("/api/health not answering")
+    if need_manager and _read(CONFIRM) != release_id:
+        what.append("no confirmation from the manager")
+    raise UpdateError(f"not healthy within {int(deadline)}s: {', '.join(what) or 'unstable'}")
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def journal_tail() -> str:
+    r = subprocess.run(["journalctl", "-u", SERVICE, "-n", "30", "--no-pager", "-o", "cat"],
+                       capture_output=True, text=True)
+    return r.stdout[-3000:]
+
+
+def install_updater(release: str) -> None:
+    """The updater, the rescue and the release keys of `release`: last step of
+    a commit, so a broken new updater never prevents the rollback of the
+    update that brought it."""
+    os.makedirs(f"{UPDATER}/keys", mode=0o755, exist_ok=True)
+    for name in ("madmin-update", "madmin-rescue"):
+        src = os.path.join(release, "scripts", name)
+        if os.path.exists(src):
+            shutil.copy2(src, f"{UPDATER}/{name}.new")
+            os.chmod(f"{UPDATER}/{name}.new", 0o755)
+            os.replace(f"{UPDATER}/{name}.new", f"{UPDATER}/{name}")
+    keys = sorted(glob.glob(os.path.join(release, "scripts", "release-keys", "*.pem")))
+    if keys:
+        for old in glob.glob(f"{UPDATER}/keys/*.pem"):
+            os.unlink(old)
+        for key in keys:
+            shutil.copy2(key, f"{UPDATER}/keys/")
+
+
+def prune(keep: set) -> None:
+    for d in glob.glob(os.path.join(RELEASES, "*")):
+        if os.path.basename(d) not in keep:
+            shutil.rmtree(d, ignore_errors=True)
+    limit = time.time() - SNAPSHOT_DAYS * 86400
+    for d in glob.glob(os.path.join(SNAPSHOTS, "*")):
+        if os.path.getmtime(d) < limit:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+# --- Commands ---
+
+def lock():
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise UpdateError("another update is running")
+    return fd
+
+
+def cmd_verify(args) -> None:
+    manifest = verify(args.file)
+    check_applicable(manifest)
+    print(json.dumps(manifest, indent=2))
+
+
+def cmd_install(args) -> None:
+    fd = lock()
+    j = read_json(JOURNAL) or {}
+    if j.get("result") in ("running", "verifying"):
+        log("previous update interrupted: recovering it first")
+        recover()
+    update_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S")
+    from_release = link_target(CURRENT)
+    j = {"update_id": update_id, "release_id": None, "from_release": from_release, "step": "verify",
+         "result": "running", "detail": "", "started_at": now_iso(), "command_id": args.command_id,
+         "snapshot": None}
+    write_json(JOURNAL, j)
+    try:
+        os.unlink(CONFIRM)
+    except FileNotFoundError:
+        pass
+    target = None
+    try:
+        manifest = verify(args.file)
+        check_applicable(manifest)
+        rid = manifest["release_id"]
+        journal(release_id=rid, signed_by=manifest["_signed_by"], step="unpack")
+        log(f"updating {from_release} -> {rid} (signed by {manifest['_signed_by']})")
+        target = unpack(args.file, manifest)
+        journal(step="venv")
+        build_venv(target, manifest)
+        journal(step="preflight")
+        preflight(target)
+    except Exception as e:
+        if target and link_target(CURRENT) != os.path.basename(target):
+            shutil.rmtree(target, ignore_errors=True)
+        journal(result="failed", detail=str(e)[:1000], finished_at=now_iso())
+        log(f"FAILED (nothing changed): {e}")
+        os.close(fd)
+        sys.exit(1)
+
+    try:
+        journal(step="snapshot")
+        snap = snapshot(update_id)
+        journal(snapshot=snap, step="switch")
+        set_link(PREVIOUS, from_release)
+        set_link(CURRENT, rid)
+        run(["systemctl", "daemon-reload"], check=False)
+        journal(step="start", result="verifying")
+        run(["systemctl", "start", SERVICE], check=False, timeout=600)
+        journal(step="health")
+        health_gate(rid, args.deadline, need_manager=enrolled() and not args.no_manager)
+    except Exception as e:
+        log(f"FAILED, rolling back: {e}")
+        rollback_to(from_release, read_json(JOURNAL).get("snapshot"), str(e))
+        os.close(fd)
+        sys.exit(1)
+
+    journal(step="commit")
+    prune({rid, from_release})
+    install_updater(target)
+    journal(result="ok", detail="", finished_at=now_iso())
+    log(f"updated to {rid}")
+    os.close(fd)
+
+
+def rollback_to(release: str, snap, reason: str) -> None:
+    detail = reason[:500]
+    try:
+        run(["systemctl", "stop", SERVICE], check=False, timeout=120)
+        if release:
+            set_link(CURRENT, release)
+        if snap and os.path.isdir(snap):
+            restore_snapshot(snap)
+        run(["systemctl", "daemon-reload"], check=False)
+        run(["systemctl", "start", SERVICE], check=False, timeout=600)
+        health_gate(release or "", min(DEFAULT_DEADLINE, 180), need_manager=False)
+        result = "rolled_back"
+    except Exception as e:
+        result = "failed"
+        detail += f"; rollback: {e}"[:400]
+    journal(result=result, detail=detail, log_tail=journal_tail(), finished_at=now_iso())
+    log(f"{result}: {detail}")
+
+
+def recover() -> None:
+    """An update interrupted (killed, reboot): undo what it changed."""
+    j = read_json(JOURNAL) or {}
+    if j.get("result") not in ("running", "verifying"):
+        return
+    step = j.get("step")
+    if step in STEPS[:STEPS.index("snapshot")]:
+        if j.get("release_id") and link_target(CURRENT) != j["release_id"]:
+            shutil.rmtree(os.path.join(RELEASES, j["release_id"]), ignore_errors=True)
+        journal(result="failed", detail=f"interrupted at {step}", finished_at=now_iso())
+        log(f"interrupted update cleaned up (at {step}, nothing had changed)")
+        return
+    if step == "commit":
+        # Only pruning was left: the new release runs and was confirmed
+        journal(result="ok", detail="", finished_at=now_iso())
+        return
+    log(f"interrupted update at {step}: rolling back to {j.get('from_release')}")
+    rollback_to(j.get("from_release"), j.get("snapshot"), f"interrupted at {step}")
+
+
+def cmd_recover(args) -> None:
+    try:
+        fd = lock()
+    except UpdateError:
+        return   # an update is running right now: it is not interrupted
+    recover()
+    os.close(fd)
+
+
+def cmd_rollback(args) -> None:
+    fd = lock()
+    prev = link_target(PREVIOUS)
+    if not prev or not os.path.isdir(os.path.join(RELEASES, prev)):
+        raise UpdateError("no previous release")
+    j = read_json(JOURNAL) or {}
+    snap = j.get("snapshot") if j.get("release_id") == link_target(CURRENT) else None
+    if not snap and not args.keep_database:
+        raise UpdateError("no snapshot of the database for this release: --keep-database to go back anyway")
+    cur = link_target(CURRENT)
+    journal(update_id=dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S"), release_id=prev,
+            from_release=cur, step="switch", result="running", started_at=now_iso(), command_id=None)
+    rollback_to(prev, snap, "manual rollback")
+    set_link(PREVIOUS, cur)
+    os.close(fd)
+
+
+def cmd_status(args) -> None:
+    print(json.dumps({
+        "current": link_target(CURRENT),
+        "previous": link_target(PREVIOUS),
+        "manifest": installed_manifest(),
+        "last_update": read_json(JOURNAL),
+        "keys": [os.path.basename(k) for k in trusted_keys()],
+    }, indent=2))
+
+
+def cmd_rebuild_venv(args) -> None:
+    cur = os.path.realpath(CURRENT)
+    manifest = installed_manifest() or {}
+    fd = lock()
+    shutil.rmtree(os.path.join(cur, "venv"), ignore_errors=True)
+    if not os.path.isdir(os.path.join(cur, "wheels", os_id())):
+        raise UpdateError("the wheels of this release were removed after install: reinstall it with "
+                          "'madmin-update install' from its .release file")
+    build_venv(cur, manifest)
+    os.close(fd)
+
+
+def cmd_bootstrap(args) -> None:
+    """First install from a checkout (setup-madmin.sh): the code of the
+    checkout and a venv from PyPI pinned by requirements.lock. No signature:
+    root runs it on purpose. Prints the release id."""
+    src = os.path.abspath(args.from_checkout)
+    version = re.search(r'^MADMIN_VERSION = "(.*)"', open(f"{src}/backend/config.py").read(), re.M).group(1)
+    rid = f"{version}+{args.build or 'dev'}"
+    target = release_dir(rid)
+    if os.path.exists(target):
+        if link_target(CURRENT) == rid:
+            run(["systemctl", "stop", SERVICE], check=False, timeout=120)
+        shutil.rmtree(target)
+    os.makedirs(target, mode=0o755)
+    for d in ("backend", "frontend", "scripts"):
+        shutil.copytree(f"{src}/{d}", f"{target}/{d}", symlinks=False,
+                        ignore=shutil.ignore_patterns("__pycache__", ".env", "*.pyc"))
+    reqs = [l.strip() for l in open(f"{src}/backend/requirements.txt") if l.strip() and not l.startswith("#")]
+    for path in sorted(glob.glob(f"{src}/backend/modules/*/manifest.json")):
+        reqs += (read_json(path) or {}).get("system_dependencies", {}).get("pip", [])
+    with open(f"{target}/requirements-all.txt", "w") as f:
+        f.write("\n".join(dict.fromkeys(reqs)) + "\n")
+    run(["python3", "-m", "venv", f"{target}/venv"], timeout=300)
+    run([f"{target}/venv/bin/pip", "install", "-q", "--upgrade", "pip"], timeout=600)
+    run([f"{target}/venv/bin/pip", "install", "-q", "-r", f"{target}/requirements-all.txt",
+         "-c", f"{target}/backend/requirements.lock"], timeout=1800)
+    write_json(f"{target}/manifest.json", {"format": 1, "version": version, "build": args.build or "dev",
+                                           "release_id": rid, "layout": LAYOUT, "os": [os_id()],
+                                           "created": now_iso()})
+    os.chmod(f"{target}/manifest.json", 0o644)
+    set_link(CURRENT, rid)
+    install_updater(target)
+    print(rid)
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(prog="madmin-update")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    v = sub.add_parser("verify")
+    v.add_argument("file")
+    i = sub.add_parser("install")
+    i.add_argument("file")
+    i.add_argument("--deadline", type=int, default=DEFAULT_DEADLINE)
+    i.add_argument("--no-manager", action="store_true", help="health gate without the manager's confirmation")
+    i.add_argument("--command-id", default=None)
+    r = sub.add_parser("rollback")
+    r.add_argument("--keep-database", action="store_true")
+    sub.add_parser("recover")
+    sub.add_parser("status")
+    sub.add_parser("rebuild-venv")
+    b = sub.add_parser("bootstrap")
+    b.add_argument("--from-checkout", required=True)
+    b.add_argument("--build", default=None)
+    args = p.parse_args()
+    if os.geteuid() != 0:
+        sys.exit("madmin-update must run as root")
+    handlers = {"verify": cmd_verify, "install": cmd_install, "rollback": cmd_rollback, "recover": cmd_recover,
+                "status": cmd_status, "rebuild-venv": cmd_rebuild_venv, "bootstrap": cmd_bootstrap}
+    try:
+        handlers[args.cmd](args)
+    except UpdateError as e:
+        sys.exit(f"ERROR: {e}")
+
+
+if __name__ == "__main__":
+    main()

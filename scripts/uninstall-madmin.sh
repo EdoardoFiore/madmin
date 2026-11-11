@@ -64,7 +64,7 @@ fi
 # --- Confirmation ---
 echo ""
 log_warning "This will REMOVE the MADMIN installation:"
-echo "  - systemd services: madmin.service, madmin-firewall-boot.service,"
+echo "  - systemd services: madmin, madmin-firewall-boot, madmin-update-recover, madmin-rescue,"
 echo "    nginx-revproxy.service (reverse proxy module instance, if present)"
 echo "  - Nginx site: /etc/nginx/sites-available/madmin.conf"
 echo "  - reverse proxy instance config: /etc/nginx-revproxy and its certbot"
@@ -94,7 +94,8 @@ fi
 # --- Step 1: Stop and remove systemd services ---
 log_info "Step 1/7: Removing systemd services..."
 
-for svc in madmin.service madmin-firewall-boot.service nginx-revproxy.service; do
+for svc in madmin.service madmin-firewall-boot.service madmin-update-recover.service \
+           madmin-rescue.timer madmin-rescue.service nginx-revproxy.service; do
     systemctl stop "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
     rm -f "/etc/systemd/system/$svc"

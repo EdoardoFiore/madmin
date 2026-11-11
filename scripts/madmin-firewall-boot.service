@@ -7,12 +7,12 @@ DefaultDependencies=no
 After=systemd-modules-load.service
 Wants=network-pre.target
 Before=network-pre.target netfilter-persistent.service
-ConditionPathExists=/opt/madmin/scripts/madmin-firewall-boot.sh
+ConditionPathExists=/opt/madmin/current/scripts/madmin-firewall-boot.sh
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/madmin/scripts/madmin-firewall-boot.sh
+ExecStart=/opt/madmin/current/scripts/madmin-firewall-boot.sh
 
 [Install]
 WantedBy=multi-user.target

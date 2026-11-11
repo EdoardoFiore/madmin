@@ -13,16 +13,23 @@ from functools import lru_cache
 
 # Versione MADMIN (usata per export/import config cross-versione)
 MADMIN_VERSION = "1.2.0"
+# Oldest installed version a release can update in place (release manifest
+# min_from): older instances are reinstalled
+MIN_UPGRADE_FROM = "1.2.0"
 
-# Next to backend/: written by the installer (and, later, by the release
-# build). Without it (a development checkout) the build is "dev".
-_MANIFEST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "manifest.json")
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+# Next to backend/: written by the release build (or by madmin-update
+# bootstrap). Without it (a development checkout) the build is "dev".
+_MANIFEST = os.path.join(os.path.dirname(_BACKEND_DIR), "manifest.json")
+# Installation root: releases/, current, etc/, data/, updater/, state/
+INSTALL_ROOT = os.environ.get("MADMIN_ROOT", "/opt/madmin")
 
 
 @lru_cache
 def build_info() -> dict:
     """What this installation runs: version, build (git commit), release id
-    and on-disk layout revision (0 = flat /opt/madmin, no updater)."""
+    and on-disk layout revision (0 = flat /opt/madmin without the updater,
+    1 = /opt/madmin/releases/<id> with madmin-update)."""
     try:
         with open(_MANIFEST) as f:
             m = json.load(f)
@@ -82,8 +89,8 @@ class Settings(BaseSettings):
         description="Data directory for backups and uploads"
     )
     modules_dir: str = Field(
-        default="/opt/madmin/backend/modules",
-        description="Directory for installed modules"
+        default=os.path.join(_BACKEND_DIR, "modules"),
+        description="Directory of the modules (shipped with the release)"
     )
     cron_scripts_dir: str = Field(
         default="/opt/madmin/cron-scripts",
@@ -108,7 +115,8 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.allowed_origins.split(",")]
     
     class Config:
-        env_file = ".env"
+        # The installed settings, then a development .env next to backend/
+        env_file = (os.path.join(INSTALL_ROOT, "etc", "madmin.env"), ".env")
         env_file_encoding = "utf-8"
         case_sensitive = False
 
