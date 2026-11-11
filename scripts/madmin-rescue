@@ -1,0 +1,180 @@
+#!/usr/bin/python3
+"""
+MADMIN rescue: the last way the manager can reach an instance whose MADMIN
+does not run (a broken release, a rollback that failed, a crash loop).
+
+Standard library only, run by madmin-rescue.timer every 5 minutes from
+/opt/madmin/updater/ (never from a release). While MADMIN runs and its
+agent is connected it does nothing. Otherwise:
+
+1. an update left half done (no updater running) is recovered;
+2. it calls POST <manager>/agent/rescue with the instance's client
+   certificate: state of madmin.service, the last 200 lines of its journal,
+   current and previous release, the update journal, free disk;
+3. the manager answers with at most one action, chosen by a superuser in
+   the UI, from a closed list: none, restart (madmin.service), rollback
+   (madmin-update rollback), install {release_id, sha256} (a release the
+   manager holds, verified by madmin-update like any update). Each action
+   id runs once; its outcome is in the next report.
+
+It never opens a shell, a tunnel or support access: with MADMIN down there
+is no audit log to record them.
+"""
+import http.client
+import json
+import os
+import shutil
+import ssl
+import subprocess
+import sys
+import time
+import urllib.parse
+from datetime import datetime, timezone
+
+ROOT = "/opt/madmin"
+MANAGER_DIR = f"{ROOT}/data/manager"
+STATE = f"{ROOT}/state"
+RESCUE_STATE = f"{STATE}/rescue.json"
+UPDATER = f"{ROOT}/updater/madmin-update"
+DOWNLOADS = f"{STATE}/downloads"
+TIMEOUT = 30
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_json(path, data):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def out(cmd, timeout=120):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def all_well() -> bool:
+    """MADMIN runs and its agent is connected to the manager (status.json is
+    rewritten at every connection and disconnection)."""
+    status = read_json(f"{MANAGER_DIR}/status.json") or {}
+    return bool(status.get("connected")) and \
+        out(["systemctl", "is-active", "madmin.service"]).strip() == "active"
+
+
+def connection():
+    state = read_json(f"{MANAGER_DIR}/state.json") or {}
+    if not state.get("manager_url") or state.get("revoked"):
+        return None, None
+    url = urllib.parse.urlsplit(state["manager_url"])
+    ctx = ssl.create_default_context(cafile=f"{MANAGER_DIR}/ca.pem")
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(f"{MANAGER_DIR}/identity.pem")
+    return http.client.HTTPSConnection(url.hostname, url.port or 443, context=ctx, timeout=TIMEOUT), state
+
+
+def report() -> dict:
+    disk = shutil.disk_usage(ROOT)
+    rescue = read_json(RESCUE_STATE) or {}
+    def link(name):
+        try:
+            return os.path.basename(os.readlink(f"{ROOT}/{name}"))
+        except OSError:
+            return None
+    return {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "unit": out(["systemctl", "show", "madmin.service", "-p", "ActiveState,SubState,NRestarts,Result"]).strip(),
+        "journal": out(["journalctl", "-u", "madmin.service", "-n", "200", "--no-pager", "-o", "short-iso"])[-20000:],
+        "current": link("current"),
+        "previous": link("previous"),
+        "update": read_json(f"{STATE}/update.json"),
+        "disk_free_mb": disk.free // (1 << 20),
+        "last_action": rescue.get("last_action"),
+    }
+
+
+def download(conn, release_id, sha256):
+    import hashlib
+    os.makedirs(DOWNLOADS, mode=0o700, exist_ok=True)
+    dest = f"{DOWNLOADS}/{release_id}.release"
+    conn.request("GET", f"/agent/releases/{urllib.parse.quote(release_id, safe='')}")
+    r = conn.getresponse()
+    if r.status != 200:
+        raise RuntimeError(f"download HTTP {r.status}")
+    h = hashlib.sha256()
+    with open(dest + ".part", "wb") as f:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            h.update(chunk)
+    if h.hexdigest() != sha256:
+        os.unlink(dest + ".part")
+        raise RuntimeError("sha256 mismatch")
+    os.replace(dest + ".part", dest)
+    return dest
+
+
+def act(action: dict, conn) -> dict:
+    kind = action.get("action")
+    if kind == "restart":
+        r = subprocess.run(["systemctl", "restart", "madmin.service"], capture_output=True, text=True, timeout=600)
+        return {"ok": r.returncode == 0, "output": (r.stdout + r.stderr)[-1000:]}
+    if kind == "rollback":
+        r = subprocess.run(["/usr/bin/python3", UPDATER, "rollback"], capture_output=True, text=True, timeout=3600)
+        return {"ok": r.returncode == 0, "output": (r.stdout + r.stderr)[-1000:]}
+    if kind == "install":
+        path = download(conn, str(action["release_id"]), str(action["sha256"]))
+        r = subprocess.run(["/usr/bin/python3", UPDATER, "install", path], capture_output=True, text=True,
+                           timeout=7200)
+        return {"ok": r.returncode == 0, "output": (r.stdout + r.stderr)[-1000:]}
+    return {"ok": False, "output": f"unknown action {kind!r}"}
+
+
+def main() -> None:
+    if os.geteuid() != 0:
+        sys.exit("madmin-rescue must run as root")
+    if all_well():
+        return
+    j = read_json(f"{STATE}/update.json") or {}
+    if j.get("result") in ("running", "verifying"):
+        # recover takes the updater's lock: a running update is left alone
+        subprocess.run(["/usr/bin/python3", UPDATER, "recover"], timeout=3600)
+    conn, _ = connection()
+    if conn is None:
+        return
+    conn.request("POST", "/agent/rescue", body=json.dumps(report()),
+                 headers={"Content-Type": "application/json"})
+    r = conn.getresponse()
+    answer = json.loads(r.read() or b"{}") if r.status == 200 else {}
+    conn.close()
+    action = answer.get("action") if isinstance(answer, dict) else None
+    if not isinstance(action, dict) or action.get("action") in (None, "none"):
+        return
+    rescue = read_json(RESCUE_STATE) or {}
+    if action.get("id") in rescue.get("done", []):
+        return
+    conn, _ = connection()
+    started = time.time()
+    try:
+        result = act(action, conn)
+    except Exception as e:
+        result = {"ok": False, "output": f"{type(e).__name__}: {e}"[:1000]}
+    rescue["done"] = (rescue.get("done", []) + [action.get("id")])[-50:]
+    rescue["last_action"] = {**action, **result, "seconds": int(time.time() - started),
+                             "at": datetime.now(timezone.utc).isoformat()}
+    write_json(RESCUE_STATE, rescue)
+
+
+if __name__ == "__main__":
+    main()

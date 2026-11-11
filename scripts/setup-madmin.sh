@@ -560,11 +560,37 @@ TimeoutStartSec=1800
 WantedBy=multi-user.target
 EOF
 
+# Rescue: every 5 minutes, when MADMIN is down or not connected, report to
+# the manager and run the one action a superuser chose there (restart,
+# rollback, install a signed release)
+cat > /etc/systemd/system/madmin-rescue.service << EOF
+[Unit]
+Description=MADMIN rescue (reports to the manager when MADMIN is down)
+After=network-online.target madmin-update-recover.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 $INSTALL_DIR/updater/madmin-rescue
+TimeoutStartSec=7200
+EOF
+cat > /etc/systemd/system/madmin-rescue.timer << EOF
+[Unit]
+Description=MADMIN rescue every 5 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # Don't start yet — install module dependencies first
 systemctl daemon-reload
 systemctl enable madmin.service
 systemctl enable madmin-firewall-boot.service
 systemctl enable madmin-update-recover.service
+systemctl enable --now madmin-rescue.timer
 
 log_success "Systemd service configured."
 
