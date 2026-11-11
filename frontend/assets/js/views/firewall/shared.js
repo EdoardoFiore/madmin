@@ -21,7 +21,7 @@ export const MANAGED_NAT_SENTINEL = 'MADMIN_MANAGED_LAN_NAT';
 // which rejects any truly-invalid combination at apply time. Keep in exact
 // sync with the backend — a mismatch either blocks a rule the engine accepts
 // or lets through one it will reject on apply.
-export const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD', 'POSTROUTING'];
+export const IN_IFACE_VALID_CHAINS = ['PREROUTING', 'INPUT', 'FORWARD'];
 export const OUT_IFACE_VALID_CHAINS = ['POSTROUTING', 'OUTPUT', 'FORWARD'];
 export const NAT_ACTION_VALID_CHAINS = {
     DNAT: ['PREROUTING', 'OUTPUT'],

@@ -434,7 +434,7 @@
             "nameValueRequired": "Nome e valore sono obbligatori"
         },
         "validation": {
-            "inIfaceHook": "Interfaccia di ingresso (-i) non valida nella catena {chain}: disponibile solo in PREROUTING, INPUT, FORWARD, POSTROUTING.",
+            "inIfaceHook": "Interfaccia di ingresso (-i) non valida nella catena {chain}: disponibile solo in PREROUTING, INPUT, FORWARD.",
             "outIfaceHook": "Interfaccia di uscita (-o) non valida nella catena {chain}: disponibile solo in POSTROUTING, OUTPUT, FORWARD.",
             "natActionHook": "Azione {action} non valida nella catena {chain}.",
             "tableChain": "Catena {chain} non valida per la tabella {table}.",
