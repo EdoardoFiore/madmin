@@ -484,6 +484,12 @@ class ModuleLoader:
                 logger.info(f"Skipping non-active module: {module_id}")
                 continue
 
+            # Schema steps of this release for the module's existing tables (a
+            # failure stops the startup: an update is then rolled back)
+            from core import migrations
+            from core.database import engine
+            await migrations.run_module(engine, module_id, self.modules_dir / module_id)
+
             # License expired or revoked: not loaded, but left active (its data
             # stays; deactivating would drop the tables)
             manifest = self._parse_manifest(self.modules_dir / module_id / "manifest.json")
@@ -734,6 +740,11 @@ class ModuleLoader:
             await self.register_module_chains(session, module_id, manifest)
             
             await session.commit()
+
+            # The initial migrations created the current tables
+            from core import migrations
+            from core.database import engine
+            await migrations.mark_module_current(engine, module_id, module_path)
             
             logger.info(f"Activated module: {module_id} v{manifest.version}")
             return {
@@ -906,9 +917,12 @@ class ModuleLoader:
                     logger.warning(f"Error cleaning up tables for {module_id}: {e}")
                     errors.append(f"Errore pulizia tabelle: {e}")
             
-            # 5. Delete DB record
+            # 5. Delete DB record (and the schema version of the dropped tables)
             await session.delete(db_module)
             await session.commit()
+            from core import migrations
+            from core.database import engine
+            await migrations.forget_module(engine, module_id)
             
             logger.info(f"Fully deactivated module: {module_id}")
             

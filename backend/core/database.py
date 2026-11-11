@@ -58,9 +58,12 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """
-    Initialize database tables.
-    Creates all tables defined in SQLModel metadata.
+    Initialize database tables: create_all for new tables, then the schema
+    steps of core.migrations for changes to existing ones (a step that fails
+    stops the startup).
     """
+    from core import migrations
+    fresh = await migrations.core_is_fresh(engine)
     async with engine.begin() as conn:
         # Import all models to ensure they're registered
         from core.auth.models import User, Permission, UserPermission, LoginAttempt
@@ -72,6 +75,7 @@ async def init_db() -> None:
         
         await conn.run_sync(SQLModel.metadata.create_all)
         logger.info("Database tables created successfully")
+    await migrations.run_core(engine, fresh)
 
 
 async def check_db_connection() -> bool:
