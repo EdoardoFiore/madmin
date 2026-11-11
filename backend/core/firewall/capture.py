@@ -64,13 +64,20 @@ def capture_dir() -> Path:
     return Path(settings.data_dir) / "captures"
 
 
-def list_interfaces() -> List[str]:
-    """Every interface the kernel has (VPN tunnels included), plus "any"."""
+def list_interfaces(include_loopback: bool = False) -> List[str]:
+    """
+    Every interface the kernel has (VPN tunnels included), plus "any".
+
+    Loopback only with include_loopback (superusers): it carries the
+    plaintext nginx -> backend hop, i.e. every other user's bearer token
+    and login form.
+    """
     try:
         names = sorted(os.listdir("/sys/class/net"))
     except OSError:
         names = []
-    return ["any"] + [n for n in names if _IFACE_RE.match(n)]
+    return ["any"] + [n for n in names if _IFACE_RE.match(n)
+                      and (include_loopback or n != "lo")]
 
 
 class CaptureSpec(BaseModel):
@@ -164,8 +171,15 @@ class CaptureSpec(BaseModel):
         return v
 
 
-def build_filter(spec: CaptureSpec, panel_port: Optional[int], client_ip: Optional[str]) -> str:
-    """The BPF expression for a capture ("" = everything)."""
+def build_filter(spec: CaptureSpec, panel_port: Optional[int], client_ip: Optional[str],
+                 exclude_loopback: bool = True) -> str:
+    """
+    The BPF expression for a capture ("" = everything).
+
+    exclude_loopback drops host-internal traffic whatever the user filter
+    says: on "any" it would otherwise include the plaintext nginx -> backend
+    hop (127.0.0.1:8000) and the PostgreSQL connection.
+    """
     if spec.port is not None and spec.protocol in ("icmp", "arp"):
         raise CaptureError("La porta non si applica a ICMP o ARP")
     parts: List[str] = []
@@ -189,6 +203,9 @@ def build_filter(spec: CaptureSpec, panel_port: Optional[int], client_ip: Option
             parts.append(f"not (tcp port {int(panel_port)} and host {client_ip})")
         except ValueError:
             pass
+    if exclude_loopback:
+        parts.append("not (src net 127.0.0.0/8 and dst net 127.0.0.0/8)")
+        parts.append("not (ip6 and src host ::1 and dst host ::1)")
     return " and ".join(parts)
 
 
