@@ -200,10 +200,13 @@ class ModuleLoader:
         """
         Grant a newly registered module's slugs per each user's default policy.
 
-        Runs once per slug, the first time the module is registered. From then on
-        they are ordinary grants an admin can revoke from the user editor.
+        Runs once per slug and user, the first time the module is registered.
+        From then on they are ordinary grants an admin can revoke from the user
+        editor; ModuleDefaultGrant keeps a deactivate/activate cycle from
+        granting them again.
         """
         from core.auth.models import User, UserPermission
+        from core.modules.models import ModuleDefaultGrant
 
         # The slug prefix is not always the module id — strongswan declares
         # ipsec.* — so read it off the slugs themselves. A module may in
@@ -216,6 +219,12 @@ class ModuleLoader:
         users = (await session.execute(
             select(User).where(User.module_default_level != "none")
         )).scalars().all()
+        already = {
+            (row.user_id, row.permission_slug)
+            for row in (await session.execute(
+                select(ModuleDefaultGrant).where(ModuleDefaultGrant.permission_slug.in_(new_slugs))
+            )).scalars().all()
+        }
 
         granted = 0
         for user in users:
@@ -232,7 +241,10 @@ class ModuleLoader:
                 wanted.extend(capabilities)
 
             for slug in wanted:
+                if (user.id, slug) in already:
+                    continue
                 session.add(UserPermission(user_id=user.id, permission_slug=slug))
+                session.add(ModuleDefaultGrant(user_id=user.id, permission_slug=slug, module_id=module_id))
                 granted += 1
 
         if granted:

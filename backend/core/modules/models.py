@@ -32,6 +32,23 @@ class InstalledModule(SQLModel, table=True):
     manifest_json: Optional[str] = Field(default=None)
 
 
+class ModuleDefaultGrant(SQLModel, table=True):
+    """
+    Slugs the module default policy has already granted to a user.
+
+    Deactivation deletes a module's permission rows, so on reactivation every
+    slug looks new again; this record outlives it, or a modules.manage holder
+    could hand back grants an admin revoked by cycling the module. No foreign
+    key: a deleted user's rows are harmless and must not block the delete.
+    """
+    __tablename__ = "module_default_grant"
+
+    user_id: uuid.UUID = Field(primary_key=True)
+    permission_slug: str = Field(primary_key=True, max_length=100)
+    module_id: str = Field(max_length=50)
+    granted_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # --- Pydantic Schemas ---
 
 class ModulePermission(SQLModel):
