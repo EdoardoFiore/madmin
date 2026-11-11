@@ -49,6 +49,10 @@ router = APIRouter()
 # work), so the window is the only thing limiting exposure of a client's
 # credentials if the mail is forwarded or intercepted.
 MAGIC_TOKEN_TTL_HOURS = 12
+# From the first open the link lives this much longer at most: enough to
+# reload the page, scan the QR and fetch the file, not the rest of the day
+# for whoever sees it later (a forwarded mail, a proxy or access log).
+MAGIC_TOKEN_GRACE_MINUTES = 30
 
 
 # =========================================================================
@@ -1248,7 +1252,7 @@ async def send_client_config_email(
             <p><strong>Istanza:</strong> {instance.name}</p>
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;">
             <p style="color: #666; font-size: 12px;">
-                ⚠️ Questo link scade il <strong>{expires_str}</strong>.<br>
+                ⚠️ Questo link scade il <strong>{expires_str}</strong>, oppure {MAGIC_TOKEN_GRACE_MINUTES} minuti dopo la prima apertura.<br>
                 Non condividerlo: chiunque lo apra può scaricare la tua configurazione VPN.
             </p>
         </div>
@@ -1279,7 +1283,8 @@ async def _validate_token(token: str, db: AsyncSession):
     """
     Validate magic token and return (magic_token, client, instance, error) tuple.
     If error is not None, it contains (title, message) for the error page.
-    Usable until it expires — see send_client_config_email for why.
+    Usable until it expires — see send_client_config_email for why — but
+    only MAGIC_TOKEN_GRACE_MINUTES from the first open on.
     """
     result = await db.execute(select(OvpnMagicToken).where(OvpnMagicToken.token == token))
     magic_token = result.scalar_one_or_none()
@@ -1303,6 +1308,12 @@ async def _validate_token(token: str, db: AsyncSession):
     if not instance:
         return None, None, None, ("Istanza non trovata", "L'istanza VPN associata non esiste più.")
     
+    grace = datetime.utcnow() + timedelta(minutes=MAGIC_TOKEN_GRACE_MINUTES)
+    if magic_token.expires_at > grace:
+        magic_token.expires_at = grace
+        db.add(magic_token)
+        await db.commit()
+
     return magic_token, client, instance, None
 
 

@@ -61,9 +61,17 @@ _DOWNLOAD_TOKEN_RE = re.compile(r'^(/api/modules/[^/]+/download/)[^/]+')
 _ANONYMOUS_BODY_PATHS = ("/api/auth/token",)
 
 
+_DOWNLOAD_TOKEN_ANYWHERE_RE = re.compile(r'(/api/modules/[^/\s"]+/download/)[^/\s"?]+')
+
+
 def redact_path(path: str) -> str:
     """The request path as stored in the audit log."""
     return _DOWNLOAD_TOKEN_RE.sub(r'\1***', path)
+
+
+def redact_text(text: str) -> str:
+    """Download tokens masked wherever they appear in a log line."""
+    return _DOWNLOAD_TOKEN_ANYWHERE_RE.sub(r'\1***', text)
 
 
 def _sanitize_value(key: str, value) -> object:

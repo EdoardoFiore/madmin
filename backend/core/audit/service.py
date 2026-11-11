@@ -206,7 +206,11 @@ async def get_system_logs(lines: int = 200, search: Optional[str] = None) -> Lis
     if not stdout:
         return []
 
-    log_lines = stdout.decode("utf-8", errors="replace").strip().split("\n")
+    # Masked before the search, so the filter cannot be used as an oracle
+    # on a token either (older lines predate the access-log filter in main.py)
+    from core.audit.middleware import redact_text
+    log_lines = [redact_text(line) for line in
+                 stdout.decode("utf-8", errors="replace").strip().split("\n")]
     if search:
         search_lower = search.lower()
         log_lines = [line for line in log_lines if search_lower in line.lower()]
