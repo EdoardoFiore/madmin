@@ -303,7 +303,9 @@ def _serialize_acl(acl: Optional[RevproxyAccessList]) -> Optional[Dict[str, Any]
         return None
     return {
         "id": str(acl.id),
-        "name": acl.name,
+        # Also for rows the API validators never saw (backup restore): only
+        # word characters, space, '.', '@' and '-' reach the nginx snippet
+        "name": re.sub(r'[^\w .@-]', '_', acl.name or '')[:100],
         "satisfy_any": acl.satisfy_any,
         "pass_auth_to_upstream": acl.pass_auth_to_upstream,
         "auths": [{"id": str(a.id), "username": a.username} for a in acl.auths],
