@@ -1,20 +1,20 @@
 """
-Identity of this instance towards the MADMIN Hub.
+Identity of this instance towards the MADMIN Manager.
 
-The instance is identified by an X.509 client certificate issued by the hub's
+The instance is identified by an X.509 client certificate issued by the manager's
 CA, never by its IP or hostname (both change). The private key is generated
-here and never leaves the machine: the hub only ever sees a CSR.
+here and never leaves the machine: the manager only ever sees a CSR.
 
-Everything lives in DATA_DIR/hub/ (0700, files 0600):
+Everything lives in DATA_DIR/manager/ (0700, files 0600):
     identity.pem  private key (ECDSA P-256) + client certificate (CN =
                   instance_id) in one file, so a renewal replaces both in a
                   single atomic rename and they can never mismatch
-    ca.pem        hub CA: the only trust anchor for every hub connection
-    ssh_ca.pub    hub SSH user CA (support SSH access)
-    license.pub   hub license signing key (Ed25519, raw base64)
-    state.json    instance_id, hub_url, backup passphrase, revoked flag
+    ca.pem        manager CA: the only trust anchor for every manager connection
+    ssh_ca.pub    manager SSH user CA (support SSH access)
+    license.pub   manager license signing key (Ed25519, raw base64)
+    state.json    instance_id, manager_url, backup passphrase, revoked flag
     pending.json / pending_key.pem
-                  registration waiting for approval on the hub (no token):
+                  registration waiting for approval on the manager (no token):
                   request id and secret, and the key the certificate will be for
 
 The folder is not part of the config export: an identity copied to another
@@ -39,25 +39,25 @@ from cryptography.x509.oid import NameOID
 
 from config import get_settings
 
-TOKEN_PREFIX = "MHUB1-"
+TOKEN_PREFIX = "MMGR1-"
 
 
-class HubIdentityError(Exception):
+class ManagerIdentityError(Exception):
     pass
 
 
-def hub_dir() -> str:
-    return os.path.join(get_settings().data_dir, "hub")
+def manager_dir() -> str:
+    return os.path.join(get_settings().data_dir, "manager")
 
 
 def _path(name: str) -> str:
-    return os.path.join(hub_dir(), name)
+    return os.path.join(manager_dir(), name)
 
 
 def write_private(name: str, data: bytes) -> None:
-    """Atomic write, 0600, in DATA_DIR/hub."""
-    os.makedirs(hub_dir(), mode=0o700, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=hub_dir(), prefix=f".{name}.")
+    """Atomic write, 0600, in DATA_DIR/manager."""
+    os.makedirs(manager_dir(), mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=manager_dir(), prefix=f".{name}.")
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as f:
@@ -85,8 +85,8 @@ def read_file(name: str) -> Optional[bytes]:
 
 @dataclass
 class EnrollmentToken:
-    hub_url: str          # https://host:port of the hub agent endpoint
-    ca_fingerprint: str   # sha256 hex of the hub CA certificate (DER)
+    manager_url: str      # https://host:port of the manager agent endpoint
+    ca_fingerprint: str   # sha256 hex of the manager CA certificate (DER)
     token_id: str
     secret: str
 
@@ -94,33 +94,33 @@ class EnrollmentToken:
 def parse_token(raw: str) -> EnrollmentToken:
     raw = raw.strip()
     if not raw.startswith(TOKEN_PREFIX):
-        raise HubIdentityError("Token di enrollment non valido (prefisso)")
+        raise ManagerIdentityError("Token di enrollment non valido (prefisso)")
     body = raw[len(TOKEN_PREFIX):]
     try:
         data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
     except (binascii.Error, ValueError):
-        raise HubIdentityError("Token di enrollment non valido (codifica)")
+        raise ManagerIdentityError("Token di enrollment non valido (codifica)")
     if not isinstance(data, dict):
-        raise HubIdentityError("Token di enrollment non valido")
+        raise ManagerIdentityError("Token di enrollment non valido")
     try:
         token = EnrollmentToken(
-            hub_url=str(data["u"]).rstrip("/"),
+            manager_url=str(data["u"]).rstrip("/"),
             ca_fingerprint=str(data["f"]).lower(),
             token_id=str(data["i"]),
             secret=str(data["s"]),
         )
     except KeyError as e:
-        raise HubIdentityError(f"Token di enrollment incompleto ({e.args[0]})")
-    token.hub_url = check_hub_url(token.hub_url)
+        raise ManagerIdentityError(f"Token di enrollment incompleto ({e.args[0]})")
+    token.manager_url = check_manager_url(token.manager_url)
     token.ca_fingerprint = check_fingerprint(token.ca_fingerprint)
     return token
 
 
-def check_hub_url(url: str) -> str:
+def check_manager_url(url: str) -> str:
     url = (url or "").strip().rstrip("/")
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.path not in ("", "/") or parts.query:
-        raise HubIdentityError("URL hub non valido (atteso https://host:porta)")
+        raise ManagerIdentityError("URL manager non valido (atteso https://host:porta)")
     return url
 
 
@@ -128,7 +128,7 @@ def check_fingerprint(fp: str) -> str:
     """sha256 hex, colons and case tolerated (as printed by openssl)."""
     fp = (fp or "").strip().lower().replace(":", "")
     if len(fp) != 64 or any(c not in "0123456789abcdef" for c in fp):
-        raise HubIdentityError("Fingerprint CA non valido (sha256 esadecimale)")
+        raise ManagerIdentityError("Fingerprint CA non valido (sha256 esadecimale)")
     return fp
 
 
@@ -140,7 +140,7 @@ def ca_fingerprint(ca_pem: bytes) -> str:
 # --- Keys and certificates ---
 
 def new_key_and_csr() -> tuple[bytes, bytes]:
-    """(private key PEM, CSR PEM). The CN is assigned by the hub."""
+    """(private key PEM, CSR PEM). The CN is assigned by the manager."""
     key = ec.generate_private_key(ec.SECP256R1())
     csr = (
         x509.CertificateSigningRequestBuilder()
@@ -156,7 +156,7 @@ def new_key_and_csr() -> tuple[bytes, bytes]:
 
 
 def key_fingerprint(key_pem: bytes) -> str:
-    """sha256 of the public key (SPKI DER): shown by the hub for the request."""
+    """sha256 of the public key (SPKI DER): shown by the manager for the request."""
     key = serialization.load_pem_private_key(key_pem, password=None)
     spki = key.public_key().public_bytes(serialization.Encoding.DER,
                                          serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -170,18 +170,18 @@ def cert_validity(pem: bytes) -> tuple[datetime, datetime]:
 
 
 def check_issued_cert(cert_pem: bytes, key_pem: bytes, ca_pem: bytes) -> None:
-    """The certificate the hub returned is for our key and signed by its CA."""
+    """The certificate the manager returned is for our key and signed by its CA."""
     cert = x509.load_pem_x509_certificate(cert_pem)
     ca = x509.load_pem_x509_certificate(ca_pem)
     key = serialization.load_pem_private_key(key_pem, password=None)
     pub = serialization.PublicFormat.SubjectPublicKeyInfo
     if cert.public_key().public_bytes(serialization.Encoding.DER, pub) != \
             key.public_key().public_bytes(serialization.Encoding.DER, pub):
-        raise HubIdentityError("Il certificato ricevuto non corrisponde alla chiave locale")
+        raise ManagerIdentityError("Il certificato ricevuto non corrisponde alla chiave locale")
     try:
         cert.verify_directly_issued_by(ca)
     except Exception:
-        raise HubIdentityError("Il certificato ricevuto non è firmato dalla CA della hub")
+        raise ManagerIdentityError("Il certificato ricevuto non è firmato dalla CA del manager")
 
 
 def save_cert_and_key(cert_pem: bytes, key_pem: bytes) -> None:
@@ -189,7 +189,7 @@ def save_cert_and_key(cert_pem: bytes, key_pem: bytes) -> None:
 
 
 def server_ssl_context(ca_pem: bytes) -> ssl.SSLContext:
-    """Trusts only the hub CA, hostname checked."""
+    """Trusts only the manager CA, hostname checked."""
     ctx = ssl.create_default_context(cadata=ca_pem.decode())
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     return ctx
@@ -198,22 +198,22 @@ def server_ssl_context(ca_pem: bytes) -> ssl.SSLContext:
 # --- Enrolled identity ---
 
 @dataclass
-class HubIdentity:
+class ManagerIdentity:
     instance_id: str
-    hub_url: str
+    manager_url: str
     revoked: bool
     enrolled_at: str
     backup_passphrase: str
 
     @property
     def ws_url(self) -> str:
-        return "wss://" + self.hub_url.split("://", 1)[1] + "/agent/ws"
+        return "wss://" + self.manager_url.split("://", 1)[1] + "/agent/ws"
 
     def ssl_context(self) -> ssl.SSLContext:
-        """mTLS context: hub CA as the only anchor, our certificate as client."""
+        """mTLS context: manager CA as the only anchor, our certificate as client."""
         ca = read_file("ca.pem")
         if ca is None:
-            raise HubIdentityError("ca.pem mancante")
+            raise ManagerIdentityError("ca.pem mancante")
         ctx = server_ssl_context(ca)
         ctx.load_cert_chain(_path("identity.pem"))
         return ctx
@@ -221,35 +221,35 @@ class HubIdentity:
     def cert_validity(self) -> tuple[datetime, datetime]:
         pem = read_file("identity.pem")
         if pem is None:
-            raise HubIdentityError("identity.pem mancante")
+            raise ManagerIdentityError("identity.pem mancante")
         return cert_validity(pem)
 
     def cert_expired(self) -> bool:
         return self.cert_validity()[1] <= datetime.now(timezone.utc)
 
 
-def load_identity() -> Optional[HubIdentity]:
+def load_identity() -> Optional[ManagerIdentity]:
     """The enrolled identity, or None when this instance is not enrolled."""
     raw = read_file("state.json")
     if raw is None or read_file("identity.pem") is None:
         return None
     try:
         s = json.loads(raw)
-        return HubIdentity(
+        return ManagerIdentity(
             instance_id=s["instance_id"],
-            hub_url=s["hub_url"],
+            manager_url=s["manager_url"],
             revoked=bool(s.get("revoked", False)),
             enrolled_at=s.get("enrolled_at", ""),
             backup_passphrase=s.get("backup_passphrase", ""),
         )
     except (ValueError, KeyError) as e:
-        raise HubIdentityError(f"state.json non leggibile: {e}")
+        raise ManagerIdentityError(f"state.json non leggibile: {e}")
 
 
-def save_state(identity: HubIdentity) -> None:
+def save_state(identity: ManagerIdentity) -> None:
     write_private("state.json", json.dumps({
         "instance_id": identity.instance_id,
-        "hub_url": identity.hub_url,
+        "manager_url": identity.manager_url,
         "revoked": identity.revoked,
         "enrolled_at": identity.enrolled_at,
         "backup_passphrase": identity.backup_passphrase,

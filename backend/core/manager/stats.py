@@ -1,5 +1,5 @@
 """
-Resource and traffic history for the hub (stats.history).
+Resource and traffic history for the manager (stats.history).
 
 The same data as the MADMIN dashboard graphs (system_stats_history and
 network_traffic_history, one sample a minute, kept 24 hours), averaged down

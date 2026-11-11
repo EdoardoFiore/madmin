@@ -1,17 +1,17 @@
 """
-Temporary support access opened by the hub.
+Temporary support access opened by the manager.
 
-UI: a hidden superuser account (User.is_hub_support) that expires with the
+UI: a hidden superuser account (User.is_manager_support) that expires with the
 support session. It has an unusable random password: the only way in is a
 one-time ticket (32 random bytes, valid 2 minutes, kept here only as a hash)
-that the operator exchanges at POST /api/auth/token/hub-ticket. The account
+that the operator exchanges at POST /api/auth/token/manager-ticket. The account
 does not appear in user management or in backups; what it does is in the
-audit log under its name (hub-<operator>-<suffix>).
+audit log under its name (mgr-<operator>-<suffix>).
 
 SSH: see sshd.py (certificate + principal for root while the grant is open).
 
 A sweeper removes expired accounts and grants every minute, and tells the
-hub; the expiry is also enforced on every request (get_current_user) and by
+manager; the expiry is also enforced on every request (get_current_user) and by
 sshd itself (certificate validity, expiry-time on the principal).
 """
 import asyncio
@@ -72,7 +72,7 @@ def _purge_tickets() -> None:
 class UiOpenArgs(CommandArgs):
     minutes: int = Field(default=60, ge=5, le=MAX_SUPPORT_MINUTES)
     # Ask a new ticket for an account already open (link lost, ticket expired)
-    username: Optional[str] = Field(default=None, pattern=r"^hub-[a-z0-9._-]{1,45}$")
+    username: Optional[str] = Field(default=None, pattern=r"^mgr-[a-z0-9._-]{1,45}$")
 
 
 @command(protocol.CMD_SUPPORT_UI_OPEN, UiOpenArgs, timeout=30)
@@ -84,17 +84,17 @@ async def _ui_open(args: UiOpenArgs, ctx: CommandContext) -> dict:
     async with async_session_maker() as session:
         if args.username:
             user = (await session.execute(select(User).where(
-                User.username == args.username, User.is_hub_support == True))).scalar_one_or_none()  # noqa: E712
+                User.username == args.username, User.is_manager_support == True))).scalar_one_or_none()  # noqa: E712
             if user is None or user.expires_at is None or user.expires_at <= datetime.utcnow():
                 raise CommandError("sessione di supporto non trovata o scaduta")
         else:
             name = ctx.operator.lower().replace("@", ".")[:30]
             user = User(
-                username=f"hub-{name}-{secrets.token_hex(3)}",
+                username=f"mgr-{name}-{secrets.token_hex(3)}",
                 hashed_password=await asyncio.to_thread(get_password_hash, secrets.token_urlsafe(48)),
                 is_active=True,
                 is_superuser=True,
-                is_hub_support=True,
+                is_manager_support=True,
                 expires_at=datetime.utcnow() + timedelta(minutes=args.minutes),
             )
             session.add(user)
@@ -111,7 +111,7 @@ async def _ui_open(args: UiOpenArgs, ctx: CommandContext) -> dict:
 
 
 class UiCloseArgs(CommandArgs):
-    username: Optional[str] = Field(default=None, pattern=r"^hub-[a-z0-9._-]{1,45}$")
+    username: Optional[str] = Field(default=None, pattern=r"^mgr-[a-z0-9._-]{1,45}$")
 
 
 async def _delete_support_users(username: Optional[str] = None, only_expired: bool = False) -> list:
@@ -119,7 +119,7 @@ async def _delete_support_users(username: Optional[str] = None, only_expired: bo
     from core.database import async_session_maker
 
     async with async_session_maker() as session:
-        query = select(User).where(User.is_hub_support == True)  # noqa: E712
+        query = select(User).where(User.is_manager_support == True)  # noqa: E712
         if username:
             query = query.where(User.username == username)
         if only_expired:
@@ -173,23 +173,23 @@ def _grant(instance_id: str, minutes: int) -> datetime:
 def _revoke_grant() -> None:
     sshd.revoke()
     try:
-        os.unlink(os.path.join(ident.hub_dir(), "ssh_grant.json"))
+        os.unlink(os.path.join(ident.manager_dir(), "ssh_grant.json"))
     except FileNotFoundError:
         pass
 
 
 @command(protocol.CMD_SUPPORT_SSH_GRANT, SshGrantArgs, timeout=60)
 async def _ssh_grant(args: SshGrantArgs, ctx: CommandContext) -> dict:
-    from .client import hub_agent
-    if hub_agent.identity is None:
+    from .client import manager_agent
+    if manager_agent.identity is None:
         raise CommandError("istanza non registrata")
     try:
-        expires_at = await asyncio.to_thread(_grant, hub_agent.identity.instance_id, args.minutes)
+        expires_at = await asyncio.to_thread(_grant, manager_agent.identity.instance_id, args.minutes)
     except RuntimeError as e:
         raise CommandError(str(e))
     return {
         "user": sshd.SUPPORT_USER,
-        "principal": sshd.principal(hub_agent.identity.instance_id),
+        "principal": sshd.principal(manager_agent.identity.instance_id),
         "expires_at": expires_at.isoformat(),
     }
 
@@ -206,7 +206,7 @@ async def ui_session_active() -> bool:
 
     async with async_session_maker() as session:
         row = (await session.execute(select(User.id).where(
-            User.is_hub_support == True, User.expires_at > datetime.utcnow()  # noqa: E712
+            User.is_manager_support == True, User.expires_at > datetime.utcnow()  # noqa: E712
         ).limit(1))).first()
     return row is not None
 
@@ -214,17 +214,17 @@ async def ui_session_active() -> bool:
 # --- Expiry ---
 
 async def sweep_once() -> None:
-    from .client import hub_agent
+    from .client import manager_agent
     _purge_tickets()
     expired = await _delete_support_users(only_expired=True)
     if expired:
-        logger.info("Hub support accounts expired: %s", ", ".join(expired))
-        hub_agent.send_event(protocol.EVENT_SUPPORT_EXPIRED, {"ui": expired})
+        logger.info("Manager support accounts expired: %s", ", ".join(expired))
+        manager_agent.send_event(protocol.EVENT_SUPPORT_EXPIRED, {"ui": expired})
     exp = await asyncio.to_thread(_grant_state)
     if exp is not None and exp <= datetime.now(timezone.utc):
         await asyncio.to_thread(_revoke_grant)
-        logger.info("Hub support SSH grant expired")
-        hub_agent.send_event(protocol.EVENT_SUPPORT_EXPIRED, {"ssh": True})
+        logger.info("Manager support SSH grant expired")
+        manager_agent.send_event(protocol.EVENT_SUPPORT_EXPIRED, {"ssh": True})
 
 
 async def sweeper() -> None:
@@ -234,7 +234,7 @@ async def sweeper() -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Hub support sweeper error")
+            logger.exception("Manager support sweeper error")
         await asyncio.sleep(SWEEP_INTERVAL)
 
 
@@ -244,6 +244,6 @@ async def cleanup_all() -> None:
     try:
         await _delete_support_users()
     except Exception as e:
-        logger.warning("Hub support accounts not removed: %s", e)
+        logger.warning("Manager support accounts not removed: %s", e)
     await asyncio.to_thread(_revoke_grant)
     await asyncio.to_thread(sshd.remove_all)

@@ -1,15 +1,15 @@
 """
-Commands the hub may run on this instance.
+Commands the manager may run on this instance.
 
 Only what is registered here exists: there is no generic shell, and every
 command validates its arguments with a Pydantic model that forbids unknown
 fields. Each execution is written to the local audit log (and forwarded to
-syslog) as user "hub:<operator>", method HUB, path hub://<command>, so a
-local administrator can always see what the hub did.
+syslog) as user "manager:<operator>", method MANAGER, path manager://<command>, so a
+local administrator can always see what the manager did.
 
 Handlers are registered by the modules of this package (backups, support,
 licenses) when imported; capabilities() is what the agent advertises in its
-hello, and the hub offers only those.
+hello, and the manager offers only those.
 """
 import asyncio
 import json
@@ -25,7 +25,7 @@ from . import protocol
 
 logger = logging.getLogger(__name__)
 
-# Commands running at once; the rest wait (a burst from the hub cannot
+# Commands running at once; the rest wait (a burst from the manager cannot
 # start dozens of exports or restores in parallel)
 MAX_CONCURRENT = 4
 
@@ -41,14 +41,14 @@ class NoArgs(CommandArgs):
 
 
 class CommandError(Exception):
-    """A failure whose message is meant for the hub operator."""
+    """A failure whose message is meant for the manager operator."""
 
 
 @dataclass
 class CommandContext:
     cmd_id: str
-    operator: str      # hub user that issued the command (sanitized)
-    hub_host: str      # where the hub is, for the audit client_ip
+    operator: str          # manager user that issued the command (sanitized)
+    manager_host: str      # where the manager is, for the audit client_ip
 
 
 Handler = Callable[[Any, CommandContext], Awaitable[Optional[dict]]]
@@ -74,7 +74,7 @@ def command(name: str, args: Type[CommandArgs] = NoArgs, timeout: float = 60,
     restart it, or must never run twice for the same id)."""
     def register(fn: Handler) -> Handler:
         if name in _registry:
-            raise RuntimeError(f"hub command {name} registered twice")
+            raise RuntimeError(f"manager command {name} registered twice")
         _registry[name] = _Command(name, args, fn, timeout, audit, persist_result)
         return fn
     return register
@@ -102,27 +102,27 @@ def _audit(ctx: CommandContext, name: str, ok: bool, duration_ms: int,
         from core.audit.syslog import syslog_forwarder
 
         entry = AuditLog(
-            username=f"hub:{ctx.operator}"[:100],
-            method="HUB",
-            path=f"hub://{name}"[:500],
+            username=f"manager:{ctx.operator}"[:100],
+            method="MANAGER",
+            path=f"manager://{name}"[:500],
             status_code=200 if ok else 500,
             duration_ms=duration_ms,
-            client_ip=ctx.hub_host[:45],
+            client_ip=ctx.manager_host[:45],
             category="write",
             request_body=json.dumps(_sanitize_dict(args)) if args else None,
             response_summary=(error or None) and error[:500],
         )
         audit_writer.submit(entry)
         syslog_forwarder.submit(
-            timestamp=entry.timestamp, username=entry.username, method="HUB",
+            timestamp=entry.timestamp, username=entry.username, method="MANAGER",
             path=entry.path, status_code=entry.status_code, duration_ms=duration_ms,
             client_ip=entry.client_ip, category="write",
         )
     except Exception as e:
-        logger.error("Hub command not audited: %s", e)
+        logger.error("Manager command not audited: %s", e)
 
 
-async def execute(cmd_id: str, payload: dict, hub_host: str) -> dict:
+async def execute(cmd_id: str, payload: dict, manager_host: str) -> dict:
     """Run one cmd frame; returns the cmd_result payload (never raises)."""
     global _semaphore
     if _semaphore is None:
@@ -130,7 +130,7 @@ async def execute(cmd_id: str, payload: dict, hub_host: str) -> dict:
 
     name = payload.get("name")
     raw_args = payload.get("args") or {}
-    ctx = CommandContext(cmd_id, sanitize_operator(payload.get("operator")), hub_host)
+    ctx = CommandContext(cmd_id, sanitize_operator(payload.get("operator")), manager_host)
 
     exp = payload.get("exp")
     if isinstance(exp, (int, float)) and exp < time.time():
@@ -156,7 +156,7 @@ async def execute(cmd_id: str, payload: dict, hub_host: str) -> dict:
         except CommandError as e:
             error = str(e)
         except Exception as e:
-            logger.exception("Hub command %s failed", name)
+            logger.exception("Manager command %s failed", name)
             error = f"errore interno: {type(e).__name__}"
     duration_ms = int((time.monotonic() - start) * 1000)
     if cmd.audit:

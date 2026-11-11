@@ -87,21 +87,21 @@ ADMIN_USERNAME="admin"
 # The password can come from the environment instead of -p, which leaves it
 # visible to every local user in the process list while the installer runs.
 ADMIN_PASSWORD="${MADMIN_ADMIN_PASSWORD:-}"
-FORCE_PW_CHANGE="false"   # opt-in: used by install automations (e.g. madmin-hub)
+FORCE_PW_CHANGE="false"   # opt-in: used by install automations (e.g. madmin-manager)
 PROVISION_LAN="false"     # opt-in: auto-provisions a managed LAN (interface + DHCP + NAT)
 PROVISION_LAN_IFACES=""   # optional: comma-separated interfaces to lock (first = managed LAN)
 PROTECT_WAN="false"       # opt-in: makes WAN (eth0) editing read-only via UI/API
-# MADMIN Hub enrollment token (one line, from the hub's "Enrollment" page).
-# Prefer --hub-token-file or the environment: --hub-token stays visible in the
+# MADMIN Manager enrollment token (one line, from the manager's "Enrollment" page).
+# Prefer --manager-token-file or the environment: --manager-token stays visible in the
 # process list and in the shell history.
-HUB_TOKEN="${MADMIN_HUB_TOKEN:-}"
-HUB_TOKEN_FILE=""
-# Without a token: the hub URL only. The instance asks to be enrolled and an
-# operator approves it on the hub (also long after the install). The CA
-# fingerprint is optional but recommended: without it the hub CA is trusted
+MANAGER_TOKEN="${MADMIN_MANAGER_TOKEN:-}"
+MANAGER_TOKEN_FILE=""
+# Without a token: the manager URL only. The instance asks to be enrolled and an
+# operator approves it on the manager (also long after the install). The CA
+# fingerprint is optional but recommended: without it the manager CA is trusted
 # on first contact.
-HUB_URL="${MADMIN_HUB_URL:-}"
-HUB_CA_SHA256="${MADMIN_HUB_CA_SHA256:-}"
+MANAGER_URL="${MADMIN_MANAGER_URL:-}"
+MANAGER_CA_SHA256="${MADMIN_MANAGER_CA_SHA256:-}"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -115,10 +115,10 @@ while [[ "$#" -gt 0 ]]; do
             if [[ -n "$2" && "$2" != -* ]]; then PROVISION_LAN_IFACES="$2"; shift; fi
             ;;
         -w|--protect-wan) PROTECT_WAN="true" ;;
-        --hub-token) HUB_TOKEN="$2"; shift ;;
-        --hub-token-file) HUB_TOKEN_FILE="$2"; shift ;;
-        --hub-url) HUB_URL="$2"; shift ;;
-        --hub-ca-sha256) HUB_CA_SHA256="$2"; shift ;;
+        --manager-token) MANAGER_TOKEN="$2"; shift ;;
+        --manager-token-file) MANAGER_TOKEN_FILE="$2"; shift ;;
+        --manager-url) MANAGER_URL="$2"; shift ;;
+        --manager-ca-sha256) MANAGER_CA_SHA256="$2"; shift ;;
     esac
     shift
 done
@@ -668,7 +668,7 @@ else
     log_warning "JWT unavailable. Firewall defaults skipped."
 fi
 
-# Managed LAN auto-provisioning (opt-in, used by automations such as madmin-hub).
+# Managed LAN auto-provisioning (opt-in, used by automations such as madmin-manager).
 # Binds DHCP + NAT to the LAN interface so VMs behind the router get connectivity
 # right away. The interface IP is NOT set here: it is assigned externally by the
 # WAN-managing software, and DHCP derives its subnet/gateway from that live IP.
@@ -853,39 +853,39 @@ configure_ssh_port() {
     return 0
 }
 
-# MADMIN Hub enrollment (opt-in). Done from the CLI as root, never over HTTP:
-# the private key is generated here; a token (immediate) pins the hub CA, the
-# hub URL alone (--hub-url) makes a request to approve on the hub. A failure
+# MADMIN Manager enrollment (opt-in). Done from the CLI as root, never over HTTP:
+# the private key is generated here; a token (immediate) pins the manager CA, the
+# manager URL alone (--manager-url) makes a request to approve on the manager. A failure
 # does not fail the install: it can be repeated with the same command.
-HUB_RESULT="none"
-if [ -n "$HUB_TOKEN_FILE" ] && [ -z "$HUB_TOKEN" ]; then
-    if [ -r "$HUB_TOKEN_FILE" ]; then
-        HUB_TOKEN="$(tr -d '[:space:]' < "$HUB_TOKEN_FILE")"
+MANAGER_RESULT="none"
+if [ -n "$MANAGER_TOKEN_FILE" ] && [ -z "$MANAGER_TOKEN" ]; then
+    if [ -r "$MANAGER_TOKEN_FILE" ]; then
+        MANAGER_TOKEN="$(tr -d '[:space:]' < "$MANAGER_TOKEN_FILE")"
     else
-        log_warning "Hub token file not readable: $HUB_TOKEN_FILE"
+        log_warning "Manager token file not readable: $MANAGER_TOKEN_FILE"
     fi
 fi
-if [ -n "$HUB_TOKEN" ]; then
-    log_info "Enrolling this instance to the MADMIN Hub..."
-    if (cd $INSTALL_DIR/backend && MADMIN_HUB_TOKEN="$HUB_TOKEN" $INSTALL_DIR/venv/bin/python -m core.hub enroll); then
-        HUB_RESULT="enrolled"
-        log_success "Instance enrolled to the MADMIN Hub."
+if [ -n "$MANAGER_TOKEN" ]; then
+    log_info "Enrolling this instance to the MADMIN Manager..."
+    if (cd $INSTALL_DIR/backend && MADMIN_MANAGER_TOKEN="$MANAGER_TOKEN" $INSTALL_DIR/venv/bin/python -m core.manager enroll); then
+        MANAGER_RESULT="enrolled"
+        log_success "Instance enrolled to the MADMIN Manager."
     else
-        HUB_RESULT="failed"
-        log_warning "Hub enrollment failed. Retry with:"
-        log_warning "  cd $INSTALL_DIR/backend && sudo MADMIN_HUB_TOKEN='<token>' $INSTALL_DIR/venv/bin/python -m core.hub enroll"
+        MANAGER_RESULT="failed"
+        log_warning "Manager enrollment failed. Retry with:"
+        log_warning "  cd $INSTALL_DIR/backend && sudo MADMIN_MANAGER_TOKEN='<token>' $INSTALL_DIR/venv/bin/python -m core.manager enroll"
     fi
-    unset HUB_TOKEN MADMIN_HUB_TOKEN
-elif [ -n "$HUB_URL" ]; then
-    log_info "Requesting enrollment to the MADMIN Hub (approval on the hub)..."
-    if (cd $INSTALL_DIR/backend && MADMIN_HUB_URL="$HUB_URL" MADMIN_HUB_CA_SHA256="$HUB_CA_SHA256" \
-            $INSTALL_DIR/venv/bin/python -m core.hub register); then
-        HUB_RESULT="pending"
-        log_success "Enrollment requested: approve it on the hub (Enrollment > In attesa)."
+    unset MANAGER_TOKEN MADMIN_MANAGER_TOKEN
+elif [ -n "$MANAGER_URL" ]; then
+    log_info "Requesting enrollment to the MADMIN Manager (approval on the manager)..."
+    if (cd $INSTALL_DIR/backend && MADMIN_MANAGER_URL="$MANAGER_URL" MADMIN_MANAGER_CA_SHA256="$MANAGER_CA_SHA256" \
+            $INSTALL_DIR/venv/bin/python -m core.manager register); then
+        MANAGER_RESULT="pending"
+        log_success "Enrollment requested: approve it on the manager (Enrollment > In attesa)."
     else
-        HUB_RESULT="failed"
-        log_warning "Hub registration failed. Retry with:"
-        log_warning "  cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.hub register --url $HUB_URL"
+        MANAGER_RESULT="failed"
+        log_warning "Manager registration failed. Retry with:"
+        log_warning "  cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.manager register --url $MANAGER_URL"
     fi
 fi
 
@@ -942,10 +942,10 @@ if [ "$FORCE_PW_CHANGE" = "true" ] || [ "$PROVISION_LAN" = "true" ] || [ "$PROTE
     echo ""
 fi
 
-case "$HUB_RESULT" in
-    enrolled) echo "MADMIN Hub: enrolled (status: cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.hub status)"; echo "" ;;
-    pending)  echo "MADMIN Hub: waiting for approval on the hub (connects by itself once approved)"; echo "" ;;
-    failed)   echo "MADMIN Hub: enrollment FAILED (see the warning above)"; echo "" ;;
+case "$MANAGER_RESULT" in
+    enrolled) echo "MADMIN Manager: enrolled (status: cd $INSTALL_DIR/backend && sudo $INSTALL_DIR/venv/bin/python -m core.manager status)"; echo "" ;;
+    pending)  echo "MADMIN Manager: waiting for approval on the manager (connects by itself once approved)"; echo "" ;;
+    failed)   echo "MADMIN Manager: enrollment FAILED (see the warning above)"; echo "" ;;
 esac
 
 # Password reminder: only meaningful when a change is not already forced

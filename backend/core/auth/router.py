@@ -327,22 +327,22 @@ async def login(
     return Token(access_token=access_token)
 
 
-class HubTicketRequest(BaseModel):
+class ManagerTicketRequest(BaseModel):
     ticket: str
 
 
-@router.post("/token/hub-ticket", response_model=Token)
-async def hub_ticket_login(
+@router.post("/token/manager-ticket", response_model=Token)
+async def manager_ticket_login(
     request: Request,
-    body: HubTicketRequest,
+    body: ManagerTicketRequest,
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Session for a hub support account, from the one-time ticket the hub
-    operator received (core/hub/support.py). The only way such an account can
+    Session for a manager support account, from the one-time ticket the manager
+    operator received (core/manager/support.py). The only way such an account can
     log in; the token never outlives the support session.
     """
-    from core.hub.support import redeem_ticket
+    from core.manager.support import redeem_ticket
 
     client_ip = get_client_ip(request)
     login_rate_limiter.begin_attempt(client_ip)
@@ -350,7 +350,7 @@ async def hub_ticket_login(
     user_id = redeem_ticket(body.ticket)
     user = await service.get_user_by_id(session, user_id) if user_id else None
     now = datetime.utcnow()
-    if (not user or not user.is_hub_support or not user.is_active
+    if (not user or not user.is_manager_support or not user.is_active
             or user.expires_at is None or user.expires_at <= now):
         await login_rate_limiter.record_failure(session, client_ip)
         await session.commit()
@@ -363,7 +363,7 @@ async def hub_ticket_login(
     await session.commit()
 
     access_token = service.create_access_token(
-        data={"sub": user.username, "user_id": str(user.id), "via": "hub"},
+        data={"sub": user.username, "user_id": str(user.id), "via": "manager"},
         expires_delta=min(
             user.expires_at - now,
             timedelta(minutes=settings.access_token_expire_minutes),

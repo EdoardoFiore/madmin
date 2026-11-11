@@ -1,15 +1,15 @@
 """
-Support tunnels: how the hub reaches the panel and SSH of an instance that
+Support tunnels: how the manager reaches the panel and SSH of an instance that
 accepts no inbound connection.
 
-For every TCP connection an operator makes to the hub's support port, the hub
+For every TCP connection an operator makes to the manager's support port, the manager
 sends tunnel.open {conn_id, target} on the control channel; the agent connects
 to the local endpoint, then opens a dedicated WSS (same client certificate) to
-<hub>/agent/tunnel/<conn_id> and copies bytes both ways as binary frames.
+<manager>/agent/tunnel/<conn_id> and copies bytes both ways as binary frames.
 One WebSocket per TCP connection: TCP's own flow control applies end to end,
 and a busy tunnel never delays the control channel.
 
-Targets are names, mapped here: the hub cannot ask for any other host or
+Targets are names, mapped here: the manager cannot ask for any other host or
 port. A target is served only while the matching support access is open
 (an unexpired support account for "ui", an SSH grant for "ssh").
 """
@@ -90,9 +90,9 @@ async def _run_tunnel(ws, reader, writer, conn_id: str) -> None:
 @command(protocol.CMD_TUNNEL_OPEN, TunnelOpenArgs, timeout=30, audit=False)
 async def _tunnel_open(args: TunnelOpenArgs, ctx: CommandContext) -> dict:
     from core.concurrency import spawn_background
-    from .client import hub_agent
+    from .client import manager_agent
 
-    identity = hub_agent.identity
+    identity = manager_agent.identity
     if identity is None:
         raise CommandError("istanza non registrata")
     if len(_tunnels) >= MAX_TUNNELS:
@@ -109,7 +109,7 @@ async def _tunnel_open(args: TunnelOpenArgs, ctx: CommandContext) -> dict:
                            ping_timeout=20, max_size=protocol.MAX_FRAME, compression=None)
     except Exception as e:
         writer.close()
-        raise CommandError(f"tunnel verso la hub non aperto: {type(e).__name__}")
+        raise CommandError(f"tunnel verso il manager non aperto: {type(e).__name__}")
     _tunnels.add(args.conn_id)
-    spawn_background(_run_tunnel(ws, reader, writer, args.conn_id), f"hub-tunnel-{args.conn_id[:8]}")
+    spawn_background(_run_tunnel(ws, reader, writer, args.conn_id), f"manager-tunnel-{args.conn_id[:8]}")
     return {}

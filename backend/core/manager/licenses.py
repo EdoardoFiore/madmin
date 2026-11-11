@@ -1,12 +1,12 @@
 """
-Module licenses issued by the hub.
+Module licenses issued by the manager.
 
 A license is `<base64url(payload)>.<base64url(signature)>`, signed with the
-hub's Ed25519 license key (public half received at enrollment, license.pub).
+manager's Ed25519 license key (public half received at enrollment, license.pub).
 Payload: {"lid", "iid", "feature", "iat", "nbf", "exp"}; it is valid on this
 instance only (iid = instance_id) and between nbf and exp.
 
-Licenses are short (the hub re-issues them before they expire, as long as
+Licenses are short (the manager re-issues them before they expire, as long as
 they stay active), so no revocation list is needed offline: a revoked
 license simply is not renewed. license.revoke removes one at once.
 
@@ -55,7 +55,7 @@ def _public_key() -> Optional[Ed25519PublicKey]:
     try:
         return Ed25519PublicKey.from_public_bytes(base64.b64decode(raw.strip()))
     except (binascii.Error, ValueError):
-        logger.error("Hub license public key unreadable")
+        logger.error("Manager license public key unreadable")
         return None
 
 
@@ -78,13 +78,13 @@ def verify(token: str, instance_id: str, key: Ed25519PublicKey, check_time: bool
 
 
 def _in_validity(payload: dict, now: float) -> bool:
-    # 5 minutes of tolerance on nbf for clock skew between hub and instance
+    # 5 minutes of tolerance on nbf for clock skew between manager and instance
     return payload["nbf"] - 300 <= now < payload["exp"]
 
 
 def _mtime(name: str) -> float:
     try:
-        return os.stat(os.path.join(ident.hub_dir(), name)).st_mtime
+        return os.stat(os.path.join(ident.manager_dir(), name)).st_mtime
     except FileNotFoundError:
         return 0.0
 
@@ -142,8 +142,8 @@ class LicenseInstallArgs(CommandArgs):
 
 @command(protocol.CMD_LICENSE_INSTALL, LicenseInstallArgs, timeout=15)
 async def _install(args: LicenseInstallArgs, ctx: CommandContext) -> dict:
-    from .client import hub_agent
-    identity = hub_agent.identity
+    from .client import manager_agent
+    identity = manager_agent.identity
     key = _public_key()
     if identity is None or key is None:
         raise CommandError("istanza non registrata o chiave licenze assente")

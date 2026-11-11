@@ -113,7 +113,7 @@ async def export_config(session: AsyncSession, passphrase: Optional[str] = None)
     - modules/{id}/files/ (irrecoverable filesystem files)
     
     passphrase: encrypts the archive with this instead of the configured
-    backup passphrase (hub backups use the per-instance passphrase agreed at
+    backup passphrase (manager backups use the per-instance passphrase agreed at
     enrollment).
 
     Returns path to created archive.
@@ -902,9 +902,9 @@ async def _export_users(session: AsyncSession) -> List[dict]:
     """Export all users with their permissions."""
     from core.auth.models import User, UserPermission
     
-    # Temporary hub support accounts are bound to a live hub session: a
+    # Temporary manager support accounts are bound to a live manager session: a
     # restore must never bring one back
-    result = await session.execute(select(User).where(User.is_hub_support == False))  # noqa: E712
+    result = await session.execute(select(User).where(User.is_manager_support == False))  # noqa: E712
     users = result.scalars().all()
     
     users_data = []

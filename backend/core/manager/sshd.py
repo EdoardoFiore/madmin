@@ -1,17 +1,17 @@
 """
-OpenSSH configuration for hub support access.
+OpenSSH configuration for manager support access.
 
-Support SSH uses certificates signed by the hub's SSH user CA, never keys
+Support SSH uses certificates signed by the manager's SSH user CA, never keys
 written to authorized_keys. Two things must hold for a login:
-- the hub signed the operator's key for principal madmin-support-<instance_id>,
+- the manager signed the operator's key for principal madmin-support-<instance_id>,
   valid only for the grant duration and only from 127.0.0.1 (the tunnel end);
 - the instance lists that principal for root, which it does only while a
   grant is open (the line also carries expiry-time and from="127.0.0.1").
 
 Files (outside /home and /root: the service runs with ProtectHome):
-    /etc/ssh/madmin_hub_ca.pub                  hub SSH user CA
+    /etc/ssh/madmin_manager_ca.pub                  manager SSH user CA
     /etc/ssh/madmin_principals/root             principals accepted for root
-    /etc/ssh/sshd_config.d/20-madmin-hub.conf   TrustedUserCAKeys + AuthorizedPrincipalsFile
+    /etc/ssh/sshd_config.d/20-madmin-manager.conf   TrustedUserCAKeys + AuthorizedPrincipalsFile
 
 AuthorizedPrincipalsFile applies to certificate logins only: password and
 authorized_keys logins are not affected.
@@ -27,13 +27,13 @@ from . import identity as ident
 logger = logging.getLogger(__name__)
 
 SSHD_BIN = "/usr/sbin/sshd"
-CA_PATH = "/etc/ssh/madmin_hub_ca.pub"
+CA_PATH = "/etc/ssh/madmin_manager_ca.pub"
 PRINCIPALS_DIR = "/etc/ssh/madmin_principals"
 PRINCIPALS_ROOT = os.path.join(PRINCIPALS_DIR, "root")
-DROPIN_PATH = "/etc/ssh/sshd_config.d/20-madmin-hub.conf"
+DROPIN_PATH = "/etc/ssh/sshd_config.d/20-madmin-manager.conf"
 SUPPORT_USER = "root"
 
-_DROPIN = f"""# Managed by MADMIN (hub support access). Removed on unenroll.
+_DROPIN = f"""# Managed by MADMIN (manager support access). Removed on unenroll.
 TrustedUserCAKeys {CA_PATH}
 AuthorizedPrincipalsFile {PRINCIPALS_DIR}/%u
 """
@@ -78,7 +78,7 @@ def ensure_configured() -> None:
         raise RuntimeError("OpenSSH server non installato")
     ca = ident.read_file("ssh_ca.pub")
     if not ca:
-        raise RuntimeError("CA SSH della hub assente: ripetere l'enrollment")
+        raise RuntimeError("CA SSH del manager assente: ripetere l'enrollment")
     ca_text = ca.decode().strip() + "\n"
     os.makedirs(PRINCIPALS_DIR, mode=0o755, exist_ok=True)
     if _read(CA_PATH) == ca_text and _read(DROPIN_PATH) == _DROPIN:
@@ -98,7 +98,7 @@ def ensure_configured() -> None:
                 _write(path, old)
         raise RuntimeError(f"configurazione sshd rifiutata: {err}")
     _reload()
-    logger.info("Hub: sshd configured for support certificates")
+    logger.info("Manager: sshd configured for support certificates")
 
 
 def grant(instance_id: str, expires_at: datetime) -> None:

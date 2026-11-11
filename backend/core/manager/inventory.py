@@ -1,6 +1,6 @@
 """
-Facts this instance reports to the hub: what it is (version, modules, OS) and
-where it is (hostname, interface addresses). The hub keeps the history of the
+Facts this instance reports to the manager: what it is (version, modules, OS) and
+where it is (hostname, interface addresses). The manager keeps the history of the
 addresses; the identity is the certificate, so a changed IP or hostname is a
 change of the same instance.
 """
@@ -79,7 +79,7 @@ async def collect_facts() -> dict:
     try:
         facts["modules"] = await _modules()
     except Exception as e:
-        logger.warning("Hub inventory: modules not readable: %s", e)
+        logger.warning("Manager inventory: modules not readable: %s", e)
         facts["modules"] = []
     return facts
 

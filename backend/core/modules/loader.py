@@ -70,10 +70,10 @@ class ModuleLoader:
     
     @staticmethod
     async def _license_missing(manifest: ModuleManifest) -> bool:
-        """True if the module needs a hub license that is not valid now."""
+        """True if the module needs a manager license that is not valid now."""
         if manifest.license is None:
             return False
-        from core.hub.licenses import is_licensed
+        from core.manager.licenses import is_licensed
         return not await asyncio.to_thread(is_licensed, manifest.license.feature)
 
     def _parse_manifest(self, manifest_path: Path) -> Optional[ModuleManifest]:

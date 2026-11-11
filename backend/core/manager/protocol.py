@@ -1,9 +1,9 @@
 """
-MADMIN <-> MADMIN Hub wire protocol.
+MADMIN <-> MADMIN Manager wire protocol.
 
-This file is kept IDENTICAL in both repositories (madmin: backend/core/hub/
-protocol.py, madmin-hub: backend/hub/agents/protocol.py); the specification
-is madmin-hub/docs/PROTOCOL.md. Any change is copied to the other side in
+This file is kept IDENTICAL in both repositories (madmin: backend/core/manager/
+protocol.py, madmin-manager: backend/manager/agents/protocol.py); the specification
+is madmin-manager/docs/PROTOCOL.md. Any change is copied to the other side in
 the same change. PROTOCOL_VERSION is bumped only for incompatible changes
 (frame shape, existing commands): every frame carries it and a mismatch drops
 the connection. A new command is additive and needs no bump, since only agents
@@ -14,7 +14,7 @@ Frames are JSON text messages on the control WebSocket:
     {"v": 1, "id": "<uuid>", "type": "<frame type>", "ts": <unix>, "payload": {...}}
 
 Drift between the two sides is made visible, not silent: the agent lists the
-commands it implements in `hello.capabilities`, and the hub offers only those.
+commands it implements in `hello.capabilities`, and the manager offers only those.
 """
 import json
 import time
@@ -28,12 +28,12 @@ PROTOCOL_VERSION = 1
 MAX_FRAME = 1024 * 1024
 
 # --- Frame types ---
-HELLO = "hello"            # agent -> hub, first frame: facts + capabilities
-HELLO_ACK = "hello_ack"    # hub -> agent: accepted (instance_id, server time)
-HEARTBEAT = "heartbeat"    # agent -> hub: periodic stats (+ facts when changed)
-CMD = "cmd"                # hub -> agent: {name, args, operator, exp}
-CMD_RESULT = "cmd_result"  # agent -> hub: {ok, data | error}, same id as the cmd
-EVENT = "event"            # agent -> hub: unsolicited notice {name, data}
+HELLO = "hello"            # agent -> manager, first frame: facts + capabilities
+HELLO_ACK = "hello_ack"    # manager -> agent: accepted (instance_id, server time)
+HEARTBEAT = "heartbeat"    # agent -> manager: periodic stats (+ facts when changed)
+CMD = "cmd"                # manager -> agent: {name, args, operator, exp}
+CMD_RESULT = "cmd_result"  # agent -> manager: {ok, data | error}, same id as the cmd
+EVENT = "event"            # agent -> manager: unsolicited notice {name, data}
 
 FRAME_TYPES = {HELLO, HELLO_ACK, HEARTBEAT, CMD, CMD_RESULT, EVENT}
 
@@ -42,7 +42,7 @@ CLOSE_PROTOCOL = 4400     # malformed frame / unsupported protocol version
 CLOSE_REVOKED = 4401      # certificate unknown or instance revoked: do not retry
 CLOSE_SUPERSEDED = 4409   # a newer connection of the same instance replaced this one
 
-# --- Commands (hub -> agent) ---
+# --- Commands (manager -> agent) ---
 CMD_PING = "agent.ping"
 CMD_INVENTORY = "inventory.refresh"
 CMD_BACKUP_RUN = "backup.run"
@@ -56,11 +56,11 @@ CMD_LICENSE_INSTALL = "license.install"
 CMD_LICENSE_REVOKE = "license.revoke"
 CMD_STATS_HISTORY = "stats.history"   # read only: resource and traffic history
 
-# Symbolic tunnel targets: the agent maps them to local endpoints, the hub can
+# Symbolic tunnel targets: the agent maps them to local endpoints, the manager can
 # never name a host or port
 TUNNEL_TARGETS = ("ui", "ssh")
 
-# --- Events (agent -> hub) ---
+# --- Events (agent -> manager) ---
 EVENT_SUPPORT_EXPIRED = "support.expired"
 
 
