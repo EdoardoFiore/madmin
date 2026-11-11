@@ -11,7 +11,9 @@ the others are cancelled and the agent reconnects with an exponential backoff
 (1 s to 60 s, jittered so a manager restart is not hit by every instance at once).
 Close code 4401 means the manager revoked this instance: the agent removes the
 support access the manager opened, stops and waits for a new enrollment instead
-of retrying forever.
+of retrying forever. 4403 (suspended) keeps everything and retries every
+15 minutes; 4429 (manager busy) waits the seconds given in the close reason.
+Any other close code is a lost connection: reconnect with backoff.
 
 Commands are deduplicated by id and their results cached: the manager re-sends
 the commands it has no result for after a reconnect, and gets the cached
@@ -60,6 +62,24 @@ FEATURES: list = []
 
 class _Revoked(Exception):
     pass
+
+
+class _Wait(Exception):
+    """The manager asked to come back later (suspended, busy)."""
+
+    def __init__(self, seconds: float, why: str):
+        super().__init__(why)
+        self.seconds = seconds
+
+
+def _check_close(code, reason) -> None:
+    """Raise what a close code from the manager means for the main loop."""
+    if code == protocol.CLOSE_REVOKED:
+        raise _Revoked()
+    if code == protocol.CLOSE_SUSPENDED:
+        raise _Wait(protocol.SUSPENDED_RETRY, "istanza sospesa dal manager")
+    if code == protocol.CLOSE_TRY_LATER:
+        raise _Wait(protocol.try_later_delay(reason), "manager occupato")
 
 
 class ManagerAgent:
@@ -134,6 +154,13 @@ class ManagerAgent:
                     logger.info("Manager: support access removed after the revocation")
                 except Exception:
                     logger.exception("Manager: support access not removed after the revocation")
+                continue
+            except _Wait as w:
+                logger.warning("Manager: %s, next attempt in %ds", w, int(w.seconds))
+                await asyncio.to_thread(self._write_status, str(w))
+                backoff = 1.0
+                failing = False
+                await self._wait_state_change(timeout=w.seconds)
                 continue
             except InvalidStatus as e:
                 error = f"handshake rifiutato (HTTP {e.response.status_code})"
@@ -227,8 +254,8 @@ class ManagerAgent:
                 await self._handshake(ws, identity)
                 await self._serve(ws, identity)
         except ConnectionClosed as e:
-            if e.rcvd is not None and e.rcvd.code == protocol.CLOSE_REVOKED:
-                raise _Revoked()
+            if e.rcvd is not None:
+                _check_close(e.rcvd.code, e.rcvd.reason)
             raise
 
     async def _handshake(self, ws, identity: ManagerIdentity) -> None:
@@ -279,8 +306,7 @@ class ManagerAgent:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.to_thread(self._write_status)
-        if ws.close_code == protocol.CLOSE_REVOKED:
-            raise _Revoked()
+        _check_close(ws.close_code, ws.close_reason)
 
     async def _reader(self, ws, manager_host: str) -> None:
         async for raw in ws:
