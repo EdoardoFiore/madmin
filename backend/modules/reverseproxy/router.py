@@ -74,6 +74,67 @@ def _block_if_disabled():
         )
 
 
+_LOCAL_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+_BACKEND_PORT = 8000  # uvicorn on 127.0.0.1 (scripts/setup-madmin.sh)
+
+
+def _local_addresses() -> set:
+    """Every address configured on the gateway's interfaces."""
+    import json
+    import subprocess
+    addrs = set()
+    try:
+        out = subprocess.run(["ip", "-j", "addr", "show"], capture_output=True,
+                             text=True, timeout=10, check=True).stdout
+        addrs = {a["local"] for i in json.loads(out or "[]")
+                 for a in i.get("addr_info", []) if a.get("local")}
+    except Exception:
+        pass
+    return addrs
+
+
+async def _check_forward_target(forward_host: str, forward_port: int) -> None:
+    """
+    Refuse a proxy host that would publish MADMIN's own management surface
+    (the backend on 127.0.0.1:8000, the panel port) on the proxy's 80/443:
+    that bypasses the firewall rules guarding the panel port and the login
+    rate limit of the main nginx. Other local services stay allowed.
+    """
+    import ipaddress
+    import socket
+    from core.settings.service import network_service
+    try:
+        panel_port = await network_service._get_current_port()
+    except Exception:
+        panel_port = None
+    if forward_port not in {_BACKEND_PORT, panel_port}:
+        return
+
+    name = forward_host.strip().lower().rstrip(".")
+    if name in _LOCAL_NAMES:
+        local = True
+    else:
+        try:
+            infos = await asyncio.to_thread(socket.getaddrinfo, name, None)
+            ips = {info[4][0] for info in infos}
+        except (OSError, UnicodeError):
+            ips = set()
+        own = await asyncio.to_thread(_local_addresses)
+        local = False
+        for ip in ips:
+            try:
+                addr = ipaddress.ip_address(ip.split("%", 1)[0])
+            except ValueError:
+                continue
+            if addr.is_loopback or addr.is_unspecified or ip in own:
+                local = True
+    if local:
+        raise HTTPException(
+            status_code=400,
+            detail="forward non consentito: punta all'interfaccia di gestione di MADMIN",
+        )
+
+
 def _to_host_read(host: RevproxyHost) -> RevproxyHostRead:
     cert = host.certificate
     return RevproxyHostRead(
@@ -208,6 +269,7 @@ async def create_host(
         raise HTTPException(status_code=400, detail="forward_port fuori range")
     if not svc.is_valid_forward_host(data.forward_host):
         raise HTTPException(status_code=400, detail="forward_host non valido")
+    await _check_forward_target(data.forward_host, data.forward_port)
     domains_norm = [svc.normalize_domain(d) for d in data.domains]
     await _check_domain_uniqueness(db, domains_norm)
     if data.access_list_id is not None:
@@ -302,6 +364,8 @@ async def update_host(
         if not (1 <= data.forward_port <= 65535):
             raise HTTPException(status_code=400, detail="forward_port fuori range")
         host.forward_port = data.forward_port
+    if data.forward_host is not None or data.forward_port is not None:
+        await _check_forward_target(host.forward_host, host.forward_port)
     if data.access_list_id is not None:
         # Allow nulling by passing all-zero UUID? Use explicit field or treat None separately.
         # PATCH with explicit null is not distinguishable from omitted in Pydantic v1.
