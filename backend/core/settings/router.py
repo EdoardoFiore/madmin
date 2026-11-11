@@ -346,7 +346,7 @@ async def update_backup_settings(
             settings.remote_host_key = None
         # The stored password belongs to the old server: never send it elsewhere
         if not update_data.get("remote_password"):
-            settings.remote_password = None
+            settings.remote_password = ""
 
     # Secrets are stored encrypted; "" clears the passphrase (no encryption)
     if "encryption_passphrase" in update_data:
