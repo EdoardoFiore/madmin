@@ -95,6 +95,21 @@ def _busy() -> Optional[str]:
     return None
 
 
+def _prune(patterns: tuple, days: int = 30) -> None:
+    """Job files and markers of old commands (the manager re-sends a command
+    for a day at most)."""
+    import glob
+    import time
+    limit = time.time() - days * 86400
+    for pattern in patterns:
+        for path in glob.glob(os.path.join(STATE_DIR, pattern)):
+            try:
+                if os.path.getmtime(path) < limit:
+                    os.unlink(path)
+            except OSError:
+                pass
+
+
 # --- os.refresh ---
 
 @command(protocol.CMD_OS_REFRESH, timeout=900, progress=True)
@@ -164,6 +179,16 @@ class RebootArgs(CommandArgs):
 @command(protocol.CMD_OS_REBOOT, RebootArgs, timeout=120, persist_result=True)
 async def _os_reboot(args: RebootArgs, ctx: CommandContext) -> dict:
     _require_updater()
+    # The reboot may come before the result is stored and sent: the command
+    # re-sent after the boot must find it done, never reboot a second time
+    marker = os.path.join(STATE_DIR, f"reboot-{ctx.cmd_id}.json")
+    done = _read_json(marker)
+    if done is not None:
+        return {**done, "kernel": os.uname().release, "rebooted": True}
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    _prune(("reboot-*.json", "os-*.json", "os-*.log"))
+    with open(marker, "w") as f:
+        json.dump({"delay_minutes": args.delay_minutes, "at": None, "kernel_trial": None}, f)
     reason = _busy()
     if reason:
         raise CommandError(reason, protocol.ERR_PRECONDITION)
@@ -172,14 +197,17 @@ async def _os_reboot(args: RebootArgs, ctx: CommandContext) -> dict:
     code, out = await _run("/usr/bin/python3", UPDATER, "reboot", f"--delay={args.delay_minutes}",
                            f"--reason={text}")
     if code != 0:
+        os.unlink(marker)
         busy = "another update is running" in out
         raise CommandError(f"riavvio rifiutato: {out[-500:]}", protocol.ERR_BUSY if busy else protocol.ERR_PRECONDITION)
     try:
         data = json.loads(out.strip().splitlines()[-1])
     except (ValueError, IndexError):
         data = {}
-    return {"delay_minutes": args.delay_minutes, "at": data.get("at"), "kernel_trial": data.get("kernel_trial"),
-            "kernel": os.uname().release}
+    result = {"delay_minutes": args.delay_minutes, "at": data.get("at"), "kernel_trial": data.get("kernel_trial")}
+    with open(marker, "w") as f:
+        json.dump(result, f)
+    return {**result, "kernel": os.uname().release}
 
 
 @command(protocol.CMD_OS_REBOOT_CANCEL, timeout=60)
