@@ -15,7 +15,11 @@
 # checked.
 #
 # Run on the OS the release is for (the wheels are built for its Python):
-#   bash scripts/build-release.sh [--allow-dirty] [--out DIR]
+#   bash scripts/build-release.sh [--allow-dirty] [--out DIR] [--skip-osv]
+# The wheels are checked against OSV (PyPI advisories): a critical one stops
+# the build unless it is waived, with a reason, in scripts/osv-waivers.txt
+# ("<advisory id> <reason>"); the others are listed. --skip-osv only for a
+# build machine without network (recorded in the manifest).
 # Code comes from `git archive HEAD`: untracked or uncommitted files are
 # never in a release (--allow-dirty only lets the build run, for tests, and
 # marks the build "-dirty").
@@ -25,10 +29,12 @@ umask 022
 
 ALLOW_DIRTY="false"
 OUT=""
+SKIP_OSV="false"
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --allow-dirty) ALLOW_DIRTY="true" ;;
         --out) OUT="$2"; shift ;;
+        --skip-osv) SKIP_OSV="true" ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -77,13 +83,62 @@ python3 -m venv "$WORK/venv"
     -w "$STAGE/wheels/$OS_ID"
 cp "$WORK/requirements.txt" "$STAGE/wheels/requirements.txt"
 
+# Known vulnerabilities of the wheels (OSV, PyPI)
+if [ "$SKIP_OSV" = "true" ]; then
+    echo '{"checked": false}' > "$WORK/osv.json"
+    echo "WARNING: OSV check skipped" >&2
+else
+    python3 - "$STAGE/wheels/$OS_ID" "$PROJECT_DIR/scripts/osv-waivers.txt" > "$WORK/osv.json" <<'PY'
+import glob, json, os, re, sys, urllib.request
+from datetime import datetime, timezone
+wheels, waivers_file = sys.argv[1:3]
+pkgs = {}
+for w in glob.glob(os.path.join(wheels, "*.whl")) + glob.glob(os.path.join(wheels, "*.tar.gz")):
+    m = re.match(r"^(.+?)-(\d[^-]*?)(-|\.tar\.gz$)", os.path.basename(w))
+    if m:
+        pkgs[m.group(1)] = m.group(2)
+waivers = {}
+if os.path.exists(waivers_file):
+    for line in open(waivers_file):
+        parts = line.split(None, 1)
+        if parts and not parts[0].startswith("#"):
+            if len(parts) < 2 or not parts[1].strip():
+                sys.exit(f"osv-waivers.txt: {parts[0]} has no reason")
+            waivers[parts[0]] = parts[1].strip()
+
+def post(url, body):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=60))
+
+names = sorted(pkgs)
+res = post("https://api.osv.dev/v1/querybatch",
+           {"queries": [{"package": {"ecosystem": "PyPI", "name": n}, "version": pkgs[n]} for n in names]})
+found = []
+for n, r in zip(names, res.get("results", [])):
+    for v in (r or {}).get("vulns") or []:
+        d = json.load(urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{v['id']}", timeout=60))
+        sev = str((d.get("database_specific") or {}).get("severity") or "unknown").lower()
+        found.append({"id": v["id"], "package": n, "version": pkgs[n], "severity": sev,
+                      "aliases": [a for a in d.get("aliases", []) if a.startswith("CVE-")],
+                      "waived": waivers.get(v["id"]) or next((waivers[a] for a in d.get("aliases", []) if a in waivers), None)})
+blocking = [f for f in found if f["severity"] == "critical" and not f["waived"]]
+for f in found:
+    tag = "BLOCKING" if f in blocking else ("waived: " + f["waived"] if f["waived"] else "")
+    print(f"OSV {f['severity']:9} {f['id']:22} {f['package']} {f['version']} {' '.join(f['aliases'])} {tag}", file=sys.stderr)
+if blocking:
+    sys.exit("Critical vulnerabilities in the wheels: update the packages (requirements.lock) or waive them in scripts/osv-waivers.txt")
+print(json.dumps({"checked": True, "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "packages": len(names), "advisories": found}))
+PY
+fi
+
 tar -C "$STAGE" -czf "$WORK/payload.tar.gz" .
 
 # Manifest
-python3 - "$STAGE" "$WORK/payload.tar.gz" "$VERSION" "$BUILD" "$OS_ID" > "$WORK/manifest.json" <<'PY'
+python3 - "$STAGE" "$WORK/payload.tar.gz" "$VERSION" "$BUILD" "$OS_ID" "$WORK/osv.json" > "$WORK/manifest.json" <<'PY'
 import glob, hashlib, json, os, re, sys
 from datetime import datetime, timezone
-stage, payload, version, build, os_id = sys.argv[1:6]
+stage, payload, version, build, os_id, osv_file = sys.argv[1:7]
 backend = os.path.join(stage, "backend")
 
 def last_step(directory):
@@ -118,6 +173,8 @@ print(json.dumps({
     "allow_downgrade_from": [],
     "payload_sha256": h.hexdigest(),
     "payload_size": os.path.getsize(payload),
+    # Informative (the instance ignores it): OSV check of the wheels at build time
+    "osv": json.load(open(osv_file)),
 }, indent=2))
 PY
 

@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Type
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from . import protocol
 
@@ -222,3 +222,21 @@ async def _ping(args: NoArgs, ctx: CommandContext) -> dict:
 async def _inventory(args: NoArgs, ctx: CommandContext) -> dict:
     from .inventory import collect_facts
     return {"facts": await collect_facts()}
+
+
+class InventoryGetArgs(CommandArgs):
+    section: str
+
+    @field_validator("section")
+    @classmethod
+    def _known(cls, v: str) -> str:
+        if v not in protocol.INVENTORY_SECTIONS:
+            raise ValueError(f"unknown section {v}")
+        return v
+
+
+@command(protocol.CMD_INVENTORY_GET, InventoryGetArgs, audit=False, timeout=120)
+async def _inventory_get(args: InventoryGetArgs, ctx: CommandContext) -> dict:
+    from .inventory import collect_section, section_digest
+    items = await collect_section(args.section)
+    return {"section": args.section, "digest": section_digest(items), "items": items}

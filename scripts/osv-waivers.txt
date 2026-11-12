@@ -1,0 +1,5 @@
+# Advisories accepted in a release, one per line: "<OSV or CVE id> <reason>".
+# A critical advisory of a wheel stops build-release.sh unless it is listed
+# here with the reason it does not apply (or cannot be fixed yet) and who
+# decided it, e.g.:
+# GHSA-xxxx-xxxx-xxxx not reachable: MADMIN never parses untrusted XML (E. Fiore, 2026-11-12)
