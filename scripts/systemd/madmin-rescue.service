@@ -1,0 +1,8 @@
+[Unit]
+Description=MADMIN rescue (reports to the manager when MADMIN is down)
+After=network-online.target madmin-update-recover.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/madmin/updater/madmin-rescue
+TimeoutStartSec=7200

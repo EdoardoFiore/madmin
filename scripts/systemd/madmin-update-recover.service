@@ -1,0 +1,13 @@
+[Unit]
+Description=MADMIN - finish or undo an interrupted update
+Before=madmin.service
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/madmin/updater/madmin-update recover --boot
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

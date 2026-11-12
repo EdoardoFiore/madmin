@@ -81,6 +81,8 @@ SNAPSHOTS = f"{STATE}/snapshots"
 LOCK = f"{STATE}/update.lock"
 KEY_DIRS = (f"{UPDATER}/keys", "/etc/madmin/release-keys.d")
 SERVICE = "madmin.service"
+SYSTEMD_DIR = "/etc/systemd/system"
+UNITS_BACKUP = f"{STATE}/units"
 HEALTH_URL = "http://127.0.0.1:8000/api/health"
 LAYOUT = 1
 DEFAULT_DEADLINE = 300
@@ -88,7 +90,7 @@ SNAPSHOT_DAYS = 7
 OUTER_MEMBERS = {"manifest.json", "manifest.json.sig", "payload.tar.gz"}
 
 # Journal steps, in order; a failure at or after "snapshot" rolls back
-STEPS = ("verify", "unpack", "venv", "preflight", "snapshot", "switch", "start", "health", "commit")
+STEPS = ("verify", "unpack", "venv", "preflight", "snapshot", "switch", "units", "start", "health", "commit")
 
 
 class UpdateError(Exception):
@@ -495,12 +497,68 @@ def install_updater(release: str) -> None:
             shutil.copy2(key, f"{UPDATER}/keys/")
 
 
+def install_units(release: str, update_id: str):
+    """The systemd units of `release` (scripts/systemd/), written before the
+    new release starts so an update can change them. The units replaced are
+    kept in state/units/<update_id>/ (a missing one as <name>.absent) and put
+    back by a rollback. A unit new to the instance is enabled when it has an
+    [Install] section. Returns the backup directory, or None (nothing changed)."""
+    src_dir = os.path.join(release, "scripts", "systemd")
+    if not os.path.isdir(src_dir):
+        return None
+    backup = os.path.join(UNITS_BACKUP, update_id)
+    added = []
+    for src in sorted(glob.glob(os.path.join(src_dir, "*.service")) + glob.glob(os.path.join(src_dir, "*.timer"))):
+        name = os.path.basename(src)
+        dst = os.path.join(SYSTEMD_DIR, name)
+        new = _read(src)
+        if os.path.exists(dst) and _read(dst) == new:
+            continue
+        os.makedirs(backup, mode=0o700, exist_ok=True)
+        if os.path.exists(dst):
+            shutil.copy2(dst, os.path.join(backup, name))
+        else:
+            open(os.path.join(backup, name + ".absent"), "w").close()
+            if "[Install]" in new:
+                added.append(name)
+        with open(dst + ".new", "w") as f:
+            f.write(new)
+        os.chmod(dst + ".new", 0o644)
+        os.replace(dst + ".new", dst)
+        log(f"unit {name} updated")
+    if not os.path.isdir(backup):
+        return None
+    run(["systemctl", "daemon-reload"], check=False)
+    for name in added:
+        run(["systemctl", "enable", name], check=False)
+    return backup
+
+
+def restore_units(backup) -> None:
+    """Undo install_units: the units as they were before the update."""
+    if not backup or not os.path.isdir(backup):
+        return
+    for path in glob.glob(os.path.join(backup, "*")):
+        name = os.path.basename(path)
+        if name.endswith(".absent"):
+            unit = name[:-len(".absent")]
+            run(["systemctl", "disable", unit], check=False)
+            try:
+                os.unlink(os.path.join(SYSTEMD_DIR, unit))
+            except FileNotFoundError:
+                pass
+        else:
+            shutil.copy2(path, os.path.join(SYSTEMD_DIR, name))
+        log(f"unit {name.replace('.absent', '')} restored")
+    run(["systemctl", "daemon-reload"], check=False)
+
+
 def prune(keep: set) -> None:
     for d in glob.glob(os.path.join(RELEASES, "*")):
         if os.path.basename(d) not in keep:
             shutil.rmtree(d, ignore_errors=True)
     limit = time.time() - SNAPSHOT_DAYS * 86400
-    for d in glob.glob(os.path.join(SNAPSHOTS, "*")):
+    for d in glob.glob(os.path.join(SNAPSHOTS, "*")) + glob.glob(os.path.join(UNITS_BACKUP, "*")):
         if os.path.getmtime(d) < limit:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -565,6 +623,9 @@ def cmd_install(args) -> None:
         journal(snapshot=snap, step="switch")
         set_link(PREVIOUS, from_release)
         set_link(CURRENT, rid)
+        # Journaled first: a recovery after a kill in the middle still finds it
+        journal(step="units", units_backup=os.path.join(UNITS_BACKUP, update_id))
+        install_units(target, update_id)
         run(["systemctl", "daemon-reload"], check=False)
         journal(step="start", result="verifying")
         run(["systemctl", "start", SERVICE], check=False, timeout=600)
@@ -598,6 +659,10 @@ def rollback_to(release: str, snap, reason: str, start: bool = True) -> None:
         run(["systemctl", "stop", SERVICE], check=False, timeout=120)
     if release:
         set_link(CURRENT, release)
+    try:
+        restore_units((read_json(JOURNAL) or {}).get("units_backup"))
+    except Exception as e:
+        problems.append(f"units not restored: {e}")
     if snap and os.path.isdir(snap):
         try:
             restore_snapshot(snap, stop=start)
@@ -660,8 +725,11 @@ def cmd_rollback(args) -> None:
     if not snap and not args.keep_database:
         raise UpdateError("no snapshot of the database for this release: --keep-database to go back anyway")
     cur = link_target(CURRENT)
+    # The units the previous release had: only if the last update brought this one
+    units = j.get("units_backup") if j.get("release_id") == cur else None
     journal(update_id=dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S"), release_id=prev,
-            from_release=cur, step="switch", result="running", started_at=now_iso(), command_id=None)
+            from_release=cur, step="switch", result="running", started_at=now_iso(), command_id=None,
+            units_backup=units)
     rollback_to(prev, snap, "manual rollback")
     set_link(PREVIOUS, cur)
     os.close(fd)

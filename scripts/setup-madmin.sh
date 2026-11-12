@@ -496,94 +496,32 @@ log_success "Nginx configured."
 # --- Step 6: Systemd service ---
 log_info "Step 6/7: Configuring systemd service..."
 
-cat > /etc/systemd/system/madmin.service << EOF
-[Unit]
-Description=MADMIN Backend (FastAPI)
-Wants=network-online.target postgresql.service
-After=network-online.target postgresql.service
+# Units: shipped in the release (scripts/systemd/) so an update can change
+# them; madmin-update installs the ones of the release it switches to
+install -m 0644 "$INSTALL_DIR/current/scripts/systemd/"*.service "$INSTALL_DIR/current/scripts/systemd/"*.timer \
+    /etc/systemd/system/
 
-[Service]
-# READY=1 once startup is done; watchdog pings come from the event loop, so a
-# blocked loop (process alive, no request answered) gets the service restarted
-Type=notify
-NotifyAccess=main
-WatchdogSec=120
-TimeoutStartSec=300
-TimeoutStopSec=30
-User=root
-WorkingDirectory=$INSTALL_DIR/current/backend
-Environment="PATH=$INSTALL_DIR/current/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
-# Exactly one worker: login limits, audit queue, locks, background tasks and
-# the module routers mounted at runtime all live in this process. Never add
-# --workers.
-ExecStart=$INSTALL_DIR/current/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
-Restart=always
-RestartSec=5
-LimitNOFILE=65536
-# Root is needed (iptables, /etc/*, systemctl), so only what the modules never
-# use is taken away. Not ProtectSystem/ProtectKernelTunables: modules write
-# /etc and net.ipv4.ip_forward
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectHome=read-only
-
-[Install]
-WantedBy=multi-user.target
-EOF
+# Boot entry chosen by grub-set-default/grub-reboot instead of always the
+# first one: a new kernel can then be booted once on trial, with the current
+# one still the default (ROADMAP 9.1). Nothing changes until that is used.
+if command -v update-grub >/dev/null 2>&1 && [ -d /etc/default/grub.d ]; then
+    echo 'GRUB_DEFAULT=saved' > /etc/default/grub.d/99-madmin.cfg
+    update-grub >/dev/null 2>&1 || log_warning "update-grub failed: GRUB_DEFAULT=saved not applied"
+fi
 
 # Enable IP forwarding
 log_info "Enabling IP forwarding..."
 echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-madmin.conf
 sysctl -p /etc/sysctl.d/99-madmin.conf
 
-# Fail-closed firewall boot guard: drops all inbound/forward traffic at boot
-# (before the network is up) until madmin loads the real ruleset from the DB.
-# Runs before netfilter-persistent and restores ipsets so the persisted rules.v4
-# loads consistently. Recovery if madmin never starts is via hypervisor console.
-cp "$SCRIPT_DIR/madmin-firewall-boot.service" /etc/systemd/system/
-
-# An update interrupted by a reboot (or a killed updater) is finished or
-# undone before MADMIN starts
-cat > /etc/systemd/system/madmin-update-recover.service << EOF
-[Unit]
-Description=MADMIN - finish or undo an interrupted update
-Before=madmin.service
-After=postgresql.service
-Wants=postgresql.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/python3 $INSTALL_DIR/updater/madmin-update recover --boot
-TimeoutStartSec=1800
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Rescue: every 5 minutes, when MADMIN is down or not connected, report to
-# the manager and run the one action a superuser chose there (restart,
-# rollback, install a signed release)
-cat > /etc/systemd/system/madmin-rescue.service << EOF
-[Unit]
-Description=MADMIN rescue (reports to the manager when MADMIN is down)
-After=network-online.target madmin-update-recover.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/python3 $INSTALL_DIR/updater/madmin-rescue
-TimeoutStartSec=7200
-EOF
-cat > /etc/systemd/system/madmin-rescue.timer << EOF
-[Unit]
-Description=MADMIN rescue every 5 minutes
-
-[Timer]
-OnBootSec=10min
-OnUnitInactiveSec=5min
-
-[Install]
-WantedBy=timers.target
-EOF
+# Fail-closed firewall boot guard (madmin-firewall-boot.service, installed
+# above): drops all inbound/forward traffic at boot (before the network is up)
+# until madmin loads the real ruleset from the DB. Recovery if madmin never
+# starts is via hypervisor console.
+# madmin-update-recover.service finishes or undoes an update interrupted by a
+# reboot before MADMIN starts. madmin-rescue.timer: every 5 minutes, when
+# MADMIN is down or not connected, reports to the manager and runs the one
+# action a superuser chose there (restart, rollback, install a signed release).
 
 # Don't start yet — install module dependencies first
 systemctl daemon-reload

@@ -67,10 +67,16 @@ the release from its manager; root can run it by hand):
 3. preflight: the new code imports with the current settings
 4. snapshot: MADMIN stopped, `pg_dump` and `etc/` + `data/` copied to
    `/opt/madmin/state/snapshots/` (kept 7 days)
-5. switch `current` (and `previous`), start MADMIN (schema steps run)
+5. switch `current` (and `previous`); the systemd units of the release
+   (`scripts/systemd/`) that differ are written to `/etc/systemd/system`
+   (the replaced ones kept in `/opt/madmin/state/units/`, a new unit with an
+   `[Install]` section enabled); start MADMIN (schema steps run)
 6. health gate (default 5 minutes): service active, `/api/health` 200, and,
    when enrolled, the manager's confirmation after the reconnection
-7. commit, or roll back: previous release, database and files restored
+7. commit, or roll back: previous release, units, database and files restored
+
+A unit is changed by editing its file in `scripts/systemd/`, never in
+`setup-madmin.sh` (which installs the same files).
 
 Before the snapshot nothing has changed. An update cut by a reboot is
 finished or undone at boot (`madmin-update-recover.service`).

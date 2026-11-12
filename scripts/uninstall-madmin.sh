@@ -94,12 +94,18 @@ fi
 # --- Step 1: Stop and remove systemd services ---
 log_info "Step 1/7: Removing systemd services..."
 
-for svc in madmin.service madmin-firewall-boot.service madmin-update-recover.service \
+# Units of the installed release (an update may have added some) and the known ones
+RELEASE_UNITS=$(ls /opt/madmin/current/scripts/systemd/ 2>/dev/null | grep -E '\.(service|timer)$' || true)
+for svc in $RELEASE_UNITS madmin.service madmin-firewall-boot.service madmin-update-recover.service \
            madmin-rescue.timer madmin-rescue.service nginx-revproxy.service; do
     systemctl stop "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
     rm -f "/etc/systemd/system/$svc"
 done
+if [ -f /etc/default/grub.d/99-madmin.cfg ]; then
+    rm -f /etc/default/grub.d/99-madmin.cfg
+    update-grub >/dev/null 2>&1 || true
+fi
 # Reverse proxy module: dedicated nginx instance (see modules/reverseproxy)
 rm -rf /etc/nginx-revproxy /var/lib/nginx-revproxy
 rm -f /etc/logrotate.d/nginx-revproxy

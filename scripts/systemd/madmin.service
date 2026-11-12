@@ -1,0 +1,32 @@
+[Unit]
+Description=MADMIN Backend (FastAPI)
+Wants=network-online.target postgresql.service
+After=network-online.target postgresql.service
+
+[Service]
+# READY=1 once startup is done; watchdog pings come from the event loop, so a
+# blocked loop (process alive, no request answered) gets the service restarted
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+TimeoutStartSec=300
+TimeoutStopSec=30
+User=root
+WorkingDirectory=/opt/madmin/current/backend
+Environment="PATH=/opt/madmin/current/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+# Exactly one worker: login limits, audit queue, locks, background tasks and
+# the module routers mounted at runtime all live in this process. Never add
+# --workers.
+ExecStart=/opt/madmin/current/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+# Root is needed (iptables, /etc/*, systemctl), so only what the modules never
+# use is taken away. Not ProtectSystem/ProtectKernelTunables: modules write
+# /etc and net.ipv4.ip_forward
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
