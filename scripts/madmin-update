@@ -338,6 +338,11 @@ def build_venv(target: str, manifest: dict) -> None:
         run(["apt-get", "install", "-y", "-o", "Dpkg::Options::=--force-confold", *missing], env=env, timeout=1800)
     venv = os.path.join(target, "venv")
     run(["python3", "-m", "venv", venv], timeout=300)
+    # pip of the release (the one ensurepip brings is the OS's, often with
+    # known advisories); releases built before it was shipped have none
+    if glob.glob(os.path.join(wheels, "pip-*.whl")):
+        run([f"{venv}/bin/pip", "install", "-q", "--no-index", "--find-links", wheels, "--upgrade", "pip",
+             "-c", os.path.join(target, "backend", "requirements.lock")], timeout=600)
     run([f"{venv}/bin/pip", "install", "-q", "--no-index", "--find-links", wheels,
          "-r", os.path.join(target, "wheels", "requirements.txt"),
          "-c", os.path.join(target, "backend", "requirements.lock")], timeout=1800)
@@ -779,7 +784,8 @@ def cmd_bootstrap(args) -> None:
     with open(f"{target}/requirements-all.txt", "w") as f:
         f.write("\n".join(dict.fromkeys(reqs)) + "\n")
     run(["python3", "-m", "venv", f"{target}/venv"], timeout=300)
-    run([f"{target}/venv/bin/pip", "install", "-q", "--upgrade", "pip"], timeout=600)
+    run([f"{target}/venv/bin/pip", "install", "-q", "--upgrade", "pip", "-c", f"{src}/backend/requirements.lock"],
+        timeout=600)
     run([f"{target}/venv/bin/pip", "install", "-q", "-r", f"{target}/requirements-all.txt",
          "-c", f"{target}/backend/requirements.lock"], timeout=1800)
     write_json(f"{target}/manifest.json", {"format": 1, "version": version, "build": args.build or "dev",

@@ -75,7 +75,8 @@ lines = [l.strip() for l in open(os.path.join(backend, "requirements.txt"))
          if l.strip() and not l.lstrip().startswith("#")]
 for path in sorted(glob.glob(os.path.join(backend, "modules", "*", "manifest.json"))):
     lines += json.load(open(path)).get("system_dependencies", {}).get("pip", [])
-print("\n".join(dict.fromkeys(lines)))
+# pip itself: the venv gets the release's pip, not the OS's
+print("\n".join(dict.fromkeys(lines + ["pip"])))
 PY
 python3 -m venv "$WORK/venv"
 "$WORK/venv/bin/pip" install -q --upgrade pip wheel
