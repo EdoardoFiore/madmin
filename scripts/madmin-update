@@ -66,6 +66,7 @@ changed, the staged release is removed.
 """
 import argparse
 import datetime as dt
+import errno
 import fcntl
 import glob
 import hashlib
@@ -94,6 +95,8 @@ JOURNAL = f"{STATE}/update.json"
 CONFIRM = f"{STATE}/update-confirm"
 SNAPSHOTS = f"{STATE}/snapshots"
 LOCK = f"{STATE}/update.lock"
+RESERVE = f"{STATE}/.reserve"      # space kept for the journal when the disk fills up
+RESERVE_SIZE = 16 << 20
 KEY_DIRS = (f"{UPDATER}/keys", "/etc/madmin/release-keys.d")
 SERVICE = "madmin.service"
 SYSTEMD_DIR = "/etc/systemd/system"
@@ -126,14 +129,34 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def write_json(path: str, data: dict) -> None:
+def _write_json(path: str, data: dict) -> None:
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp.")
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_json(path: str, data: dict) -> None:
+    """Atomic. With the disk full, the reserve file (lock()) is given up so
+    that the journal can still say what happened."""
+    try:
+        _write_json(path, data)
+    except OSError as e:
+        if e.errno != errno.ENOSPC or not os.path.exists(RESERVE):
+            raise
+        os.unlink(RESERVE)
+        log("disk full: reserve released to write the journal")
+        _write_json(path, data)
 
 
 def read_json(path: str):
@@ -392,9 +415,15 @@ def snapshot(update_id: str) -> str:
         r = subprocess.run(["runuser", "-u", "postgres", "--", "pg_dump", "-Fc", "-d", db["name"]],
                            stdout=f, stderr=subprocess.PIPE, timeout=1800)
     if r.returncode != 0:
+        # A partial snapshot is useless and holds the space MADMIN needs to start again
+        shutil.rmtree(path, ignore_errors=True)
         raise UpdateError(f"pg_dump failed: {r.stderr.decode()[-300:]}")
-    run(["tar", "-C", ROOT, "--exclude=data/imports", "-czf", os.path.join(path, "files.tar.gz"), "etc", "data"],
-        timeout=1800)
+    try:
+        run(["tar", "-C", ROOT, "--exclude=data/imports", "-czf", os.path.join(path, "files.tar.gz"), "etc", "data"],
+            timeout=1800)
+    except UpdateError:
+        shutil.rmtree(path, ignore_errors=True)
+        raise
     write_json(os.path.join(path, "snapshot.json"), {"database": db, "created": now_iso(),
                                                       "release": link_target(CURRENT)})
     return path
@@ -802,6 +831,17 @@ def lock():
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         raise UpdateError("another update is running")
+    if not os.path.exists(RESERVE):
+        try:
+            with open(RESERVE, "wb") as f:
+                os.posix_fallocate(f.fileno(), 0, RESERVE_SIZE)
+            os.chmod(RESERVE, 0o600)
+        except OSError:
+            # no space for it now: the free-space check of the update will refuse anyway
+            try:
+                os.unlink(RESERVE)
+            except OSError:
+                pass
     return fd
 
 
