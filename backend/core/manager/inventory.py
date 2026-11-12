@@ -139,10 +139,21 @@ def _unattended_upgrades() -> bool:
         os.path.exists("/usr/bin/unattended-upgrade")
 
 
+def _scheduled_reboot():
+    """Epoch of a pending `shutdown -r`, or None."""
+    data = dict(l.split("=", 1) for l in _read("/run/systemd/shutdown/scheduled").splitlines() if "=" in l)
+    if data.get("MODE") != "reboot" or not data.get("USEC", "").isdigit():
+        return None
+    return int(data["USEC"]) // 1_000_000
+
+
 def os_status() -> dict:
+    from .osactions import kernel_state
     kernels = _installed_kernels()
     stamp = _apt_stamp()
     return {
+        "reboot_scheduled_at": _scheduled_reboot(),
+        "kernel_trial": kernel_state(),
         "running_kernel": platform.release(),
         "newest_kernel": kernels[-1] if kernels else "",
         "kernels": kernels,

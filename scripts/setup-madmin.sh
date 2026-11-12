@@ -504,8 +504,13 @@ install -m 0644 "$INSTALL_DIR/current/scripts/systemd/"*.service "$INSTALL_DIR/c
 # Boot entry chosen by grub-set-default/grub-reboot instead of always the
 # first one: a new kernel can then be booted once on trial, with the current
 # one still the default (ROADMAP 9.1). Nothing changes until that is used.
+# panic=10: a kernel that panics reboots by itself (into the default one)
+# instead of hanging until someone opens the hypervisor console.
 if command -v update-grub >/dev/null 2>&1 && [ -d /etc/default/grub.d ]; then
-    echo 'GRUB_DEFAULT=saved' > /etc/default/grub.d/99-madmin.cfg
+    cat > /etc/default/grub.d/99-madmin.cfg << 'GRUBEOF'
+GRUB_DEFAULT=saved
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT panic=10"
+GRUBEOF
     update-grub >/dev/null 2>&1 || log_warning "update-grub failed: GRUB_DEFAULT=saved not applied"
 fi
 
@@ -529,6 +534,7 @@ systemctl enable madmin.service
 systemctl enable madmin-firewall-boot.service
 systemctl enable madmin-update-recover.service
 systemctl enable --now madmin-rescue.timer
+systemctl enable --now madmin-boot-check.timer
 
 log_success "Systemd service configured."
 

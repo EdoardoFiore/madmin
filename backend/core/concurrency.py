@@ -38,6 +38,12 @@ def spawn_background(coro: Awaitable, name: str) -> asyncio.Task:
     return task
 
 
+def is_locked(name: str) -> bool:
+    """Whether resource_lock(name) is held right now."""
+    lock = _locks.get(name)
+    return lock is not None and lock.locked()
+
+
 @asynccontextmanager
 async def resource_lock(name: str):
     lock = _locks.get(name)

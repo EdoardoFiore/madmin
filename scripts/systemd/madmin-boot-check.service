@@ -1,0 +1,7 @@
+[Unit]
+Description=MADMIN - kernel on trial: confirmed in time, or back to the previous one
+After=madmin-update-recover.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/madmin/updater/madmin-update boot-check

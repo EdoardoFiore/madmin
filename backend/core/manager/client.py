@@ -96,6 +96,7 @@ class ManagerAgent:
         self._state_mtime: tuple = ()
         self._last_renew_check = 0.0
         self._facts_digest: Optional[str] = None
+        self._facts_due = False
         # Set by the manager in hello_ack (kept across sessions, reset by a restart)
         self.config = {key: default for key, (_, _, default) in protocol.CONFIG_LIMITS.items()}
         self.revision = 0
@@ -311,6 +312,10 @@ class ManagerAgent:
         if update is not None:
             state["update"] = update
         self._reported_update = update
+        from .osactions import kernel_state
+        kernel = await asyncio.to_thread(kernel_state)
+        if kernel is not None:
+            state["kernel"] = kernel
         return state
 
     async def _report_update(self) -> None:
@@ -361,6 +366,11 @@ class ManagerAgent:
             from .update import confirm
             if await asyncio.to_thread(confirm, ack["update_confirm"]):
                 logger.info("Manager: update to %s confirmed", ack["update_confirm"])
+        if isinstance(ack.get("kernel_confirm"), str):
+            from .osactions import kernel_confirm
+            if await kernel_confirm(ack["kernel_confirm"]):
+                logger.info("Manager: kernel %s confirmed, now the default", ack["kernel_confirm"])
+                self.facts_changed()
         if ack.get("ca_bundle"):
             try:
                 added = await asyncio.to_thread(ident.accept_ca_bundle, str(ack["ca_bundle"]).encode())
@@ -414,12 +424,18 @@ class ManagerAgent:
         while True:
             await ws.send(await outbox.get())
 
+    def facts_changed(self) -> None:
+        """Something the facts describe changed now (an OS action): they are
+        collected and sent with the next heartbeat, not at the next interval."""
+        self._facts_due = True
+
     async def _heartbeat(self, outbox: asyncio.Queue, identity: ManagerIdentity) -> None:
         last_facts = time.monotonic()
         while True:
             await asyncio.sleep(self.config["heartbeat_interval"])
             payload = {"stats": await collect_stats()}
-            if time.monotonic() - last_facts >= self.config["facts_interval"]:
+            if self._facts_due or time.monotonic() - last_facts >= self.config["facts_interval"]:
+                self._facts_due = False
                 last_facts = time.monotonic()
                 facts = await collect_facts()
                 digest = facts_digest(facts)
@@ -502,4 +518,4 @@ manager_agent = ManagerAgent()
 
 def load_command_handlers() -> None:
     """Register the commands implemented by the other modules of the package."""
-    from . import backups, licenses, relocate, stats, support, tunnel, update  # noqa: F401
+    from . import backups, licenses, osactions, relocate, stats, support, tunnel, update  # noqa: F401

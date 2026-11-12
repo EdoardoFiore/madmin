@@ -1,0 +1,9 @@
+[Unit]
+Description=MADMIN kernel trial check every 2 minutes after boot
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

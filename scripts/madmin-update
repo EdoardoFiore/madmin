@@ -19,6 +19,21 @@ agent with systemd-run (so it survives the restart of MADMIN) or by root:
                                              first install from a git checkout (setup-madmin.sh)
     madmin-update rebuild-venv               the venv of the current release, for the OS now running
 
+OS actions (ROADMAP 9.1), run outside the MADMIN process so that a package
+upgrade restarting services (MADMIN included) does not cut them:
+
+    madmin-update os-upgrade --scope security|all --job FILE
+                                             apt-get update + upgrade (security: unattended-upgrade,
+                                             the security pocket only); progress and result in FILE
+    madmin-update reboot [--delay MIN] [--reason TEXT]
+                                             reboot; a kernel newer than the running one boots once,
+                                             on trial (grub-reboot), the running one stays the default
+    madmin-update reboot-cancel              cancels a scheduled reboot (and its trial)
+    madmin-update kernel-confirm --kernel K  the trial kernel came up and reached the manager: default
+    madmin-update boot-check                 madmin-boot-check.timer: a trial kernel not confirmed
+                                             within KERNEL_TRIAL_MINUTES of the boot reboots into the
+                                             previous one; a fallback already happened is recorded
+
 Layout (layout 1):
 
     /opt/madmin/releases/<id>/   backend/ frontend/ scripts/ venv/ manifest.json
@@ -86,6 +101,10 @@ UNITS_BACKUP = f"{STATE}/units"
 HEALTH_URL = "http://127.0.0.1:8000/api/health"
 LAYOUT = 1
 DEFAULT_DEADLINE = 300
+KERNEL_TRIAL = f"{STATE}/kernel-trial.json"
+KERNEL_TRIAL_MINUTES = 15
+GRUB_CFG = "/boot/grub/grub.cfg"
+SHUTDOWN_SCHEDULED = "/run/systemd/shutdown/scheduled"
 SNAPSHOT_DAYS = 7
 OUTER_MEMBERS = {"manifest.json", "manifest.json.sig", "payload.tar.gz"}
 
@@ -568,6 +587,212 @@ def prune(keep: set) -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
+# --- OS actions ---
+
+def dpkg_versions() -> dict:
+    out = run(["dpkg-query", "-W", "-f", "${db:Status-Abbrev}\t${Package}:${Architecture}\t${Version}\n"],
+              capture=True, timeout=120, env=dict(os.environ, LC_ALL="C")).stdout
+    return {p[1]: p[2] for p in (l.split("\t") for l in out.splitlines()) if len(p) == 3 and p[0].startswith("ii")}
+
+
+def kernel_key(name: str) -> tuple:
+    return tuple(int(n) if n.isdigit() else n for n in re.split(r"[.\-+~]", name))
+
+
+def installed_kernels() -> list:
+    return sorted((os.path.basename(p)[len("vmlinuz-"):] for p in glob.glob("/boot/vmlinuz-*")), key=kernel_key)
+
+
+def running_kernel() -> str:
+    return os.uname().release
+
+
+def boot_time() -> float:
+    with open("/proc/stat") as f:
+        for line in f:
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    return 0.0
+
+
+def grub_entry(kernel: str):
+    """The GRUB menu path of the normal (not recovery) entry of `kernel`, as
+    grub-reboot and grub-set-default take it ("submenu>entry" for the
+    kernels under "Advanced options"), or None."""
+    try:
+        cfg = open(GRUB_CFG).read()
+    except OSError:
+        return None
+    submenu = None
+    for line in cfg.splitlines():
+        line = line.strip()
+        m = re.match(r"^submenu\s.*\$menuentry_id_option\s+'([^']+)'", line)
+        if m:
+            submenu = m.group(1)
+            continue
+        m = re.match(r"^menuentry\s.*\$menuentry_id_option\s+'([^']+)'", line)
+        if m and m.group(1).startswith(f"gnulinux-{kernel}-advanced-"):
+            return f"{submenu}>{m.group(1)}" if submenu else m.group(1)
+    return None
+
+
+def grub_uses_saved() -> bool:
+    try:
+        return "saved_entry" in open(GRUB_CFG).read() and any(
+            re.search(r"^GRUB_DEFAULT=[\"']?saved", open(p).read(), re.M)
+            for p in ["/etc/default/grub"] + glob.glob("/etc/default/grub.d/*.cfg"))
+    except OSError:
+        return False
+
+
+def os_job(path: str, **changes) -> dict:
+    data = read_json(path) or {}
+    data.update(changes)
+    data["updated_at"] = now_iso()
+    write_json(path, data)
+    return data
+
+
+def cmd_os_upgrade(args) -> None:
+    """apt-get update + upgrade. Takes the update lock: no MADMIN update, and
+    no second upgrade, while it runs. Holds are respected (apt never touches a
+    held package); configuration files changed locally are kept (confold)."""
+    job = args.job
+    os_job(job, state="running", step="lock", scope=args.scope, started_at=now_iso(), pid=os.getpid())
+    try:
+        fd = lock()
+    except UpdateError as e:
+        os_job(job, state="failed", code="busy", detail=str(e), finished_at=now_iso())
+        sys.exit(1)
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", LC_ALL="C", NEEDRESTART_MODE="a",
+               NEEDRESTART_SUSPEND="")
+    log_path = job[:-5] + ".log" if job.endswith(".json") else job + ".log"
+    try:
+        before = dpkg_versions()
+        kernels_before = installed_kernels()
+        os_job(job, step="apt-update")
+        with open(log_path, "a") as logf:
+            # apt-daily may hold the dpkg lock: wait for it instead of failing
+            r = subprocess.run(["apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-q"], env=env,
+                               stdout=logf, stderr=subprocess.STDOUT, timeout=1500)
+            if r.returncode != 0:
+                raise UpdateError("apt-get update failed")
+            os_job(job, step="upgrade")
+            if args.scope == "security":
+                if not os.path.exists("/usr/bin/unattended-upgrade"):
+                    raise UpdateError("unattended-upgrades not installed: security-only upgrade not possible")
+                cmd = ["unattended-upgrade", "-v"]
+            else:
+                cmd = ["apt-get", "-y", "-q", "--with-new-pkgs", "-o", "DPkg::Lock::Timeout=600",
+                       "-o", "Dpkg::Options::=--force-confdef",
+                       "-o", "Dpkg::Options::=--force-confold", "upgrade"]
+            r = subprocess.run(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT, timeout=5400)
+        after = dpkg_versions()
+        changes = [{"name": k, "from": before.get(k, ""), "to": after.get(k, "")}
+                   for k in sorted(before.keys() | after.keys()) if before.get(k) != after.get(k)]
+        new_kernels = [k for k in installed_kernels() if k not in kernels_before]
+        tail = _read(log_path)[-3000:]
+        result = {"changes": changes[:2000], "changed": len(changes), "new_kernels": new_kernels,
+                  "reboot_required": os.path.exists("/var/run/reboot-required"),
+                  "reboot_packages": sorted(set(_read("/var/run/reboot-required.pkgs").split())),
+                  "log_tail": tail}
+        if r.returncode != 0:
+            os_job(job, state="failed", code="failed", detail=f"{cmd[0]} exited with {r.returncode}",
+                   finished_at=now_iso(), **result)
+            sys.exit(1)
+        os_job(job, state="done", step="done", finished_at=now_iso(), **result)
+    except (UpdateError, OSError, subprocess.SubprocessError) as e:
+        os_job(job, state="failed", code="failed", detail=str(e)[:500], log_tail=_read(log_path)[-3000:],
+               finished_at=now_iso())
+        sys.exit(1)
+    finally:
+        os.close(fd)
+
+
+def scheduled_reboot():
+    """{"at": epoch, "mode"} of a pending shutdown -r, or None."""
+    data = dict(l.split("=", 1) for l in _read(SHUTDOWN_SCHEDULED).splitlines() if "=" in l)
+    if data.get("MODE") != "reboot" or not data.get("USEC"):
+        return None
+    return {"at": int(data["USEC"]) // 1_000_000, "mode": data["MODE"]}
+
+
+def cmd_reboot(args) -> None:
+    """Reboot now or in --delay minutes. With a kernel newer than the running
+    one installed, it boots once on trial: grub-set-default keeps the running
+    kernel as the default, grub-reboot picks the new one for the next boot
+    only. Refused while an update or an OS upgrade runs (the update lock)."""
+    fd = lock()
+    try:
+        running = running_kernel()
+        kernels = installed_kernels()
+        newest = kernels[-1] if kernels else running
+        trial = None
+        if kernel_key(newest) > kernel_key(running):
+            if not grub_uses_saved():
+                raise UpdateError("new kernel installed but GRUB_DEFAULT is not 'saved': no trial boot possible "
+                                  "(setup-madmin.sh sets it; run update-grub)")
+            new_entry, old_entry = grub_entry(newest), grub_entry(running)
+            if not new_entry or not old_entry:
+                raise UpdateError(f"GRUB entries not found for {newest} / {running} (run update-grub)")
+            run(["grub-set-default", old_entry], timeout=60)
+            run(["grub-reboot", new_entry], timeout=60)
+            trial = {"kernel": newest, "previous": running, "entry": new_entry, "fallback_entry": old_entry,
+                     "result": "pending", "started_at": now_iso(), "detail": "", "reason": args.reason[:200]}
+            write_json(KERNEL_TRIAL, trial)
+            log(f"kernel {newest} boots on trial, {running} stays the default")
+        when = f"+{args.delay}" if args.delay else "now"
+        run(["shutdown", "-r", when, f"MADMIN: {args.reason}"[:200]], timeout=60)
+        print(json.dumps({"scheduled": when, "kernel_trial": trial["kernel"] if trial else None,
+                          "at": (scheduled_reboot() or {}).get("at")}))
+    finally:
+        os.close(fd)
+
+
+def cmd_reboot_cancel(args) -> None:
+    run(["shutdown", "-c"], check=False, timeout=60)
+    trial = read_json(KERNEL_TRIAL)
+    if trial and trial.get("result") == "pending" and running_kernel() == trial.get("previous"):
+        # Not booted yet: the next boot is the default one again
+        run(["grub-editenv", "-", "unset", "next_entry"], check=False, timeout=60)
+        os.unlink(KERNEL_TRIAL)
+        log("kernel trial cancelled")
+    print(json.dumps({"cancelled": True}))
+
+
+def cmd_kernel_confirm(args) -> None:
+    trial = read_json(KERNEL_TRIAL) or {}
+    if trial.get("result") != "pending" or trial.get("kernel") != args.kernel or running_kernel() != args.kernel:
+        sys.exit("ERROR: no pending trial of this kernel running")
+    run(["grub-set-default", trial["entry"]], timeout=60)
+    trial.update(result="confirmed", confirmed_at=now_iso())
+    write_json(KERNEL_TRIAL, trial)
+    log(f"kernel {args.kernel} confirmed: now the default")
+
+
+def cmd_boot_check(args) -> None:
+    trial = read_json(KERNEL_TRIAL)
+    if not trial or trial.get("result") != "pending":
+        return
+    started = dt.datetime.strptime(trial["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    if boot_time() < started.timestamp():
+        return   # the trial reboot has not happened yet
+    if running_kernel() != trial["kernel"]:
+        trial.update(result="failed", detail=f"booted {running_kernel()} instead of {trial['kernel']} "
+                                             "(the trial kernel did not come up)", failed_at=now_iso())
+        write_json(KERNEL_TRIAL, trial)
+        log(trial["detail"])
+        return
+    if time.time() - boot_time() < KERNEL_TRIAL_MINUTES * 60:
+        return
+    trial.update(result="failed", detail=f"{trial['kernel']} not confirmed by the manager within "
+                                         f"{KERNEL_TRIAL_MINUTES} minutes of the boot: back to {trial['previous']}",
+                 failed_at=now_iso())
+    write_json(KERNEL_TRIAL, trial)
+    log(trial["detail"])
+    run(["systemctl", "reboot"], check=False, timeout=60)
+
+
 # --- Commands ---
 
 def lock():
@@ -816,11 +1041,23 @@ def main() -> None:
     b = sub.add_parser("bootstrap")
     b.add_argument("--from-checkout", required=True)
     b.add_argument("--build", default=None)
+    o = sub.add_parser("os-upgrade")
+    o.add_argument("--scope", choices=("security", "all"), required=True)
+    o.add_argument("--job", required=True)
+    rb = sub.add_parser("reboot")
+    rb.add_argument("--delay", type=int, default=0)
+    rb.add_argument("--reason", default="")
+    sub.add_parser("reboot-cancel")
+    kc = sub.add_parser("kernel-confirm")
+    kc.add_argument("--kernel", required=True)
+    sub.add_parser("boot-check")
     args = p.parse_args()
     if os.geteuid() != 0:
         sys.exit("madmin-update must run as root")
     handlers = {"verify": cmd_verify, "install": cmd_install, "rollback": cmd_rollback, "recover": cmd_recover,
-                "status": cmd_status, "rebuild-venv": cmd_rebuild_venv, "bootstrap": cmd_bootstrap}
+                "status": cmd_status, "rebuild-venv": cmd_rebuild_venv, "bootstrap": cmd_bootstrap,
+                "os-upgrade": cmd_os_upgrade, "reboot": cmd_reboot, "reboot-cancel": cmd_reboot_cancel,
+                "kernel-confirm": cmd_kernel_confirm, "boot-check": cmd_boot_check}
     try:
         handlers[args.cmd](args)
     except UpdateError as e:
