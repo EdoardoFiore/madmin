@@ -1,6 +1,21 @@
-// MADMIN: a router never reboots by itself. Security updates are still
-// installed every day by unattended-upgrades; the reboot that a new kernel
-// needs is decided and scheduled from the MADMIN Manager (os.reboot).
+// MADMIN: automatic updates of the router.
 // Shipped with the MADMIN release (scripts/etc/): do not edit here.
+//
+// What they install: only the security updates of the installed Ubuntu
+// release (Ubuntu's default, made explicit so that no other configuration
+// widens it): fixed versions of the same packages, never the -updates pocket
+// (normal updates: "Aggiorna tutto" from the manager), never another Ubuntu
+// release. When: the time set by the MADMIN Manager (apt-daily-upgrade.timer).
+#clear Unattended-Upgrade::Allowed-Origins;
+#clear Unattended-Upgrade::Origins-Pattern;
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}";
+    "${distro_id}:${distro_codename}-security";
+    "${distro_id}ESMApps:${distro_codename}-apps-security";
+    "${distro_id}ESM:${distro_codename}-infra-security";
+};
+
+// A router never reboots by itself: a new kernel waits for the reboot
+// scheduled from the MADMIN Manager (os.reboot).
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "false";

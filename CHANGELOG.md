@@ -8,6 +8,11 @@ All notable changes to MADMIN. Versions follow [Semantic Versioning](https://sem
 
 Every block of work that is pushed bumps the version (`MADMIN_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. Only some versions become a signed release; a release id is `<version>+<git commit>`, so two builds of the same version are told apart by the commit (`-dirty` = uncommitted changes, test builds only).
 
+## [1.4.2] - 2026-11-13
+
+### Changed
+- Automatic updates explicitly limited to the security updates of the installed Ubuntu release (`Allowed-Origins`: release, `-security`, ESM security; Ubuntu's default made explicit, so that no other configuration widens it to `-updates` or another release).
+
 ## [1.4.1] - 2026-11-13
 
 ### Fixed
