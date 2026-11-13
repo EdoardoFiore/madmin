@@ -267,7 +267,8 @@ def _scheduled_reboot():
 
 
 def os_status() -> dict:
-    from .osactions import autoupdate_state, kernel_state, needrestart_state
+    from .osactions import autoupdate_state, ensure_etc_files, kernel_state, needrestart_state
+    ensure_etc_files()
     kernels = _installed_kernels()
     stamp = _apt_stamp()
     return {

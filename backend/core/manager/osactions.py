@@ -305,14 +305,47 @@ def autoupdate_state() -> dict:
             state["randomize_minutes"] = int(m.group(1))
     except OSError:
         pass
+    state["next_run"] = None
     try:
-        out = subprocess.run(["systemctl", "show", "apt-daily-upgrade.timer", "-p", "NextElapseUSecRealtime",
-                              "--timestamp=unix"], capture_output=True, text=True, timeout=10).stdout
-        m = re.search(r"=@(\d+)", out)
-        state["next_run"] = int(m.group(1)) if m else None
-    except (OSError, subprocess.SubprocessError):
-        state["next_run"] = None
+        out = subprocess.run(["systemctl", "list-timers", "apt-daily-upgrade.timer", "--all", "--output=json"],
+                             capture_output=True, text=True, timeout=10).stdout
+        timers = json.loads(out or "[]")
+        if timers and timers[0].get("next"):
+            state["next_run"] = int(timers[0]["next"]) // 1_000_000
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
     return state
+
+
+_etc_checked = False
+
+
+def ensure_etc_files() -> None:
+    """The release's files for /etc (scripts/etc/), once per start. madmin-update
+    installs them at every update, but an update made by an older updater
+    (before 1.4.0) did not: the agent puts them in place."""
+    global _etc_checked
+    if _etc_checked:
+        return
+    _etc_checked = True
+    import glob
+    src_root = os.path.join(INSTALL_ROOT, "current", "scripts", "etc")
+    for src in glob.glob(os.path.join(src_root, "**", "*"), recursive=True):
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join("/etc", os.path.relpath(src, src_root))
+        try:
+            new = open(src).read()
+            if os.path.exists(dst) and open(dst).read() == new:
+                continue
+            os.makedirs(os.path.dirname(dst), mode=0o755, exist_ok=True)
+            with open(dst + ".tmp", "w") as f:
+                f.write(new)
+            os.chmod(dst + ".tmp", 0o644)
+            os.replace(dst + ".tmp", dst)
+            logger.info("Manager: %s installed from the release", dst)
+        except OSError as e:
+            logger.warning("Manager: %s not installed: %s", dst, e)
 
 
 class AutoupdateArgs(CommandArgs):

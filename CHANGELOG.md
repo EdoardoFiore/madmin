@@ -8,6 +8,12 @@ All notable changes to MADMIN. Versions follow [Semantic Versioning](https://sem
 
 Every block of work that is pushed bumps the version (`MADMIN_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. Only some versions become a signed release; a release id is `<version>+<git commit>`, so two builds of the same version are told apart by the commit (`-dirty` = uncommitted changes, test builds only).
 
+## [1.4.1] - 2026-11-13
+
+### Fixed
+- The apt policy (never reboot) was not installed by an update run by an older updater: the agent puts the release's `/etc` files in place at start.
+- `os_status.autoupdate.next_run` was always empty.
+
 ## [1.4.0] - 2026-11-13
 
 ### Added
