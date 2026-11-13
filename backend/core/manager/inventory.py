@@ -16,6 +16,7 @@ import socket
 import subprocess
 import time
 from importlib import metadata
+from typing import Dict, List
 
 from config import build_info
 
@@ -91,8 +92,7 @@ async def _modules() -> list:
 
 # --- OS state and heavy sections (ROADMAP 8.1) ---
 
-_APT_CACHE_SECONDS = 3600
-_apt_cache: dict = {"at": 0.0, "stamp": None, "data": {}}
+_apt_cache: dict = {"stamp": None, "data": {}}
 
 
 def _kernel_key(name: str) -> tuple:
@@ -112,25 +112,144 @@ def _apt_stamp() -> float:
     return max(times) if times else 0.0
 
 
-def _pending_updates() -> dict:
-    """apt-get -s dist-upgrade: what an upgrade would install, and how much of
-    it comes from the security pocket. Cached: it takes seconds."""
+_INST_RE = re.compile(r"^Inst (\S+) (?:\[([^\]]*)\] )?\((\S+) ([^\[]*)\[([^\]]+)\]\)")
+_POLICY_VER_RE = re.compile(r"^ (\*\*\*| {3}) (\S+) (-?\d+)(?: \(phased (\d+)%\))?$")
+_SECURITY_SUITE_RE = re.compile(r"-(security|infra-security|apps-security)/")
+# Packages whose upgrade needs a reboot to take effect (besides the kernel's)
+_REBOOT_PACKAGES = {"libc6", "systemd", "dbus", "linux-base", "linux-firmware", "intel-microcode", "amd64-microcode"}
+
+
+def _run_c(*cmd: str, timeout: int = 120) -> str:
+    return subprocess.run(list(cmd), capture_output=True, text=True, timeout=timeout,
+                          env={**os.environ, "LC_ALL": "C"}).stdout
+
+
+def _list_after(out: str, header: str) -> List[str]:
+    """Package names listed (indented) after a header line of apt-get output."""
+    lines = out.splitlines()
+    for n, line in enumerate(lines):
+        if line.startswith(header):
+            names = []
+            for l in lines[n + 1:]:
+                if not l.startswith(" "):
+                    break
+                names += l.split()
+            return names
+    return []
+
+
+def _policy(names: List[str]) -> Dict[str, dict]:
+    """apt-cache policy: for each package the security version newer than the
+    installed one (the newest from a -security suite) and the phasing of the
+    candidate."""
+    out: Dict[str, dict] = {}
+    if not names:
+        return out
+    text = _run_c("apt-cache", "policy", *names)
+    pkg, info, version, past_installed = None, None, None, False
+    for line in text.splitlines():
+        if line and not line.startswith(" ") and line.endswith(":"):
+            pkg = line[:-1]
+            info = out.setdefault(pkg, {"security_version": "", "phased": None, "security_phased": None})
+            version, past_installed = None, False
+            continue
+        if info is None:
+            continue
+        if line.strip().startswith("Candidate:"):
+            info["candidate"] = line.split(":", 1)[1].strip()
+            continue
+        m = _POLICY_VER_RE.match(line)
+        if m:
+            version = m.group(2)
+            if m.group(1) == "***":
+                past_installed = True
+            phased = int(m.group(4)) if m.group(4) else None
+            if version == info.get("candidate"):
+                info["phased"] = phased
+            info.setdefault("_phased", {})[version] = phased
+            continue
+        if version and not past_installed and not info["security_version"] and _SECURITY_SUITE_RE.search(line):
+            info["security_version"] = version
+            info["security_phased"] = info.get("_phased", {}).get(version)
+    for info in out.values():
+        info.pop("_phased", None)
+    return out
+
+
+def section_upgrades() -> list:
+    """What each OS action would install (ROADMAP 9.1), one item per package:
+
+        all        installed by "Aggiorna tutto" (apt-get upgrade --with-new-pkgs)
+        security   installed by "Aggiornamenti di sicurezza" (unattended-upgrade:
+                   the newest version from a -security suite, ESM included)
+        reason     why it is not installed now: phased (Ubuntu's gradual release,
+                   'phased' = percent of machines that get it), held (apt-mark
+                   hold), kept (kept back: it would remove or need something else)
+
+    Cached until the package lists or the installed packages change."""
     stamp = _apt_stamp()
     dpkg = os.path.getmtime("/var/lib/dpkg/status") if os.path.exists("/var/lib/dpkg/status") else 0
-    if time.monotonic() - _apt_cache["at"] < _APT_CACHE_SECONDS and _apt_cache["stamp"] == (stamp, dpkg):
-        return _apt_cache["data"]
-    data = {}
+    if _apt_cache["stamp"] == (stamp, dpkg) and "upgrades" in _apt_cache["data"]:
+        return _apt_cache["data"]["upgrades"]
+    sim = _run_c("apt-get", "-s", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade")
+    items: Dict[str, dict] = {}
+    for line in sim.splitlines():
+        m = _INST_RE.match(line)
+        if not m:
+            continue
+        name, old, new, origins, arch = m.groups()
+        items[f"{name}:{arch}"] = {"name": name, "arch": arch, "installed": old or "", "candidate": new,
+                                   "origin": "security" if "-security" in origins else "updates",
+                                   "all": True, "security": False, "security_version": "", "reason": "",
+                                   "phased": None}
+    phased = set(_list_after(sim, "The following upgrades have been deferred due to phasing:"))
+    kept = set(_list_after(sim, "The following packages have been kept back:"))
+    held = set(_run_c("apt-mark", "showhold").split())
+    for line in _run_c("apt", "list", "--upgradable").splitlines():
+        m = re.match(r"^([^/\s]+)/\S+ (\S+) (\S+) \[upgradable from: ([^\]]+)\]", line)
+        if not m:
+            continue
+        name, candidate, arch, installed = m.groups()
+        key = f"{name}:{arch}"
+        if key in items:
+            continue
+        reason = "held" if name in held else "phased" if name in phased else "kept" if name in kept else "kept"
+        items[key] = {"name": name, "arch": arch, "installed": installed, "candidate": candidate, "origin": "updates",
+                      "all": False, "security": False, "security_version": "", "reason": reason, "phased": None}
+    policy = _policy(sorted({i["name"] for i in items.values() if i["installed"]}))
+    for item in items.values():
+        pol = policy.get(item["name"]) or {}
+        item["phased"] = pol.get("phased")
+        sec = pol.get("security_version", "")
+        if not item["installed"]:
+            # a new package pulled in by the upgrade (a new kernel): its own suite decides
+            item["security"] = item["origin"] == "security"
+            item["security_version"] = item["candidate"] if item["security"] else ""
+        elif sec and item["name"] not in held and not pol.get("security_phased"):
+            item["security"] = True
+            item["security_version"] = sec
+        # security: the newest version is a security one; mixed: the security
+        # one is older than the candidate (only "all" installs the candidate)
+        item["origin"] = ("security" if item["security_version"] == item["candidate"] else "mixed") \
+            if item["security"] else "updates"
+        name = item["name"]
+        item["reboot"] = name.startswith(("linux-image-", "linux-modules-")) or name in _REBOOT_PACKAGES
+    result = sorted(items.values(), key=lambda i: (i["name"], i["arch"]))
+    _apt_cache["stamp"] = (stamp, dpkg)
+    _apt_cache["data"] = {"upgrades": result}
+    return result
+
+
+def _pending_updates() -> dict:
+    """Counts for the facts, from section_upgrades (same simulation)."""
     try:
-        out = subprocess.run(["apt-get", "-s", "-o", "Debug::NoLocking=1", "dist-upgrade"],
-                             capture_output=True, text=True, timeout=120,
-                             env={**os.environ, "LC_ALL": "C"}).stdout
-        lines = [l for l in out.splitlines() if l.startswith("Inst ")]
-        data = {"pending_updates": len(lines),
-                "pending_security": sum(1 for l in lines if "-security" in l)}
+        items = section_upgrades()
     except (OSError, subprocess.SubprocessError) as e:
         logger.warning("Manager inventory: apt simulation failed: %s", e)
-    _apt_cache.update(at=time.monotonic(), stamp=(stamp, dpkg), data=data)
-    return data
+        return {}
+    return {"pending_updates": sum(1 for i in items if i["all"]),
+            "pending_security": sum(1 for i in items if i["security"]),
+            "pending_held_back": sum(1 for i in items if i["reason"])}
 
 
 def _unattended_upgrades() -> bool:
@@ -194,7 +313,7 @@ def section_python() -> list:
     return [seen[k] for k in sorted(seen)]
 
 
-SECTIONS = {"packages": section_packages, "python": section_python}
+SECTIONS = {"packages": section_packages, "python": section_python, "upgrades": section_upgrades}
 
 
 def section_digest(items: list) -> str:
