@@ -8,6 +8,14 @@ All notable changes to MADMIN. Versions follow [Semantic Versioning](https://sem
 
 Every block of work that is pushed bumps the version (`MADMIN_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. Only some versions become a signed release; a release id is `<version>+<git commit>`, so two builds of the same version are told apart by the commit (`-dirty` = uncommitted changes, test builds only).
 
+## [1.4.0] - 2026-11-13
+
+### Added
+- The router never reboots by itself: `Unattended-Upgrade::Automatic-Reboot "false"` (`scripts/etc/apt/apt.conf.d/99madmin-unattended-upgrades`). Files under `scripts/etc/` are installed by the installer and by every update (kept for rollback like the units).
+- `os.autoupdate.set`: the daily time (and time zone, random delay) of the automatic security updates, set by the manager (`apt-daily-upgrade.timer` drop-in).
+- `os.services.restart`: restarts the services needrestart lists (MADMIN last, in a transient unit).
+- Facts: `os_status.restart_services`, `kernel_outdated`, `microcode_outdated`, `autoupdate`.
+
 ## [1.3.0] - 2026-11-13
 
 First tracked version after 1.2.0. Builds `1.2.0+<commit>` made between 1.2.0 and this version were development builds of this work.

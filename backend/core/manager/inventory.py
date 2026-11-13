@@ -267,10 +267,12 @@ def _scheduled_reboot():
 
 
 def os_status() -> dict:
-    from .osactions import kernel_state
+    from .osactions import autoupdate_state, kernel_state, needrestart_state
     kernels = _installed_kernels()
     stamp = _apt_stamp()
     return {
+        **needrestart_state(),
+        "autoupdate": autoupdate_state(),
         "reboot_scheduled_at": _scheduled_reboot(),
         "kernel_trial": kernel_state(),
         "running_kernel": platform.release(),

@@ -102,6 +102,10 @@ for svc in $RELEASE_UNITS madmin.service madmin-firewall-boot.service madmin-upd
     systemctl disable "$svc" 2>/dev/null || true
     rm -f "/etc/systemd/system/$svc"
 done
+# Policy files shipped by the releases, and the update time set by the manager
+rm -f /etc/apt/apt.conf.d/99madmin-unattended-upgrades
+rm -rf /etc/systemd/system/apt-daily-upgrade.timer.d/50-madmin.conf
+systemctl daemon-reload 2>/dev/null || true
 if [ -f /etc/default/grub.d/99-madmin.cfg ]; then
     rm -f /etc/default/grub.d/99-madmin.cfg
     update-grub >/dev/null 2>&1 || true

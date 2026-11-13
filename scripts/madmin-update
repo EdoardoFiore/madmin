@@ -551,7 +551,8 @@ def install_updater(release: str) -> None:
 
 
 def install_units(release: str, update_id: str):
-    """The systemd units of `release` (scripts/systemd/), written before the
+    """The systemd units of `release` (scripts/systemd/) and its files for
+    /etc (scripts/etc/, _install_etc), written before the
     new release starts so an update can change them. The units replaced are
     kept in state/units/<update_id>/ (a missing one as <name>.absent) and put
     back by a rollback. A unit new to the instance is enabled when it has an
@@ -579,6 +580,7 @@ def install_units(release: str, update_id: str):
         os.chmod(dst + ".new", 0o644)
         os.replace(dst + ".new", dst)
         log(f"unit {name} updated")
+    _install_etc(release, backup)
     if not os.path.isdir(backup):
         return None
     run(["systemctl", "daemon-reload"], check=False)
@@ -587,11 +589,53 @@ def install_units(release: str, update_id: str):
     return backup
 
 
+def _install_etc(release: str, backup: str) -> None:
+    """Configuration files of the release (scripts/etc/<path> -> /etc/<path>:
+    the apt and needrestart policies), with the same backup as the units
+    (backup/etc/<path>, or <path>.absent)."""
+    src_root = os.path.join(release, "scripts", "etc")
+    for src in sorted(glob.glob(os.path.join(src_root, "**", "*"), recursive=True)):
+        if not os.path.isfile(src):
+            continue
+        rel = os.path.relpath(src, src_root)
+        dst = os.path.join("/etc", rel)
+        new = _read(src)
+        if os.path.exists(dst) and _read(dst) == new:
+            continue
+        saved = os.path.join(backup, "etc", rel)
+        os.makedirs(os.path.dirname(saved), mode=0o700, exist_ok=True)
+        if os.path.exists(dst):
+            shutil.copy2(dst, saved)
+        else:
+            open(saved + ".absent", "w").close()
+        os.makedirs(os.path.dirname(dst), mode=0o755, exist_ok=True)
+        with open(dst + ".new", "w") as f:
+            f.write(new)
+        os.chmod(dst + ".new", 0o644)
+        os.replace(dst + ".new", dst)
+        log(f"/etc/{rel} updated")
+
+
 def restore_units(backup) -> None:
     """Undo install_units: the units as they were before the update."""
     if not backup or not os.path.isdir(backup):
         return
+    etc_saved = os.path.join(backup, "etc")
+    for path in sorted(glob.glob(os.path.join(etc_saved, "**", "*"), recursive=True)):
+        if not os.path.isfile(path):
+            continue
+        rel = os.path.relpath(path, etc_saved)
+        if rel.endswith(".absent"):
+            try:
+                os.unlink(os.path.join("/etc", rel[:-len(".absent")]))
+            except FileNotFoundError:
+                pass
+        else:
+            shutil.copy2(path, os.path.join("/etc", rel))
+        log(f"/etc/{rel.replace('.absent', '')} restored")
     for path in glob.glob(os.path.join(backup, "*")):
+        if os.path.isdir(path):
+            continue
         name = os.path.basename(path)
         if name.endswith(".absent"):
             unit = name[:-len(".absent")]

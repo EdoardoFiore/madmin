@@ -500,6 +500,12 @@ log_info "Step 6/7: Configuring systemd service..."
 # them; madmin-update installs the ones of the release it switches to
 install -m 0644 "$INSTALL_DIR/current/scripts/systemd/"*.service "$INSTALL_DIR/current/scripts/systemd/"*.timer \
     /etc/systemd/system/
+# Files for /etc shipped in the release (apt policy: never reboot by itself);
+# updates install them the same way
+if [ -d "$INSTALL_DIR/current/scripts/etc" ]; then
+    (cd "$INSTALL_DIR/current/scripts/etc" && find . -type f | while read -r f; do
+        install -D -m 0644 "$f" "/etc/${f#./}"; done)
+fi
 
 # Boot entry chosen by grub-set-default/grub-reboot instead of always the
 # first one: a new kernel can then be booted once on trial, with the current

@@ -19,9 +19,10 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+import re
+from typing import List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from config import INSTALL_ROOT, build_info
 
@@ -217,3 +218,130 @@ async def _os_reboot_cancel(args: CommandArgs, ctx: CommandContext) -> dict:
     if code != 0:
         raise CommandError(f"annullamento fallito: {out[-300:]}")
     return {"cancelled": True}
+
+
+# --- Services running with outdated libraries (needrestart) ---
+
+_SERVICE_RE = re.compile(r"^[A-Za-z0-9@._:-]{1,200}\.service$")
+
+
+def needrestart_state() -> dict:
+    """needrestart -b (list only): services running old libraries, kernel and
+    microcode status. The automatic updates restart services themselves (at
+    their nightly time); what is left here needs a restart by hand."""
+    import subprocess
+    try:
+        out = subprocess.run(["needrestart", "-b", "-r", "l"], capture_output=True, text=True, timeout=60,
+                             env={**os.environ, "LC_ALL": "C"}).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    services, data = [], {}
+    for line in out.splitlines():
+        key, _, value = line.partition(":")
+        value = value.strip()
+        if key == "NEEDRESTART-SVC" and _SERVICE_RE.match(value):
+            services.append(value)
+        elif key == "NEEDRESTART-UCSTA":
+            data["microcode_outdated"] = value == "2"
+        elif key == "NEEDRESTART-KSTA":
+            # 1 current, 2 ABI compatible upgrade pending, 3 version upgrade pending
+            data["kernel_outdated"] = value in ("2", "3")
+    data["restart_services"] = sorted(set(services))
+    return data
+
+
+class ServicesRestartArgs(CommandArgs):
+    # None = every service needrestart lists now
+    services: Optional[List[str]] = Field(default=None, max_length=100)
+
+    @field_validator("services")
+    @classmethod
+    def _names(cls, v):
+        if v is not None and any(not _SERVICE_RE.match(s) for s in v):
+            raise ValueError("service names: <name>.service")
+        return v
+
+
+@command(protocol.CMD_OS_SERVICES_RESTART, ServicesRestartArgs, timeout=300, persist_result=True)
+async def _os_services_restart(args: ServicesRestartArgs, ctx: CommandContext) -> dict:
+    """Restarts services needrestart lists (only those: the manager cannot name
+    any other unit). In a transient unit, MADMIN last: restarting
+    madmin.service ends this process, the result is persisted before."""
+    _require_updater()
+    reason = _busy()
+    if reason:
+        raise CommandError(reason, protocol.ERR_PRECONDITION)
+    listed = set((await asyncio.to_thread(needrestart_state)).get("restart_services", []))
+    wanted = listed if args.services is None else listed & set(args.services)
+    if not wanted:
+        return {"restarted": [], "skipped": sorted(set(args.services or []) - listed)}
+    order = sorted(wanted - {"madmin.service"}) + (["madmin.service"] if "madmin.service" in wanted else [])
+    unit = f"madmin-svc-{ctx.cmd_id[:8]}"
+    code, out = await _run("systemd-run", f"--unit={unit}", "--collect", "--description=MADMIN service restart",
+                           "--on-active=2", "/bin/systemctl", "restart", *order)
+    if code != 0:
+        raise CommandError(f"riavvio dei servizi non avviato: {out[-300:]}")
+    from .client import manager_agent
+    manager_agent.facts_changed()
+    return {"restarted": order, "skipped": sorted(set(args.services or []) - listed), "unit": unit}
+
+
+# --- Time of the automatic security updates (unattended-upgrades) ---
+
+AUTOUPDATE_DROPIN = "/etc/systemd/system/apt-daily-upgrade.timer.d/50-madmin.conf"
+
+
+def autoupdate_state() -> dict:
+    """The time set by the manager (drop-in) and the next run."""
+    import subprocess
+    state = {"time": None, "tz": None, "randomize_minutes": None}
+    try:
+        text = open(AUTOUPDATE_DROPIN).read()
+        m = re.search(r"^OnCalendar=\*-\*-\* (\d\d:\d\d)(?::00)? (\S+)$", text, re.M)
+        if m:
+            state.update(time=m.group(1), tz=m.group(2))
+        m = re.search(r"^RandomizedDelaySec=(\d+)m$", text, re.M)
+        if m:
+            state["randomize_minutes"] = int(m.group(1))
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["systemctl", "show", "apt-daily-upgrade.timer", "-p", "NextElapseUSecRealtime",
+                              "--timestamp=unix"], capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r"=@(\d+)", out)
+        state["next_run"] = int(m.group(1)) if m else None
+    except (OSError, subprocess.SubprocessError):
+        state["next_run"] = None
+    return state
+
+
+class AutoupdateArgs(CommandArgs):
+    time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    tz: str = Field(pattern=r"^[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}$|^UTC$", max_length=60)
+    randomize_minutes: int = Field(default=30, ge=0, le=180)
+
+
+@command(protocol.CMD_OS_AUTOUPDATE_SET, AutoupdateArgs, timeout=60)
+async def _os_autoupdate_set(args: AutoupdateArgs, ctx: CommandContext) -> dict:
+    """When unattended-upgrades installs the security updates (and needrestart
+    restarts the services that use them): a daily time in a time zone. The
+    reboot is never automatic (apt.conf.d/99madmin-unattended-upgrades)."""
+    if not os.path.exists(os.path.join("/usr/share/zoneinfo", args.tz)):
+        raise CommandError(f"fuso orario sconosciuto: {args.tz}", protocol.ERR_PRECONDITION)
+    text = ("# MADMIN Manager: time of the automatic security updates (os.autoupdate.set)\n"
+            "[Timer]\nOnCalendar=\n"
+            f"OnCalendar=*-*-* {args.time} {args.tz}\n"
+            f"RandomizedDelaySec={args.randomize_minutes}m\n")
+    os.makedirs(os.path.dirname(AUTOUPDATE_DROPIN), mode=0o755, exist_ok=True)
+    tmp = AUTOUPDATE_DROPIN + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, AUTOUPDATE_DROPIN)
+    for cmd in (("systemctl", "daemon-reload"), ("systemctl", "restart", "apt-daily-upgrade.timer")):
+        code, out = await _run(*cmd)
+        if code != 0:
+            raise CommandError(f"{' '.join(cmd)}: {out[-300:]}")
+    from .client import manager_agent
+    manager_agent.facts_changed()
+    return await asyncio.to_thread(autoupdate_state)

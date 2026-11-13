@@ -12,7 +12,7 @@ from typing import List
 from functools import lru_cache
 
 # Versione MADMIN (usata per export/import config cross-versione)
-MADMIN_VERSION = "1.3.0"
+MADMIN_VERSION = "1.4.0"
 # Oldest installed version a release can update in place (release manifest
 # min_from): older instances are reinstalled
 MIN_UPGRADE_FROM = "1.2.0"

@@ -1,0 +1,6 @@
+// MADMIN: a router never reboots by itself. Security updates are still
+// installed every day by unattended-upgrades; the reboot that a new kernel
+// needs is decided and scheduled from the MADMIN Manager (os.reboot).
+// Shipped with the MADMIN release (scripts/etc/): do not edit here.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
