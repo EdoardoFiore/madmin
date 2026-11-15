@@ -8,6 +8,11 @@ All notable changes to MADMIN. Versions follow [Semantic Versioning](https://sem
 
 Every block of work that is pushed bumps the version (`MADMIN_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. Only some versions become a signed release; a release id is `<version>+<git commit>`, so two builds of the same version are told apart by the commit (`-dirty` = uncommitted changes, test builds only).
 
+## [1.4.3] - 2026-11-15
+
+### Fixed
+- Ubuntu's phased updates looked installable by "Aggiorna tutto" on the manager, which then installed nothing: the agent simulated the upgrade inside madmin.service, whose private mount namespace (PrivateTmp) makes apt ignore phasing. The simulation now runs in a transient unit, as the upgrade does, and those packages show as held back by the gradual release.
+
 ## [1.4.2] - 2026-11-13
 
 ### Changed
