@@ -124,6 +124,27 @@ def _run_c(*cmd: str, timeout: int = 120) -> str:
                           env={**os.environ, "LC_ALL": "C"}).stdout
 
 
+def _run_like_upgrade(*cmd: str, timeout: int = 120) -> str:
+    """Output of cmd run where os.upgrade runs it: a transient systemd unit.
+
+    madmin.service has PrivateTmp, so its own mount namespace, and apt treats
+    a process in a separate mount namespace like one in a chroot: it ignores
+    phasing. Simulated from here, Ubuntu's phased updates looked installable
+    by "Aggiorna tutto", which (run by systemd-run, outside that namespace)
+    then left them out. Falls back to running cmd here if systemd-run fails."""
+    try:
+        out = subprocess.run(["systemd-run", "--quiet", "--pipe", "--wait", "--collect",
+                              "--description=MADMIN apt simulation", "--setenv=LC_ALL=C", *cmd],
+                             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        if out.returncode == 0 and out.stdout:
+            return out.stdout
+        logger.warning("Manager inventory: systemd-run for the apt simulation failed (%s): run directly",
+                       out.stderr.strip()[-200:])
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("Manager inventory: systemd-run for the apt simulation failed (%s): run directly", e)
+    return _run_c(*cmd, timeout=timeout)
+
+
 def _list_after(out: str, header: str) -> List[str]:
     """Package names listed (indented) after a header line of apt-get output."""
     lines = out.splitlines()
@@ -191,7 +212,7 @@ def section_upgrades() -> list:
     dpkg = os.path.getmtime("/var/lib/dpkg/status") if os.path.exists("/var/lib/dpkg/status") else 0
     if _apt_cache["stamp"] == (stamp, dpkg) and "upgrades" in _apt_cache["data"]:
         return _apt_cache["data"]["upgrades"]
-    sim = _run_c("apt-get", "-s", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade")
+    sim = _run_like_upgrade("apt-get", "-s", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade")
     items: Dict[str, dict] = {}
     for line in sim.splitlines():
         m = _INST_RE.match(line)
