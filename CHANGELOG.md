@@ -8,6 +8,12 @@ All notable changes to MADMIN. Versions follow [Semantic Versioning](https://sem
 
 Every block of work that is pushed bumps the version (`MADMIN_VERSION` in `backend/config.py`), adds an entry here and is tagged `vX.Y.Z`. Only some versions become a signed release; a release id is `<version>+<git commit>`, so two builds of the same version are told apart by the commit (`-dirty` = uncommitted changes, test builds only).
 
+## [1.4.4] - 2026-11-19
+
+### Fixed
+- The refresh of the package lists (`apt-daily.timer`, twice a day) depended on Ubuntu's default `APT::Periodic::Update-Package-Lists "1"`. With it turned off (image, other `apt.conf.d` file), the security updates and the manager's list of updates never saw a new fix. `99madmin-unattended-upgrades` now sets it, and `APT::Periodic::Unattended-Upgrade "1"`, explicitly; the file is read last.
+- Facts: `os_status.unattended_upgrades` read the apt files with a regex (a later file turning it off still read as on). It now comes from the configuration apt applies (`apt-config dump`) and requires `apt-daily-upgrade.timer` to be active. New `os_status.apt_lists_refresh`: `Update-Package-Lists` on and `apt-daily.timer` active.
+
 ## [1.4.3] - 2026-11-15
 
 ### Fixed
