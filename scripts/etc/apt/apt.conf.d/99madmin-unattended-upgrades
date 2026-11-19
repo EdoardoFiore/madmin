@@ -6,6 +6,14 @@
 // widens it): fixed versions of the same packages, never the -updates pocket
 // (normal updates: "Aggiorna tutto" from the manager), never another Ubuntu
 // release. When: the time set by the MADMIN Manager (apt-daily-upgrade.timer).
+
+// Both on whatever the image or the other apt.conf.d files say (this file is
+// read last): the package lists refreshed by apt-daily.timer (twice a day),
+// otherwise neither the security updates nor the list of updates the manager
+// shows would ever see a new fix; the security updates installed daily.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+
 #clear Unattended-Upgrade::Allowed-Origins;
 #clear Unattended-Upgrade::Origins-Pattern;
 Unattended-Upgrade::Allowed-Origins {

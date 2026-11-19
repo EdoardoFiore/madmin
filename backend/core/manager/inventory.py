@@ -273,10 +273,40 @@ def _pending_updates() -> dict:
             "pending_held_back": sum(1 for i in items if i["reason"])}
 
 
-def _unattended_upgrades() -> bool:
-    conf = "".join(_read(p) for p in glob.glob("/etc/apt/apt.conf.d/*"))
-    return bool(re.search(r'APT::Periodic::Unattended-Upgrade\s+"1"', conf)) and \
-        os.path.exists("/usr/bin/unattended-upgrade")
+def _apt_periodic() -> Dict[str, str]:
+    """APT::Periodic as apt applies it (every apt.conf.d file, the last one
+    wins): {"Update-Package-Lists": "1", "Unattended-Upgrade": "1", ...}."""
+    try:
+        out = _run_c("apt-config", "dump", "APT::Periodic", timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    return dict(re.findall(r'^APT::Periodic::([\w-]+) "([^"]*)";$', out, re.M))
+
+
+def _on(value: str) -> bool:
+    """A Periodic interval: "0" (or unset) = never, else days or "always"."""
+    return value not in ("", "0")
+
+
+def _timer_active(unit: str) -> bool:
+    try:
+        return _run_c("systemctl", "is-active", unit, timeout=10).strip() == "active"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _automatic_apt() -> dict:
+    """Whether the package lists are refreshed (apt-daily.timer + Update-Package-Lists)
+    and the security updates installed (apt-daily-upgrade.timer + Unattended-Upgrade)
+    by themselves. MADMIN's apt.conf.d/99madmin-unattended-upgrades turns both on;
+    another file, or a disabled timer, can still turn them off."""
+    periodic = _apt_periodic()
+    return {
+        "apt_lists_refresh": _on(periodic.get("Update-Package-Lists", "")) and _timer_active("apt-daily.timer"),
+        "unattended_upgrades": _on(periodic.get("Unattended-Upgrade", ""))
+                               and os.path.exists("/usr/bin/unattended-upgrade")
+                               and _timer_active("apt-daily-upgrade.timer"),
+    }
 
 
 def _scheduled_reboot():
@@ -302,7 +332,7 @@ def os_status() -> dict:
         "kernels": kernels,
         "reboot_required": os.path.exists("/var/run/reboot-required"),
         "reboot_packages": sorted(set(_read("/var/run/reboot-required.pkgs").split())),
-        "unattended_upgrades": _unattended_upgrades(),
+        **_automatic_apt(),
         "apt_updated_at": int(stamp) if stamp else None,
         **_pending_updates(),
     }
